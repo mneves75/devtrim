@@ -1,1 +1,4 @@
 /target
+/dist
+/video/node_modules
+/video/out
