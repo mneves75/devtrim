@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>devtrim — Manual</title>
+<script>
+/* Restore saved theme before first paint (FOUC guard). */
+{ const s = localStorage.getItem("devtrim-theme");
+  if (s) document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", s); }
+</script>
+<style>
+  @layer reset, base, theme, components, utilities;
+
+  @layer reset {
+    *, *::before, *::after { box-sizing: border-box; }
+    * { margin: 0; }
+    html { -webkit-text-size-adjust: 100%; }
+    img, svg { display: block; max-inline-size: 100%; }
+    input, button, textarea, select { font: inherit; }
+    p, h1, h2, h3, h4 { overflow-wrap: break-word; }
+  }
+
+  @layer base {
+    :root {
+      color-scheme: light dark;
+
+      /* Raw values */
+      --bg-l: oklch(98% 0.004 260);
+      --bg-d: oklch(17% 0.012 260);
+      --surface-l: oklch(100% 0 0);
+      --surface-d: oklch(21% 0.014 260);
+      --ink-l: oklch(24% 0.02 260);
+      --ink-d: oklch(92% 0.01 260);
+      --muted-l: oklch(45% 0.02 260);
+      --muted-d: oklch(70% 0.015 260);
+      --line-l: oklch(88% 0.008 260);
+      --line-d: oklch(30% 0.015 260);
+      --accent-l: oklch(52% 0.19 255);
+      --accent-d: oklch(74% 0.14 235);
+      --ok-l: oklch(55% 0.15 150);
+      --ok-d: oklch(75% 0.16 155);
+      --warn-l: oklch(65% 0.15 75);
+      --warn-d: oklch(80% 0.14 80);
+      --bad-l: oklch(55% 0.2 25);
+      --bad-d: oklch(70% 0.18 25);
+
+      /* Adaptive tokens */
+      --bg: light-dark(var(--bg-l), var(--bg-d));
+      --surface: light-dark(var(--surface-l), var(--surface-d));
+      --ink: light-dark(var(--ink-l), var(--ink-d));
+      --muted: light-dark(var(--muted-l), var(--muted-d));
+      --line: light-dark(var(--line-l), var(--line-d));
+      --accent: light-dark(var(--accent-l), var(--accent-d));
+      --ok: light-dark(var(--ok-l), var(--ok-d));
+      --warn: light-dark(var(--warn-l), var(--warn-d));
+      --bad: light-dark(var(--bad-l), var(--bad-d));
+
+      color: var(--ink);
+      background: var(--bg);
+      accent-color: var(--accent);
+      scrollbar-width: thin;
+      scrollbar-color: light-dark(oklch(70% .01 260), oklch(38% .012 260)) transparent;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: clamp(1rem, 0.95rem + 0.3vw, 1.125rem);
+      line-height: 1.65;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr);
+      gap: clamp(1rem, 3vw, 3rem);
+      inline-size: min(78rem, 100%);
+      margin-inline: auto;
+      padding-inline: clamp(0.75rem, 2vw, 2rem);
+    }
+
+    code, kbd, pre {
+      font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.875em;
+    }
+    code { background: color-mix(in oklab, var(--accent) 10%, transparent); padding: 0.12em 0.35em; border-radius: 0.3em; }
+    pre { padding: 0.9em 1em; border-radius: 0.6em; overflow-x: auto; line-height: 1.5;
+          border: 1px solid var(--line); position: relative; }
+    pre code { background: none; padding: 0; }
+    kbd { border: 1px solid var(--line); border-block-end-width: 2px; border-radius: 0.35em; padding: 0.05em 0.4em; }
+
+    a { color: var(--accent); text-decoration-thickness: from-font; text-underline-offset: 0.2em; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 0.2em; }
+    ::selection { background: color-mix(in oklab, var(--accent) 30%, transparent); }
+
+    @media (prefers-reduced-motion: no-preference) {
+      html { scroll-behavior: smooth; }
+      body > * { transition: background-color .25s ease, border-color .25s ease; }
+    }
+  }
+
+  @layer theme {
+    header.hero {
+      margin-block: clamp(1.5rem, 4vh, 3rem) 1rem;
+      h1 { font-size: clamp(2rem, 1.4rem + 2.6vw, 3.2rem); letter-spacing: -0.03em; text-wrap: balance; }
+      .tagline { color: var(--muted); font-size: 1.1em; max-inline-size: 46ch; text-wrap: pretty; }
+      .badges { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-block-start: 0.9rem; }
+    }
+    .badge {
+      font-size: 0.78em; font-weight: 600; letter-spacing: 0.04em;
+      border: 1px solid var(--line); border-radius: 99em;
+      padding: 0.2em 0.75em; background: var(--surface);
+    }
+    .badge.ok { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 40%, transparent); }
+    .badge.warn { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 45%, transparent); }
+    .badge.bad { color: var(--bad); border-color: color-mix(in oklab, var(--bad) 45%, transparent); }
+  }
+
+  @layer components {
+    /* ---------- sidebar ---------- */
+    nav.toc {
+      position: sticky; inset-block-start: 0;
+      block-size: 100dvh; overflow-y: auto;
+      padding-block: 1.5rem 2rem; align-self: start;
+      border-inline-end: 1px solid var(--line);
+      font-size: 0.88em;
+    }
+    nav.toc .brand { font-weight: 800; letter-spacing: -0.02em; font-size: 1.05em; margin-block-end: 1rem; }
+    nav.toc .brand span { color: var(--accent); }
+    nav.toc ol { list-style: none; padding: 0; display: grid; gap: 0.15rem; }
+    nav.toc a {
+      display: block; padding: 0.28em 0.6em; border-radius: 0.4em;
+      color: var(--muted); text-decoration: none;
+    }
+    nav.toc a:hover { color: var(--ink); background: color-mix(in oklab, var(--accent) 8%, transparent); }
+    nav.toc a[aria-current="true"] {
+      color: var(--accent); font-weight: 600;
+      background: color-mix(in oklab, var(--accent) 12%, transparent);
+    }
+    .toc-tools { display: grid; gap: 0.5rem; margin-block: 0.75rem 1rem; }
+    #filter {
+      inline-size: 100%; padding: 0.4em 0.7em; border-radius: 0.45em;
+      border: 1px solid var(--line); background: var(--surface); color: inherit;
+    }
+    #theme-toggle {
+      justify-self: start; cursor: pointer; border: 1px solid var(--line);
+      background: var(--surface); color: inherit; border-radius: 0.45em; padding: 0.3em 0.7em;
+    }
+    #theme-toggle:hover { border-color: var(--accent); }
+
+    /* ---------- main ---------- */
+    main { padding-block: clamp(1.5rem, 4vh, 3rem) 6rem; min-inline-size: 0; }
+    section { margin-block: 2.6rem; scroll-margin-block-start: 1rem; }
+    h2 {
+      font-size: 1.55em; letter-spacing: -0.02em; text-wrap: balance;
+      margin-block: 0 0.8em; padding-block-start: 0.4em;
+    }
+    h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-inline-end: 0.4em; }
+    h3 { font-size: 1.12em; margin-block: 1.6em 0.5em; }
+    p { text-wrap: pretty; max-inline-size: 72ch; }
+    ul:not(.cards), ol.plain { padding-inline-start: 1.2em; display: grid; gap: 0.35em; max-inline-size: 72ch; }
+
+    .lead { font-size: 1.08em; color: var(--muted); max-inline-size: 60ch; }
+
+    /* callouts */
+    .note, .warn, .danger-box {
+      border-radius: 0.6em; padding: 0.85em 1.1em; margin-block: 1em;
+      max-inline-size: 72ch; border: 1px solid;
+    }
+    .note { border-color: color-mix(in oklab, var(--accent) 35%, transparent);
+            background: color-mix(in oklab, var(--accent) 7%, transparent); }
+    .warn { border-color: color-mix(in oklab, var(--warn) 50%, transparent);
+            background: color-mix(in oklab, var(--warn) 9%, transparent); }
+    .danger-box { border-color: color-mix(in oklab, var(--bad) 50%, transparent);
+            background: color-mix(in oklab, var(--bad) 8%, transparent); }
+
+    /* tables */
+    table { border-collapse: collapse; inline-size: 100%; font-size: 0.92em; margin-block: 1em; }
+    caption { text-align: start; color: var(--muted); padding-block-end: 0.5em; font-size: 0.9em; }
+    th, td { text-align: start; padding: 0.5em 0.75em; border-block-end: 1px solid var(--line); vertical-align: top; }
+    thead th { color: var(--muted); font-weight: 600; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.06em; }
+    tbody tr:hover { background: color-mix(in oklab, var(--accent) 5%, transparent); }
+    td code { white-space: nowrap; }
+    td.d1 { color: var(--ok); } td.d5 { color: var(--warn); } td.d9 { color: var(--bad); font-weight: 600; }
+
+    /* command reference cards */
+    .cmd-card {
+      background: var(--surface); border: 1px solid var(--line);
+      border-radius: 0.8em; padding: 1.1em 1.3em; margin-block: 1em;
+      container-type: inline-size;
+    }
+    .cmd-card > summary {
+      cursor: pointer; list-style: none; display: flex; flex-wrap: wrap;
+      align-items: center; gap: 0.6em; font-weight: 700; user-select: none;
+    }
+    .cmd-card > summary::-webkit-details-marker { display: none; }
+    .cmd-card > summary::after { content: "▸"; margin-inline-start: auto; color: var(--muted); transition: rotate .2s ease; }
+    .cmd-card[open] > summary::after { rotate: 90deg; }
+    .cmd-card[open] > summary { margin-block-end: 0.6em; }
+    .cmd-name { font-family: ui-monospace, monospace; color: var(--accent); }
+    .cmd-card .body { border-block-start: 1px dashed var(--line); padding-block-start: 0.8em; display: grid; gap: 0.7em; }
+
+    .flag-table td:first-child code { color: var(--warn); }
+
+    /* copy button */
+    .copy-btn {
+      position: absolute; inset-block-start: 0.45em; inset-inline-end: 0.45em;
+      border: 1px solid var(--line); background: var(--bg); color: var(--muted);
+      border-radius: 0.4em; font-size: 0.72em; padding: 0.25em 0.6em; cursor: pointer;
+    }
+    .copy-btn:hover { color: var(--ink); border-color: var(--accent); }
+    .copy-btn.copied { color: var(--ok); border-color: var(--ok); }
+
+    /* danger meter */
+    meter.bar { inline-size: 7em; block-size: 0.7em; accent-color: var(--accent); }
+
+    .skip-link {
+      position: absolute; inset-inline-start: -999px; inset-block-start: 0.5rem;
+      background: var(--surface); padding: 0.4em 0.8em; border-radius: 0.4em; z-index: 10;
+    }
+    .skip-link:focus { inset-inline-start: 0.5rem; }
+
+    footer { color: var(--muted); font-size: 0.85em; border-block-start: 1px solid var(--line); padding-block: 1.5rem; }
+  }
+
+  @layer utilities {
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .dim { color: var(--muted); }
+    [hidden] { display: none !important; }
+    .grid2 { display: grid; gap: 1rem 2rem; }
+    @media (min-width: 40rem) { .grid2 { grid-template-columns: 1fr 1fr; } }
+  }
+
+  /* narrow screens: sidebar becomes top bar */
+  @media (max-width: 55rem) {
+    body { grid-template-columns: 1fr; }
+    nav.toc {
+      position: static; block-size: auto; border-inline-end: 0;
+      border-block-end: 1px solid var(--line); padding-block: 1rem;
+    }
+  }
+
+  @media print {
+    nav.toc, .copy-btn, #theme-toggle { display: none; }
+    body { grid-template-columns: 1fr; }
+    .cmd-card { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to content</a>
+
+<nav class="toc" aria-label="Table of contents">
+  <div class="brand">dev<span>trim</span></div>
+  <div class="toc-tools">
+    <label class="sr-only" for="filter">Filter sections</label>
+    <input id="filter" type="search" placeholder="Filter sections…" autocomplete="off">
+    <button id="theme-toggle" type="button" aria-label="Toggle color scheme">◐ theme</button>
+  </div>
+  <ol id="toc-list">
+    <li><a href="#philosophy">Philosophy</a></li>
+    <li><a href="#install">Install &amp; build</a></li>
+    <li><a href="#quickstart">Quick start</a></li>
+    <li><a href="#commands">Command reference</a></li>
+    <li><a href="#safety">Safety model</a></li>
+    <li><a href="#danger">Danger scoring</a></li>
+    <li><a href="#config">Configuration</a></li>
+    <li><a href="#agents">Agent integration (JSON)</a></li>
+    <li><a href="#recipes">Recipes</a></li>
+    <li><a href="#troubleshooting">Troubleshooting</a></li>
+  </ol>
+</nav>
+
+<main id="content">
+<header class="hero">
+  <h1>devtrim</h1>
+  <p class="tagline">Developer-machine disk hygiene for macOS: <strong>measure, classify, trim</strong> — with preview-first safety rails.</p>
+  <div class="badges">
+    <span class="badge ok">v0.1.0 · Apache-2.0</span>
+    <span class="badge">macOS 13+</span>
+    <span class="badge warn">Trash-first deletion</span>
+    <span class="badge bad">Protected-path denylist</span>
+    <span class="badge ok">--json for agents</span>
+  </div>
+</header>
+
+<!-- ============ PHILOSOPHY ============ -->
+<section id="philosophy" aria-labelledby="h-philosophy">
+<h2 id="h-philosophy"><span class="num" aria-hidden="true">01</span>Philosophy</h2>
+<p class="lead">devtrim exists because cleaning a 900&nbsp;GB Mac by hand is how good data dies. Every design decision enforces three rules:</p>
+<div class="grid2">
+  <div>
+    <ul>
+      <li><strong>Measure before cutting.</strong> <code>scan</code> is read-only and always free to run. Sizes are real (<code>st_blocks</code>-aware), so sparse files don't lie to you.</li>
+      <li><strong>Classify by risk.</strong> Every finding carries a danger score from 1–10 that decides how hard you must confirm (see <a href="#danger">§06</a>).</li>
+      <li><strong>Trim with a net.</strong> Filesystem deletions go to macOS Trash by default — recoverable from Finder. Permanent deletion is an explicit <code>--shred</code>.</li>
+    </ul>
+  </div>
+  <div>
+    <p>The tool refuses to be clever about your data:</p>
+    <ul>
+      <li>Docker <strong>volumes are never pruned</strong> — a volume can hold a live production database.</li>
+      <li>Xcode <strong>Archives are listed but exempt</strong> — they are release artifacts.</li>
+      <li>Repos with recent commits are <strong>skipped</strong>, not swept.</li>
+    </ul>
+  </div>
+</div>
+</section>
+
+<!-- ============ INSTALL ============ -->
+<section id="install" aria-labelledby="h-install">
+<h2 id="h-install"><span class="num" aria-hidden="true">02</span>Install &amp; build</h2>
+<pre><code>git clone https://github.com/mneves75/devtrim
+cd devtrim
+cargo build --release        # → target/release/devtrim (~1 MB)
+cargo test                   # unit tests: date math, scanners, parsers</code></pre>
+<p>No runtime dependencies beyond macOS itself. The binary is self-contained; put it on your <code>PATH</code>:</p>
+<pre><code>cp target/release/devtrim /usr/local/bin/     # or ~/.local/bin
+devtrim --version</code></pre>
+<div class="note"><strong>Rust ≥ 1.85</strong> (edition 2024) is required to build. Runtime target is macOS 13+.</div>
+</section>
+
+<!-- ============ QUICKSTART ============ -->
+<section id="quickstart" aria-labelledby="h-quickstart">
+<h2 id="h-quickstart"><span class="num" aria-hidden="true">03</span>Quick start</h2>
+<p>The 30-second tour. Everything starts as a <em>dry-run preview</em>:</p>
+<pre><code>devtrim scan                        # full report across every category
+devtrim clean caches                # preview only — nothing happens yet
+devtrim clean caches --apply -y     # actually move caches to Trash
+devtrim icloud                      # check big files queued for iCloud upload</code></pre>
+<p>Reading the output:</p>
+<pre><code>   37.5 GB  danger:7  DerivedData  /Users/you/Library/Developer/Xcode/DerivedData
+           └─ rebuilt on next build</code></pre>
+<ul>
+  <li><strong>size</strong> — real bytes on disk (sparse-file aware).</li>
+  <li><strong>danger:N</strong> — confirmation weight; colors go green → amber → orange → red.</li>
+  <li><strong>path</strong> — exactly what would be affected.</li>
+  <li><strong>└─ note</strong> — why removal is safe and how it comes back.</li>
+</ul>
+</section>
+
+<!-- ============ COMMANDS ============ -->
+<section id="commands" aria-labelledby="h-commands">
+<h2 id="h-commands"><span class="num" aria-hidden="true">04</span>Command reference</h2>
+<p class="dim">Global flags work anywhere: <code>--apply</code> <code>-y/--yes</code> <code>--yolo</code> <code>--shred</code> <code>--json</code> <code>--root &lt;dir&gt;</code>. Click a card for details.</p>
+
+<details class="cmd-card" data-keywords="scan report read-only sizes json">
+<summary><span class="cmd-name">devtrim scan</span> <span class="badge ok">read-only</span></summary>
+<div class="body">
+  <p>Reports every reclaimable category under configured roots plus known Library paths: package caches, stale <code>node_modules</code>, simulators, Xcode support files, Docker reclaimables, old Swift toolchains, agent scratch dirs.</p>
+  <table>
+    <caption>Exit codes</caption>
+    <tbody>
+      <tr><td><code>0</code></td><td>report produced (even when empty)</td></tr>
+      <tr><td><code>1</code></td><td>a category scanner failed (others still reported)</td></tr>
+    </tbody>
+  </table>
+</div>
+</details>
+
+<details class="cmd-card" data-keywords="caches cache huggingface npm brew uv codex re-download">
+<summary><span class="cmd-name">devtrim clean caches</span> <span class="badge ok">danger ≤ 3–5</span></summary>
+<div class="body">
+  <p>Moves regenerable caches to Trash: HuggingFace models, Codex runtimes, <code>uv</code>, node core cache, npm download cache, Homebrew downloads. Everything re-downloads automatically on next use.</p>
+  <p class="warn"><strong>Bandwidth note:</strong> deleting a 43 GB HuggingFace cache means re-downloading it when needed. devtrim tells you this in the note column instead of deciding for you.</p>
+</div>
+</details>
+
+<details class="cmd-card" data-keywords="node_modules node modules repos git stale active lockfile pnpm npm">
+<summary><span class="cmd-name">devtrim clean node-modules</span> <span class="badge warn">danger 5+</span></summary>
+<div class="body">
+  <p>Finds every <code>node_modules</code> under your roots, maps each to its owning git repo (nearest ancestor with <code>.git</code>), then classifies:</p>
+  <ul>
+    <li><strong>active</strong> — last commit within <code>active_days</code> (default 30): <em>skipped</em>, counted in stderr.</li>
+    <li><strong>stale</strong> — older, or no git repo at all: proposed for removal.</li>
+    <li>Nested stores (<code>.pnpm</code> virtual store inner copies) are deduplicated — only outer roots count.</li>
+  </ul>
+  <p>Restore any project afterwards with <code>pnpm install</code> or <code>npm install</code>; the finding notes which lockfile governs each repo.</p>
+</div>
+</details>
+
+<details class="cmd-card" data-keywords="simulators xcrun simctl erase delete unavailable ios watchos devices">
+<summary><span class="cmd-name">devtrim clean simulators</span> <span class="badge warn">danger 4–6</span></summary>
+<div class="body">
+  <p>Two-stage behavior:</p>
+  <ul>
+    <li><strong>Always:</strong> <code>xcrun simctl delete unavailable</code> — removes devices whose runtime was deleted. Genuinely safe.</li>
+    <li><strong>Only with <code>--yolo</code>:</strong> additionally <code>xcrun simctl erase all</code> — wipes installed apps and contents of every remaining simulator. Devices survive; their state doesn't.</li>
+  </ul>
+  <div class="danger-box"><strong>erase-all destroys simulator app data</strong> (test photos, logins, databases). It requires <code>--yolo</code> precisely because <code>-y</code> is too easy to type.</div>
+</div>
+</details>
+
+<details class="cmd-card" data-keywords="xcode deriveddata devicesupport archives symbols">
+<summary><span class="cmd-name">devtrim clean xcode</span> <span class="badge warn">danger 4+</span></summary>
+<div class="body">
+  <p>Clears children of <code>iOS DeviceSupport</code> (symbol caches, rebuilt on next device debug) and <code>DerivedData</code> (rebuilt on next build). Parent directories are preserved so Xcode rediscovers them.</p>
+  <div class="note"><code>Xcode/Archives</code> is <strong>always listed but never touched</strong> — those are App Store release artifacts. danger 0, action <code>none</code>.</div>
+</div>
+</details>
+
+<details class="cmd-card" data-keywords="docker orbstack images builder prune volumes postgres">
+<summary><span class="cmd-name">devtrim clean docker</span> <span class="badge warn">danger 6+</span></summary>
+<div class="body">
+  <p>Reads <code>docker system df</code>, proposes pruning unused images and build cache, then executes <code>docker image prune -a -f</code> and <code>docker builder prune -a -f</code> on apply.</p>
+  <div class="danger-box"><strong>Volumes are never pruned.</strong> A named volume may hold your live Postgres database (26 GB in one observed case). If you want volume space back, that's a deliberate manual operation after dumping data.</div>
+  <p class="dim">OrbStack users: the VM disk compacts lazily. Restart OrbStack after pruning to trigger TRIM and see host-side space return.</p>
+</div>
+</details>
+
+<details class="cmd-card" data-keywords="toolchains swift xctoolchain swift-latest swift.org">
+<summary><span class="cmd-name">devtrim clean toolchains</span> <span class="badge warn">danger 6</span></summary>
+<div class="body">
+  <p>Lists swift.org toolchains in <code>~/Library/Developer/Toolchains</code>. Anything not resolved by <code>swift-latest.xctoolchain</code> is proposed for removal. Xcode's built-in toolchain lives inside <code>Xcode.app</code> and is unaffected.</p>
+  <p>Reinstall any removed chain from <a href="https://swift.org/install">swift.org/install</a> if a project pinned to it resurfaces.</p>
+</div>
+</details>
+
+<details class="cmd-card" data-keywords="leftovers agent scratch kimi supergoal xcresult evidence worktree">
+<summary><span class="cmd-name">devtrim clean leftovers</span> <span class="badge warn">danger 5+</span></summary>
+<div class="body">
+  <p>Hunts AI-agent scratch that outlives its missions:</p>
+  <ul>
+    <li>depth-1 dirs matching <code>&lt;agent-prefix&gt;.&lt;6 alphanumerics&gt;</code> (e.g. <code>kimi-plan005-validation-resume.3rjuOR</code>)</li>
+    <li><code>.supergoal/evidence</code> and <code>.supergoal/perf</code> trees — past mission artifacts</li>
+  </ul>
+  <p>The pattern is intentionally conservative: prefix must match known agent naming, suffix must be exactly 6 alphanumeric chars.</p>
+</div>
+</details>
+
+<details class="cmd-card" data-keywords="icloud brctl evict upload pending sync mobile documents">
+<summary><span class="cmd-name">devtrim icloud</span> <span class="badge ok">read-only</span></summary>
+<div class="body">
+  <p>For files ≥ 100 MB in iCloud Drive Documents, reports how much is still materialized locally (via block-count, catching sparse placeholders):</p>
+  <pre><code>"BERLIN_E-mails.zip — 100% still local"
+  └─ upload in progress; keep Mac awake and online"</code></pre>
+  <p>Eviction (<code>brctl evict</code>) only succeeds <em>after</em> iCloud marks the file uploaded — forcing earlier risks data loss. This command lets you wait knowingly.</p>
+</div>
+</details>
+
+<details class="cmd-card" data-keywords="trash empty purge confirm size">
+<summary><span class="cmd-name">devtrim trash-empty</span> <span class="badge bad">danger 9</span></summary>
+<div class="body">
+  <p>Purges everything in <code>~/.Trash</code>. Requires typed acknowledgment matching current size:</p>
+  <pre><code>devtrim trash-empty --confirm=14   # fails unless Trash holds ~14 GB (±2)</code></pre>
+  <p>This is the one command where <code>--apply</code>/<code>-y</code> are irrelevant — the typed value <em>is</em> the gate. Only <code>--yolo</code> skips it, and you should never alias that.</p>
+</div>
+</details>
+</section>
+
+<!-- ============ SAFETY ============ -->
+<section id="safety" aria-labelledby="h-safety">
+<h2 id="h-safety"><span class="num" aria-hidden="true">05</span>Safety model</h2>
+<p>Five independent layers stand between a typo and a tragedy:</p>
+<table>
+  <thead><tr><th scope="col">Layer</th><th scope="col">Rule</th><th scope="col">Bypass</th></tr></thead>
+  <tbody>
+    <tr><td>Preview default</td><td>without <code>--apply</code>, nothing mutates — ever</td><td>none needed (it's the default)</td></tr>
+    <tr><td>Trash-first</td><td>filesystem deletes go to <code>~/.Trash</code></td><td><code>--shred</code></td></tr>
+    <tr><td>Danger gate</td><td>score-scaled prompts (see <a href="#danger">§06</a>)</td><td><code>-y</code> ≤5 · <code>--yolo</code> all</td></tr>
+    <tr><td>Protected paths</td><td>hard denylist below</td><td><strong>nothing bypasses this</strong></td></tr>
+    <tr><td>Non-TTY guard</td><td>piped runs refuse mutation without explicit <code>-y</code>/<code>--yolo</code></td><td>explicit flag</td></tr>
+  </tbody>
+</table>
+
+<h3>Protected paths</h3>
+<p>System roots (<code>/System</code>, <code>/usr</code>, <code>/etc</code>, <code>/Applications</code>, …) and user-critical dirs (<code>~/.ssh</code>, <code>~/.gnupg</code>) are refused unconditionally. Under <code>~/Library</code> only these managed subpaths are eligible:</p>
+<pre><code>Developer/Toolchains · Developer/Xcode/{iOS DeviceSupport,DerivedData}
+Developer/CoreSimulator/Devices · Caches/Homebrew</code></pre>
+<p class="warn">The denylist cannot be disabled by any flag. If you find yourself wanting to, the correct tool is a different tool.</p>
+
+<h3>Size escalation</h3>
+<p>Danger scores are dynamic — big targets escalate regardless of category:</p>
+<table>
+  <thead><tr><th scope="col">Total size</th><th scope="col">Minimum danger</th><th scope="col">Effect</th></tr></thead>
+  <tbody>
+    <tr><td>&gt; 1 GB</td><td class="d5">≥ 5</td><td><code>-y</code> required in non-TTY</td></tr>
+    <tr><td>&gt; 10 GB</td><td class="d5">≥ 7</td><td>interactive y/N prompt</td></tr>
+    <tr><td>&gt; 50 GB</td><td class="d9">≥ 8</td><td>near-Critical handling</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ============ DANGER ============ -->
+<section id="danger" aria-labelledby="h-danger">
+<h2 id="h-danger"><span class="num" aria-hidden="true">06</span>Danger scoring</h2>
+<p>Borrowed philosophy from ai-shell's command scorer: static risk per operation, dynamically raised by guards.</p>
+<table>
+  <thead><tr><th scope="col">Score</th><th scope="col">Meaning</th><th scope="col">Gate</th><th scope="col">Examples</th></tr></thead>
+  <tbody>
+    <tr><td class="d1">1–2</td><td>read-only / trivially reversible</td><td>none</td><td><code>scan</code>, brew cache</td></tr>
+    <tr><td class="d1">3–4</td><td>regenerable caches</td><td>silent with <code>-y</code></td><td>caches, DeviceSupport</td></tr>
+    <tr><td class="d5">5–6</td><td>rebuildable state</td><td>prompt unless <code>-y</code>; non-TTY needs <code>-y</code></td><td>node-modules, simulators, docker</td></tr>
+    <tr><td class="d9">7–8</td><td>user-visible state loss</td><td>interactive y/N even with size alone</td><td>huge DerivedData sweeps</td></tr>
+    <tr><td class="d9">9–10</td><td>irreversible bulk deletion</td><td>typed numeric confirm; <code>--yolo</code> overrides</td><td><code>trash-empty</code></td></tr>
+  </tbody>
+</table>
+<pre><code># What a Critical gate looks like:
+CRITICAL about to irreversibly remove ~14 GB. Type the number to continue: 14</code></pre>
+</section>
+
+<!-- ============ CONFIG ============ -->
+<section id="config" aria-labelledby="h-config">
+<h2 id="h-config"><span class="num" aria-hidden="true">07</span>Configuration</h2>
+<p>Optional file at <code>~/.config/devtrim.toml</code>:</p>
+<pre><code>roots = ["~/dev", "~/sandbox"]   # scan roots (default: ~/dev)
+active_days = 30                 # commit recency defining "active" repos</code></pre>
+<p>CLI <code>--root</code> flags override config roots entirely. Unknown keys are ignored — forward-compatible by design.</p>
+</section>
+
+<!-- ============ AGENTS ============ -->
+<section id="agents" aria-labelledby="h-agents">
+<h2 id="h-agents"><span class="num" aria-hidden="true">08</span>Agent integration (JSON)</h2>
+<p>Every reporting command accepts <code>--json</code>, emitting a stable schema suitable for coding agents:</p>
+<pre><code>[
+  {
+    "label": "DerivedData",
+    "path": "/Users/you/Library/Developer/Xcode/DerivedData",
+    "size_bytes": 40265318400,
+    "note": "rebuilt on next build",
+    "danger": 7,
+    "action": "trash"
+  }
+]</code></pre>
+<p>Agent contract:</p>
+<ul>
+  <li>agents must pass <code>-y</code> explicitly to mutate in non-TTY mode — silent approval is refused</li>
+  <li><code>action: "trash"</code> items are filesystem ops; <code>"command:&nbsp;…"</code> items shell out verbatim</li>
+  <li><code>action: "info"</code> / <code>"none"</code> items must never trigger mutation logic</li>
+</ul>
+<div class="note">Pair well with an <code>AGENTS.md</code> rule: “run <code>devtrim scan --json</code> before proposing disk changes; propose <code>devtrim clean …</code> commands rather than raw <code>rm</code>.”</div>
+</section>
+
+<!-- ============ RECIPES ============ -->
+<section id="recipes" aria-labelledby="h-recipes">
+<h2 id="h-recipes"><span class="num" aria-hidden="true">09</span>Recipes</h2>
+
+<h3>The quarterly deep-clean</h3>
+<pre><code>devtrim scan                       # eyeball the landscape
+devtrim clean caches --apply -y
+devtrim clean node-modules         # review which repos go stale…
+devtrim clean node-modules --apply -y
+devtrim clean xcode --apply -y
+devtrim clean simulators --apply   # check the unavailable count first
+devtrim clean docker --apply       # then restart OrbStack/Docker Desktop
+df -h /System/Volumes/Data</code></pre>
+
+<h3>Waiting out a large iCloud upload</h3>
+<pre><code>watch -n 300 'devtrim icloud'      # poll every 5 min
+# when a file reads "~100% uploaded":
+brctl evict "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Documents/&lt;file&gt;"</code></pre>
+
+<h3>Pre-flight before a big clone or model download</h3>
+<pre><code>devtrim scan --json | jq '[.[].size_bytes] | add'   # total reclaimable bytes
+devtrim clean caches --apply -y                     # make room first</code></pre>
+
+<h3>Auditing what an agent did</h3>
+<pre><code># Trash is your audit log:
+ls -la ~/.Trash | head
+# restore anything from Finder (⌘Z works too)</code></pre>
+</section>
+
+<!-- ============ TROUBLESHOOTING ============ -->
+<section id="troubleshooting" aria-labelledby="h-ts">
+<h2 id="h-ts"><span class="num" aria-hidden="true">10</span>Troubleshooting</h2>
+<details class="cmd-card"><summary><code>df</code> says less space than expected after a clean</summary><div class="body">
+  <p>Three usual suspects, in order:</p>
+  <ul>
+    <li><strong>Purgeable space accounting</strong> — macOS counts some evictable content oddly between calls; trust trends over single readings.</li>
+    <li><strong>OrbStack/Docker sparse disk</strong> — space freed inside the VM isn't returned until TRIM compaction; restart the VM.</li>
+    <li><strong>Files went to Trash</strong> — Trash-first means space returns only when Trash empties. That's the safety net working.</li>
+  </ul>
+</div></details>
+
+<details class="cmd-card"><summary><code>non-interactive run: re-run with -y…</code></summary><div class="body">
+  <p>You piped stdin (CI, agent, script) without an explicit consent flag. That refusal is intentional — add <code>-y</code> for routine ops, reserve <code>--yolo</code> for genuinely unattended maintenance windows.</p>
+</div></details>
+
+<details class="cmd-card"><summary><code>refusing protected path</code></summary><div class="body">
+  <p>A scan root or computed target intersects the denylist. Check <code>roots</code> in config; remember <code>--root ~</code> makes almost everything protected-by-design.</p>
+</div></details>
+
+<details class="cmd-card"><summary>Simulator storage didn't shrink after <code>erase</code></summary><div class="body">
+  <p><code>erase all</code> only runs under <code>--yolo</code>; plain apply does <code>delete unavailable</code> only. Also give CoreSimulator a minute — device bundles compact asynchronously.</p>
+</div></details>
+
+<details class="cmd-card"><summary>Homebrew/npm cache rows show <code>command:</code> failures in notes</summary><div class="body">
+  <p>The binary wasn't on <code>PATH</code> in the invoking environment. Run from an interactive shell, or let the trash path handle it (brew cache dirs trash cleanly too).</p>
+</div></details>
+</section>
+
+<footer>
+  devtrim v0.1.0 · Apache-2.0 · built with rust edition 2024 ·
+  manual is a single self-contained HTML file — save it offline.
+</footer>
+</main>
+
+<script type="module">
+{
+  const $ = (s, r=document) => r.querySelector(s);
+  const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+
+  /* ---- theme toggle: persists choice, follows OS otherwise ---- */
+  const meta = $('meta[name="color-scheme"]');
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  $("#theme-toggle")?.addEventListener("click", () => {
+    const stored = localStorage.getItem("devtrim-theme");
+    const current = stored ?? (mq.matches ? "dark" : "light");
+    const target = current === "dark" ? "light" : "dark";
+    meta.content = target;
+    localStorage.setItem("devtrim-theme", target);
+  });
+  addEventListener("change", () => {
+    if (!localStorage.getItem("devtrim-theme")) meta.content = "light dark";
+  });
+
+  /* ---- section filter (keeps content in DOM ⇒ ⌘F-findable) ---- */
+  const filter = $("#filter");
+  const sections = $$("main > section");
+  filter?.addEventListener("input", () => {
+    const q = filter.value.trim().toLowerCase();
+    for (const sec of sections) {
+      const hit = !q || sec.textContent.toLowerCase().includes(q)
+        || ($(`summary[data-keywords]`, sec)?.dataset.keywords ?? "").includes(q);
+      sec.hidden = !hit;
+      $(`#toc-list a[href="#${sec.id}"]`)?.parentElement.toggleAttribute("hidden", !hit);
+    }
+  });
+
+  /* ---- copy buttons on every code block ---- */
+  for (const pre of $$("pre")) {
+    const btn = document.createElement("button");
+    btn.className = "copy-btn";
+    btn.type = "button";
+    btn.textContent = "copy";
+    btn.addEventListener("click", async () => {
+      await navigator.clipboard.writeText($("code", pre)?.innerText ?? pre.innerText);
+      btn.textContent = "copied ✓"; btn.classList.add("copied");
+      setTimeout(() => { btn.textContent = "copy"; btn.classList.remove("copied"); }, 1600);
+    });
+    pre.append(btn);
+  }
+
+  /* ---- TOC current-section highlighting ---- */
+  const links = new Map($$("#toc-list a").map(a => [a.hash.slice(1), a]));
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      const a = links.get(e.target.id);
+      if (!a) continue;
+      if (e.isIntersecting) {
+        for (const l of links.values()) l.removeAttribute("aria-current");
+        a.setAttribute("aria-current", "true");
+      }
+    }
+  }, { rootMargin: "-20% 0px -70% 0px" });
+  sections.forEach(s => io.observe(s));
+
+  /* ---- exclusive accordions within the command reference ---- */
+  const cmdSection = $("#commands");
+  cmdSection?.addEventListener("toggle", e => {
+    if (!(e.target instanceof HTMLDetailsElement) || !e.target.open) return;
+    for (const d of $$(".cmd-card", cmdSection)) {
+      if (d !== e.target && d.open && getComputedStyle(d).display !== "none") d.open = false;
+    }
+  }, true);
+}
+</script>
+</body>
+</html>
