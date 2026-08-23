@@ -2,15 +2,15 @@
 
 Developer-machine disk hygiene for macOS: **measure, classify, trim — safely.**
 
-Born from a real cleanup session that reclaimed 250+ GB: HuggingFace caches,
-stale `node_modules`, simulator storage, Xcode support files, Docker bloat,
-duplicate Swift toolchains, and agent scratch directories.
+Born from a cleanup session that reclaimed 250+ GB across model caches, stale
+`node_modules`, simulator storage, Xcode support files, Docker bloat, and old
+Swift toolchains.
 
-**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.2.0](https://github.com/mneves75/devtrim/releases/tag/v0.2.0)**
+**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.2.1](https://github.com/mneves75/devtrim/releases/tag/v0.2.1)**
 
 ## Install
 
-Download the Apple silicon archive from the [v0.2.0 release](https://github.com/mneves75/devtrim/releases/tag/v0.2.0), then verify it with the included checksum:
+Download the Apple silicon archive from the [v0.2.1 release](https://github.com/mneves75/devtrim/releases/tag/v0.2.1), then verify it with the included checksum:
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
@@ -27,57 +27,93 @@ cp target/release/devtrim /usr/local/bin/
 
 ## Principles
 
-- **Preview by default.** Nothing changes without `--apply`.
-- **Trash-first.** Filesystem deletions go to macOS Trash (recoverable). `--shred` opts out.
-- **Danger scores.** Every finding carries 1–10; gates scale accordingly:
-  - ≤2: no prompt
-  - 3–5: `-y` skips prompt
-  - 6–8: interactive y/N (or `-y`)
-  - ≥9: typed numeric confirmation (`--yolo` overrides)
-- **Non-TTY safe.** Piped/agent runs refuse to mutate unless `-y`/`--yolo` is explicit.
-- **Protected paths.** `/System`, `/usr`, `/Applications`, `~/.ssh`, wholesale `~/Library`, … are refused unconditionally; only known managed subpaths under Library are eligible.
-- **Volumes are sacred.** Docker prune never touches volumes (a live DB volume is user data).
-- **Agent-friendly.** `--json` on everything.
+- **Preview by default.** Every mutation, including `trash-empty`, requires `--apply`.
+- **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets.
+- **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
+- **Fail closed.** Unknown Git activity, broken toolchain links, malformed config, symlinked ancestors, and failed owner commands block mutation.
+- **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
+  - ≤2: no interactive prompt, but non-TTY apply still needs `-y`/`--yolo`
+  - 3–8: y/N prompt (`-y` skips it)
+  - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
+- **Protected physical paths.** System roots, user secrets, the home root, Trash root, and paths reached through symlinked ancestors are refused.
+- **Volumes are sacred.** Docker volumes are never pruned.
+- **Archives are sacred.** Xcode Archives are visible but never actionable.
+- **Agent-friendly.** Every `--json` invocation emits exactly one JSON document and failures return nonzero.
 
 ## Usage
 
 ```bash
-devtrim scan                     # full read-only report
-devtrim scan --json              # machine-readable
-devtrim clean caches --apply     # HF/uv/npm/brew caches
-devtrim clean node-modules --apply -y   # stale repos only; active skipped
-devtrim clean simulators --apply # delete-unavailable (erase-all needs --yolo)
-devtrim clean xcode --apply      # DeviceSupport + DerivedData (Archives exempt)
-devtrim clean docker --apply     # unused images + build cache
-devtrim clean toolchains --apply # old swift.org toolchains (swift-latest preserved)
-devtrim clean leftovers --apply  # agent scratch dirs, .supergoal evidence
-devtrim icloud                   # upload status of big queued files
-devtrim trash-empty --confirm=14 # typed-size acknowledgment required
+devtrim scan                              # full read-only report
+devtrim scan --json                       # one machine-readable envelope
+devtrim clean caches --apply -y           # HF/uv/npm/brew/node download caches
+devtrim clean node-modules --apply -y     # exact paths in conclusively stale Git repos
+devtrim clean simulators --apply -y       # delete unavailable devices only
+devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData children
+devtrim clean docker --apply -y           # unused images + build cache; never volumes
+devtrim clean toolchains --apply -y       # only unreferenced swift.org toolchains
+devtrim clean leftovers                   # report-only hints; never deletes worktrees
+devtrim icloud                            # large queued iCloud uploads
+devtrim trash-empty --confirm=14          # preview permanent Trash purge
+devtrim trash-empty --confirm=14 --apply  # perform the verified purge
 ```
 
-## Config (optional) — `~/.config/devtrim.toml`
+`--yolo` only bypasses confirmation. It never adds simulator erase-all or any
+other operation that was absent from the preview.
+
+## Config — `~/.config/devtrim.toml`
 
 ```toml
 roots = ["~/dev"]        # scan roots
-active_days = 30         # repos with commits newer than this are "active"
+active_days = 30         # newer commits make a repo active
 ```
+
+Explicit `--root` flags replace config/default roots. Existing roots are resolved
+before preview. An unreadable or malformed config is an error; devtrim never
+silently falls back to another root.
+
+## JSON contract
+
+JSON mode returns one envelope, including empty and failed results:
+
+```json
+{
+  "operation": "caches",
+  "applied": false,
+  "findings": [],
+  "errors": []
+}
+```
+
+Applied commands additionally include `summary`. Each action is typed (`trash`,
+`shred`, `command`, `info`, or `none`) rather than encoded as a shell string.
 
 ## Safety model
 
 | Layer | Rule |
 |---|---|
-| Preview | dry-run is the default; `--apply` mutates |
-| Trash | default deletion target; recoverable via Finder |
-| Danger gate | static score per op + dynamic escalation at 1/10/50 GB |
-| Protected paths | hard denylist, no flag bypasses |
-| Size guard | >10 GB bumps danger to ≥7, >50 GB to ≥8 |
-| Non-TTY | refuses mutation without explicit flags |
+| Preview | `--apply` is mandatory for every mutation |
+| Candidate set | apply uses exact previewed findings |
+| Trash | recoverable by default; permanent mode is explicit |
+| Danger gate | maximum finding score plus aggregate estimated logical bytes |
+| Physical path | literal and resolved parent must agree; deny-only resolution |
+| Activity | unknown Git/toolchain ownership is ineligible |
+| Automation | one JSON document; partial/failed work returns nonzero |
 
-## Build and release
+Sizes are estimated logical bytes. APFS clones, sparse files, and container-VM
+compaction can make immediately available disk space differ.
+
+## Build and verify
 
 ```bash
-cargo build --release --locked
-cargo test
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+cargo audit
+cargo build --release --locked --target aarch64-apple-darwin
 ```
 
-Release notes live in [`CHANGELOG.md`](CHANGELOG.md). After committing and pushing a version bump, run `scripts/release.sh <version>` to build the archive, checksum it, tag the commit, and create the GitHub release.
+See [`SECURITY.md`](SECURITY.md) for the threat model and reporting process.
+Release notes live in [`CHANGELOG.md`](CHANGELOG.md). After committing and
+pushing a version bump, run `scripts/release.sh <version>` to rerun local gates,
+require successful CI for that exact commit, build and verify the arm64 archive,
+tag the commit, and create the GitHub release.

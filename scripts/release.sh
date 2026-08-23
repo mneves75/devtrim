@@ -1,37 +1,89 @@
 #!/usr/bin/env bash
-# devtrim release: build → package → checksums → tag → GitHub release
-# usage: scripts/release.sh <version>   (e.g. 0.2.0)
+# devtrim release: verify → build arm64 → package → checksum → tag → GitHub release
+# usage: scripts/release.sh <version>   (e.g. 0.2.1)
 set -euo pipefail
 
-ver="${1:?usage: release.sh <version>}"
+ver="${1:?usage: scripts/release.sh <version>}"
+[[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "ERROR: version must be X.Y.Z"; exit 1; }
 tag="v${ver}"
+target="aarch64-apple-darwin"
+out="devtrim-${ver}-macos-arm64"
 cd "$(dirname "$0")/.."
 
 echo "==> verifying release state"
-grep -q "^version = \"${ver}\"$" Cargo.toml || { echo "ERROR: Cargo.toml version != ${ver}. Bump first."; exit 1; }
+grep -Fqx "version = \"${ver}\"" Cargo.toml || { echo "ERROR: Cargo.toml version != ${ver}"; exit 1; }
 grep -Fq "## [${ver}]" CHANGELOG.md || { echo "ERROR: no CHANGELOG.md section for ${ver}"; exit 1; }
-git diff --quiet && git diff --cached --quiet || { echo "ERROR: commit changes before releasing"; exit 1; }
-git rev-parse "${tag}" >/dev/null 2>&1 && { echo "ERROR: tag ${tag} already exists"; exit 1; }
+grep -Fq "v${ver}" README.md || { echo "ERROR: README.md lacks v${ver}"; exit 1; }
+grep -Fq "v${ver}" MANUAL.html || { echo "ERROR: MANUAL.html lacks v${ver}"; exit 1; }
+grep -Fq "v${ver}" index.html || { echo "ERROR: index.html lacks v${ver}"; exit 1; }
+[[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || { echo "ERROR: commit all changes before releasing"; exit 1; }
+upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || { echo "ERROR: current branch has no upstream"; exit 1; }
+git fetch --quiet origin || { echo "ERROR: cannot reach origin to verify release state"; exit 1; }
+[[ "$(git rev-parse HEAD)" == "$(git rev-parse "$upstream")" ]] || { echo "ERROR: push the release commit and sync with $upstream first"; exit 1; }
+git rev-parse "$tag" >/dev/null 2>&1 && { echo "ERROR: local tag $tag already exists"; exit 1; }
+remote_tag=$(git ls-remote --tags origin "refs/tags/${tag}") || { echo "ERROR: cannot query remote tags"; exit 1; }
+[[ -z "$remote_tag" ]] || { echo "ERROR: remote tag $tag already exists"; exit 1; }
+gh release view "$tag" >/dev/null 2>&1 && { echo "ERROR: GitHub release $tag already exists"; exit 1; }
 
-echo "==> clean release build"
-cargo build --release --locked
+echo "==> quality gates"
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+if command -v rustup >/dev/null 2>&1; then
+  rustup toolchain install 1.85.0 --profile minimal
+  rustup run 1.85.0 cargo test --locked --all-targets --all-features
+fi
+release_commit=$(git rev-parse HEAD)
+if ! ci_conclusion=$(gh run list --workflow ci.yml --event push --commit "$release_commit" --limit 1 --json conclusion,status --jq '.[0] | select(.status == "completed") | .conclusion'); then
+  echo "ERROR: could not query CI for release commit ${release_commit}"
+  echo "ACTION: verify gh authentication and run: gh run list --workflow ci.yml --commit ${release_commit}"
+  exit 1
+fi
+if [[ "$ci_conclusion" != "success" ]]; then
+  echo "ERROR: release commit ${release_commit} has no successful completed CI run"
+  echo "ACTION: wait for or rerun CI on that exact pushed commit, then retry this release"
+  exit 1
+fi
+cargo audit
+bash -n scripts/release.sh
+shellcheck scripts/release.sh
+actionlint
 
-echo "==> smoke test"
-./target/release/devtrim --version
+echo "==> locked arm64 release build"
+if command -v rustup >/dev/null 2>&1; then
+  rustup target add "$target"
+fi
+cargo build --release --locked --target "$target"
+binary="target/${target}/release/devtrim"
+file "$binary" | grep -q 'arm64' || { echo "ERROR: release binary is not arm64"; exit 1; }
+"$binary" --version | grep -Fqx "devtrim ${ver}" || { echo "ERROR: binary version mismatch"; exit 1; }
 
-echo "==> packaging"
-out="devtrim-${ver}-macos-arm64"
+echo "==> clean packaging"
+# SAFE: both paths are ignored, version-derived release outputs under repository dist/.
+rm -rf "dist/${out}" "dist/${out}.zip"
+rm -f "dist/SHA256SUMS.txt"
 mkdir -p "dist/${out}"
-cp target/release/devtrim "dist/${out}/"
-cp MANUAL.html README.md LICENSE "dist/${out}/" 2>/dev/null || cp MANUAL.html README.md "dist/${out}/"
+cp "$binary" "dist/${out}/devtrim"
+cp MANUAL.html README.md LICENSE "dist/${out}/"
 ( cd dist && zip -qr "${out}.zip" "${out}" )
 ( cd dist && shasum -a 256 "${out}.zip" > SHA256SUMS.txt )
-cat "dist/SHA256SUMS.txt"
+unzip -l "dist/${out}.zip"
+( cd dist && shasum -a 256 -c SHA256SUMS.txt )
 
-echo "==> tag + release"
-notes=$(awk -v hdr="## [${ver}]" 'index($0,hdr)==1{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md)
-[ -n "${notes}" ] || { echo "ERROR: empty release notes for ${ver}"; exit 1; }
-git tag "${tag}"
-git push origin "${tag}"
-gh release create "${tag}" "dist/${out}.zip" "dist/SHA256SUMS.txt" --title "devtrim ${ver}" --notes "$notes"
+echo "==> tag + GitHub release"
+notes=$(awk -v hdr="## [${ver}]" 'index($0,hdr)==1{found=1;next} /^## /{if(found)exit} found' CHANGELOG.md)
+[[ -n "$notes" ]] || { echo "ERROR: empty release notes for ${ver}"; exit 1; }
+gh auth status
+git tag "$tag"
+if ! git push origin "$tag"; then
+  echo "ERROR: local tag $tag was created but the push failed"
+  echo "RECOVER: inspect git ls-remote --tags origin refs/tags/$tag before acting"
+  echo "RECOVER: if absent, fix the push issue, delete the local tag with git tag -d $tag, and rerun; if present, create the GitHub release manually"
+  exit 1
+fi
+if ! gh release create "$tag" "dist/${out}.zip" "dist/SHA256SUMS.txt" --title "devtrim ${ver}" --notes "$notes"; then
+  echo "ERROR: tag $tag was pushed but GitHub release creation failed"
+  echo "RECOVER: inspect the pushed tag/assets, then run gh release create ${tag} dist/${out}.zip dist/SHA256SUMS.txt manually"
+  exit 1
+fi
 echo "==> released ${tag}"

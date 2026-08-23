@@ -1,6 +1,6 @@
 [package]
 name = "devtrim"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Marcus Neves"]
@@ -11,7 +11,7 @@ keywords = ["cli", "macos", "disk", "cleanup", "developer"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 walkdir = "2.5"
 trash = "5"

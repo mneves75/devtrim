@@ -402,7 +402,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.2.0</span>
+    <span class="chip g">v0.2.1</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
     <span class="chip r">Protected-path denylist</span>
@@ -416,7 +416,7 @@
   <span class="ghost" aria-hidden="true">01</span>
   <p class="lead">devtrim exists because cleaning a 900&nbsp;GB Mac by hand is how good data dies. Three rules govern everything it does.</p>
   <ul class="flow">
-    <li><strong>Measure before cutting.</strong> <code>scan</code> is read-only and always free to run. Sizes are real (<code>st_blocks</code>-aware), so sparse files don't lie to you.</li>
+    <li><strong>Measure before cutting.</strong> <code>scan</code> is read-only and always free to run. Sizes are estimated logical bytes; APFS clones, sparse files, Trash, and container VMs can differ.</li>
     <li><strong>Classify by risk.</strong> Every finding carries a danger score from 1 to 10 that decides how hard you must confirm (see <a href="#danger">§06</a>).</li>
     <li><strong>Trim with a net.</strong> Filesystem deletions go to macOS Trash by default — recoverable from Finder. Permanent deletion requires an explicit <code>--shred</code>.</li>
   </ul>
@@ -433,8 +433,8 @@
   <h2 id="h-install"><span class="num">02</span> Install &amp; build</h2>
   <pre data-copy="safe"><code>git clone https://github.com/mneves75/devtrim
 cd devtrim
-cargo build --release
-cargo test</code></pre>
+cargo build --release --locked
+cargo test --locked</code></pre>
   <p>No runtime dependencies beyond macOS itself. The release binary is ~1&nbsp;MB and self-contained:</p>
   <pre data-copy="safe"><code>cp target/release/devtrim /usr/local/bin/
 devtrim --version</code></pre>
@@ -454,7 +454,7 @@ devtrim clean caches</code></pre>
   <pre data-copy="none"><code>   37.5 GB  danger:7  DerivedData  /Users/you/Library/Developer/Xcode/DerivedData
            └─ rebuilt on next build</code></pre>
   <ul class="flow">
-    <li><strong>size</strong> — real bytes on disk (sparse-file aware).</li>
+    <li><strong>size</strong> — estimated logical bytes; actual immediately reclaimable space can differ.</li>
     <li><strong>danger:N</strong> — confirmation weight; colors go green → amber → red.</li>
     <li><strong>path</strong> — exactly what would be affected.</li>
     <li><strong>└─ note</strong> — why removal is safe and how it comes back.</li>
@@ -482,8 +482,8 @@ devtrim clean caches</code></pre>
     <div class="card-body"><p>Moves regenerable caches to Trash. Re-downloads automatically on next use — mind the bandwidth for large model caches.</p></div>
   </details>
   <details class="card">
-    <summary><span class="cmd-name">node-modules</span><span class="cmd-desc">stale repos only; active skipped</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Finds every <code>node_modules</code>, maps it to its owning git repo, skips anything committed within <code>active_days</code> (default 30). Nested virtual stores deduplicated. Reinstall anytime.</p></div>
+    <summary><span class="cmd-name">node-modules</span><span class="cmd-desc">exact paths in conclusively stale repos</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
+    <div class="card-body"><p>Maps each <code>node_modules</code> to its owning Git repo, skips recent commits, and applies only the exact paths shown. Unknown Git activity is refused. Dependency and <code>.git</code> trees are not traversed.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">xcode</span><span class="cmd-desc">DeviceSupport + DerivedData</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
@@ -498,18 +498,18 @@ devtrim clean caches</code></pre>
     <div class="card-body"><p><code>image prune -a</code> + <code>builder prune</code>. <strong>Volumes are never touched</strong> — a volume can hold your live database. OrbStack users: restart the VM afterwards to trigger TRIM compaction.</p></div>
   </details>
   <details class="card">
-    <summary><span class="cmd-name">leftovers</span><span class="cmd-desc">agent scratch dirs, .supergoal artifacts</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Conservative pattern match: agent-prefixed dirs with 6-char suffixes, plus past <code>.supergoal</code> evidence/perf trees.</p></div>
+    <summary><span class="cmd-name">leftovers</span><span class="cmd-desc">report-only review hints</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>INFO</span></summary>
+    <div class="card-body"><p>Lists possible agent scratch and <code>.supergoal</code> paths for manual review. It never deletes them because worktree or mission staleness cannot be proven from a name.</p></div>
   </details>
 
   <p class="group-label" id="g-nuclear">Nuclear — read twice, run once</p>
   <details class="card">
-    <summary><span class="cmd-name">simulators</span><span class="cmd-desc">delete unavailable (+erase all via --yolo)</span><span class="pill r"><span class="sq"><i class="on"></i><i class="on"></i><i class="on"></i></span>NUKE</span></summary>
-    <div class="card-body"><p>Always: removes devices whose runtime is gone. With <code>--yolo</code>: also <code>erase all</code> — wipes installed apps and contents of every simulator. Devices survive; their state doesn't.</p></div>
+    <summary><span class="cmd-name">simulators</span><span class="cmd-desc">delete unavailable devices only</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
+    <div class="card-body"><p>Removes devices whose runtime is gone. <code>--yolo</code> may bypass confirmation, but it never adds <code>erase all</code> or any operation absent from preview.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">trash-empty</span><span class="cmd-desc">purge ~/.Trash permanently</span><span class="pill r"><span class="sq"><i class="on"></i><i class="on"></i><i class="on"></i></span>NUKE</span></summary>
-    <div class="card-body"><p>Requires <code>--confirm=&lt;gb&gt;</code> matching current Trash size ±2 GB. The typed value is the gate — flags don't substitute.</p></div>
+    <div class="card-body"><p>Preview with <code>--confirm=&lt;gb&gt;</code>; permanent purge additionally requires <code>--apply</code>. The approximate size must match within ±2 GB.</p></div>
   </details>
 </section>
 
@@ -522,7 +522,7 @@ devtrim clean caches</code></pre>
     <tbody>
       <tr><td data-th="Layer">Preview default</td><td data-th="Rule">without <code>--apply</code>, nothing mutates — ever</td><td data-th="Bypass">none needed (default)</td></tr>
       <tr><td data-th="Layer">Trash-first</td><td data-th="Rule">filesystem deletes go to <code>~/.Trash</code></td><td data-th="Bypass"><code>--shred</code></td></tr>
-      <tr><td data-th="Layer">Danger gate</td><td data-th="Rule">score-scaled prompts (see <a href="#danger">§06</a>)</td><td data-th="Bypass"><code>-y</code> ≤5 · <code>--yolo</code> all</td></tr>
+      <tr><td data-th="Layer">Danger gate</td><td data-th="Rule">score-scaled prompts (see <a href="#danger">§06</a>)</td><td data-th="Bypass"><code>-y</code> skips y/N · <code>--yolo</code> skips confirmation only</td></tr>
       <tr><td data-th="Layer">Protected paths</td><td data-th="Rule">hard denylist below</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Non-TTY guard</td><td data-th="Rule">piped runs refuse mutation without explicit consent</td><td data-th="Bypass">explicit flag</td></tr>
     </tbody>
@@ -531,8 +531,7 @@ devtrim clean caches</code></pre>
   <h3>Protected paths</h3>
   <p>System roots (<code>/System</code>, <code>/usr</code>, <code>/etc</code>, <code>/Applications</code>, …) and user-critical dirs (<code>~/.ssh</code>, <code>~/.gnupg</code>) are refused unconditionally. Under <code>~/Library</code>, only these managed subpaths are eligible:</p>
   <pre data-copy="none"><code>Developer/Toolchains · Developer/Xcode/iOS DeviceSupport
-Developer/Xcode/DerivedData · Developer/CoreSimulator/Devices
-Caches/Homebrew</code></pre>
+Developer/Xcode/DerivedData · Caches/Homebrew</code></pre>
   <div class="warn">The denylist cannot be disabled by any flag. If you find yourself wanting to, the correct tool is a different tool.</div>
 
   <h3>Size escalation</h3>
@@ -556,14 +555,16 @@ Caches/Homebrew</code></pre>
     <thead><tr><th>Score</th><th>Meaning</th><th>Gate</th><th>Examples</th></tr></thead>
     <tbody>
       <tr><td data-th="Score" class="lvl-g">1–2</td><td data-th="Meaning">read-only / trivially reversible</td><td data-th="Gate">none</td><td data-th="Examples"><code>scan</code>, brew cache</td></tr>
-      <tr><td data-th="Score" class="lvl-a">3–4</td><td data-th="Meaning">regenerable caches</td><td data-th="Gate">silent with <code>-y</code></td><td data-th="Examples">caches, DeviceSupport</td></tr>
-      <tr><td data-th="Score" class="lvl-a">5–6</td><td data-th="Meaning">rebuildable state</td><td data-th="Gate">prompt unless <code>-y</code>; non-TTY needs <code>-y</code></td><td data-th="Examples">node-modules, simulators, docker</td></tr>
-      <tr><td data-th="Score" style="color:#e08a3c">7–8</td><td data-th="Meaning">user-visible state loss</td><td data-th="Gate">interactive y/N</td><td data-th="Examples">huge sweeps</td></tr>
+      <tr><td data-th="Score" class="lvl-a">3–4</td><td data-th="Meaning">regenerable caches</td><td data-th="Gate">silent with <code>-y</code></td><td data-th="Examples">caches, DeviceSupport, unavailable simulators</td></tr>
+      <tr><td data-th="Score" class="lvl-a">5–6</td><td data-th="Meaning">rebuildable state</td><td data-th="Gate">prompt unless <code>-y</code>; non-TTY needs <code>-y</code></td><td data-th="Examples">node-modules, docker</td></tr>
+      <tr><td data-th="Score" style="color:#e08a3c">7–8</td><td data-th="Meaning">large or user-visible state loss</td><td data-th="Gate">prompt unless <code>-y</code></td><td data-th="Examples">huge sweeps</td></tr>
       <tr><td data-th="Score" class="lvl-r">9–10</td><td data-th="Meaning">irreversible bulk deletion</td><td data-th="Gate">typed numeric confirm</td><td data-th="Examples"><code>trash-empty</code></td></tr>
     </tbody>
   </table></div>
-  <pre data-copy="none"><code><span class="dim">$ devtrim clean trash-empty --confirm=?</span>
-CRITICAL about to irreversibly remove ~14 GB. Type the number to continue: _</code></pre>
+  <pre data-copy="none"><code><span class="dim">$ devtrim trash-empty --confirm=14</span>
+dry-run no changes made; re-run with --apply and --confirm=14 to act
+<span class="dim">$ devtrim trash-empty --confirm=14 --apply</span>
+✓ Trash permanently purged</code></pre>
 </section>
 
 <!-- ============ 07 CONFIG ============ -->
@@ -578,20 +579,25 @@ active_days = 30                 # commit recency defining "active" repos</code>
 <!-- ============ 08 AGENTS ============ -->
 <section id="agents" aria-labelledby="h-agents">
   <h2 id="h-agents"><span class="num">08</span> Agent integration</h2>
-  <p>Every reporting command accepts <code>--json</code>, emitting a stable schema for coding agents:</p>
-  <pre data-copy="none"><code>[
-  {
-    "label": "DerivedData",
-    "path": "/Users/you/Library/Developer/Xcode/DerivedData",
-    "size_bytes": 40265318400,
-    "note": "rebuilt on next build",
-    "danger": 7,
-    "action": "trash"
-  }
-]</code></pre>
+  <p>Every reporting command accepts <code>--json</code>, emitting exactly one response envelope:</p>
+  <pre data-copy="none"><code>{
+  "operation": "xcode",
+  "applied": false,
+  "findings": [
+    {
+      "label": "DerivedData: Project-hash",
+      "path": "/Users/you/Library/Developer/Xcode/DerivedData/Project-hash",
+      "size_bytes": 40265318400,
+      "note": "build output; rebuilt on next build",
+      "danger": 7,
+      "action": { "type": "trash" }
+    }
+  ],
+  "errors": []
+}</code></pre>
   <ul class="flow">
     <li>agents must pass <code>-y</code> explicitly to mutate non-interactively — silent approval is refused</li>
-    <li><code>action: "trash"</code> items are filesystem ops; <code>"command:&nbsp;…"</code> items shell out verbatim</li>
+    <li>actions are typed as <code>trash</code>, <code>shred</code>, <code>command</code>, <code>info</code>, or <code>none</code>; command argv is never parsed from display text</li>
     <li><code>"info"</code> / <code>"none"</code> items must never trigger mutation logic</li>
   </ul>
   <div class="note">Pair with an <code>AGENTS.md</code> rule: “run <code>devtrim scan --json</code> before proposing disk changes; propose <code>devtrim clean …</code> rather than raw <code>rm</code>.”</div>
@@ -616,7 +622,7 @@ active_days = 30                 # commit recency defining "active" repos</code>
   <pre data-copy="safe"><code>brctl evict "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Documents/&lt;file&gt;"</code></pre>
 
   <h3>Pre-flight before a big clone or model download</h3>
-  <pre data-copy="safe"><code>devtrim scan --json | jq '[.[].size_bytes] | add'</code></pre>
+  <pre data-copy="safe"><code>devtrim scan --json | jq '[.findings[].size_bytes] | add // 0'</code></pre>
   <pre data-copy="safe"><code>devtrim clean caches --apply -y</code></pre>
 
   <div class="note"><strong>Trash is your audit log.</strong> Everything cleaned today is restorable from Finder until you empty it.</div>
@@ -642,17 +648,17 @@ active_days = 30                 # commit recency defining "active" repos</code>
     <div class="card-body"><p>A root or computed target intersects the denylist. Check config <code>roots</code>; remember <code>--root ~</code> makes nearly everything protected-by-design.</p></div>
   </details>
 
-  <details class="card"><summary><span class="cmd-name">simulator storage didn't shrink after erase</span></summary>
-    <div class="card-body"><p><code>erase all</code> needs <code>--yolo</code>. CoreSimulator also compacts device bundles asynchronously — give it a minute.</p></div>
+  <details class="card"><summary><span class="cmd-name">simulator storage differs from the preview</span></summary>
+    <div class="card-body"><p>The preview shows total simulator storage for context, but only unavailable devices are actionable. CoreSimulator may compact bundles asynchronously after deletion.</p></div>
   </details>
 
-  <details class="card"><summary><span class="cmd-name">command: rows show FAILED in notes</span></summary>
-    <div class="card-body"><p>The binary wasn't on <code>PATH</code> in that environment. Run from an interactive shell, or let the trash path handle cache dirs directly.</p></div>
+  <details class="card"><summary><span class="cmd-name">an owner command failed</span></summary>
+    <div class="card-body"><p>devtrim returns nonzero and includes the error in JSON. Failed actions are never counted as touched or reclaimed; fix the owner tool and preview again.</p></div>
   </details>
 </section>
 
 <footer>
-  <span>devtrim <b>v0.2.0</b></span>
+  <span>devtrim <b>v0.2.1</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

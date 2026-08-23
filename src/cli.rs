@@ -18,23 +18,23 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub apply: bool,
 
-    /// Skip confirmation prompts for danger ≤ Medium (5). Non-TTY requires this or --yolo.
+    /// Skip normal y/N prompts. Non-TTY mutation requires this or --yolo.
     #[arg(short = 'y', long, global = true)]
     pub yes: bool,
 
-    /// Skip ALL safety gates including typed confirmations for Critical ops
+    /// Skip confirmation only; never adds operations to the previewed plan
     #[arg(long, global = true)]
     pub yolo: bool,
 
-    /// Permanently delete instead of moving to Trash where applicable
+    /// Permanently delete instead of moving filesystem targets to Trash
     #[arg(long, global = true)]
     pub shred: bool,
 
-    /// Emit machine-readable JSON (agent-friendly)
+    /// Emit one machine-readable JSON document
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Extra paths to scan beyond configured roots
+    /// Replace configured/default scan roots
     #[arg(long = "root", global = true)]
     pub roots: Vec<String>,
 }
@@ -43,7 +43,7 @@ pub struct Cli {
 pub enum Command {
     /// Read-only report of every reclaimable category with sizes and risk
     Scan,
-    /// Clean one category (see subcommand help)
+    /// Clean one category
     Clean {
         /// caches | node-modules | simulators | xcode | docker | toolchains | leftovers
         #[arg(value_enum)]
@@ -51,10 +51,10 @@ pub enum Command {
     },
     /// Show iCloud Drive queued uploads and their local-materialization status
     Icloud,
-    /// Purge the macOS Trash. Requires --confirm=<gb> matching current Trash size.
+    /// Purge macOS Trash permanently; requires --apply and --confirm=<gb>
     TrashEmpty {
-        /// Type the approximate Trash size in GB as acknowledgment (e.g. --confirm=14)
-        #[arg(long)]
+        /// Approximate Trash size in GB as acknowledgment (e.g. --confirm=14)
+        #[arg(long = "confirm")]
         confirm_gb: Option<u64>,
     },
 }
@@ -62,13 +62,13 @@ pub enum Command {
 impl Target {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Target::Caches => "caches",
-            Target::NodeModules => "node-modules",
-            Target::Simulators => "simulators",
-            Target::Xcode => "xcode",
-            Target::Docker => "docker",
-            Target::Toolchains => "toolchains",
-            Target::Leftovers => "leftovers",
+            Self::Caches => "caches",
+            Self::NodeModules => "node-modules",
+            Self::Simulators => "simulators",
+            Self::Xcode => "xcode",
+            Self::Docker => "docker",
+            Self::Toolchains => "toolchains",
+            Self::Leftovers => "leftovers",
         }
     }
 }

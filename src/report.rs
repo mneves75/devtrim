@@ -1,20 +1,50 @@
-//! Findings model + rendering.
+//! Findings model + human/JSON rendering.
 
-use crate::cli::Cli;
 use colored::Colorize;
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum Action {
+    Trash,
+    Shred,
+    Command { program: String, args: Vec<String> },
+    Info,
+    None,
+}
+
+impl Action {
+    pub fn command(program: &str, args: &[&str]) -> Self {
+        Self::Command {
+            program: program.into(),
+            args: args.iter().map(|arg| (*arg).into()).collect(),
+        }
+    }
+
+    pub fn is_actionable(&self) -> bool {
+        matches!(self, Self::Trash | Self::Shred | Self::Command { .. })
+    }
+
+    fn display(&self) -> String {
+        match self {
+            Self::Trash => "move to Trash".into(),
+            Self::Shred => "permanently delete".into(),
+            Self::Command { program, args } => format!("run `{program} {}`", args.join(" ")),
+            Self::Info => "information only".into(),
+            Self::None => "excluded".into(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Finding {
-    /// Human label, e.g. "huggingface model cache"
     pub label: String,
     pub path: Option<String>,
+    /// Estimated logical bytes. APFS clones and sparse files can differ on disk.
     pub size_bytes: u64,
-    /// Why it is safe (or not) to remove; shown in preview
     pub note: String,
     /// 1-10
     pub danger: u8,
-    /// What apply will do: "trash" | "command: <cmd>"
-    pub action: String,
+    pub action: Action,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -23,6 +53,16 @@ pub struct Summary {
     pub items_touched: usize,
     pub bytes_freed_estimate: u64,
     pub notes: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct Response<'a> {
+    operation: &'a str,
+    applied: bool,
+    findings: &'a [Finding],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<&'a Summary>,
+    errors: &'a [String],
 }
 
 pub fn gb(bytes: u64) -> String {
@@ -47,42 +87,81 @@ fn danger_tag(d: u8) -> colored::ColoredString {
     }
 }
 
-pub fn print(findings: &[Finding], cli: &Cli) {
-    if cli.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(findings).unwrap_or_else(|_| "[]".into())
-        );
+pub fn effective_actions(findings: &mut [Finding], shred: bool) {
+    if !shred {
         return;
     }
-    let total: u64 = findings.iter().map(|f| f.size_bytes).sum();
-    for f in findings {
-        let path = f.path.as_deref().unwrap_or("-");
-        println!(
-            "{:>9}  {}  {}  {}\n           └─ {}",
-            gb(f.size_bytes),
-            danger_tag(f.danger),
-            f.label.bold(),
-            path.dimmed(),
-            f.note
-        );
+    for finding in findings {
+        if finding.action == Action::Trash {
+            finding.action = Action::Shred;
+            finding.danger = finding.danger.max(9);
+        }
     }
-    println!("\n{} across {} item(s)", gb(total).bold(), findings.len());
 }
 
-pub fn print_summary(s: &Summary, cli: &Cli) {
-    if cli.json {
-        println!("{}", serde_json::to_string_pretty(s).unwrap_or_default());
-        return;
+pub fn actionable_bytes(findings: &[Finding]) -> u64 {
+    findings
+        .iter()
+        .filter(|finding| finding.action.is_actionable())
+        .map(|finding| finding.size_bytes)
+        .sum()
+}
+
+pub fn print_human(findings: &[Finding]) {
+    let total = actionable_bytes(findings);
+    for finding in findings {
+        let path = finding.path.as_deref().unwrap_or("-");
+        println!(
+            "{:>9}  {}  {}  {}\n           └─ {}; action: {}",
+            gb(finding.size_bytes),
+            danger_tag(finding.danger),
+            finding.label.bold(),
+            path.dimmed(),
+            finding.note,
+            finding.action.display()
+        );
     }
-    for n in &s.notes {
-        println!("  {n}");
+    println!(
+        "\n{} actionable across {} finding(s)",
+        gb(total).bold(),
+        findings.len()
+    );
+}
+
+pub fn print_summary(summary: &Summary) {
+    for note in &summary.notes {
+        println!("  {note}");
     }
     println!(
         "\n{} {}: {} item(s), ~{} reclaimed estimate",
         "✓".green().bold(),
-        s.op,
-        s.items_touched,
-        gb(s.bytes_freed_estimate)
+        summary.op,
+        summary.items_touched,
+        gb(summary.bytes_freed_estimate)
     );
+}
+
+pub fn print_json(
+    operation: &str,
+    applied: bool,
+    findings: &[Finding],
+    summary: Option<&Summary>,
+    errors: &[String],
+) {
+    let response = Response {
+        operation,
+        applied,
+        findings,
+        summary,
+        errors,
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&response)
+            .unwrap_or_else(|_| r#"{"operation":"unknown","applied":false,"findings":[],"errors":["serialization failed"]}"#.into())
+    );
+}
+
+pub fn print_error_json(message: &str) {
+    print_json("unknown", false, &[], None, &[message.to_string()]);
 }

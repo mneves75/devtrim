@@ -4,7 +4,7 @@
 use anyhow::Result;
 use walkdir::WalkDir;
 
-use crate::report::Finding;
+use crate::report::{Action, Finding};
 use crate::safety::Ctx;
 
 pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
@@ -25,11 +25,11 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
             continue; // only interesting for big queued files
         }
         let on_disk = blocks_bytes(p);
-        let pct = if logical == 0 {
-            100
-        } else {
-            (on_disk * 100 / logical).min(100)
-        };
+        let pct = on_disk
+            .saturating_mul(100)
+            .checked_div(logical)
+            .unwrap_or(100)
+            .min(100);
         let label = p
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -39,14 +39,12 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
             path: Some(p.display().to_string()),
             size_bytes: logical,
             note: if pct >= 99 {
-                "fully local; `brctl evict` will succeed once iCloud marks it uploaded"
-                    .into()
+                "fully local; `brctl evict` will succeed once iCloud marks it uploaded".into()
             } else {
-                "upload in progress; keep Mac awake and online; evict only after upload"
-                    .into()
+                "upload in progress; keep Mac awake and online; evict only after upload".into()
             },
             danger: 1,
-            action: "info".into(),
+            action: Action::Info,
         });
     }
     Ok(out)

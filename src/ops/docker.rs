@@ -1,82 +1,97 @@
-//! Docker/OrbStack pruning: unused images + build cache. Volumes are NEVER
-//! pruned automatically — a live database volume is user data.
+//! Docker/OrbStack pruning: unused images + build cache. Volumes are never pruned.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::process::Command;
 
-use super::{Finding, Op, Summary};
+use super::{Action, Finding, Op, Summary};
 use crate::safety::{Ctx, escalate};
 
 pub struct Docker;
 
 fn docker(args: &[&str]) -> Result<String> {
-    let o = Command::new("docker").args(args).output()?;
-    Ok(String::from_utf8_lossy(&o.stdout).to_string())
+    let output = Command::new("docker").args(args).output()?;
+    if !output.status.success() {
+        anyhow::bail!("`docker {}` failed", args.join(" "));
+    }
+    String::from_utf8(output.stdout).context("docker returned non-UTF-8 output")
 }
 
 impl Op for Docker {
     fn name(&self) -> &'static str {
         "docker"
     }
+
     fn scan(&self, _ctx: &Ctx) -> Result<Vec<Finding>> {
-        if Command::new("docker").arg("version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        let version = match Command::new("docker").arg("version").output() {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        if !version.status.success() {
             return Ok(Vec::new());
         }
-        let df = docker(&["system", "df", "--format", "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}"])?;
-        let mut out = Vec::new();
-        for line in df.lines() {
-            let mut it = line.split('\t');
-            let (Some(kind), Some(size), Some(recl)) = (it.next(), it.next(), it.next()) else {
+        let output = docker(&[
+            "system",
+            "df",
+            "--format",
+            "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}",
+        ])?;
+        let mut findings = Vec::new();
+        for line in output.lines() {
+            let mut columns = line.split('\t');
+            let (Some(kind), Some(total), Some(reclaimable)) =
+                (columns.next(), columns.next(), columns.next())
+            else {
                 continue;
             };
-            match kind {
-                "Images" | "Build Cache" => {
-                    let bytes = parse_size(recl);
-                    if bytes == 0 {
-                        continue;
-                    }
-                    out.push(Finding {
-                        label: format!("Docker {kind} reclaimable"),
-                        path: None,
-                        size_bytes: bytes,
-                        note: format!(
-                            "prunes unused {} ({total} total); volumes are never touched",
-                            if kind == "Images" { "images" } else { "build cache" },
-                            total = size
-                        ),
-                        danger: escalate(6, bytes),
-                        action: if kind == "Images" {
-                            "command:docker image prune -a -f".into()
-                        } else {
-                            "command:docker builder prune -a -f".into()
-                        },
-                    });
-                }
-                _ => {}
+            let (label, args) = match kind {
+                "Images" => ("Docker Images reclaimable", ["image", "prune", "-a", "-f"]),
+                "Build Cache" => (
+                    "Docker Build Cache reclaimable",
+                    ["builder", "prune", "-a", "-f"],
+                ),
+                _ => continue,
+            };
+            let bytes = parse_size(reclaimable);
+            if bytes == 0 {
+                continue;
             }
+            findings.push(Finding {
+                label: label.into(),
+                path: None,
+                size_bytes: bytes,
+                note: format!(
+                    "{total} total; removes every image not referenced by a container, including untagged local builds; volumes are never touched"
+                ),
+                danger: escalate(6, bytes),
+                action: Action::command("docker", &args),
+            });
         }
-        Ok(out)
+        Ok(findings)
     }
 
-    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<Summary> {
+    fn apply(&self, findings: &[Finding], _ctx: &Ctx) -> Result<Summary> {
         let mut notes = Vec::new();
         let mut touched = 0usize;
         let mut bytes = 0u64;
-        for f in findings {
-            let cmd = f.action.trim_start_matches("command:");
-            let args: Vec<&str> = cmd.split_whitespace().collect();
-            let r = Command::new(args[0]).args(&args[1..]).output()?;
-            bytes += f.size_bytes;
+        for finding in findings {
+            let Action::Command { program, args } = &finding.action else {
+                continue;
+            };
+            let expected = args == &["image", "prune", "-a", "-f"]
+                || args == &["builder", "prune", "-a", "-f"];
+            if program != "docker" || !expected {
+                anyhow::bail!("refusing unexpected Docker action");
+            }
+            let output = Command::new(program).args(args).output()?;
+            if !output.status.success() {
+                anyhow::bail!("`{program} {}` failed", args.join(" "));
+            }
             touched += 1;
-            notes.push(format!(
-                "`{cmd}` → {}",
-                if r.status.success() { "ok" } else { "FAILED" }
-            ));
+            bytes += finding.size_bytes;
+            notes.push(format!("`{program} {}` completed", args.join(" ")));
         }
-        notes.push(
-            "note: OrbStack compacts its disk lazily; restart OrbStack to trigger TRIM".into(),
-        );
-        let _ = ctx;
+        notes.push("OrbStack compacts its disk lazily; restart it to trigger TRIM".into());
         Ok(Summary {
             op: self.name().into(),
             items_touched: touched,
@@ -86,12 +101,14 @@ impl Op for Docker {
     }
 }
 
-/// Parse Docker size strings like "8.376GB (59%)" or "729.1kB" into bytes.
-pub(crate) fn parse_size(s: &str) -> u64 {
-    let s = s.split('(').next().unwrap_or("").trim();
-    let (num, unit) = s.split_at(s.find(|c: char| c.is_alphabetic()).unwrap_or(s.len()));
-    let v: f64 = num.trim().parse().unwrap_or(0.0);
-    let mult = match unit.trim().to_lowercase().as_str() {
+pub(crate) fn parse_size(value: &str) -> u64 {
+    let value = value.split('(').next().unwrap_or("").trim();
+    let split = value
+        .find(|character: char| character.is_alphabetic())
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let number: f64 = number.trim().parse().unwrap_or(0.0);
+    let multiplier = match unit.trim().to_lowercase().as_str() {
         "b" | "" => 1.0,
         "kb" => 1e3,
         "mb" => 1e6,
@@ -102,7 +119,7 @@ pub(crate) fn parse_size(s: &str) -> u64 {
         "gib" => 1024.0 * 1024.0 * 1024.0,
         _ => 1.0,
     };
-    (v * mult).round() as u64
+    (number * multiplier).round() as u64
 }
 
 #[cfg(test)]

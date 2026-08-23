@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.0
+          rustup target add aarch64-apple-darwin
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --all-targets --all-features
+
+      - name: MSRV tests
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          cargo +1.85.0 test --locked --all-targets --all-features
+
+      - name: Dependency audit
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit
+
+      - name: Locked arm64 release build
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          file target/aarch64-apple-darwin/release/devtrim | grep -q 'arm64'
+          target/aarch64-apple-darwin/release/devtrim --version
