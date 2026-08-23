@@ -34,18 +34,18 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        out.push(Finding {
-            label: format!("{label} — {pct}% still local"),
-            path: Some(p.display().to_string()),
-            size_bytes: logical,
-            note: if pct >= 99 {
-                "fully local; `brctl evict` will succeed once iCloud marks it uploaded".into()
+        out.push(Finding::new(
+            format!("{label} — {pct}% still local"),
+            Some(p.to_path_buf()),
+            logical,
+            if pct >= 99 {
+                "fully local; `brctl evict` will succeed once iCloud marks it uploaded"
             } else {
-                "upload in progress; keep Mac awake and online; evict only after upload".into()
+                "upload in progress; keep Mac awake and online; evict only after upload"
             },
-            danger: 1,
-            action: Action::Info,
-        });
+            1,
+            Action::Info,
+        ));
     }
     Ok(out)
 }

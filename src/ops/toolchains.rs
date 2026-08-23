@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::{Action, Finding, Op, Summary, dir_size, remove_path};
+use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size};
 use crate::safety::{Ctx, escalate};
 
 pub struct Toolchains;
@@ -42,67 +42,63 @@ impl Op for Toolchains {
                 continue;
             }
             let size = dir_size(&path);
-            findings.push(Finding {
-                label: format!(
+            findings.push(Finding::new(
+                format!(
                     "Swift toolchain {}",
                     path.file_name().unwrap_or_default().to_string_lossy()
                 ),
-                path: Some(path.display().to_string()),
-                size_bytes: size,
-                note: "not referenced by any verified Toolchains symlink; reinstallable from swift.org"
-                    .into(),
-                danger: escalate(6, size),
-                action: Action::Trash,
-            });
+                Some(path),
+                size,
+                "not referenced by any verified Toolchains symlink; reinstallable from swift.org",
+                escalate(6, size),
+                Action::Trash,
+            ));
         }
         Ok(findings)
     }
 
-    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<Summary> {
+    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
         let directory = ctx.home.join("Library/Developer/Toolchains");
         let preserved = preserved_targets(&directory)?
             .ok_or_else(|| anyhow::anyhow!("cannot prove a preserved Swift toolchain"))?;
-        let mut notes = Vec::new();
-        let mut touched = 0usize;
-        let mut bytes = 0u64;
+        let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
             if !matches!(finding.action, Action::Trash | Action::Shred) {
                 continue;
             }
-            let path = PathBuf::from(
-                finding
-                    .path
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("toolchain finding missing path"))?,
-            );
-            let canonical = path
-                .canonicalize()
-                .with_context(|| format!("cannot re-verify toolchain {}", path.display()))?;
-            if preserved.contains(&canonical) {
-                anyhow::bail!(
-                    "toolchain became referenced after preview: {}",
+            let result = (|| -> Result<String> {
+                let path = finding
+                    .target()
+                    .ok_or_else(|| anyhow::anyhow!("toolchain finding missing internal target"))?;
+                let canonical = path
+                    .canonicalize()
+                    .with_context(|| format!("cannot re-verify toolchain {}", path.display()))?;
+                if preserved.contains(&canonical) {
+                    anyhow::bail!(
+                        "toolchain became referenced after preview: {}",
+                        path.display()
+                    );
+                }
+                apply_filesystem_finding(finding, ctx)?;
+                Ok(format!(
+                    "{} {}",
+                    if finding.action == Action::Shred {
+                        "permanently deleted"
+                    } else {
+                        "trashed"
+                    },
                     path.display()
-                );
+                ))
+            })();
+            match result {
+                Ok(note) => outcome.record(finding, note),
+                Err(error) => {
+                    outcome.fail(error);
+                    break;
+                }
             }
-            remove_path(&path, ctx)?;
-            touched += 1;
-            bytes += finding.size_bytes;
-            notes.push(format!(
-                "{} {}",
-                if ctx.shred {
-                    "permanently deleted"
-                } else {
-                    "trashed"
-                },
-                path.display()
-            ));
         }
-        Ok(Summary {
-            op: self.name().into(),
-            items_touched: touched,
-            bytes_freed_estimate: bytes,
-            notes,
-        })
+        Ok(outcome)
     }
 }
 
@@ -160,7 +156,7 @@ mod tests {
     fn temp(name: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("devtrim-toolchains-{name}-{}", std::process::id()));
-        std::fs::remove_dir_all(&path).ok();
+        crate::ops::remove_test_path(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
     }
@@ -176,7 +172,7 @@ mod tests {
         )
         .unwrap();
         assert!(preserved_targets(&directory).unwrap().is_none());
-        std::fs::remove_dir_all(directory).ok();
+        crate::ops::remove_test_path(directory);
     }
 
     #[test]
@@ -194,6 +190,6 @@ mod tests {
         symlink("swift-1.xctoolchain", directory.join("custom.xctoolchain")).unwrap();
         let preserved = preserved_targets(&directory).unwrap().unwrap();
         assert_eq!(preserved.len(), 2);
-        std::fs::remove_dir_all(directory).ok();
+        crate::ops::remove_test_path(directory);
     }
 }

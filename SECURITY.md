@@ -31,15 +31,16 @@ or a fully compromised host.
 Non-negotiable boundaries:
 
 - Every mutation requires `--apply`.
-- Apply uses only exact previewed findings.
-- Filesystem targets go to Trash unless permanent deletion is explicitly shown.
+- Apply uses only exact previewed findings and preserves their exact non-lossy path identity.
+- Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
 - Literal and physically resolved parents must agree; symlinked ancestors fail closed.
 - System roots, the user home root, Trash root, `.ssh`, `.gnupg`, and wholesale
   `~/Library` are protected. Only named managed Library subpaths are eligible.
 - Unknown Git activity or toolchain ownership is not deletion authority.
 - Docker volumes and Xcode Archives are never pruned.
 - Confirmation bypasses never add operations.
-- Failed owner commands return nonzero and are not counted as reclaimed work.
+- Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
+- Failed or partial work returns nonzero; successful earlier actions remain visible in the summary.
 
 ## Defense layers
 
@@ -48,16 +49,15 @@ Non-negotiable boundaries:
    command strings are evaluated.
 3. **Immutable candidates** — existing scan roots are canonicalized before
    preview, and apply does not rediscover filesystem targets.
-4. **Physical path validation** — deletion validates literal policy and the
-   canonical existing parent immediately before mutation. Resolution is
-   deny-only and cannot turn a refused spelling into permission.
-5. **Trash-first recovery** — normal filesystem removal uses macOS Trash.
-6. **Danger and non-TTY gates** — aggregate size can increase confirmation;
+4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.
+5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission.
+6. **Trash-first recovery** — normal filesystem removal uses macOS Trash.
+7. **Danger and non-TTY gates** — aggregate size can increase confirmation;
    unattended mutation requires explicit consent.
-7. **Truthful automation** — JSON is one document; partial/failed operations
+8. **Truthful automation** — JSON is one document; partial/failed operations
    return nonzero with errors.
-8. **Regression gates** — macOS CI runs format, strict Clippy, tests, MSRV tests,
-   dependency audit, and an explicit arm64 release build.
+9. **Regression gates** — macOS CI runs format, strict Clippy, tests, MSRV tests,
+   dependency audit, a positive-control structural deletion-sink lint, and an explicit arm64 release build.
 
 ## Supply chain
 
@@ -66,14 +66,13 @@ Non-negotiable boundaries:
 - GitHub Actions are pinned to immutable commit SHAs.
 - Dependabot checks Cargo and Actions weekly.
 - Release archives include SHA-256 checksums and the full Apache-2.0 license.
-- `cargo audit`, Gitleaks, and TruffleHog were clean before v0.2.1.
+- Release preparation runs `cargo audit`, Gitleaks, and TruffleHog; results are recorded in the matching changelog section only after they execute.
 
 ## Known limitations
 
 - Sizes are estimated logical bytes, not guaranteed immediately reclaimable
   APFS blocks. Clones, sparse files, Trash, and container VM compaction differ.
-- Path validation closes symlinked-ancestor redirection but does not claim a
-  transaction across arbitrary concurrent hostile filesystem mutation. devtrim
+- The typed target prevents unvalidated and lossy-display paths from reaching removal, but path validation does not hold a directory descriptor through deletion and therefore does not claim a transaction across arbitrary concurrent hostile filesystem mutation. devtrim
   is a single-user local tool; when identity cannot be proven it refuses.
 - Targets skipped because their state could not be proven are reported on
   stderr, not inside the JSON envelope. A JSON consumer therefore sees a

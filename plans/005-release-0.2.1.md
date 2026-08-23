@@ -14,7 +14,7 @@
 - **Depends on**: `plans/004-release-gates.md`
 - **Category**: docs / release
 - **Planned at**: commit `8dbbd6c`, 2026-08-23
-- **Execution status**: IN PROGRESS; independent reviews and two autoreview passes are clean, all local gates pass, and the release commit is prepared. Publication follows CI.
+- **Execution status**: DONE; v0.2.1 was published and its exact release commit passed CI.
 
 ## Why this matters
 
@@ -88,8 +88,8 @@ changelog/release material or no matches in current docs.
 - [x] Version is `0.2.1` everywhere current.
 - [x] Changelog and docs match tested behavior.
 - [x] AGENTS/CLAUDE guidance is synchronized.
-- [ ] Full validation and autoreview are clean or findings are dispositioned.
-- [ ] One local commit exists and working tree is clean.
+- [x] Full validation and autoreview are clean or findings are dispositioned.
+- [x] One local commit exists and working tree is clean.
 - [x] No push, tag, or release has occurred in this plan.
 
 ## STOP conditions

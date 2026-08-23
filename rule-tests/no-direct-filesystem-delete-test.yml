@@ -1,0 +1,17 @@
+id: no-direct-filesystem-delete
+valid:
+  - apply_filesystem_finding(finding, ctx)?;
+  - crate::ops::remove_test_path(path);
+  - std::fs::read_dir(path)?;
+invalid:
+  - std::fs::remove_file(path)?;
+  - fs::remove_file(path)?;
+  - remove_file(path)?;
+  - std::fs::remove_dir(path)?;
+  - fs::remove_dir(path)?;
+  - remove_dir(path)?;
+  - std::fs::remove_dir_all(path)?;
+  - fs::remove_dir_all(path)?;
+  - remove_dir_all(path)?;
+  - trash::delete(path)?;
+  - delete(path)?;

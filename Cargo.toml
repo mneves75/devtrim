@@ -1,6 +1,6 @@
 [package]
 name = "devtrim"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Marcus Neves"]
@@ -23,3 +23,6 @@ serde_json = "1"
 [profile.release]
 lto = true
 strip = true
+
+[dev-dependencies]
+proptest = "1.11"

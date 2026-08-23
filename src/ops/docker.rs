@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::process::Command;
 
-use super::{Action, Finding, Op, Summary};
+use super::{Action, ApplyOutcome, Finding, Op};
 use crate::safety::{Ctx, escalate};
 
 pub struct Docker;
@@ -56,48 +56,53 @@ impl Op for Docker {
             if bytes == 0 {
                 continue;
             }
-            findings.push(Finding {
-                label: label.into(),
-                path: None,
-                size_bytes: bytes,
-                note: format!(
+            findings.push(Finding::new(
+                label,
+                None,
+                bytes,
+                format!(
                     "{total} total; removes every image not referenced by a container, including untagged local builds; volumes are never touched"
                 ),
-                danger: escalate(6, bytes),
-                action: Action::command("docker", &args),
-            });
+                escalate(6, bytes),
+                Action::command("docker", &args),
+            ));
         }
         Ok(findings)
     }
 
-    fn apply(&self, findings: &[Finding], _ctx: &Ctx) -> Result<Summary> {
-        let mut notes = Vec::new();
-        let mut touched = 0usize;
-        let mut bytes = 0u64;
+    fn apply(&self, findings: &[Finding], _ctx: &Ctx) -> Result<ApplyOutcome> {
+        let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
-            let Action::Command { program, args } = &finding.action else {
-                continue;
-            };
-            let expected = args == &["image", "prune", "-a", "-f"]
-                || args == &["builder", "prune", "-a", "-f"];
-            if program != "docker" || !expected {
-                anyhow::bail!("refusing unexpected Docker action");
+            let result = (|| -> Result<String> {
+                let Action::Command { program, args } = &finding.action else {
+                    anyhow::bail!("refusing unexpected Docker action");
+                };
+                let expected = args == &["image", "prune", "-a", "-f"]
+                    || args == &["builder", "prune", "-a", "-f"];
+                if program != "docker" || !expected {
+                    anyhow::bail!("refusing unexpected Docker action");
+                }
+                let output = Command::new(program).args(args).output()?;
+                if !output.status.success() {
+                    anyhow::bail!("`{program} {}` failed", args.join(" "));
+                }
+                Ok(format!("`{program} {}` completed", args.join(" ")))
+            })();
+            match result {
+                Ok(note) => outcome.record(finding, note),
+                Err(error) => {
+                    outcome.fail(error);
+                    break;
+                }
             }
-            let output = Command::new(program).args(args).output()?;
-            if !output.status.success() {
-                anyhow::bail!("`{program} {}` failed", args.join(" "));
-            }
-            touched += 1;
-            bytes += finding.size_bytes;
-            notes.push(format!("`{program} {}` completed", args.join(" ")));
         }
-        notes.push("OrbStack compacts its disk lazily; restart it to trigger TRIM".into());
-        Ok(Summary {
-            op: self.name().into(),
-            items_touched: touched,
-            bytes_freed_estimate: bytes,
-            notes,
-        })
+        if outcome.summary.items_touched > 0 {
+            outcome
+                .summary
+                .notes
+                .push("OrbStack compacts its disk lazily; restart it to trigger TRIM".into());
+        }
+        Ok(outcome)
     }
 }
 
@@ -126,11 +131,35 @@ pub(crate) fn parse_size(value: &str) -> u64 {
 mod tests {
     use super::*;
 
+    use std::path::PathBuf;
     #[test]
     fn parses_docker_sizes() {
         assert_eq!(parse_size("8.376GB (59%)"), 8_376_000_000);
         assert_eq!(parse_size("729.1kB"), 729_100);
         assert_eq!(parse_size("5.051GB"), 5_051_000_000);
         assert_eq!(parse_size("0B"), 0);
+    }
+    #[test]
+    fn rejects_forged_volume_prune_action() {
+        let finding = Finding::new(
+            "forged",
+            None,
+            0,
+            "test",
+            1,
+            Action::command("docker", &["volume", "prune", "-f"]),
+        );
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            home: PathBuf::from("/tmp"),
+            interactive: false,
+        };
+        let outcome = Docker.apply(&[finding], &ctx).unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1);
     }
 }

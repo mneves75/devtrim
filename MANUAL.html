@@ -402,7 +402,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.2.1</span>
+    <span class="chip g">v0.3.0</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
     <span class="chip r">Protected-path denylist</span>
@@ -516,12 +516,14 @@ devtrim clean caches</code></pre>
 <!-- ============ 05 SAFETY ============ -->
 <section id="safety" aria-labelledby="h-safety">
   <h2 id="h-safety"><span class="num">05</span> Safety model</h2>
-  <p>Five independent layers stand between a typo and a tragedy:</p>
+  <p>Seven independent layers stand between a typo and a tragedy:</p>
   <div class="tbl-wrap"><table>
     <thead><tr><th>Layer</th><th>Rule</th><th>Bypass</th></tr></thead>
     <tbody>
       <tr><td data-th="Layer">Preview default</td><td data-th="Rule">without <code>--apply</code>, nothing mutates — ever</td><td data-th="Bypass">none needed (default)</td></tr>
       <tr><td data-th="Layer">Trash-first</td><td data-th="Rule">filesystem deletes go to <code>~/.Trash</code></td><td data-th="Bypass"><code>--shred</code></td></tr>
+      <tr><td data-th="Layer">Typed target</td><td data-th="Rule">only an exact validated path can reach removal; display text has no authority</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
+      <tr><td data-th="Layer">Single sink</td><td data-th="Rule">all filesystem removal passes one structurally enforced boundary</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Danger gate</td><td data-th="Rule">score-scaled prompts (see <a href="#danger">§06</a>)</td><td data-th="Bypass"><code>-y</code> skips y/N · <code>--yolo</code> skips confirmation only</td></tr>
       <tr><td data-th="Layer">Protected paths</td><td data-th="Rule">hard denylist below</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Non-TTY guard</td><td data-th="Rule">piped runs refuse mutation without explicit consent</td><td data-th="Bypass">explicit flag</td></tr>
@@ -532,7 +534,7 @@ devtrim clean caches</code></pre>
   <p>System roots (<code>/System</code>, <code>/usr</code>, <code>/etc</code>, <code>/Applications</code>, …) and user-critical dirs (<code>~/.ssh</code>, <code>~/.gnupg</code>) are refused unconditionally. Under <code>~/Library</code>, only these managed subpaths are eligible:</p>
   <pre data-copy="none"><code>Developer/Toolchains · Developer/Xcode/iOS DeviceSupport
 Developer/Xcode/DerivedData · Caches/Homebrew</code></pre>
-  <div class="warn">The denylist cannot be disabled by any flag. If you find yourself wanting to, the correct tool is a different tool.</div>
+  <div class="warn">npm and Homebrew may report configurable cache paths; devtrim accepts only their exact cache namespaces and revalidates them when applying. The denylist cannot be disabled by any flag. If you find yourself wanting to, the correct tool is a different tool.</div>
 
   <h3>Size escalation</h3>
   <div class="tbl-wrap"><table>
@@ -658,7 +660,7 @@ active_days = 30                 # commit recency defining "active" repos</code>
 </section>
 
 <footer>
-  <span>devtrim <b>v0.2.1</b></span>
+  <span>devtrim <b>v0.3.0</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

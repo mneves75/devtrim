@@ -29,6 +29,12 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+      - name: Deletion-boundary lint
+        run: |
+          cargo install ast-grep --locked --version 0.45.0
+          ast-grep test --skip-snapshot-tests
+          ast-grep scan --config sgconfig.yml
+
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 

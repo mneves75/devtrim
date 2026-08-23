@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 
-use super::{Action, Finding, Op, Summary, dir_size};
+use super::{Action, ApplyOutcome, Finding, Op, dir_size};
 use crate::safety::Ctx;
 
 pub struct Leftovers;
@@ -34,17 +34,17 @@ impl Op for Leftovers {
             for entry in std::fs::read_dir(root)?.flatten() {
                 let path = entry.path();
                 if path.is_dir() && is_agent_scratch(&entry.file_name().to_string_lossy()) {
-                    findings.push(Finding {
-                        label: format!(
+                    findings.push(Finding::new(
+                        format!(
                             "possible agent scratch `{}`",
                             entry.file_name().to_string_lossy()
                         ),
-                        path: Some(path.display().to_string()),
-                        size_bytes: dir_size(&path),
-                        note: "review manually; worktree staleness cannot be proven".into(),
-                        danger: 1,
-                        action: Action::Info,
-                    });
+                        Some(path.clone()),
+                        dir_size(&path),
+                        "review manually; worktree staleness cannot be proven",
+                        1,
+                        Action::Info,
+                    ));
                 }
             }
             for entry in walkdir::WalkDir::new(root)
@@ -59,15 +59,14 @@ impl Op for Leftovers {
                 for child in ["evidence", "perf"] {
                     let path = entry.path().join(child);
                     if path.is_dir() {
-                        findings.push(Finding {
-                            label: format!("supergoal {child} artifacts"),
-                            path: Some(path.display().to_string()),
-                            size_bytes: dir_size(&path),
-                            note: "review manually; completion cannot be inferred from a path"
-                                .into(),
-                            danger: 1,
-                            action: Action::Info,
-                        });
+                        findings.push(Finding::new(
+                            format!("supergoal {child} artifacts"),
+                            Some(path.clone()),
+                            dir_size(&path),
+                            "review manually; completion cannot be inferred from a path",
+                            1,
+                            Action::Info,
+                        ));
                     }
                 }
             }
@@ -75,13 +74,13 @@ impl Op for Leftovers {
         Ok(findings)
     }
 
-    fn apply(&self, _findings: &[Finding], _ctx: &Ctx) -> Result<Summary> {
-        Ok(Summary {
-            op: self.name().into(),
-            items_touched: 0,
-            bytes_freed_estimate: 0,
-            notes: vec!["leftovers are report-only; review them manually".into()],
-        })
+    fn apply(&self, _findings: &[Finding], _ctx: &Ctx) -> Result<ApplyOutcome> {
+        let mut outcome = ApplyOutcome::new(self.name());
+        outcome
+            .summary
+            .notes
+            .push("leftovers are report-only; review them manually".into());
+        Ok(outcome)
     }
 }
 

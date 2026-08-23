@@ -27,7 +27,6 @@ const PROTECTED_USER: &[&str] = &["Library", ".ssh", ".gnupg"];
 pub struct Ctx {
     pub yes: bool,
     pub yolo: bool,
-    pub shred: bool,
     pub json: bool,
     pub roots: Vec<PathBuf>,
     pub active_days: u32,
@@ -67,7 +66,6 @@ impl Ctx {
         Ok(Self {
             yes: cli.yes,
             yolo: cli.yolo,
-            shred: cli.shred,
             json: cli.json,
             roots,
             active_days,
@@ -114,7 +112,20 @@ fn load_config(path: &Path) -> Result<(Vec<String>, u32)> {
     }
 }
 
-pub fn validate_path_for_deletion(path: &Path, home: &Path) -> Result<PathBuf> {
+/// A pathname that passed the deletion boundary's current safety checks.
+///
+/// Validation has a documented pathname TOCTOU limitation: it does not hold an
+/// open descriptor across deletion, so ambiguous identity must still fail closed.
+#[derive(Debug)]
+pub(crate) struct VerifiedTarget(PathBuf);
+
+impl VerifiedTarget {
+    pub(crate) fn into_path(self) -> PathBuf {
+        self.0
+    }
+}
+
+pub(crate) fn validate_path_for_deletion(path: &Path, home: &Path) -> Result<VerifiedTarget> {
     let literal = abs(path);
     if is_protected(&literal, home) {
         bail!("refusing protected path: {}", literal.display());
@@ -139,7 +150,7 @@ pub fn validate_path_for_deletion(path: &Path, home: &Path) -> Result<PathBuf> {
     if is_protected_abs(&resolved, home) {
         bail!("refusing protected resolved path: {}", resolved.display());
     }
-    Ok(literal)
+    Ok(VerifiedTarget(literal))
 }
 
 pub fn validate_trash_root(home: &Path) -> Result<PathBuf> {
@@ -335,13 +346,102 @@ pub fn dir_size(path: &Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config as ProptestConfig, RngSeed};
+    use std::os::unix::{ffi::OsStringExt, fs::symlink};
 
     fn temp(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("devtrim-{name}-{}", std::process::id()));
-        std::fs::remove_dir_all(&path).ok();
+        crate::ops::remove_test_path(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            rng_seed: RngSeed::Fixed(0xD37_71A),
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn protected_system_roots_and_descendants(
+            index in 0usize..PROTECTED.len(),
+            leaf in "[a-z]{1,12}",
+        ) {
+            let home = Path::new("/Users/example");
+            let root = Path::new(PROTECTED[index]);
+            prop_assert!(is_protected(root, home));
+            if root != Path::new("/") {
+                prop_assert!(is_protected(&root.join(leaf), home));
+            }
+        }
+
+        #[test]
+        fn protected_user_roots_and_descendants(
+            index in 0usize..PROTECTED_USER.len(),
+            leaf in "[a-z]{1,12}",
+        ) {
+            let home = Path::new("/Users/example");
+            let root = home.join(PROTECTED_USER[index]);
+            prop_assert!(is_protected(&root, home));
+            if PROTECTED_USER[index] != "Library" {
+                prop_assert!(is_protected(&root.join(leaf), home));
+            }
+        }
+
+        #[test]
+        fn library_managed_namespaces_are_exact_exceptions(
+            index in 0usize..4,
+            leaf in "[a-z]{1,12}",
+        ) {
+            let home = Path::new("/Users/example");
+            let managed = [
+                "Developer/Toolchains",
+                "Developer/Xcode/iOS DeviceSupport",
+                "Developer/Xcode/DerivedData",
+                "Caches/Homebrew",
+            ];
+            let root = home.join("Library").join(managed[index]);
+            prop_assert!(!is_protected(&root, home));
+            prop_assert!(!is_protected(&root.join(leaf), home));
+            prop_assert!(is_protected(&home.join("Library/Application Support"), home));
+            prop_assert!(is_protected(&home.join("Library/Developer/Xcode/Archives"), home));
+        }
+
+        #[test]
+        fn cleaned_parent_aliases_to_user_secrets_are_protected(
+            index in 0usize..2,
+            leaf in "[a-z]{1,12}",
+        ) {
+            let home = Path::new("/Users/example");
+            let secret = [".ssh", ".gnupg"][index];
+            let alias = home.join("dev").join("..").join(secret).join(leaf);
+            prop_assert!(is_protected(&alias, home));
+        }
+
+        #[test]
+        fn validation_preserves_arbitrary_non_utf8_leaf_identity(
+            raw in proptest::collection::vec(any::<u8>(), 0..24),
+        ) {
+            let home = std::env::current_dir()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .join("target")
+                .join(format!("devtrim-nonutf8-{}", std::process::id()));
+            std::fs::create_dir_all(&home).unwrap();
+            let mut bytes = vec![0xff];
+            bytes.extend(raw.into_iter().map(|byte| match byte {
+                0 | b'/' => b'_',
+                value => value,
+            }));
+            let target = home.join(std::ffi::OsString::from_vec(bytes));
+            let verified = validate_path_for_deletion(&target, &home).unwrap();
+            prop_assert_eq!(verified.into_path(), target);
+            crate::ops::remove_test_path(home);
+        }
     }
 
     #[test]
@@ -350,7 +450,7 @@ mod tests {
         assert!(is_protected(&home, &home));
         assert!(is_protected(&home.join(".ssh/key"), &home));
         assert!(!is_protected(&home.join("dev/project"), &home));
-        std::fs::remove_dir_all(home).ok();
+        crate::ops::remove_test_path(home);
     }
 
     #[test]
@@ -364,7 +464,7 @@ mod tests {
         let target = safe.join("linked/node_modules");
         let error = validate_path_for_deletion(&target, &home).unwrap_err();
         assert!(error.to_string().contains("symlinked ancestor"));
-        std::fs::remove_dir_all(home).ok();
+        crate::ops::remove_test_path(home);
     }
 
     #[test]
@@ -374,8 +474,8 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         symlink(&target, home.join(".Trash")).unwrap();
         assert!(validate_trash_root(&home).is_err());
-        std::fs::remove_file(home.join(".Trash")).ok();
-        std::fs::remove_dir_all(home).ok();
+        crate::ops::remove_test_path(home.join(".Trash"));
+        crate::ops::remove_test_path(home);
     }
 
     #[test]

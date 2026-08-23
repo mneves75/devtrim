@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use super::{Action, Finding, Op, Summary, dir_size};
+use super::{Action, ApplyOutcome, Finding, Op, dir_size};
 use crate::safety::Ctx;
 
 pub struct Simulators;
@@ -66,43 +66,75 @@ impl Op for Simulators {
             return Ok(Vec::new());
         }
         let storage = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"));
-        Ok(vec![Finding {
-            label: "unavailable Apple simulator devices".into(),
-            path: None,
-            size_bytes: 0,
-            note: format!(
+        Ok(vec![Finding::new(
+            "unavailable Apple simulator devices",
+            None,
+            0,
+            format!(
                 "{unavailable} device(s) reference missing runtimes; total simulator storage is ~{}",
                 crate::report::gb(storage)
             ),
-            danger: 4,
-            action: Action::command("xcrun", &["simctl", "delete", "unavailable"]),
-        }])
+            4,
+            Action::command("xcrun", &["simctl", "delete", "unavailable"]),
+        )])
     }
 
-    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<Summary> {
+    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
         let before = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"));
-        let mut touched = 0usize;
-        let mut notes = Vec::new();
+        let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
-            let Action::Command { program, args } = &finding.action else {
-                continue;
-            };
-            if program != "xcrun" || args != &["simctl", "delete", "unavailable"] {
-                anyhow::bail!("refusing unexpected simulator action");
+            let result = (|| -> Result<String> {
+                let Action::Command { program, args } = &finding.action else {
+                    anyhow::bail!("refusing unexpected simulator action");
+                };
+                if program != "xcrun" || args != &["simctl", "delete", "unavailable"] {
+                    anyhow::bail!("refusing unexpected simulator action");
+                }
+                let output = Command::new(program).args(args).output()?;
+                if !output.status.success() {
+                    anyhow::bail!("`xcrun simctl delete unavailable` failed");
+                }
+                Ok("deleted unavailable simulator devices".into())
+            })();
+            match result {
+                Ok(note) => outcome.record(finding, note),
+                Err(error) => {
+                    outcome.fail(error);
+                    break;
+                }
             }
-            let output = Command::new(program).args(args).output()?;
-            if !output.status.success() {
-                anyhow::bail!("`xcrun simctl delete unavailable` failed");
-            }
-            touched += 1;
-            notes.push("deleted unavailable simulator devices".into());
         }
         let after = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"));
-        Ok(Summary {
-            op: self.name().into(),
-            items_touched: touched,
-            bytes_freed_estimate: before.saturating_sub(after),
-            notes,
-        })
+        outcome.summary.bytes_freed_estimate = before.saturating_sub(after);
+        Ok(outcome)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn rejects_forged_erase_all_action() {
+        let finding = Finding::new(
+            "forged",
+            None,
+            0,
+            "test",
+            1,
+            Action::command("xcrun", &["simctl", "erase", "all"]),
+        );
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            home: PathBuf::from("/tmp"),
+            interactive: false,
+        };
+        let outcome = Simulators.apply(&[finding], &ctx).unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1);
     }
 }

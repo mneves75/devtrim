@@ -1,6 +1,7 @@
 //! Findings model + human/JSON rendering.
 
 use colored::Colorize;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -35,6 +36,13 @@ impl Action {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetAuthority {
+    Standard,
+    NpmCache,
+    BrewCache,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Finding {
     pub label: String,
@@ -45,6 +53,46 @@ pub struct Finding {
     /// 1-10
     pub danger: u8,
     pub action: Action,
+    #[serde(skip)]
+    target: Option<PathBuf>,
+    #[serde(skip)]
+    authority: TargetAuthority,
+}
+
+impl Finding {
+    pub fn new(
+        label: impl Into<String>,
+        path: Option<PathBuf>,
+        size_bytes: u64,
+        note: impl Into<String>,
+        danger: u8,
+        action: Action,
+    ) -> Self {
+        let display_path = path.as_ref().map(|value| value.display().to_string());
+        Self {
+            label: label.into(),
+            path: display_path,
+            size_bytes,
+            note: note.into(),
+            danger,
+            action,
+            target: path,
+            authority: TargetAuthority::Standard,
+        }
+    }
+
+    pub(crate) fn target(&self) -> Option<&Path> {
+        self.target.as_deref()
+    }
+
+    pub(crate) fn with_authority(mut self, authority: TargetAuthority) -> Self {
+        self.authority = authority;
+        self
+    }
+
+    pub(crate) fn authority(&self) -> TargetAuthority {
+        self.authority
+    }
 }
 
 #[derive(Debug, serde::Serialize)]

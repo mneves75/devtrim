@@ -6,11 +6,11 @@ Born from a cleanup session that reclaimed 250+ GB across model caches, stale
 `node_modules`, simulator storage, Xcode support files, Docker bloat, and old
 Swift toolchains.
 
-**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.2.1](https://github.com/mneves75/devtrim/releases/tag/v0.2.1)**
+**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.3.0](https://github.com/mneves75/devtrim/releases/tag/v0.3.0)**
 
 ## Install
 
-Download the Apple silicon archive from the [v0.2.1 release](https://github.com/mneves75/devtrim/releases/tag/v0.2.1), then verify it with the included checksum:
+Download the Apple silicon archive from the [v0.3.0 release](https://github.com/mneves75/devtrim/releases/tag/v0.3.0), then verify it with the included checksum:
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
@@ -35,7 +35,8 @@ cp target/release/devtrim /usr/local/bin/
   - ≤2: no interactive prompt, but non-TTY apply still needs `-y`/`--yolo`
   - 3–8: y/N prompt (`-y` skips it)
   - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
-- **Protected physical paths.** System roots, user secrets, the home root, Trash root, and paths reached through symlinked ancestors are refused.
+- **Typed deletion boundary.** Exact `PathBuf` targets must become an internal `VerifiedTarget` immediately before the single deletion sink can consume them. Display strings are never deletion authority.
+- **Protected physical paths.** System roots, user secrets, the home root, Trash root, paths reached through symlinked ancestors, and owner-reported cache paths outside npm/Homebrew namespaces are refused.
 - **Volumes are sacred.** Docker volumes are never pruned.
 - **Archives are sacred.** Xcode Archives are visible but never actionable.
 - **Agent-friendly.** Every `--json` invocation emits exactly one JSON document and failures return nonzero.
@@ -84,8 +85,7 @@ JSON mode returns one envelope, including empty and failed results:
 }
 ```
 
-Applied commands additionally include `summary`. Each action is typed (`trash`,
-`shred`, `command`, `info`, or `none`) rather than encoded as a shell string.
+Applied commands additionally include `summary`. If a later target fails, the summary retains earlier successful work, `errors` explains the stop, and the process exits nonzero. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string.
 
 ## Safety model
 
@@ -95,6 +95,8 @@ Applied commands additionally include `summary`. Each action is typed (`trash`,
 | Candidate set | apply uses exact previewed findings |
 | Trash | recoverable by default; permanent mode is explicit |
 | Danger gate | maximum finding score plus aggregate estimated logical bytes |
+| Target identity | exact internal `PathBuf`; display text is never parsed back into authority |
+| Deletion sink | only `VerifiedTarget` reaches physical removal; action selects Trash vs. permanent mode |
 | Physical path | literal and resolved parent must agree; deny-only resolution |
 | Activity | unknown Git/toolchain ownership is ineligible |
 | Automation | one JSON document; partial/failed work returns nonzero |
@@ -106,10 +108,14 @@ compaction can make immediately available disk space differ.
 
 ```bash
 cargo fmt --all -- --check
+ast-grep test --skip-snapshot-tests
+ast-grep scan --config sgconfig.yml
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
+cargo +1.85.0 test --locked --all-targets --all-features
 cargo audit
 cargo build --release --locked --target aarch64-apple-darwin
+bash -n scripts/release.sh && shellcheck scripts/release.sh && actionlint
 ```
 
 See [`SECURITY.md`](SECURITY.md) for the threat model and reporting process.

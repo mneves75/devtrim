@@ -1,9 +1,8 @@
 //! Xcode support files. Archives are deliberately exempt release artifacts.
 
 use anyhow::Result;
-use std::path::Path;
 
-use super::{Action, Finding, Op, Summary, dir_size, remove_path};
+use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size};
 use crate::safety::{Ctx, escalate};
 
 pub struct Xcode;
@@ -38,67 +37,70 @@ impl Op for Xcode {
             for entry in entries {
                 let path = entry?.path();
                 let size = dir_size(&path);
-                findings.push(Finding {
-                    label: format!(
+                findings.push(Finding::new(
+                    format!(
                         "{label}: {}",
                         path.file_name().unwrap_or_default().to_string_lossy()
                     ),
-                    path: Some(path.display().to_string()),
-                    size_bytes: size,
-                    note: (*note).into(),
-                    danger: escalate(4, size),
-                    action: Action::Trash,
-                });
+                    Some(path),
+                    size,
+                    *note,
+                    escalate(4, size),
+                    Action::Trash,
+                ));
             }
         }
         let archives = ctx.home.join("Library/Developer/Xcode/Archives");
         let archive_size = dir_size(&archives);
         if archive_size > 0 {
-            findings.push(Finding {
-                label: "Xcode Archives".into(),
-                path: Some(archives.display().to_string()),
-                size_bytes: archive_size,
-                note: "EXCLUDED: release artifacts; listed for visibility only".into(),
-                danger: 0,
-                action: Action::None,
-            });
+            findings.push(Finding::new(
+                "Xcode Archives",
+                Some(archives),
+                archive_size,
+                "EXCLUDED: release artifacts; listed for visibility only",
+                0,
+                Action::None,
+            ));
         }
         Ok(findings)
     }
 
-    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<Summary> {
-        let mut notes = Vec::new();
-        let mut touched = 0usize;
-        let mut bytes = 0u64;
+    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
+        let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
             if !matches!(finding.action, Action::Trash | Action::Shred) {
                 if finding.action == Action::None {
-                    notes.push("skipped Xcode Archives by design".into());
+                    outcome
+                        .summary
+                        .notes
+                        .push("skipped Xcode Archives by design".into());
                 }
                 continue;
             }
-            let path = finding
-                .path
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("Xcode finding missing path"))?;
-            remove_path(Path::new(path), ctx)?;
-            touched += 1;
-            bytes += finding.size_bytes;
-            notes.push(format!(
-                "{} {path}",
-                if ctx.shred {
-                    "permanently deleted"
-                } else {
-                    "trashed"
+            let result = (|| -> Result<String> {
+                let path = finding
+                    .target()
+                    .ok_or_else(|| anyhow::anyhow!("Xcode finding missing internal target"))?;
+                apply_filesystem_finding(finding, ctx)?;
+                Ok(format!(
+                    "{} {}",
+                    if finding.action == Action::Shred {
+                        "permanently deleted"
+                    } else {
+                        "trashed"
+                    },
+                    path.display()
+                ))
+            })();
+            match result {
+                Ok(note) => outcome.record(finding, note),
+                Err(error) => {
+                    outcome.fail(error);
+                    break;
                 }
-            ));
+            }
         }
-        Ok(Summary {
-            op: self.name().into(),
-            items_touched: touched,
-            bytes_freed_estimate: bytes,
-            notes,
-        })
+        Ok(outcome)
     }
 }
 
@@ -109,22 +111,21 @@ mod tests {
     #[test]
     fn archives_are_never_applied_or_counted() {
         let home = std::env::temp_dir().join(format!("devtrim-xcode-{}", std::process::id()));
-        std::fs::remove_dir_all(&home).ok();
+        crate::ops::remove_test_path(&home);
         let archive = home.join("Library/Developer/Xcode/Archives/release.xcarchive");
         std::fs::create_dir_all(&archive).unwrap();
         std::fs::write(archive.join("sentinel"), "keep").unwrap();
-        let finding = Finding {
-            label: "Xcode Archives".into(),
-            path: Some(archive.display().to_string()),
-            size_bytes: 4,
-            note: "excluded".into(),
-            danger: 0,
-            action: Action::None,
-        };
+        let finding = Finding::new(
+            "Xcode Archives",
+            Some(archive.clone()),
+            4,
+            "excluded",
+            0,
+            Action::None,
+        );
         let ctx = Ctx {
             yes: true,
             yolo: false,
-            shred: true,
             json: false,
             roots: Vec::new(),
             active_days: 30,
@@ -132,11 +133,12 @@ mod tests {
             interactive: false,
         };
 
-        let summary = Xcode.apply(&[finding], &ctx).unwrap();
-        assert_eq!(summary.items_touched, 0);
-        assert_eq!(summary.bytes_freed_estimate, 0);
+        let outcome = Xcode.apply(&[finding], &ctx).unwrap();
+        assert!(outcome.errors.is_empty());
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.summary.bytes_freed_estimate, 0);
         assert!(archive.join("sentinel").exists());
 
-        std::fs::remove_dir_all(home).ok();
+        crate::ops::remove_test_path(home);
     }
 }

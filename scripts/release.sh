@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # devtrim release: verify → build arm64 → package → checksum → tag → GitHub release
-# usage: scripts/release.sh <version>   (e.g. 0.2.1)
+# usage: scripts/release.sh <version>   (e.g. 0.3.0)
 set -euo pipefail
 
 ver="${1:?usage: scripts/release.sh <version>}"
@@ -27,12 +27,14 @@ gh release view "$tag" >/dev/null 2>&1 && { echo "ERROR: GitHub release $tag alr
 
 echo "==> quality gates"
 cargo fmt --all -- --check
+command -v ast-grep >/dev/null 2>&1 || { echo "ERROR: ast-grep is required for release validation"; exit 1; }
+ast-grep test --skip-snapshot-tests
+ast-grep scan --config sgconfig.yml
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-if command -v rustup >/dev/null 2>&1; then
-  rustup toolchain install 1.85.0 --profile minimal
-  rustup run 1.85.0 cargo test --locked --all-targets --all-features
-fi
+command -v rustup >/dev/null 2>&1 || { echo "ERROR: rustup is required to execute the MSRV gate"; exit 1; }
+rustup toolchain install 1.85.0 --profile minimal
+rustup run 1.85.0 cargo test --locked --all-targets --all-features
 release_commit=$(git rev-parse HEAD)
 if ! ci_conclusion=$(gh run list --workflow ci.yml --event push --commit "$release_commit" --limit 1 --json conclusion,status --jq '.[0] | select(.status == "completed") | .conclusion'); then
   echo "ERROR: could not query CI for release commit ${release_commit}"
@@ -48,6 +50,7 @@ cargo audit
 bash -n scripts/release.sh
 shellcheck scripts/release.sh
 actionlint
+cmp -s AGENTS.md CLAUDE.md || { echo "ERROR: AGENTS.md and CLAUDE.md differ"; exit 1; }
 
 echo "==> locked arm64 release build"
 if command -v rustup >/dev/null 2>&1; then

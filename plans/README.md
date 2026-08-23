@@ -14,7 +14,8 @@ TUI, sudo, or app-protection scope.
 | 002 | Make cleanup plans immutable, conservative, and truthful | P0 | M | 001 | DONE |
 | 003 | Stabilize JSON, config, errors, and exit status | P1 | M | 002 | DONE |
 | 004 | Add release-blocking tests, CI, and artifact safeguards | P1 | M | 001–003 | DONE (MSRV runs in CI; `scripts/release.sh` requires a green exact-commit run) |
-| 005 | Release devtrim 0.2.1 with synchronized documentation | P1 | S | 004 | IN PROGRESS (reviews clean, gates green, commit prepared) |
+| 005 | Release devtrim 0.2.1 with synchronized documentation | P1 | S | 004 | DONE |
+| 006 | Make invalid deletion targets unrepresentable | P0 | M | 001–005 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 
@@ -24,6 +25,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 - 002 changes finding/apply behavior; 003 must serialize the final contracts.
 - 004 locks all safety contracts in tests and release gates.
 - 005 only starts after every local gate and independent review is clean.
+- 006 replaces the deletion-owner convention with a private verified-target capability and structural enforcement.
 
 ## Review record
 

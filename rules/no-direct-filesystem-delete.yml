@@ -1,0 +1,19 @@
+id: no-direct-filesystem-delete
+language: Rust
+severity: error
+message: Filesystem deletion must go through src/ops/mod.rs's verified-target sink.
+note: Keep validation and physical removal coupled at the single shared boundary.
+files:
+  - src/**/*.rs
+ignores:
+  - src/ops/mod.rs
+rule:
+  any:
+    - pattern: $MODULE::remove_file($TARGET)
+    - pattern: remove_file($TARGET)
+    - pattern: $MODULE::remove_dir($TARGET)
+    - pattern: remove_dir($TARGET)
+    - pattern: $MODULE::remove_dir_all($TARGET)
+    - pattern: remove_dir_all($TARGET)
+    - pattern: $MODULE::delete($TARGET)
+    - pattern: delete($TARGET)

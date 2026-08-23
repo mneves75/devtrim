@@ -18,6 +18,17 @@ impl Sandbox {
         Self(path)
     }
 
+    fn in_target(name: &str) -> Self {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-cli-{name}-{}-{id}", std::process::id()));
+        std::fs::remove_dir_all(&path).ok();
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
     fn path(&self) -> &Path {
         &self.0
     }
@@ -196,7 +207,58 @@ fn node_modules_apply_refuses_repo_that_became_active() {
 }
 
 #[test]
-fn failed_docker_prune_is_nonzero_and_not_summarized() {
+fn partial_apply_serializes_first_success_then_stops() {
+    let sandbox = Sandbox::in_target("partial-apply");
+    let first = sandbox.path().join("dev/a/node_modules");
+    let second = sandbox.path().join("dev/b/node_modules");
+    for target in [&first, &second] {
+        std::fs::create_dir_all(target.parent().unwrap().join(".git")).unwrap();
+        std::fs::create_dir_all(target).unwrap();
+        std::fs::write(target.join("sentinel"), "keep").unwrap();
+    }
+    let counter = sandbox.path().join("git-count");
+    sandbox.script(
+        "git",
+        "count=0\nif [ -f \"$DEVTRIM_TEST_COUNT\" ]; then read count < \"$DEVTRIM_TEST_COUNT\"; fi\ncount=$((count + 1))\nprintf '%s\\n' \"$count\" > \"$DEVTRIM_TEST_COUNT\"\ncase \"$count\" in\n  1|2|3) printf '2020-01-01\\n' ;;\n  *) exit 9 ;;\nesac",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args([
+            "clean",
+            "node-modules",
+            "--apply",
+            "--shred",
+            "--yolo",
+            "--json",
+        ])
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("DEVTRIM_TEST_COUNT", &counter)
+        .output()
+        .unwrap();
+
+    let value = json(&output);
+    assert!(!output.status.success());
+    assert!(
+        !first.exists(),
+        "first target remained; response={value}; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(second.join("sentinel").exists());
+    assert_eq!(value["operation"], "node-modules");
+    assert_eq!(value["applied"], true);
+    assert_eq!(value["summary"]["items_touched"], 1);
+    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+    assert!(
+        value["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("Git activity check failed")
+    );
+}
+
+#[test]
+fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
     let sandbox = Sandbox::new("docker-failure");
     // The format argument contains a real tab, so match on a prefix: an exact pattern
     // would silently fall through to the catch-all and make this a scan-failure test.
@@ -210,7 +272,7 @@ fn failed_docker_prune_is_nonzero_and_not_summarized() {
     );
     assert!(!output.status.success());
     let value = json(&output);
-    assert!(value.get("summary").is_none());
+    assert_eq!(value["summary"]["items_touched"], 0);
     let errors = value["errors"].as_array().unwrap();
     assert_eq!(errors.len(), 1);
     // Proves the failure came from the prune itself, not from a mismatched scan mock.

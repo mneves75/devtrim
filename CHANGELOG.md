@@ -2,6 +2,27 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.3.0] - 2026-08-23
+
+### Added
+- A private `VerifiedTarget` capability at the shared filesystem deletion sink; unvalidated paths cannot reach physical removal
+- Deterministic property tests for protected roots, managed `~/Library` exceptions, cleaned parent aliases, and non-UTF-8 target identity
+- A positive-control ast-grep rule, pre-commit hook, CI step, and release gate that reject direct filesystem deletion outside the shared sink
+
+### Changed
+- Findings retain exact internal `PathBuf` identity while serialized paths remain presentation-only
+- Apply derives Trash versus permanent deletion from each previewed typed action and reports successful work before a later failure
+- npm and Homebrew owner-reported cache paths are constrained to exact program namespaces and revalidated immediately before apply
+- Release validation now fails when the Rust 1.85 MSRV gate cannot execute instead of silently skipping it
+
+### Security
+- Fixed an owner-cache protected-path bypass that accepted arbitrary hidden directories and parent-component escapes under the user home
+- Added forged-action tests proving Docker volumes and simulator erase-all cannot cross command allowlists
+- Release requires `cargo audit`, Gitleaks, TruffleHog, full tests, strict Clippy, MSRV tests, an arm64 build, and independent autoreview on the exact commit before publication
+- The remaining pathname TOCTOU limitation is explicit: validation does not hold a directory descriptor across deletion and assumes no hostile concurrent local mutation
+
+[0.3.0]: https://github.com/mneves75/devtrim/releases/tag/v0.3.0
+
 ## [0.2.1] - 2026-08-23
 
 ### Added

@@ -67,14 +67,14 @@ fn run(cli: cli::Cli) -> Result<ExitCode> {
                 Ok(size) => size,
                 Err(error) => return command_error("trash-empty", false, &[], &ctx, error),
             };
-            let findings = vec![report::Finding {
-                label: "macOS Trash contents".into(),
-                path: Some(ctx.home.join(".Trash").display().to_string()),
-                size_bytes: size,
-                note: "permanent purge; Finder recovery is no longer available afterward".into(),
-                danger: 9,
-                action: report::Action::Shred,
-            }];
+            let findings = vec![report::Finding::new(
+                "macOS Trash contents",
+                Some(ctx.home.join(".Trash")),
+                size,
+                "permanent purge; Finder recovery is no longer available afterward",
+                9,
+                report::Action::Shred,
+            )];
             if !cli.apply {
                 if ctx.json {
                     report::print_json("trash-empty", false, &findings, None, &[]);
@@ -165,10 +165,7 @@ fn clean(target: cli::Target, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitC
         .any(|finding| finding.action.is_actionable());
     if !actionable {
         return match operation.apply(&findings, ctx) {
-            Ok(summary) => {
-                print_result(operation.name(), true, &findings, &summary, ctx);
-                Ok(ExitCode::SUCCESS)
-            }
+            Ok(outcome) => Ok(print_outcome(operation.name(), &findings, &outcome, ctx)),
             Err(error) => command_error(operation.name(), false, &findings, ctx, error),
         };
     }
@@ -178,10 +175,7 @@ fn clean(target: cli::Target, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitC
         return command_error(operation.name(), false, &findings, ctx, error);
     }
     match operation.apply(&findings, ctx) {
-        Ok(summary) => {
-            print_result(operation.name(), true, &findings, &summary, ctx);
-            Ok(ExitCode::SUCCESS)
-        }
+        Ok(outcome) => Ok(print_outcome(operation.name(), &findings, &outcome, ctx)),
         Err(error) => command_error(operation.name(), true, &findings, ctx, error),
     }
 }
@@ -197,6 +191,33 @@ fn print_result(
         report::print_json(operation, applied, findings, Some(summary), &[]);
     } else {
         report::print_summary(summary);
+    }
+}
+
+fn print_outcome(
+    operation: &str,
+    findings: &[report::Finding],
+    outcome: &ops::ApplyOutcome,
+    ctx: &safety::Ctx,
+) -> ExitCode {
+    if ctx.json {
+        report::print_json(
+            operation,
+            true,
+            findings,
+            Some(&outcome.summary),
+            &outcome.errors,
+        );
+    } else {
+        report::print_summary(&outcome.summary);
+        for error in &outcome.errors {
+            eprintln!("{} {error}", "error:".red().bold());
+        }
+    }
+    if outcome.errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 
