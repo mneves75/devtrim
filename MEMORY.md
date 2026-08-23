@@ -1,9 +1,11 @@
 # Project Memory
 
-## Current goal
+## Current state
 
-Ship devtrim 0.3.0 code and documentation with the deletion boundary encoded in
-the type system, all release gates executed, and the exact commit green in CI.
+devtrim 0.3.0 implementation and documentation are complete on `master`. The
+typed deletion boundary, security scans, local release gates, independent
+verification, and exact-commit CI passed. Tagging, GitHub Release creation, and
+publication remain a separate explicitly authorized workflow.
 
 ## Decisions
 
@@ -16,7 +18,7 @@ the type system, all release gates executed, and the exact commit green in CI.
 - MSRV is a mandatory executed gate; absence of its toolchain is a failure.
 - Pathname TOCTOU remains documented rather than overstated as solved.
 
-## Active state
+## Next boundary
 
-Implementation and docs target 0.3.0. Publication, tag, and GitHub Release are
-not part of the current push-only task.
+Do not tag or publish 0.3.0 until explicitly requested. When requested, run
+`scripts/release.sh 0.3.0` from a clean, synchronized `master`.
