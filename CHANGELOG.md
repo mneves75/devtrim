@@ -2,6 +2,24 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.2.0] - 2026-08-22
+
+### Added
+- Landing page + GitHub Pages site (mneves75.github.io/devtrim) with lazy-loaded demo video and visual transcript
+- 12s product demo video rendered with Remotion (`media/demo.mp4`)
+- `scripts/release.sh` — reproducible release automation: locked release build, zip + SHA256SUMS, tag, GitHub release from changelog
+- PRODUCT.md / DESIGN.md design-system docs; AGENTS.md + CLAUDE.md agent guidance
+
+### Fixed
+- Release-notes extraction used an awk character class, truncating published release bodies (v0.1.0 repaired retroactively)
+- Landing stylesheet blocked by its own CSP (`style-src` now allows self)
+- Reveal-on-scroll left content invisible without JavaScript (`noscript` fallback)
+
+### Security
+- CSP (`default-src 'none'`, `style-src 'self' 'unsafe-inline'`) + `referrer: no-referrer` on all shipped HTML
+
+[0.2.0]: https://github.com/mneves75/devtrim/releases/tag/v0.2.0
+
 ## [0.1.0] - 2026-08-21
 
 First public release.
