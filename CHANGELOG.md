@@ -14,6 +14,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - Apply derives Trash versus permanent deletion from each previewed typed action and reports successful work before a later failure
 - npm and Homebrew owner-reported cache paths are constrained to exact program namespaces and revalidated immediately before apply
 - Release validation now fails when the Rust 1.85 MSRV gate cannot execute instead of silently skipping it
+- Release automation now stages `-betaN` tags as GitHub prereleases before the final production tag
 
 ### Security
 - Fixed an owner-cache protected-path bypass that accepted arbitrary hidden directories and parent-component escapes under the user home

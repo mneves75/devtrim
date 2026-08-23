@@ -120,6 +120,9 @@ bash -n scripts/release.sh && shellcheck scripts/release.sh && actionlint
 
 See [`SECURITY.md`](SECURITY.md) for the threat model and reporting process.
 Release notes live in [`CHANGELOG.md`](CHANGELOG.md). After committing and
-pushing a version bump, run `scripts/release.sh <version>` to rerun local gates,
-require successful CI for that exact commit, build and verify the arm64 archive,
-tag the commit, and create the GitHub release.
+pushing a version bump, run `scripts/release.sh 0.3.0-beta1` for the first
+staging candidate. Each retry increments the suffix (`beta2`, `beta3`, …).
+The script reruns local gates, requires successful CI for that exact commit,
+builds and verifies the arm64 archive, creates an annotated tag, and publishes
+a GitHub prerelease. After verifying the beta, run `scripts/release.sh 0.3.0`
+to tag and publish the production release from the same commit.

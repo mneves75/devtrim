@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # devtrim release: verify → build arm64 → package → checksum → tag → GitHub release
-# usage: scripts/release.sh <version>   (e.g. 0.3.0)
+# usage: scripts/release.sh <version>   (e.g. 0.3.0-beta1 or 0.3.0)
 set -euo pipefail
 
-ver="${1:?usage: scripts/release.sh <version>}"
-[[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "ERROR: version must be X.Y.Z"; exit 1; }
-tag="v${ver}"
+release="${1:?usage: scripts/release.sh <version>}"
+[[ $# -eq 1 ]] || { echo "ERROR: usage: scripts/release.sh <version>"; exit 1; }
+[[ "$release" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(-beta[1-9][0-9]*)?$ ]] || {
+  echo "ERROR: version must be X.Y.Z or X.Y.Z-betaN (N starts at 1)"
+  exit 1
+}
+ver="${BASH_REMATCH[1]}"
+prerelease_suffix="${BASH_REMATCH[2]:-}"
+tag="v${release}"
 target="aarch64-apple-darwin"
-out="devtrim-${ver}-macos-arm64"
+out="devtrim-${release}-macos-arm64"
 cd "$(dirname "$0")/.."
 
 echo "==> verifying release state"
@@ -23,7 +29,7 @@ git fetch --quiet origin || { echo "ERROR: cannot reach origin to verify release
 git rev-parse "$tag" >/dev/null 2>&1 && { echo "ERROR: local tag $tag already exists"; exit 1; }
 remote_tag=$(git ls-remote --tags origin "refs/tags/${tag}") || { echo "ERROR: cannot query remote tags"; exit 1; }
 [[ -z "$remote_tag" ]] || { echo "ERROR: remote tag $tag already exists"; exit 1; }
-gh release view "$tag" >/dev/null 2>&1 && { echo "ERROR: GitHub release $tag already exists"; exit 1; }
+gh release view "$tag" --json tagName >/dev/null 2>&1 && { echo "ERROR: GitHub release $tag already exists"; exit 1; }
 
 echo "==> quality gates"
 cargo fmt --all -- --check
@@ -63,7 +69,8 @@ file "$binary" | grep -q 'arm64' || { echo "ERROR: release binary is not arm64";
 
 echo "==> clean packaging"
 # SAFE: both paths are ignored, version-derived release outputs under repository dist/.
-rm -rf "dist/${out}" "dist/${out}.zip"
+[[ ! -e "dist/${out}" ]] || rm -r "dist/${out}"
+rm -f "dist/${out}.zip"
 rm -f "dist/SHA256SUMS.txt"
 mkdir -p "dist/${out}"
 cp "$binary" "dist/${out}/devtrim"
@@ -77,16 +84,20 @@ echo "==> tag + GitHub release"
 notes=$(awk -v hdr="## [${ver}]" 'index($0,hdr)==1{found=1;next} /^## /{if(found)exit} found' CHANGELOG.md)
 [[ -n "$notes" ]] || { echo "ERROR: empty release notes for ${ver}"; exit 1; }
 gh auth status
-git tag "$tag"
+git tag -a "$tag" -m "$tag"
 if ! git push origin "$tag"; then
   echo "ERROR: local tag $tag was created but the push failed"
   echo "RECOVER: inspect git ls-remote --tags origin refs/tags/$tag before acting"
   echo "RECOVER: if absent, fix the push issue, delete the local tag with git tag -d $tag, and rerun; if present, create the GitHub release manually"
   exit 1
 fi
-if ! gh release create "$tag" "dist/${out}.zip" "dist/SHA256SUMS.txt" --title "devtrim ${ver}" --notes "$notes"; then
+release_args=(--verify-tag)
+if [[ -n "$prerelease_suffix" ]]; then
+  release_args+=(--prerelease --latest=false)
+fi
+if ! gh release create "$tag" "dist/${out}.zip" "dist/SHA256SUMS.txt" --title "devtrim ${release}" --notes "$notes" "${release_args[@]}"; then
   echo "ERROR: tag $tag was pushed but GitHub release creation failed"
-  echo "RECOVER: inspect the pushed tag/assets, then run gh release create ${tag} dist/${out}.zip dist/SHA256SUMS.txt manually"
+  echo "RECOVER: inspect the pushed tag/assets, then rerun gh release create for ${tag} with flags: ${release_args[*]}"
   exit 1
 fi
 echo "==> released ${tag}"

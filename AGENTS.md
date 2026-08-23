@@ -35,4 +35,5 @@ no async runtime, minimal dependencies.
 3. Run every command above; MSRV must execute and may never be skipped. Also run `bash -n scripts/release.sh`, `shellcheck scripts/release.sh`, and `actionlint`.
 4. Run the local autoreview helper in local mode and inspect the final diff.
 5. Commit and push a clean tree.
-6. `scripts/release.sh <version>` reruns local gates, requires successful CI for the exact release commit, builds/verifies arm64, packages the full Apache-2.0 license, tags, and creates the GitHub release.
+6. Stage with `scripts/release.sh <version>-beta<N>`; increment `N` for each retry. The script reruns local gates, requires successful CI for the exact release commit, builds/verifies arm64, packages the full Apache-2.0 license, creates an annotated tag, and publishes a GitHub prerelease.
+7. Verify the staged archive, checksum, and CLI behavior before promoting the same commit with `scripts/release.sh <version>` to create the production tag and GitHub release.
