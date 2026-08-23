@@ -6,6 +6,25 @@ Born from a real cleanup session that reclaimed 250+ GB: HuggingFace caches,
 stale `node_modules`, simulator storage, Xcode support files, Docker bloat,
 duplicate Swift toolchains, and agent scratch directories.
 
+**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.2.0](https://github.com/mneves75/devtrim/releases/tag/v0.2.0)**
+
+## Install
+
+Download the Apple silicon archive from the [v0.2.0 release](https://github.com/mneves75/devtrim/releases/tag/v0.2.0), then verify it with the included checksum:
+
+```bash
+shasum -a 256 -c SHA256SUMS.txt
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/mneves75/devtrim
+cd devtrim
+cargo build --release --locked
+cp target/release/devtrim /usr/local/bin/
+```
+
 ## Principles
 
 - **Preview by default.** Nothing changes without `--apply`.
@@ -54,9 +73,11 @@ active_days = 30         # repos with commits newer than this are "active"
 | Size guard | >10 GB bumps danger to ≥7, >50 GB to ≥8 |
 | Non-TTY | refuses mutation without explicit flags |
 
-## Build
+## Build and release
 
 ```bash
-cargo build --release
+cargo build --release --locked
 cargo test
 ```
+
+Release notes live in [`CHANGELOG.md`](CHANGELOG.md). After committing and pushing a version bump, run `scripts/release.sh <version>` to build the archive, checksum it, tag the commit, and create the GitHub release.

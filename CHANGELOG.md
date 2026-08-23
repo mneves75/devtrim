@@ -7,7 +7,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ### Added
 - Landing page + GitHub Pages site (mneves75.github.io/devtrim) with lazy-loaded demo video and visual transcript
 - 12s product demo video rendered with Remotion (`media/demo.mp4`)
-- `scripts/release.sh` — reproducible release automation: locked release build, zip + SHA256SUMS, tag, GitHub release from changelog
+- `scripts/release.sh` — reproducible release automation: clean-tree and existing-tag guards, locked release build, zip + SHA256SUMS, tag, GitHub release from changelog
 - PRODUCT.md / DESIGN.md design-system docs; AGENTS.md + CLAUDE.md agent guidance
 
 ### Fixed

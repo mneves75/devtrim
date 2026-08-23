@@ -3,9 +3,9 @@
 Rust CLI (edition 2024). Sync code, no async runtime. Minimal deps.
 
 ## Commands
-- Build: `cargo build --release`
+- Build: `cargo build --release --locked`
 - Test: `cargo test`
-- Manual: open `MANUAL.html`
+- Site/manual: `python3 -m http.server 4173`, then open `/index.html` or `/MANUAL.html`
 
 ## Conventions
 - Every cleanup category = one file in `src/ops/`, implementing the `Op` trait.
@@ -13,8 +13,11 @@ Rust CLI (edition 2024). Sync code, no async runtime. Minimal deps.
 - Filesystem deletions MUST go through `ops::remove_path` (protected-path check + Trash-first).
 - Never add shell-string execution; use `Command::new` with arg arrays only.
 - Docker volumes are never pruned. Xcode Archives are never pruned.
-- User-facing strings in English; docs single-file HTML with CSP meta intact.
+- User-facing strings in English; keep CSP metadata intact in shipped HTML.
+- Landing page: `index.html` + `styles.css`; demo media lives in `media/`.
 
 ## Release
-- `scripts/release.sh <version>` builds release binary, zips with SHA256SUMS,
-  tags `v<version>`, creates the GitHub release from CHANGELOG.md notes.
+1. Bump `Cargo.toml` and every public version reference.
+2. Add the dated `CHANGELOG.md` section; update README and agent docs.
+3. Run tests, commit, and push a clean tree.
+4. `scripts/release.sh <version>` builds the locked release, zips it with SHA256SUMS, tags `v<version>`, and creates the GitHub release from changelog notes.
