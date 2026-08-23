@@ -120,9 +120,11 @@ bash -n scripts/release.sh && shellcheck scripts/release.sh && actionlint
 
 See [`SECURITY.md`](SECURITY.md) for the threat model and reporting process.
 Release notes live in [`CHANGELOG.md`](CHANGELOG.md). After committing and
-pushing a version bump, run `scripts/release.sh 0.3.0-beta1` for the first
-staging candidate. Each retry increments the suffix (`beta2`, `beta3`, …).
-The script reruns local gates, requires successful CI for that exact commit,
-builds and verifies the arm64 archive, creates an annotated tag, and publishes
-a GitHub prerelease. After verifying the beta, run `scripts/release.sh 0.3.0`
-to tag and publish the production release from the same commit.
+pushing a version bump, enable GitHub immutable releases and run
+`scripts/release.sh <version>-beta<N>` for staging. Each retry uses a new
+counter. The script reruns local gates, requires successful CI for the exact
+commit, and pushes an annotated tag. The hosted release workflow builds the
+arm64 archive, signs SLSA provenance, publishes an immutable prerelease, and
+verifies the downloaded asset. Production uses `scripts/release.sh <version>`;
+the workflow promotes the exact highest verified beta artifact from the same
+commit without rebuilding it.

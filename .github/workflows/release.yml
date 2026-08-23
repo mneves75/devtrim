@@ -1,0 +1,277 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      IMMUTABLE_RELEASES_ENABLED: ${{ vars.IMMUTABLE_RELEASES_ENABLED }}
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "ERROR: release requires a tag"; exit 1; }
+          [[ "${IMMUTABLE_RELEASES_ENABLED}" == "true" ]] || {
+            echo "ERROR: immutable release latch is not enabled"
+            exit 1
+          }
+          release="${GITHUB_REF_NAME#v}"
+          [[ "$release" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(-beta[1-9][0-9]*)?$ ]] || {
+            echo "ERROR: release tag must be vX.Y.Z or vX.Y.Z-betaN"
+            exit 1
+          }
+          base="${BASH_REMATCH[1]}"
+          suffix="${BASH_REMATCH[2]:-}"
+          [[ "$(git cat-file -t "${GITHUB_REF_NAME}")" == "tag" ]] || {
+            echo "ERROR: release tag must be annotated"
+            exit 1
+          }
+          [[ "$(git rev-list -n 1 "${GITHUB_REF_NAME}")" == "${GITHUB_SHA}" ]] || {
+            echo "ERROR: release tag does not dereference to workflow commit"
+            exit 1
+          }
+          grep -Fqx "version = \"$base\"" Cargo.toml
+          grep -Fq "## [$base]" CHANGELOG.md
+          grep -Fq "v$base" README.md
+          grep -Fq "v$base" MANUAL.html
+          grep -Fq "v$base" index.html
+
+          ci_conclusion=$(gh run list --workflow ci.yml --event push --commit "${GITHUB_SHA}" --limit 1 --json conclusion,status --jq '.[0] | select(.status == "completed") | .conclusion')
+          [[ "$ci_conclusion" == "success" ]] || {
+            echo "ERROR: release commit has no successful completed CI run"
+            exit 1
+          }
+
+          notes="${RUNNER_TEMP}/release-notes.md"
+          awk -v hdr="## [$base]" 'index($0,hdr)==1{found=1;next} /^## /{if(found)exit} found' CHANGELOG.md > "$notes"
+          [[ -s "$notes" ]] || { echo "ERROR: release notes are empty"; exit 1; }
+
+          is_beta=false
+          [[ -z "$suffix" ]] || is_beta=true
+          release_exists=false
+          if existing=$(gh release view "${GITHUB_REF_NAME}" --json isDraft,isImmutable,isPrerelease,tagName); then
+            [[ "$(jq -r .isDraft <<<"$existing")" == "false" ]] || {
+              echo "ERROR: a draft release already exists; inspect it before retrying"
+              exit 1
+            }
+            [[ "$(jq -r .isImmutable <<<"$existing")" == "true" ]] || {
+              echo "ERROR: an existing release is mutable"
+              exit 1
+            }
+            [[ "$(jq -r .isPrerelease <<<"$existing")" == "$is_beta" ]] || {
+              echo "ERROR: existing release type does not match tag"
+              exit 1
+            }
+            release_exists=true
+          fi
+
+          {
+            echo "release=$release"
+            echo "base=$base"
+            echo "is_beta=$is_beta"
+            echo "release_exists=$release_exists"
+            echo "out=devtrim-$base-macos-arm64"
+            echo "notes=$notes"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned Rust
+        if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          rustup target add aarch64-apple-darwin
+
+      - name: Build beta artifact
+        if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target aarch64-apple-darwin
+          binary="target/aarch64-apple-darwin/release/devtrim"
+          file "$binary" | grep -q 'arm64'
+          "$binary" --version | grep -Fqx "devtrim ${{ steps.meta.outputs.base }}"
+
+      - name: Package beta artifact
+        if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${{ steps.meta.outputs.out }}"
+          mkdir -p "dist/$out"
+          cp target/aarch64-apple-darwin/release/devtrim "dist/$out/devtrim"
+          cp MANUAL.html README.md LICENSE "dist/$out/"
+          ( cd dist && zip -qr "$out.zip" "$out" )
+          ( cd dist && shasum -a 256 "$out.zip" > SHA256SUMS.txt )
+          unzip -l "dist/$out.zip"
+          ( cd dist && shasum -a 256 -c SHA256SUMS.txt )
+
+      - name: Attest beta artifact
+        if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: dist/${{ steps.meta.outputs.out }}.zip
+
+      - name: Publish beta prerelease
+        if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${{ steps.meta.outputs.out }}"
+          release_args=(
+            "${GITHUB_REF_NAME}"
+            "dist/$out.zip"
+            dist/SHA256SUMS.txt
+            --verify-tag
+            --prerelease
+            --latest=false
+            --title "devtrim ${{ steps.meta.outputs.release }}"
+            --notes-file "${{ steps.meta.outputs.notes }}"
+          )
+          gh release create "${release_args[@]}"
+
+      - name: Select verified beta artifact
+        if: steps.meta.outputs.is_beta == 'false' && steps.meta.outputs.release_exists == 'false'
+        id: promote
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ steps.meta.outputs.base }}"
+          out="${{ steps.meta.outputs.out }}"
+          beta_tag=""
+          promotion_dir=""
+
+          while IFS= read -r candidate; do
+            [[ -n "$candidate" ]] || continue
+            git fetch --quiet origin "refs/tags/$candidate:refs/tags/$candidate" || continue
+            [[ "$(git cat-file -t "$candidate" 2>/dev/null)" == "tag" ]] || continue
+            [[ "$(git rev-list -n 1 "$candidate")" == "${GITHUB_SHA}" ]] || continue
+
+            candidate_state=$(gh release view "$candidate" --json isDraft,isImmutable,isPrerelease,assets)
+            [[ "$(jq -r .isDraft <<<"$candidate_state")" == "false" ]] || continue
+            [[ "$(jq -r .isImmutable <<<"$candidate_state")" == "true" ]] || continue
+            [[ "$(jq -r .isPrerelease <<<"$candidate_state")" == "true" ]] || continue
+            asset_names=$(jq -r '.assets[].name' <<<"$candidate_state" | sort)
+            expected_names=$(printf '%s\n%s\n' SHA256SUMS.txt "$out.zip" | sort)
+            [[ "$asset_names" == "$expected_names" ]] || continue
+            gh release verify "$candidate" --format json >/dev/null || continue
+
+            candidate_dir="${RUNNER_TEMP}/candidate-${candidate##*-beta}"
+            mkdir -p "$candidate_dir"
+            gh release download "$candidate" --dir "$candidate_dir" --pattern "$out.zip" --pattern SHA256SUMS.txt || continue
+            ( cd "$candidate_dir" && shasum -a 256 -c SHA256SUMS.txt ) || continue
+            attestation_args=(
+              --repo "${GITHUB_REPOSITORY}"
+              --source-digest "${GITHUB_SHA}"
+              --source-ref "refs/tags/$candidate"
+            )
+            gh attestation verify "$candidate_dir/$out.zip" "${attestation_args[@]}" >/dev/null || continue
+
+            beta_tag="$candidate"
+            promotion_dir="$candidate_dir"
+            break
+          done < <(
+            gh release list --limit 1000 --json tagName,isDraft,isImmutable,isPrerelease --jq '
+                [.[] |
+                  select(.isDraft == false and .isImmutable == true and .isPrerelease == true) |
+                  select(.tagName | test("^v'"${base//./\\.}"'-beta[1-9][0-9]*$")) |
+                  . + {beta_number: (.tagName | capture("beta(?<n>[0-9]+)$").n | tonumber)}
+                ] |
+                sort_by(.beta_number) |
+                reverse |
+                .[].tagName
+              '
+          )
+
+          [[ -n "$beta_tag" ]] || {
+            echo "ERROR: no immutable attested beta from this commit is promotable"
+            exit 1
+          }
+          {
+            echo "beta_tag=$beta_tag"
+            echo "promotion_dir=$promotion_dir"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish production release
+        if: steps.meta.outputs.is_beta == 'false' && steps.meta.outputs.release_exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${{ steps.meta.outputs.out }}"
+          promotion_dir="${{ steps.promote.outputs.promotion_dir }}"
+          release_args=(
+            "${GITHUB_REF_NAME}"
+            "$promotion_dir/$out.zip"
+            "$promotion_dir/SHA256SUMS.txt"
+            --verify-tag
+            --latest
+            --title "devtrim ${{ steps.meta.outputs.release }}"
+            --notes-file "${{ steps.meta.outputs.notes }}"
+          )
+          gh release create "${release_args[@]}"
+
+      - name: Verify published release
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${{ steps.meta.outputs.out }}"
+          published="${RUNNER_TEMP}/published"
+          mkdir -p "$published"
+          gh release download "${GITHUB_REF_NAME}" --dir "$published" --pattern "$out.zip" --pattern SHA256SUMS.txt
+          asset_names=$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name' | sort)
+          expected_names=$(printf '%s\n%s\n' SHA256SUMS.txt "$out.zip" | sort)
+          [[ "$asset_names" == "$expected_names" ]] || {
+            echo "ERROR: published release asset set is not exact"
+            exit 1
+          }
+          ( cd "$published" && shasum -a 256 -c SHA256SUMS.txt )
+
+          release_state=$(gh release view "${GITHUB_REF_NAME}" --json isDraft,isImmutable,isPrerelease,tagName)
+          [[ "$(jq -r .isDraft <<<"$release_state")" == "false" ]]
+          [[ "$(jq -r .isImmutable <<<"$release_state")" == "true" ]]
+          [[ "$(jq -r .isPrerelease <<<"$release_state")" == "${{ steps.meta.outputs.is_beta }}" ]]
+
+          release_verified=false
+          for _ in {1..10}; do
+            if gh release verify "${GITHUB_REF_NAME}" --format json >/dev/null; then
+              release_verified=true
+              break
+            fi
+            sleep 3
+          done
+          [[ "$release_verified" == "true" ]] || {
+            echo "ERROR: immutable release attestation did not verify"
+            exit 1
+          }
+
+          attestation_args=(
+            --repo "${GITHUB_REPOSITORY}"
+            --source-digest "${GITHUB_SHA}"
+          )
+          if [[ "${{ steps.meta.outputs.is_beta }}" == "true" ]]; then
+            attestation_args+=(--source-ref "${GITHUB_REF}")
+          fi
+          gh attestation verify "$published/$out.zip" "${attestation_args[@]}" >/dev/null

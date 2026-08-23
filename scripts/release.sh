@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# devtrim release: verify → build arm64 → package → checksum → tag → GitHub release
+# devtrim release: verify → tag → hosted build/promotion → attest → GitHub release
 # usage: scripts/release.sh <version>   (e.g. 0.3.0-beta1 or 0.3.0)
 set -euo pipefail
 
@@ -12,8 +12,7 @@ release="${1:?usage: scripts/release.sh <version>}"
 ver="${BASH_REMATCH[1]}"
 prerelease_suffix="${BASH_REMATCH[2]:-}"
 tag="v${release}"
-target="aarch64-apple-darwin"
-out="devtrim-${release}-macos-arm64"
+out="devtrim-${ver}-macos-arm64"
 cd "$(dirname "$0")/.."
 
 echo "==> verifying release state"
@@ -30,6 +29,12 @@ git rev-parse "$tag" >/dev/null 2>&1 && { echo "ERROR: local tag $tag already ex
 remote_tag=$(git ls-remote --tags origin "refs/tags/${tag}") || { echo "ERROR: cannot query remote tags"; exit 1; }
 [[ -z "$remote_tag" ]] || { echo "ERROR: remote tag $tag already exists"; exit 1; }
 gh release view "$tag" --json tagName >/dev/null 2>&1 && { echo "ERROR: GitHub release $tag already exists"; exit 1; }
+repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+immutable_enabled=$(gh api "repos/${repo}/immutable-releases" --jq .enabled)
+[[ "$immutable_enabled" == "true" ]] || {
+  echo "ERROR: GitHub immutable releases must be enabled before tagging"
+  exit 1
+}
 
 echo "==> quality gates"
 cargo fmt --all -- --check
@@ -58,31 +63,7 @@ shellcheck scripts/release.sh
 actionlint
 cmp -s AGENTS.md CLAUDE.md || { echo "ERROR: AGENTS.md and CLAUDE.md differ"; exit 1; }
 
-echo "==> locked arm64 release build"
-if command -v rustup >/dev/null 2>&1; then
-  rustup target add "$target"
-fi
-cargo build --release --locked --target "$target"
-binary="target/${target}/release/devtrim"
-file "$binary" | grep -q 'arm64' || { echo "ERROR: release binary is not arm64"; exit 1; }
-"$binary" --version | grep -Fqx "devtrim ${ver}" || { echo "ERROR: binary version mismatch"; exit 1; }
-
-echo "==> clean packaging"
-# SAFE: both paths are ignored, version-derived release outputs under repository dist/.
-[[ ! -e "dist/${out}" ]] || rm -r "dist/${out}"
-rm -f "dist/${out}.zip"
-rm -f "dist/SHA256SUMS.txt"
-mkdir -p "dist/${out}"
-cp "$binary" "dist/${out}/devtrim"
-cp MANUAL.html README.md LICENSE "dist/${out}/"
-( cd dist && zip -qr "${out}.zip" "${out}" )
-( cd dist && shasum -a 256 "${out}.zip" > SHA256SUMS.txt )
-unzip -l "dist/${out}.zip"
-( cd dist && shasum -a 256 -c SHA256SUMS.txt )
-
-echo "==> tag + GitHub release"
-notes=$(awk -v hdr="## [${ver}]" 'index($0,hdr)==1{found=1;next} /^## /{if(found)exit} found' CHANGELOG.md)
-[[ -n "$notes" ]] || { echo "ERROR: empty release notes for ${ver}"; exit 1; }
+echo "==> tag + hosted release workflow"
 gh auth status
 git tag -a "$tag" -m "$tag"
 if ! git push origin "$tag"; then
@@ -91,13 +72,43 @@ if ! git push origin "$tag"; then
   echo "RECOVER: if absent, fix the push issue, delete the local tag with git tag -d $tag, and rerun; if present, create the GitHub release manually"
   exit 1
 fi
-release_args=(--verify-tag)
-if [[ -n "$prerelease_suffix" ]]; then
-  release_args+=(--prerelease --latest=false)
-fi
-if ! gh release create "$tag" "dist/${out}.zip" "dist/SHA256SUMS.txt" --title "devtrim ${release}" --notes "$notes" "${release_args[@]}"; then
-  echo "ERROR: tag $tag was pushed but GitHub release creation failed"
-  echo "RECOVER: inspect the pushed tag/assets, then rerun gh release create for ${tag} with flags: ${release_args[*]}"
+
+run_id=""
+for _ in {1..30}; do
+  run_id=$(gh run list --workflow release.yml --event push --commit "$release_commit" --limit 20 \
+    --json databaseId,headBranch \
+    --jq ".[] | select(.headBranch == \"${tag}\") | .databaseId" | head -n 1)
+  [[ -z "$run_id" ]] || break
+  sleep 2
+done
+if [[ -z "$run_id" ]]; then
+  echo "ERROR: release workflow did not start for $tag"
+  echo "RECOVER: inspect Actions for the pushed tag; never move or reuse it"
   exit 1
 fi
-echo "==> released ${tag}"
+gh run watch "$run_id" --exit-status || {
+  echo "ERROR: hosted release workflow failed for $tag"
+  echo "RECOVER: inspect run ${run_id}; rerun it only after the failure is understood"
+  exit 1
+}
+
+expected_prerelease=false
+[[ -z "$prerelease_suffix" ]] || expected_prerelease=true
+release_state=$(gh release view "$tag" --json tagName,isImmutable,isPrerelease \
+  --jq '[.tagName, .isImmutable, .isPrerelease] | @tsv')
+[[ "$release_state" == "$tag"$'\ttrue\t'"$expected_prerelease" ]] || {
+  echo "ERROR: published release state does not match $tag"
+  exit 1
+}
+gh release verify "$tag" --format json >/dev/null
+
+verify_dir=$(mktemp -d "/tmp/devtrim-release-verify.XXXXXX")
+trap 'rm -r "$verify_dir"' EXIT
+gh release download "$tag" --dir "$verify_dir" --pattern "${out}.zip" --pattern SHA256SUMS.txt
+( cd "$verify_dir" && shasum -a 256 -c SHA256SUMS.txt )
+attestation_args=(--repo "$repo" --source-digest "$release_commit")
+if [[ "$expected_prerelease" == "true" ]]; then
+  attestation_args+=(--source-ref "refs/tags/${tag}")
+fi
+gh attestation verify "$verify_dir/${out}.zip" "${attestation_args[@]}" >/dev/null
+echo "==> released and verified ${tag}"

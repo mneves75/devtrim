@@ -2,10 +2,10 @@
 
 ## Current state
 
-devtrim 0.3.0 implementation and documentation are complete on `master`. The
-typed deletion boundary, security scans, local release gates, independent
-verification, and exact-commit CI passed. Tagging, GitHub Release creation, and
-publication remain a separate explicitly authorized workflow.
+devtrim 0.3.0 implementation is on `master`. `v0.3.0-beta1` proved the arm64
+archive but is not promotable because it was built locally and published as a
+mutable, unattested prerelease. The next release commit adds a hosted attested
+build and immutable exact-byte beta-to-production promotion.
 
 ## Decisions
 
@@ -17,8 +17,11 @@ publication remain a separate explicitly authorized workflow.
   pre-commit, CI, and release validation.
 - MSRV is a mandatory executed gate; absence of its toolchain is a failure.
 - Pathname TOCTOU remains documented rather than overstated as solved.
+- A production release may consume only an immutable, attested beta artifact
+  from the same dereferenced commit; production never rebuilds it.
 
 ## Next boundary
 
-Do not tag or publish 0.3.0 until explicitly requested. When requested, run
-`scripts/release.sh 0.3.0` from a clean, synchronized `master`.
+Enable immutable GitHub releases, publish and verify `v0.3.0-beta2` from the
+next clean exact-CI commit, then stop for explicit production confirmation.
+Never promote or reuse `v0.3.0-beta1`.

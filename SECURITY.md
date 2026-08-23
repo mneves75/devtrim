@@ -65,7 +65,8 @@ Non-negotiable boundaries:
 - Rust is pinned in `rust-toolchain.toml`; `rust-version` records the MSRV.
 - GitHub Actions are pinned to immutable commit SHAs.
 - Dependabot checks Cargo and Actions weekly.
-- Release archives include SHA-256 checksums and the full Apache-2.0 license.
+- Hosted release builds produce SHA-256 checksums, the full Apache-2.0 license, and signed artifact provenance.
+- GitHub releases and their tags/assets are immutable. Production promotes the exact verified beta archive from the same commit instead of rebuilding it.
 - Release preparation runs `cargo audit`, Gitleaks, and TruffleHog; results are recorded in the matching changelog section only after they execute.
 
 ## Known limitations

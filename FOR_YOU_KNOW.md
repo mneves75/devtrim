@@ -30,6 +30,12 @@ deletion sink, and the MSRV note described a gate that had not executed. In
 it can catch a planted direct delete before trusting a clean scan. A gate that
 cannot run fails the release.
 
+Release candidates follow the same rule. A beta is built on GitHub's hosted
+arm64 runner, checksummed, bound to its source commit with signed provenance,
+and published as an immutable release. Production does not rebuild it; it
+promotes the exact verified bytes. Think of staging as inspecting a sealed
+shipping crate, not inspecting one crate and sending a newly packed lookalike.
+
 The remaining honest limitation is pathname TOCTOU. `VerifiedTarget` proves
 the checks ran; it does not hold an open directory descriptor through deletion.
 The threat model assumes a single-user local tool without hostile concurrent
