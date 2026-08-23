@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="devtrim — local-first disk hygiene for macOS developer machines. Measure, classify, trim. Trash-first deletion with danger-scored guardrails.">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>devtrim — measure · classify · trim</title>
+<link rel="stylesheet" href="styles.css">
+<noscript><style>[data-reveal]{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to content</a>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <p class="eyebrow">Local-first disk hygiene for macOS developer machines</p>
+    <h1>Clean your machine like<br>you deploy code.</h1>
+    <p class="pitch">See exactly what 40&nbsp;GB of caches costs before anything moves.
+      Every action is previewed, scored 1–10 for danger, and lands in the Trash —
+      recoverable until you say otherwise.</p>
+    <p class="badges">Free and open source · Apache-2.0 · macOS 13+</p>
+    <div class="cta-row">
+      <a class="btn primary" href="#install">Download v0.1.0</a>
+      <a class="btn ghost" href="#commands">Read the manual</a>
+    </div>
+    <figure class="hero-fig" data-reveal>
+      <img src="assets/hero-shell.png" alt="devtrim documentation shell: graphite background, technical grid, giant DEVTRIM wordmark and semantic badges" width="1600" height="1000">
+      <figcaption>The docs shell — same grid, same accent, same discipline.</figcaption>
+    </figure>
+  </div>
+</header>
+
+<main id="content">
+
+<section class="why" aria-labelledby="why-h">
+  <div class="wrap">
+    <h2 id="why-h">One careful pass replaces a risky ritual.</h2>
+    <div class="why-grid">
+      <article data-reveal>
+        <p class="eyebrow">The problem</p>
+        <h3>Developer Macs fill up silently.</h3>
+        <p>DerivedData, model caches, simulators, Docker layers and six-month-old
+          <code>node_modules</code> quietly eat hundreds of gigabytes.</p>
+      </article>
+      <article data-reveal>
+        <p class="eyebrow">The choice</p>
+        <h3>Classify before you delete.</h3>
+        <p>Every target gets a danger score from 1 to 10. Caches are green.
+          Simulator contents are red. The score decides how much you must confirm.</p>
+      </article>
+      <article data-reveal>
+        <p class="eyebrow">The boundary</p>
+        <h3>Some doors have no handle.</h3>
+        <p>Docker volumes are never pruned. Xcode Archives are never pruned.
+          A protected-path denylist no flag can override.</p>
+      </article>
+      <article data-reveal>
+        <p class="eyebrow">The result</p>
+        <h3>Space you can trust back.</h3>
+        <p>Everything cleaned today is restorable from Finder tomorrow.
+          Permanent deletion needs a typed confirmation that matches the size.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="demo" aria-labelledby="demo-h">
+  <div class="wrap">
+    <h2 id="demo-h">From full disk to 70 GB back.</h2>
+    <p class="section-note">Videos load only when you play them.</p>
+    <div class="video-card" data-reveal>
+      <div class="video-head"><strong>Scan &amp; clean</strong> — see a real report, then act on one category. <a href="media/demo.mp4">Download the demo</a></div>
+      <video controls preload="none" src="media/demo.mp4"></video>
+      <ol class="transcript">
+        <li><code>devtrim scan</code> reports every reclaimable category with real sizes.</li>
+        <li>Each line shows a danger score; notes explain what comes back.</li>
+        <li>Totals: 69.6 GB across 13 items — measured, not guessed.</li>
+        <li><code>devtrim clean caches --apply -y</code> acts on one category only.</li>
+        <li>The cache moves to Trash: recoverable from Finder until emptied.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="features" aria-labelledby="feat-h">
+  <div class="wrap">
+    <h2 id="feat-h">Seven commands. Kept intentionally narrow.</h2>
+    <div class="feat-grid">
+      <article data-reveal><h3><code>scan</code></h3><p>Full read-only report of every reclaimable category, with real sizes and danger levels. JSON output for agents.</p></article>
+      <article data-reveal><h3><code>caches</code></h3><p>HuggingFace models, npm, Homebrew, uv. Re-downloads on demand — devtrim tells you the bandwidth cost instead of deciding.</p></article>
+      <article data-reveal><h3><code>node-modules</code></h3><p>Sweeps only repos without commits in the last 30 days. Monorepo-aware, nested-store aware, lockfile-aware.</p></article>
+      <article data-reveal><h3><code>xcode</code></h3><p>DeviceSupport symbols and DerivedData. Archives are always listed but never touched.</p></article>
+      <article data-reveal><h3><code>docker</code></h3><p>Unused images and build cache. Volumes are sacred — a volume may hold your live database.</p></article>
+      <article data-reveal><h3><code>simulators</code></h3><p>Deletes devices whose runtime is gone. Erasing contents of live simulators requires <code>--yolo</code>.</p></article>
+      <article data-reveal><h3><code>toolchains</code> + <code>leftovers</code></h3><p>Duplicate Swift toolchains (Xcode's own unaffected) and AI-agent scratch directories.</p></article>
+      <article data-reveal><h3><code>icloud</code></h3><p>Big files queued for iCloud upload, with local-materialization status — so eviction happens after upload, not before.</p></article>
+    </div>
+  </div>
+</section>
+
+<section class="trust" aria-labelledby="trust-h">
+  <div class="wrap">
+    <h2 id="trust-h">Local scans. Guardrails by default.</h2>
+    <ul class="negations">
+      <li>No telemetry. The binary makes zero network calls of its own.</li>
+      <li>Nothing leaves your machine to be "analyzed".</li>
+      <li>Deletion means Trash first; <code>--shred</code> is opt-in per run.</li>
+      <li><code>/System</code>, <code>/Applications</code>, <code>~/.ssh</code> and friends are refused unconditionally — no flag overrides.</li>
+      <li>Piped runs refuse to mutate unless consent is explicit.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="install" id="install" aria-labelledby="install-h">
+  <div class="wrap">
+    <h2 id="install-h">Install v0.1.0.</h2>
+    <div class="install-grid">
+      <div data-reveal>
+        <a class="btn primary big" href="https://github.com/mneves75/devtrim/releases/download/v0.1.0/devtrim-0.1.0-macos-arm64.zip">Download for Apple silicon</a>
+        <p class="dim mono">SHA-256 in <a href="https://github.com/mneves75/devtrim/releases/tag/v0.1.0">release assets</a>. Verify before running:</p>
+        <pre><code>shasum -a 256 -c SHA256SUMS.txt</code></pre>
+      </div>
+      <div data-reveal>
+        <h3>Build from source</h3>
+        <pre><code>git clone https://github.com/mneves75/devtrim
+cd devtrim
+cargo build --release
+cp target/release/devtrim /usr/local/bin/</code></pre>
+        <p class="dim">Rust ≥ 1.85. No runtime dependencies beyond macOS 13+.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="final" aria-label="Get started">
+  <div class="wrap">
+    <h2>Run the scan you've been putting off.</h2>
+    <p class="pitch">It reads nothing it shouldn't, changes nothing without <code>--apply</code>,
+      and keeps the safety net until you empty it.</p>
+    <div class="cta-row center">
+      <a class="btn primary" href="https://github.com/mneves75/devtrim#readme">Get started</a>
+      <a class="btn ghost" href="MANUAL.html">Full manual</a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span class="mono">devtrim v0.1.0</span>
+    <span><a href="https://github.com/mneves75/devtrim">GitHub</a></span>
+    <span><a href="MANUAL.html">Manual</a></span>
+    <span><a href="https://github.com/mneves75/devtrim/releases/tag/v0.1.0">Releases</a></span>
+    <span class="dim">Apache-2.0 © 2026 Marcus Neves</span>
+  </div>
+</footer>
+
+<script>
+{
+  const reveal = document.querySelectorAll("[data-reveal]");
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduced || !("IntersectionObserver" in window)) {
+    reveal.forEach(el => el.classList.add("is-visible"));
+  } else {
+    const io = new IntersectionObserver(entries => {
+      entries.forEach(e => {
+        if (e.isIntersecting) { e.target.classList.add("is-visible"); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12 });
+    reveal.forEach(el => io.observe(el));
+  }
+}
+</script>
+</body>
+</html>
