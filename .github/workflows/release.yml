@@ -192,7 +192,8 @@ jobs:
             gh release list --limit 1000 --json tagName,isDraft,isImmutable,isPrerelease --jq '
                 [.[] |
                   select(.isDraft == false and .isImmutable == true and .isPrerelease == true) |
-                  select(.tagName | test("^v'"${base//./\\.}"'-beta[1-9][0-9]*$")) |
+                  select(.tagName | startswith("v'"${base}"'-beta")) |
+                  select(.tagName | test("-beta[1-9][0-9]*$")) |
                   . + {beta_number: (.tagName | capture("beta(?<n>[0-9]+)$").n | tonumber)}
                 ] |
                 sort_by(.beta_number) |
