@@ -6,11 +6,11 @@ Born from a cleanup session that reclaimed 250+ GB across model caches, stale
 `node_modules`, simulator storage, Xcode support files, Docker bloat, and old
 Swift toolchains.
 
-**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.3.0](https://github.com/mneves75/devtrim/releases/tag/v0.3.0)**
+**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.3.1](https://github.com/mneves75/devtrim/releases/tag/v0.3.1)**
 
 ## Install
 
-Download the Apple silicon archive from the [v0.3.0 release](https://github.com/mneves75/devtrim/releases/tag/v0.3.0), then verify it with the included checksum:
+Download the Apple silicon archive from the [v0.3.1 release](https://github.com/mneves75/devtrim/releases/tag/v0.3.1), then verify it with the included checksum:
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
@@ -30,7 +30,7 @@ cp target/release/devtrim /usr/local/bin/
 - **Preview by default.** Every mutation, including `trash-empty`, requires `--apply`.
 - **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets.
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
-- **Fail closed.** Unknown Git activity, broken toolchain links, malformed config, symlinked ancestors, and failed owner commands block mutation.
+- **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, and failed owner commands block mutation.
 - **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
   - ≤2: no interactive prompt, but non-TTY apply still needs `-y`/`--yolo`
   - 3–8: y/N prompt (`-y` skips it)
@@ -69,7 +69,7 @@ active_days = 30         # newer commits make a repo active
 ```
 
 Explicit `--root` flags replace config/default roots. Existing roots are resolved
-before preview. An unreadable or malformed config is an error; devtrim never
+before preview. An unreadable, malformed, or unknown config field is an error; devtrim never
 silently falls back to another root.
 
 ## JSON contract
@@ -99,10 +99,13 @@ Applied commands additionally include `summary`. If a later target fails, the su
 | Deletion sink | only `VerifiedTarget` reaches physical removal; action selects Trash vs. permanent mode |
 | Physical path | literal and resolved parent must agree; deny-only resolution |
 | Activity | unknown Git/toolchain ownership is ineligible |
+| Measurement | incomplete traversal, metadata, or numeric state blocks an actionable plan |
 | Automation | one JSON document; partial/failed work returns nonzero |
 
 Sizes are estimated logical bytes. APFS clones, sparse files, and container-VM
-compaction can make immediately available disk space differ.
+compaction can make immediately available disk space differ. An estimate may
+differ from physical blocks, but devtrim refuses to invent one when traversal
+or metadata is incomplete.
 
 ## Build and verify
 
@@ -112,10 +115,12 @@ ast-grep test --skip-snapshot-tests
 ast-grep scan --config sgconfig.yml
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-cargo +1.85.0 test --locked --all-targets --all-features
+rustup run 1.85.0 cargo test --locked --all-targets --all-features
 cargo audit
 cargo build --release --locked --target aarch64-apple-darwin
 bash -n scripts/release.sh && shellcheck scripts/release.sh && actionlint
+gitleaks git --redact --no-banner .
+trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color
 ```
 
 See [`SECURITY.md`](SECURITY.md) for the threat model and reporting process.

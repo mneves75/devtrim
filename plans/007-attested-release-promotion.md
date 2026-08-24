@@ -1,6 +1,6 @@
 # Plan 007 — Attested beta-to-production promotion
 
-Status: IN PROGRESS
+Status: DONE
 
 ## Problem
 
@@ -71,3 +71,7 @@ orchestrator changes.
 - `scripts/release.sh` creates only annotated tags and waits for hosted verification.
 - A new beta is immutable; `gh release verify` and `gh attestation verify` pass.
 - Production promotion downloads the same beta ZIP digest and does not rebuild.
+
+`v0.3.0-beta2` satisfied the hosted-build, immutable-release, checksum,
+attestation, and exact-commit criteria. Production promotion remains gated by
+an explicit release decision rather than plan completion.

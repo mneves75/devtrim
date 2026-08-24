@@ -22,7 +22,6 @@ jobs:
       artifact-metadata: write
     env:
       GH_TOKEN: ${{ github.token }}
-      IMMUTABLE_RELEASES_ENABLED: ${{ vars.IMMUTABLE_RELEASES_ENABLED }}
     steps:
       - name: Checkout tagged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -35,10 +34,6 @@ jobs:
         run: |
           set -euo pipefail
           [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "ERROR: release requires a tag"; exit 1; }
-          [[ "${IMMUTABLE_RELEASES_ENABLED}" == "true" ]] || {
-            echo "ERROR: immutable release latch is not enabled"
-            exit 1
-          }
           release="${GITHUB_REF_NAME#v}"
           [[ "$release" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(-beta[1-9][0-9]*)?$ ]] || {
             echo "ERROR: release tag must be vX.Y.Z or vX.Y.Z-betaN"

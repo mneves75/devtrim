@@ -40,7 +40,7 @@ impl Op for Leftovers {
                             entry.file_name().to_string_lossy()
                         ),
                         Some(path.clone()),
-                        dir_size(&path),
+                        dir_size(&path)?,
                         "review manually; worktree staleness cannot be proven",
                         1,
                         Action::Info,
@@ -62,7 +62,7 @@ impl Op for Leftovers {
                         findings.push(Finding::new(
                             format!("supergoal {child} artifacts"),
                             Some(path.clone()),
-                            dir_size(&path),
+                            dir_size(&path)?,
                             "review manually; completion cannot be inferred from a path",
                             1,
                             Action::Info,

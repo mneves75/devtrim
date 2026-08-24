@@ -44,7 +44,7 @@ jobs:
       - name: MSRV tests
         run: |
           rustup toolchain install 1.85.0 --profile minimal
-          cargo +1.85.0 test --locked --all-targets --all-features
+          rustup run 1.85.0 cargo test --locked --all-targets --all-features
 
       - name: Dependency audit
         run: |

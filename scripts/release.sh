@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # devtrim release: verify → tag → hosted build/promotion → attest → GitHub release
-# usage: scripts/release.sh <version>   (e.g. 0.3.0-beta1 or 0.3.0)
+# usage: scripts/release.sh <version>   (e.g. 0.3.1-beta1 or 0.3.1)
 set -euo pipefail
 
 release="${1:?usage: scripts/release.sh <version>}"
@@ -58,6 +58,10 @@ if [[ "$ci_conclusion" != "success" ]]; then
   exit 1
 fi
 cargo audit
+command -v gitleaks >/dev/null 2>&1 || { echo "ERROR: gitleaks is required for release validation"; exit 1; }
+gitleaks git --redact --no-banner .
+command -v trufflehog >/dev/null 2>&1 || { echo "ERROR: trufflehog is required for release validation"; exit 1; }
+trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color
 bash -n scripts/release.sh
 shellcheck scripts/release.sh
 actionlint

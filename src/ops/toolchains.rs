@@ -41,7 +41,7 @@ impl Op for Toolchains {
             if preserved.contains(&canonical) {
                 continue;
             }
-            let size = dir_size(&path);
+            let size = dir_size(&path)?;
             findings.push(Finding::new(
                 format!(
                     "Swift toolchain {}",

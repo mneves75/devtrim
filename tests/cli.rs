@@ -95,6 +95,27 @@ fn malformed_config_fails_closed_with_json() {
 }
 
 #[test]
+fn unknown_config_field_fails_closed_with_json() {
+    let sandbox = Sandbox::new("unknown-config-field");
+    std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
+    std::fs::write(
+        sandbox.path().join(".config/devtrim.toml"),
+        "rootz = [\"~/only-this-root\"]\n",
+    )
+    .unwrap();
+
+    let output = run(&sandbox, &["scan", "--json"]);
+
+    assert!(!output.status.success());
+    assert!(
+        json(&output)["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("unknown field `rootz`")
+    );
+}
+
+#[test]
 fn config_tilde_root_is_expanded() {
     let sandbox = Sandbox::new("tilde-root");
     let project = sandbox.path().join("dev/project");

@@ -24,13 +24,13 @@ impl Op for Caches {
         let mut findings = Vec::new();
         for (label, relative) in CACHES {
             let path = ctx.home.join(relative);
-            let size = dir_size(&path);
+            let size = dir_size(&path)?;
             if size > 0 {
                 findings.push(cache_finding(label, path, size, 3));
             }
         }
         if let Some(path) = owner_cache_path("npm", &["config", "get", "cache"], &ctx.home)? {
-            let size = dir_size(&path);
+            let size = dir_size(&path)?;
             if size > 0 {
                 findings.push(
                     cache_finding("npm download cache", path, size, 2)
@@ -39,7 +39,7 @@ impl Op for Caches {
             }
         }
         if let Some(path) = owner_cache_path("brew", &["--cache"], &ctx.home)? {
-            let size = dir_size(&path);
+            let size = dir_size(&path)?;
             if size > 0 {
                 findings.push(
                     cache_finding("homebrew downloads cache", path, size, 1)

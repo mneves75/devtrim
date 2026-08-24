@@ -8,7 +8,7 @@ no async runtime, minimal dependencies.
 - Lint: `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - Deletion boundary: `ast-grep test --skip-snapshot-tests` then `ast-grep scan --config sgconfig.yml`
 - Test: `cargo test --locked --all-targets --all-features`
-- MSRV: `cargo +1.85.0 test --locked --all-targets --all-features`
+- MSRV: `rustup run 1.85.0 cargo test --locked --all-targets --all-features`
 - Audit: `cargo audit`
 - Build: `cargo build --release --locked --target aarch64-apple-darwin`
 - Site/manual: `python3 -m http.server 4173`, then open `/index.html` or `/MANUAL.html`
@@ -17,7 +17,7 @@ no async runtime, minimal dependencies.
 - Every cleanup category = one file in `src/ops/`, implementing the `Op` trait.
 - Findings use typed actions. Confirmation flags may bypass a gate but MUST NOT add or widen actions.
 - Apply consumes only exact previewed findings; never rescan for deletion targets after confirmation.
-- Unknown activity, ownership, symlink resolution, or owner-command status fails closed.
+- Unknown activity, ownership, symlink resolution, owner-command status, configuration fields, or size measurement fails closed.
 - Filesystem findings retain an exact internal `PathBuf`; serialized display text is never parsed back into deletion authority.
 - Only `safety::validate_path_for_deletion` creates `VerifiedTarget`; only the private sink in `src/ops/mod.rs` consumes it. Raw filesystem deletion anywhere else is a blocking ast-grep violation.
 - Apply derives Trash versus permanent mode from the previewed typed `Action`, never from a runtime flag.
@@ -32,7 +32,7 @@ no async runtime, minimal dependencies.
 ## Release
 1. Bump `Cargo.toml` and every public version reference.
 2. Add the dated `CHANGELOG.md` section; update README, manual, site, security, and agent docs.
-3. Run every command above; MSRV must execute and may never be skipped. Also run `bash -n scripts/release.sh`, `shellcheck scripts/release.sh`, and `actionlint`.
+3. Run every command above; MSRV must execute and may never be skipped. Also run `bash -n scripts/release.sh`, `shellcheck scripts/release.sh`, `actionlint`, Gitleaks, and TruffleHog.
 4. Run the local autoreview helper in local mode and inspect the final diff.
 5. Commit and push a clean tree.
 6. GitHub immutable releases must be enabled. Stage with `scripts/release.sh <version>-beta<N>`; every retry uses a new `N`. The script reruns local gates, requires successful exact-commit CI, and pushes an annotated tag.

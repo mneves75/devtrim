@@ -2,10 +2,9 @@
 
 ## Current state
 
-devtrim 0.3.0 implementation is on `master`. `v0.3.0-beta1` proved the arm64
-archive but is not promotable because it was built locally and published as a
-mutable, unattested prerelease. The next release commit adds a hosted attested
-build and immutable exact-byte beta-to-production promotion.
+devtrim 0.3.1 hardening is being prepared on `master`. `v0.3.0-beta2` proved
+the hosted, immutable, attested exact-byte promotion path, but 0.3.1 supersedes
+it with fail-closed measurement/config parsing and truthful secret-scan gates.
 
 ## Decisions
 
@@ -19,9 +18,10 @@ build and immutable exact-byte beta-to-production promotion.
 - Pathname TOCTOU remains documented rather than overstated as solved.
 - A production release may consume only an immutable, attested beta artifact
   from the same dereferenced commit; production never rebuilds it.
+- Actionable size measurement, Docker size parsing, and config schema parsing
+  fail closed; partial or ambiguous inputs never become cleanup authority.
 
 ## Next boundary
 
-Enable immutable GitHub releases, publish and verify `v0.3.0-beta2` from the
-next clean exact-CI commit, then stop for explicit production confirmation.
-Never promote or reuse `v0.3.0-beta1`.
+Publish and verify `v0.3.1-beta1` from the clean exact-CI commit, then stop for
+explicit production confirmation. Never promote or reuse `v0.3.0-beta1`.

@@ -89,8 +89,8 @@ pub fn scan_all(ctx: &Ctx) -> ScanResult {
     ScanResult { findings, errors }
 }
 
-pub fn dir_size(path: &Path) -> u64 {
-    crate::safety::dir_size(path).unwrap_or(0)
+pub fn dir_size(path: &Path) -> Result<u64> {
+    crate::safety::dir_size(path)
 }
 
 pub fn apply_filesystem_finding(finding: &Finding, ctx: &Ctx) -> Result<()> {

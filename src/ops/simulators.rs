@@ -65,7 +65,7 @@ impl Op for Simulators {
         if unavailable == 0 {
             return Ok(Vec::new());
         }
-        let storage = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"));
+        let storage = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"))?;
         Ok(vec![Finding::new(
             "unavailable Apple simulator devices",
             None,
@@ -80,7 +80,7 @@ impl Op for Simulators {
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
-        let before = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"));
+        let before = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"))?;
         let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
             let result = (|| -> Result<String> {
@@ -104,8 +104,12 @@ impl Op for Simulators {
                 }
             }
         }
-        let after = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"));
-        outcome.summary.bytes_freed_estimate = before.saturating_sub(after);
+        match dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices")) {
+            Ok(after) => outcome.summary.bytes_freed_estimate = before.saturating_sub(after),
+            Err(error) => {
+                outcome.fail(error.context("cannot measure simulator storage after apply"))
+            }
+        }
         Ok(outcome)
     }
 }

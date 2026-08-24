@@ -30,6 +30,13 @@ deletion sink, and the MSRV note described a gate that had not executed. In
 it can catch a planted direct delete before trusting a clean scan. A gate that
 cannot run fails the release.
 
+The 0.3.1 lesson is that authority is broader than the final delete call. A
+directory size influences danger and the decision to act, so an unreadable
+entry cannot be silently discarded. A config key influences policy, so a typo
+cannot be silently ignored. A Docker size influences the same plan, so its unit
+and numeric range must be proven. These parsers and measurements now return
+errors at their shared boundaries instead of manufacturing plausible data.
+
 Release candidates follow the same rule. A beta is built on GitHub's hosted
 arm64 runner, checksummed, bound to its source commit with signed provenance,
 and published as an immutable release. Production does not rebuild it; it

@@ -37,6 +37,8 @@ Non-negotiable boundaries:
 - System roots, the user home root, Trash root, `.ssh`, `.gnupg`, and wholesale
   `~/Library` are protected. Only named managed Library subpaths are eligible.
 - Unknown Git activity or toolchain ownership is not deletion authority.
+- Incomplete directory traversal, metadata, or numeric parsing is not size authority for an actionable plan.
+- Unknown configuration fields are rejected so a misspelled safety setting cannot appear active.
 - Docker volumes and Xcode Archives are never pruned.
 - Confirmation bypasses never add operations.
 - Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
@@ -56,7 +58,9 @@ Non-negotiable boundaries:
    unattended mutation requires explicit consent.
 8. **Truthful automation** — JSON is one document; partial/failed operations
    return nonzero with errors.
-9. **Regression gates** — macOS CI runs format, strict Clippy, tests, MSRV tests,
+9. **Truthful measurement** — traversal, metadata, numeric parsing, and overflow
+   errors block actionable plans rather than producing partial estimates.
+10. **Regression gates** — macOS CI runs format, strict Clippy, tests, MSRV tests,
    dependency audit, a positive-control structural deletion-sink lint, and an explicit arm64 release build.
 
 ## Supply chain
@@ -73,6 +77,8 @@ Non-negotiable boundaries:
 
 - Sizes are estimated logical bytes, not guaranteed immediately reclaimable
   APFS blocks. Clones, sparse files, Trash, and container VM compaction differ.
+  The estimate is nevertheless complete for the traversed logical tree: an
+  unreadable entry or overflow is an error, not a partial result.
 - The typed target prevents unvalidated and lossy-display paths from reaching removal, but path validation does not hold a directory descriptor through deletion and therefore does not claim a transaction across arbitrary concurrent hostile filesystem mutation. devtrim
   is a single-user local tool; when identity cannot be proven it refuses.
 - Targets skipped because their state could not be proven are reported on

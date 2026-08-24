@@ -36,7 +36,7 @@ impl Op for Xcode {
             };
             for entry in entries {
                 let path = entry?.path();
-                let size = dir_size(&path);
+                let size = dir_size(&path)?;
                 findings.push(Finding::new(
                     format!(
                         "{label}: {}",
@@ -51,7 +51,7 @@ impl Op for Xcode {
             }
         }
         let archives = ctx.home.join("Library/Developer/Xcode/Archives");
-        let archive_size = dir_size(&archives);
+        let archive_size = dir_size(&archives)?;
         if archive_size > 0 {
             findings.push(Finding::new(
                 "Xcode Archives",

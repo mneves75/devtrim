@@ -2,6 +2,20 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.3.1] - 2026-08-23
+
+### Fixed
+- Directory sizing now fails closed on traversal, metadata, or overflow errors and never follows a symlink supplied as the scan root
+- Configuration files reject unknown fields instead of silently accepting misspelled safety settings
+- Docker disk-usage parsing recognizes documented petabyte and exabyte units while rejecting missing, unsupported, negative, non-finite, and out-of-range values
+
+### Security
+- Release preparation now actually executes Gitleaks and TruffleHog before tagging, matching the documented release contract
+- The privileged local preflight queries GitHub's immutable-release setting directly, while hosted jobs verify the published release is actually immutable
+- Actionable scans refuse to build a cleanup plan when their logical-byte measurement cannot be completed truthfully
+
+[0.3.1]: https://github.com/mneves75/devtrim/releases/tag/v0.3.1
+
 ## [0.3.0] - 2026-08-23
 
 ### Added

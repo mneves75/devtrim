@@ -402,7 +402,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.3.0</span>
+    <span class="chip g">v0.3.1</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
     <span class="chip r">Protected-path denylist</span>
@@ -416,7 +416,7 @@
   <span class="ghost" aria-hidden="true">01</span>
   <p class="lead">devtrim exists because cleaning a 900&nbsp;GB Mac by hand is how good data dies. Three rules govern everything it does.</p>
   <ul class="flow">
-    <li><strong>Measure before cutting.</strong> <code>scan</code> is read-only and always free to run. Sizes are estimated logical bytes; APFS clones, sparse files, Trash, and container VMs can differ.</li>
+    <li><strong>Measure before cutting.</strong> <code>scan</code> is read-only and always free to run. Sizes are estimated logical bytes; APFS clones, sparse files, Trash, and container VMs can differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.</li>
     <li><strong>Classify by risk.</strong> Every finding carries a danger score from 1 to 10 that decides how hard you must confirm (see <a href="#danger">§06</a>).</li>
     <li><strong>Trim with a net.</strong> Filesystem deletions go to macOS Trash by default — recoverable from Finder. Permanent deletion requires an explicit <code>--shred</code>.</li>
   </ul>
@@ -575,7 +575,7 @@ dry-run no changes made; re-run with --apply and --confirm=14 to act
   <p>Optional file at <code>~/.config/devtrim.toml</code>:</p>
   <pre data-copy="none"><code>roots = ["~/dev", "~/sandbox"]   # scan roots (default: ~/dev)
 active_days = 30                 # commit recency defining "active" repos</code></pre>
-  <p>CLI <code>--root</code> flags override config roots entirely. Unknown keys are ignored — forward-compatible by design.</p>
+  <p>CLI <code>--root</code> flags override config roots entirely. Unknown keys are rejected so a misspelled safety setting cannot appear active.</p>
 </section>
 
 <!-- ============ 08 AGENTS ============ -->
@@ -660,7 +660,7 @@ active_days = 30                 # commit recency defining "active" repos</code>
 </section>
 
 <footer>
-  <span>devtrim <b>v0.3.0</b></span>
+  <span>devtrim <b>v0.3.1</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

@@ -91,6 +91,7 @@ fn shellexpand(value: &str, home: &Path) -> String {
 }
 
 #[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct FileCfg {
     roots: Option<Vec<String>>,
     active_days: Option<u32>,
@@ -333,11 +334,17 @@ pub fn dir_size(path: &Path) -> Result<u64> {
     }
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
+        .follow_root_links(false)
     {
+        let entry = entry.with_context(|| format!("cannot measure {}", path.display()))?;
         if entry.file_type().is_file() {
-            bytes += entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            let len = entry
+                .metadata()
+                .with_context(|| format!("cannot measure {}", entry.path().display()))?
+                .len();
+            bytes = bytes
+                .checked_add(len)
+                .ok_or_else(|| anyhow::anyhow!("logical size overflow under {}", path.display()))?;
         }
     }
     Ok(bytes)
@@ -348,7 +355,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, RngSeed};
-    use std::os::unix::{ffi::OsStringExt, fs::symlink};
+    use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt, fs::symlink};
 
     fn temp(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("devtrim-{name}-{}", std::process::id()));
@@ -482,5 +489,36 @@ mod tests {
     fn aggregate_size_escalates() {
         assert_eq!(escalate(3, 11 * 1024 * 1024 * 1024), 7);
         assert_eq!(escalate(3, 51 * 1024 * 1024 * 1024), 8);
+    }
+
+    #[test]
+    fn directory_size_fails_closed_on_unreadable_content() {
+        let root = temp("unreadable-size");
+        let unreadable = root.join("unreadable");
+        std::fs::create_dir_all(&unreadable).unwrap();
+        std::fs::write(unreadable.join("hidden"), "not measured").unwrap();
+
+        let original = std::fs::metadata(&unreadable).unwrap().permissions();
+        let mut denied = original.clone();
+        denied.set_mode(0o000);
+        std::fs::set_permissions(&unreadable, denied).unwrap();
+        let measured = dir_size(&root);
+        std::fs::set_permissions(&unreadable, original).unwrap();
+
+        assert!(measured.is_err());
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn directory_size_does_not_follow_a_root_symlink() {
+        let root = temp("symlink-size");
+        let target = root.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("payload"), "not part of the link").unwrap();
+        let link = root.join("link");
+        symlink(&target, &link).unwrap();
+
+        assert_eq!(dir_size(&link).unwrap(), 0);
+        crate::ops::remove_test_path(root);
     }
 }

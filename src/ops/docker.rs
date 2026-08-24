@@ -52,7 +52,8 @@ impl Op for Docker {
                 ),
                 _ => continue,
             };
-            let bytes = parse_size(reclaimable);
+            let bytes = parse_size(reclaimable)
+                .with_context(|| format!("invalid Docker reclaimable size: {reclaimable}"))?;
             if bytes == 0 {
                 continue;
             }
@@ -106,25 +107,29 @@ impl Op for Docker {
     }
 }
 
-pub(crate) fn parse_size(value: &str) -> u64 {
+pub(crate) fn parse_size(value: &str) -> Result<u64> {
     let value = value.split('(').next().unwrap_or("").trim();
     let split = value
         .find(|character: char| character.is_alphabetic())
         .unwrap_or(value.len());
     let (number, unit) = value.split_at(split);
-    let number: f64 = number.trim().parse().unwrap_or(0.0);
+    let number: f64 = number.trim().parse().context("invalid numeric size")?;
     let multiplier = match unit.trim().to_lowercase().as_str() {
-        "b" | "" => 1.0,
+        "b" => 1.0,
         "kb" => 1e3,
         "mb" => 1e6,
         "gb" => 1e9,
         "tb" => 1e12,
-        "kib" => 1024.0,
-        "mib" => 1024.0 * 1024.0,
-        "gib" => 1024.0 * 1024.0 * 1024.0,
-        _ => 1.0,
+        "pb" => 1e15,
+        "eb" => 1e18,
+        unit => anyhow::bail!("unsupported size unit `{unit}`"),
     };
-    (number * multiplier).round() as u64
+    let bytes = (number * multiplier).round();
+    // `i64::MAX as f64` rounds up to 2^63, so equality is already ambiguous.
+    if !bytes.is_finite() || bytes < 0.0 || bytes >= i64::MAX as f64 {
+        anyhow::bail!("size is outside Docker's signed 64-bit byte range");
+    }
+    Ok(bytes as u64)
 }
 
 #[cfg(test)]
@@ -134,10 +139,27 @@ mod tests {
     use std::path::PathBuf;
     #[test]
     fn parses_docker_sizes() {
-        assert_eq!(parse_size("8.376GB (59%)"), 8_376_000_000);
-        assert_eq!(parse_size("729.1kB"), 729_100);
-        assert_eq!(parse_size("5.051GB"), 5_051_000_000);
-        assert_eq!(parse_size("0B"), 0);
+        assert_eq!(parse_size("8.376GB (59%)").unwrap(), 8_376_000_000);
+        assert_eq!(parse_size("729.1kB").unwrap(), 729_100);
+        assert_eq!(parse_size("5.051GB").unwrap(), 5_051_000_000);
+        assert_eq!(parse_size("2.22PB").unwrap(), 2_220_000_000_000_000);
+        assert_eq!(parse_size("9EB").unwrap(), 9_000_000_000_000_000_000);
+        assert_eq!(parse_size("0B").unwrap(), 0);
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_out_of_range_docker_sizes() {
+        for value in [
+            "5",
+            "5XB",
+            "-1GB",
+            "NaNGB",
+            "10EB",
+            "9223372036854775807B",
+            "9223372036854775808B",
+        ] {
+            assert!(parse_size(value).is_err(), "accepted {value}");
+        }
     }
     #[test]
     fn rejects_forged_volume_prune_action() {
