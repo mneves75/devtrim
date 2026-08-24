@@ -2,13 +2,22 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.3.2] - Unreleased
+## [0.3.2] - 2026-08-24
+
+### Added
+- Human apply displays an AS-IS data-loss warning, and CLI help plus public documentation explain risk, backups, and manual macOS permission decisions
+
+### Changed
+- Every interactive mutation now confirms: `-y` skips normal y/N prompts and `--yolo` skips interactive prompts, while operation-specific acknowledgments such as `trash-empty --confirm=<gb>` remain mandatory
 
 ### Fixed
 - Manual layout keeps the table of contents and document content in their intended desktop columns, with keyboard access to scrollable examples
 - Production promotion selects beta tags without generating invalid jq regex escapes
+- Actionable-size and apply-summary aggregation saturate instead of wrapping, so extreme totals cannot lower danger or misstate results
+- iCloud allocated-size inspection now fails on metadata or arithmetic errors instead of silently presenting a partial value
+- The shared protected-system boundary explicitly rejects `/bin`, `/sbin`, and `/var` aliases
 
-[0.3.2]: https://github.com/mneves75/devtrim/compare/v0.3.1...HEAD
+[0.3.2]: https://github.com/mneves75/devtrim/releases/tag/v0.3.2
 
 ## [0.3.1] - 2026-08-23
 

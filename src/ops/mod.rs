@@ -43,8 +43,11 @@ impl ApplyOutcome {
     }
 
     pub fn record(&mut self, finding: &Finding, note: String) {
-        self.summary.items_touched += 1;
-        self.summary.bytes_freed_estimate += finding.size_bytes;
+        self.summary.items_touched = self.summary.items_touched.saturating_add(1);
+        self.summary.bytes_freed_estimate = self
+            .summary
+            .bytes_freed_estimate
+            .saturating_add(finding.size_bytes);
         self.summary.notes.push(note);
     }
 
@@ -283,5 +286,17 @@ mod tests {
 
         std::fs::remove_file(home.join(".Trash")).ok();
         std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn apply_outcome_size_saturates_instead_of_wrapping() {
+        let finding = Finding::new("huge", None, u64::MAX, "test", 1, Action::Info);
+        let mut outcome = ApplyOutcome::new("test");
+
+        outcome.record(&finding, "first".into());
+        outcome.record(&finding, "second".into());
+
+        assert_eq!(outcome.summary.items_touched, 2);
+        assert_eq!(outcome.summary.bytes_freed_estimate, u64::MAX);
     }
 }

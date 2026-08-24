@@ -1,7 +1,7 @@
 //! iCloud Drive upload status: how much of each queued file is still
 //! materialized locally (evictable only after upload completes).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use walkdir::WalkDir;
 
 use crate::report::{Action, Finding};
@@ -24,7 +24,7 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
         if logical < 100 * 1024 * 1024 {
             continue; // only interesting for big queued files
         }
-        let on_disk = blocks_bytes(p);
+        let on_disk = blocks_bytes(p)?;
         let pct = on_disk
             .saturating_mul(100)
             .checked_div(logical)
@@ -51,12 +51,28 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
 }
 
 /// Real bytes on disk via st_blocks (detects sparse/dataless files).
-fn blocks_bytes(p: &std::path::Path) -> u64 {
+fn blocks_bytes(p: &std::path::Path) -> Result<u64> {
     use std::os::unix::fs::MetadataExt;
-    WalkDir::new(p)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.metadata().ok())
-        .map(|m| m.blocks() * 512)
-        .sum()
+    let blocks = std::fs::metadata(p)
+        .with_context(|| format!("cannot inspect iCloud file {}", p.display()))?
+        .blocks();
+    blocks
+        .checked_mul(512)
+        .ok_or_else(|| anyhow::anyhow!("allocated size overflow for {}", p.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_measurement_fails_closed() {
+        let missing =
+            std::env::temp_dir().join(format!("devtrim-icloud-missing-{}", std::process::id()));
+        crate::ops::remove_test_path(&missing);
+
+        let error = blocks_bytes(&missing).unwrap_err();
+
+        assert!(error.to_string().contains("cannot inspect iCloud file"));
+    }
 }

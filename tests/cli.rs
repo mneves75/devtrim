@@ -155,6 +155,25 @@ fn trash_empty_requires_apply() {
 }
 
 #[test]
+fn trash_empty_yolo_still_requires_size_acknowledgment() {
+    let sandbox = Sandbox::new("trash-yolo-ack");
+    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
+    let sentinel = sandbox.path().join(".Trash/keep");
+    std::fs::write(&sentinel, "keep").unwrap();
+
+    let output = run(&sandbox, &["trash-empty", "--apply", "--yolo", "--json"]);
+
+    assert!(!output.status.success());
+    assert!(sentinel.exists());
+    assert!(
+        json(&output)["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("requires --confirm=<gb>")
+    );
+}
+
+#[test]
 fn shred_is_explicit_in_preview() {
     let sandbox = Sandbox::new("shred-preview");
     std::fs::create_dir_all(sandbox.path().join(".cache/uv")).unwrap();
@@ -302,4 +321,30 @@ fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
         "expected prune failure, got {errors:?}"
     );
     assert_eq!(value["findings"].as_array().unwrap().len(), 1);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("DATA-LOSS WARNING"));
+}
+
+#[test]
+fn human_apply_prints_data_loss_warning_before_action() {
+    let sandbox = Sandbox::new("risk-warning");
+    sandbox.script(
+        "docker",
+        "case \"$*\" in\n  'version') exit 0 ;;\n  'system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  'image prune -a -f') exit 0 ;;\n  *) exit 1 ;;\nesac",
+    );
+
+    let output = run(&sandbox, &["clean", "docker", "--apply", "-y"]);
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("DATA-LOSS WARNING"));
+}
+
+#[test]
+fn help_states_that_apply_flags_accept_data_loss_risk() {
+    let sandbox = Sandbox::new("risk-help");
+    let output = run(&sandbox, &["--help"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success());
+    assert!(stdout.contains("cleanup can delete data"));
+    assert!(stdout.matches("Accept data-loss risk").count() >= 2);
 }

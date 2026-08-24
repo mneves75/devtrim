@@ -17,6 +17,7 @@ no async runtime, minimal dependencies.
 - Every cleanup category = one file in `src/ops/`, implementing the `Op` trait.
 - Findings use typed actions. Confirmation flags may bypass a gate but MUST NOT add or widen actions.
 - Apply consumes only exact previewed findings; never rescan for deletion targets after confirmation.
+- Every human apply prints the data-loss notice; every interactive mutation confirms regardless of danger. `-y` skips y/N only; `--yolo` skips all interactive prompts. Operation-specific acknowledgments such as `trash-empty --confirm=<gb>` still apply; JSON remains machine-only.
 - Unknown activity, ownership, symlink resolution, owner-command status, configuration fields, or size measurement fails closed.
 - Filesystem findings retain an exact internal `PathBuf`; serialized display text is never parsed back into deletion authority.
 - Only `safety::validate_path_for_deletion` creates `VerifiedTarget`; only the private sink in `src/ops/mod.rs` consumes it. Raw filesystem deletion anywhere else is a blocking ast-grep violation.

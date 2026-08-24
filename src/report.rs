@@ -151,8 +151,7 @@ pub fn actionable_bytes(findings: &[Finding]) -> u64 {
     findings
         .iter()
         .filter(|finding| finding.action.is_actionable())
-        .map(|finding| finding.size_bytes)
-        .sum()
+        .fold(0, |total, finding| total.saturating_add(finding.size_bytes))
 }
 
 pub fn print_human(findings: &[Finding]) {
@@ -212,4 +211,20 @@ pub fn print_json(
 
 pub fn print_error_json(message: &str) {
     print_json("unknown", false, &[], None, &[message.to_string()]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn actionable_bytes_saturates_instead_of_wrapping() {
+        let findings = [
+            Finding::new("first", None, u64::MAX, "test", 1, Action::Info),
+            Finding::new("second", None, 1, "test", 1, Action::Trash),
+            Finding::new("third", None, u64::MAX, "test", 1, Action::Trash),
+        ];
+
+        assert_eq!(actionable_bytes(&findings), u64::MAX);
+    }
 }

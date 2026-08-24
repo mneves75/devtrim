@@ -48,3 +48,11 @@ the checks ran; it does not hold an open directory descriptor through deletion.
 The threat model assumes a single-user local tool without hostile concurrent
 filesystem mutation. A future capability-filesystem design should close that
 window instead of pretending this type already does.
+
+Human consent is a separate boundary from path authority. Every human apply
+states the data-loss and AS-IS terms before mutation, and every interactive
+danger level confirms. `-y` accepts risk and skips normal y/N prompts, while
+only `--yolo` skips critical interactive prompts. Neither flag removes an
+operation-specific acknowledgment such as `trash-empty --confirm=<gb>`.
+JSON receives no prose because its one-document contract is an automation
+boundary, not an interactive disclaimer surface.

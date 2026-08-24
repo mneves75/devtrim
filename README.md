@@ -6,11 +6,11 @@ Born from a cleanup session that reclaimed 250+ GB across model caches, stale
 `node_modules`, simulator storage, Xcode support files, Docker bloat, and old
 Swift toolchains.
 
-**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.3.1](https://github.com/mneves75/devtrim/releases/tag/v0.3.1)**
+**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.3.2](https://github.com/mneves75/devtrim/releases/tag/v0.3.2)**
 
 ## Install
 
-Download the Apple silicon archive from the [v0.3.1 release](https://github.com/mneves75/devtrim/releases/tag/v0.3.1), then verify it with the included checksum:
+Download the Apple silicon archive from the [v0.3.2 release](https://github.com/mneves75/devtrim/releases/tag/v0.3.2), then verify it with the included checksum:
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
@@ -32,14 +32,27 @@ cp target/release/devtrim /usr/local/bin/
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
 - **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, and failed owner commands block mutation.
 - **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
-  - ≤2: no interactive prompt, but non-TTY apply still needs `-y`/`--yolo`
-  - 3–8: y/N prompt (`-y` skips it)
+  - 1–8: y/N prompt (`-y` skips it); non-TTY apply needs `-y`/`--yolo`
   - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
 - **Typed deletion boundary.** Exact `PathBuf` targets must become an internal `VerifiedTarget` immediately before the single deletion sink can consume them. Display strings are never deletion authority.
 - **Protected physical paths.** System roots, user secrets, the home root, Trash root, paths reached through symlinked ancestors, and owner-reported cache paths outside npm/Homebrew namespaces are refused.
 - **Volumes are sacred.** Docker volumes are never pruned.
 - **Archives are sacred.** Xcode Archives are visible but never actionable.
 - **Agent-friendly.** Every `--json` invocation emits exactly one JSON document and failures return nonzero.
+
+## Data-loss risk, warranty, and macOS permissions
+
+devtrim is free, open-source software provided **AS IS**, without warranties or
+conditions of any kind; the [Apache-2.0 license](LICENSE) is authoritative.
+Cleanup can delete files. Safety checks reduce risk but cannot replace a current
+backup or your review of the preview. By applying a plan — including with `-y`
+or `--yolo` — you accept the risk of data loss for the exact targets shown.
+
+Preview first, prefer Trash, and use `--shred` or `trash-empty` only when you
+intend permanent removal. macOS may deny access or ask you to authorize Files &
+Folders or Full Disk Access in System Settings; grant access manually only when
+you understand the request. devtrim never bypasses macOS protections. Apple
+documents these controls under [Privacy & Security](https://support.apple.com/guide/mac-help/mchl211c911f/mac).
 
 ## Usage
 
@@ -58,8 +71,11 @@ devtrim trash-empty --confirm=14          # preview permanent Trash purge
 devtrim trash-empty --confirm=14 --apply  # perform the verified purge
 ```
 
-`--yolo` only bypasses confirmation. It never adds simulator erase-all or any
-other operation that was absent from the preview.
+`-y` acknowledges the data-loss warning and bypasses normal y/N prompts;
+critical plans still require typed confirmation. `--yolo` acknowledges the
+risk and skips interactive prompts, but it never bypasses operation-specific
+acknowledgments such as `trash-empty --confirm=<gb>` or adds an operation that
+was absent from the preview.
 
 ## Config — `~/.config/devtrim.toml`
 

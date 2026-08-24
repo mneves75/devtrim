@@ -14,15 +14,15 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    /// Apply changes (default is dry-run preview only)
+    /// Apply the exact previewed actions; cleanup can delete data
     #[arg(long, global = true)]
     pub apply: bool,
 
-    /// Skip normal y/N prompts. Non-TTY mutation requires this or --yolo.
+    /// Accept data-loss risk and skip y/N prompts; required for non-TTY mutation
     #[arg(short = 'y', long, global = true)]
     pub yes: bool,
 
-    /// Skip confirmation only; never adds operations to the previewed plan
+    /// Accept data-loss risk and skip prompts; operation acknowledgments still apply
     #[arg(long, global = true)]
     pub yolo: bool,
 

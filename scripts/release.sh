@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # devtrim release: verify → tag → hosted build/promotion → attest → GitHub release
-# usage: scripts/release.sh <version>   (e.g. 0.3.1-beta1 or 0.3.1)
+# usage: scripts/release.sh <version>   (e.g. 0.3.2-beta1 or 0.3.2)
 set -euo pipefail
 
 release="${1:?usage: scripts/release.sh <version>}"

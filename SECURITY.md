@@ -41,6 +41,7 @@ Non-negotiable boundaries:
 - Unknown configuration fields are rejected so a misspelled safety setting cannot appear active.
 - Docker volumes and Xcode Archives are never pruned.
 - Confirmation bypasses never add operations.
+- Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
 - Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
 - Failed or partial work returns nonzero; successful earlier actions remain visible in the summary.
 
@@ -54,8 +55,7 @@ Non-negotiable boundaries:
 4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.
 5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission.
 6. **Trash-first recovery** — normal filesystem removal uses macOS Trash.
-7. **Danger and non-TTY gates** — aggregate size can increase confirmation;
-   unattended mutation requires explicit consent.
+7. **Risk, danger, and non-TTY gates** — human apply displays the AS-IS/data-loss notice, every interactive mutation confirms, aggregate size can require typed input, and unattended mutation requires explicit consent.
 8. **Truthful automation** — JSON is one document; partial/failed operations
    return nonzero with errors.
 9. **Truthful measurement** — traversal, metadata, numeric parsing, and overflow
@@ -85,7 +85,9 @@ Non-negotiable boundaries:
   stderr, not inside the JSON envelope. A JSON consumer therefore sees a
   smaller plan rather than an explicit skip list.
 - The `trash` crate and Finder behavior depend on macOS permissions and volume
-  support. Trash purge is permanent once explicitly applied.
+  support. Files & Folders or Full Disk Access authorization is a manual user
+  decision in System Settings; devtrim does not bypass it. Trash purge is
+  permanent once explicitly applied.
 - External commands can hang or change behavior across installed tool versions;
   broad timeout/process frameworks are deferred until a measured need exists.
 - `leftovers` is intentionally report-only because worktree or mission

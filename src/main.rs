@@ -95,6 +95,7 @@ fn run(cli: cli::Cli) -> Result<ExitCode> {
             if let Err(error) = safety::validate_trash_root(&ctx.home) {
                 return command_error("trash-empty", false, &findings, &ctx, error);
             }
+            safety::warn_data_loss(&ctx);
             if let Err(error) = safety::trash_gate(&ctx.home, confirm_gb) {
                 return command_error("trash-empty", false, &findings, &ctx, error);
             }

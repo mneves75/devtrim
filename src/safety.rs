@@ -11,8 +11,11 @@ use crate::ops::Finding;
 const PROTECTED: &[&str] = &[
     "/",
     "/System",
+    "/bin",
+    "/sbin",
     "/usr",
     "/etc",
+    "/var",
     "/private/etc",
     "/private/var",
     "/Applications",
@@ -277,6 +280,7 @@ pub fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
     if !ctx.interactive && !ctx.yes && !ctx.yolo {
         bail!("non-interactive run: re-run with -y to confirm danger-{max_danger} operations");
     }
+    warn_data_loss(ctx);
     if ctx.yolo {
         return Ok(());
     }
@@ -298,7 +302,7 @@ pub fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
         }
         return Ok(());
     }
-    if max_danger >= 3 && !ctx.yes {
+    if !ctx.yes {
         eprintln!(
             "{} danger-{max_danger}: proceed? [y/N]",
             "confirm".yellow().bold()
@@ -312,13 +316,22 @@ pub fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
     Ok(())
 }
 
+pub fn warn_data_loss(ctx: &Ctx) {
+    if !ctx.json {
+        eprintln!(
+            "{} applying this plan can delete data. devtrim is provided AS IS, without warranties; you assume the risk for the exact targets shown. Keep backups and grant macOS permissions manually only when you understand the request.",
+            "DATA-LOSS WARNING:".red().bold()
+        );
+    }
+}
+
 pub fn trash_gate(home: &Path, confirm_gb: Option<u64>) -> Result<()> {
     let Some(want) = confirm_gb else {
         bail!("Trash purge requires --confirm=<gb> matching current Trash size");
     };
     let actual_gb = dir_size(&home.join(".Trash"))? / (1024 * 1024 * 1024);
     let low = actual_gb.saturating_sub(2);
-    let high = actual_gb + 2;
+    let high = actual_gb.saturating_add(2);
     if !(low..=high).contains(&want) {
         bail!(
             "--confirm={want} but Trash holds ~{actual_gb} GB; pass --confirm={actual_gb} to acknowledge"
@@ -453,16 +466,21 @@ mod tests {
 
     #[test]
     fn protects_home_and_user_secrets() {
-        let home = temp("protected");
+        let home = PathBuf::from("/Users/example");
         assert!(is_protected(&home, &home));
         assert!(is_protected(&home.join(".ssh/key"), &home));
         assert!(!is_protected(&home.join("dev/project"), &home));
-        crate::ops::remove_test_path(home);
     }
 
     #[test]
     fn rejects_symlinked_ancestor() {
-        let home = temp("ancestor");
+        let home = std::env::current_dir()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-ancestor-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
         let safe = home.join("dev");
         let protected = home.join("Library");
         std::fs::create_dir_all(protected.join("node_modules")).unwrap();
@@ -489,6 +507,27 @@ mod tests {
     fn aggregate_size_escalates() {
         assert_eq!(escalate(3, 11 * 1024 * 1024 * 1024), 7);
         assert_eq!(escalate(3, 51 * 1024 * 1024 * 1024), 8);
+    }
+
+    #[test]
+    fn yes_does_not_bypass_critical_typed_confirmation() {
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: true,
+            roots: Vec::new(),
+            active_days: 30,
+            home: PathBuf::from("/Users/example"),
+            interactive: false,
+        };
+
+        let error = gate(9, &ctx, &[]).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires interactive typed confirmation")
+        );
     }
 
     #[test]

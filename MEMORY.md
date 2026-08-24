@@ -2,9 +2,9 @@
 
 ## Current state
 
-devtrim 0.3.1 is the immutable production release. It promotes the exact
-attested `v0.3.1-beta1` arm64 archive from commit `15bf6af`; `master` contains
-the follow-up beta-selection fix and has opened 0.3.2 as Unreleased.
+devtrim 0.3.1 is the immutable production release. A 0.3.2 release candidate
+is prepared on `master`; its next release step is an immutable, attested
+`v0.3.2-beta1` followed by exact-byte production promotion after approval.
 
 ## Decisions
 
@@ -22,6 +22,11 @@ the follow-up beta-selection fix and has opened 0.3.2 as Unreleased.
   fail closed; partial or ambiguous inputs never become cleanup authority.
 - A failed final-tag workflow never moves the tag. Recovery may publish the
   already verified beta bytes manually, then fixes the workflow on `master`.
+- Every human apply states the data-loss risk. `-y` skips normal y/N only;
+  `--yolo` skips interactive prompts, but operation-specific acknowledgments
+  such as `trash-empty --confirm=<gb>` remain mandatory.
+- Aggregated sizes saturate instead of wrapping, and measurement errors fail
+  closed before they can lower a danger score or authorize mutation.
 
 ## Next boundary
 
