@@ -5,6 +5,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ## [0.3.2] - Unreleased
 
 ### Fixed
+- Manual layout keeps the table of contents and document content in their intended desktop columns, with keyboard access to scrollable examples
 - Production promotion selects beta tags without generating invalid jq regex escapes
 
 [0.3.2]: https://github.com/mneves75/devtrim/compare/v0.3.1...HEAD

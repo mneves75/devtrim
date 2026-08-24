@@ -93,6 +93,7 @@
     body {
       display: grid;
       grid-template-columns: minmax(15.5rem, 18rem) minmax(0, 1fr);
+      grid-template-areas: "toc content";
       gap: clamp(1rem, 3vw, 3rem);
       inline-size: min(82rem, 100%);
       margin-inline: auto;
@@ -149,6 +150,7 @@
 
     /* ============ toc rail ============ */
     nav.toc {
+      grid-area: toc;
       position: sticky; inset-block-start: 0;
       max-block-size: 100dvh; overflow-y: auto;
       padding-block: 1.4rem 2rem; align-self: start;
@@ -195,7 +197,7 @@
     #theme-toggle:hover { color: var(--ink); border-color: var(--ok); }
 
     /* ============ main flow ============ */
-    main { padding-block: 0 5rem; min-inline-size: 0; }
+    main { grid-area: content; padding-block: 0 5rem; min-inline-size: 0; }
     section { margin-block: clamp(2.5rem, 6vh, 4rem); scroll-margin-block-start: 1rem; position: relative; }
     h2 {
       font-size: clamp(1.45rem, 1.2rem + 1vw, 1.9rem);
@@ -352,6 +354,15 @@
   }
 
   @layer utilities {
+    .skip-link {
+      position: fixed; z-index: 10;
+      inset-block-start: 0.75rem; inset-inline-start: 0.75rem;
+      padding: 0.45em 0.75em;
+      color: var(--ink); background: var(--surface);
+      border: 1px solid var(--ok); border-radius: 0.35em;
+      transform: translateY(calc(-100% - 1rem));
+    }
+    .skip-link:focus-visible { transform: translateY(0); }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .dim { color: var(--muted); }
     [hidden] { display: none !important; }
@@ -359,13 +370,13 @@
 
   /* narrow screens */
   @media (max-width: 55rem) {
-    body { grid-template-columns: 1fr; }
+    body { grid-template-columns: 1fr; grid-template-areas: "toc" "content"; }
     nav.toc { position: static; max-block-size: none; border-inline-end: 0; border-block-end: 1px solid var(--line); }
   }
 
   @media print {
     nav.toc, .copy-btn, #theme-toggle, .no-copy-chip { display: none; }
-    body { grid-template-columns: 1fr; }
+    body { grid-template-columns: 1fr; grid-template-areas: "content"; }
     .cmd-card, details.card { break-inside: avoid; }
     details.card[open] > *:not(summary) { display: block !important; }
   }
@@ -451,7 +462,7 @@ devtrim clean caches</code></pre>
   <pre data-copy="safe"><code>devtrim clean caches --apply -y</code></pre>
   <div class="warn">The two blocks above are separate on purpose. Pasting preview and mutation together defeats the point of previewing.</div>
   <p>Reading the output:</p>
-  <pre data-copy="none"><code>   37.5 GB  danger:7  DerivedData  /Users/you/Library/Developer/Xcode/DerivedData
+  <pre data-copy="none" tabindex="0"><code>   37.5 GB  danger:7  DerivedData  /Users/you/Library/Developer/Xcode/DerivedData
            └─ rebuilt on next build</code></pre>
   <ul class="flow">
     <li><strong>size</strong> — estimated logical bytes; actual immediately reclaimable space can differ.</li>
@@ -532,7 +543,7 @@ devtrim clean caches</code></pre>
 
   <h3>Protected paths</h3>
   <p>System roots (<code>/System</code>, <code>/usr</code>, <code>/etc</code>, <code>/Applications</code>, …) and user-critical dirs (<code>~/.ssh</code>, <code>~/.gnupg</code>) are refused unconditionally. Under <code>~/Library</code>, only these managed subpaths are eligible:</p>
-  <pre data-copy="none"><code>Developer/Toolchains · Developer/Xcode/iOS DeviceSupport
+  <pre data-copy="none" tabindex="0"><code>Developer/Toolchains · Developer/Xcode/iOS DeviceSupport
 Developer/Xcode/DerivedData · Caches/Homebrew</code></pre>
   <div class="warn">npm and Homebrew may report configurable cache paths; devtrim accepts only their exact cache namespaces and revalidates them when applying. The denylist cannot be disabled by any flag. If you find yourself wanting to, the correct tool is a different tool.</div>
 
@@ -563,7 +574,7 @@ Developer/Xcode/DerivedData · Caches/Homebrew</code></pre>
       <tr><td data-th="Score" class="lvl-r">9–10</td><td data-th="Meaning">irreversible bulk deletion</td><td data-th="Gate">typed numeric confirm</td><td data-th="Examples"><code>trash-empty</code></td></tr>
     </tbody>
   </table></div>
-  <pre data-copy="none"><code><span class="dim">$ devtrim trash-empty --confirm=14</span>
+  <pre data-copy="none" tabindex="0"><code><span class="dim">$ devtrim trash-empty --confirm=14</span>
 dry-run no changes made; re-run with --apply and --confirm=14 to act
 <span class="dim">$ devtrim trash-empty --confirm=14 --apply</span>
 ✓ Trash permanently purged</code></pre>
@@ -573,7 +584,7 @@ dry-run no changes made; re-run with --apply and --confirm=14 to act
 <section id="config" aria-labelledby="h-config">
   <h2 id="h-config"><span class="num">07</span> Configuration</h2>
   <p>Optional file at <code>~/.config/devtrim.toml</code>:</p>
-  <pre data-copy="none"><code>roots = ["~/dev", "~/sandbox"]   # scan roots (default: ~/dev)
+  <pre data-copy="none" tabindex="0"><code>roots = ["~/dev", "~/sandbox"]   # scan roots (default: ~/dev)
 active_days = 30                 # commit recency defining "active" repos</code></pre>
   <p>CLI <code>--root</code> flags override config roots entirely. Unknown keys are rejected so a misspelled safety setting cannot appear active.</p>
 </section>
@@ -582,7 +593,7 @@ active_days = 30                 # commit recency defining "active" repos</code>
 <section id="agents" aria-labelledby="h-agents">
   <h2 id="h-agents"><span class="num">08</span> Agent integration</h2>
   <p>Every reporting command accepts <code>--json</code>, emitting exactly one response envelope:</p>
-  <pre data-copy="none"><code>{
+  <pre data-copy="none" tabindex="0"><code>{
   "operation": "xcode",
   "applied": false,
   "findings": [
