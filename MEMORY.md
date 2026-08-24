@@ -2,9 +2,9 @@
 
 ## Current state
 
-devtrim 0.3.1 is the immutable production release. A 0.3.2 release candidate
-is prepared on `master`; its next release step is an immutable, attested
-`v0.3.2-beta1` followed by exact-byte production promotion after approval.
+devtrim 0.3.2 is the immutable production release. It promotes the exact
+attested `v0.3.2-beta1` arm64 archive from commit `1eb6218`; 0.4.0 is the
+active development line for the planned Ratatui interface.
 
 ## Decisions
 
@@ -30,5 +30,6 @@ is prepared on `master`; its next release step is an immutable, attested
 
 ## Next boundary
 
-Fuzz the path/config/size validators, then evaluate Apple signing and
-notarization. The pathname TOCTOU assumption remains explicit.
+Design the Ratatui interface as a presentation layer over the existing typed
+scan/preview/apply boundaries. Fuzzing, signing/notarization, and the documented
+pathname TOCTOU limitation remain follow-ups rather than hidden claims.
