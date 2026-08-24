@@ -2,6 +2,13 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.3.2] - Unreleased
+
+### Fixed
+- Production promotion selects beta tags without generating invalid jq regex escapes
+
+[0.3.2]: https://github.com/mneves75/devtrim/compare/v0.3.1...HEAD
+
 ## [0.3.1] - 2026-08-23
 
 ### Fixed
