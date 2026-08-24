@@ -4,7 +4,7 @@
 
 devtrim 0.3.2 is the immutable production release. It promotes the exact
 attested `v0.3.2-beta1` arm64 archive from commit `1eb6218`; 0.4.0 is the
-active development line for the planned Ratatui interface.
+active development line with an unreleased Ratatui interface.
 
 ## Decisions
 
@@ -27,9 +27,15 @@ active development line for the planned Ratatui interface.
   such as `trash-empty --confirm=<gb>` remain mandatory.
 - Aggregated sizes saturate instead of wrapping, and measurement errors fail
   closed before they can lower a danger score or authorize mutation.
+- The TUI is a presentation adapter over existing `Op` owners. A matching typed
+  approval is required at apply time, and CLI bypass flags are rejected.
+- Ratatui 0.30.2/Crossterm 0.29 require MSRV 1.88. Default Ratatui features,
+  including its optional layout cache, stay off; the graph resolves patched
+  `lru 0.18.2` instead of affected `0.12.5`.
 
 ## Next boundary
 
-Design the Ratatui interface as a presentation layer over the existing typed
-scan/preview/apply boundaries. Fuzzing, signing/notarization, and the documented
-pathname TOCTOU limitation remain follow-ups rather than hidden claims.
+The 0.4.0 implementation has completed local review and release validation but
+remains unreleased. Stage it only through a new immutable beta when explicitly
+requested. Fuzzing, signing/notarization, and the documented pathname TOCTOU
+limitation remain follow-ups rather than hidden claims.

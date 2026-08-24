@@ -130,16 +130,50 @@ fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn purge_trash(ctx: &Ctx) -> Result<usize> {
+pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
     let directory = crate::safety::validate_trash_root(&ctx.home)?;
-    let mut count = 0usize;
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        let target = crate::safety::validate_path_for_deletion(&entry.path(), &ctx.home)?;
-        remove_path(target, true)?;
-        count += 1;
+    let mut entries = std::fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    entries
+        .into_iter()
+        .map(|entry| {
+            let path = entry.path();
+            let size = dir_size(&path)?;
+            Ok(Finding::new(
+                format!("Trash item: {}", entry.file_name().to_string_lossy()),
+                Some(path),
+                size,
+                "permanent purge; Finder recovery is no longer available afterward",
+                9,
+                Action::Shred,
+            ))
+        })
+        .collect()
+}
+
+pub fn purge_trash(findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
+    let directory = crate::safety::validate_trash_root(&ctx.home)?;
+    let mut outcome = ApplyOutcome::new("trash-empty");
+    for finding in findings {
+        let result = (|| -> Result<()> {
+            if finding.action != Action::Shred {
+                anyhow::bail!("refusing non-permanent Trash action");
+            }
+            let target = finding
+                .target()
+                .ok_or_else(|| anyhow::anyhow!("Trash finding missing internal target"))?;
+            if target.parent() != Some(directory.as_path()) {
+                anyhow::bail!("refusing target outside the previewed Trash root");
+            }
+            apply_filesystem_finding(finding, ctx)
+        })();
+        if let Err(error) = result {
+            outcome.fail(error);
+            break;
+        }
+        outcome.record(finding, format!("permanently deleted {}", finding.label));
     }
-    Ok(count)
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -170,6 +204,8 @@ mod tests {
             active_days: 30,
             home,
             interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            diagnostics: Default::default(),
         }
     }
 
@@ -281,10 +317,64 @@ mod tests {
         std::fs::write(&sentinel, "keep").unwrap();
         symlink(&outside, home.join(".Trash")).unwrap();
 
-        assert!(purge_trash(&context(home.clone())).is_err());
+        assert!(purge_trash(&[], &context(home.clone())).is_err());
         assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
 
         std::fs::remove_file(home.join(".Trash")).ok();
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn purge_trash_consumes_only_exact_previewed_children() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-trash-plan-{}", std::process::id()));
+        std::fs::remove_dir_all(&home).ok();
+        let trash = home.join(".Trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        let home = home.canonicalize().unwrap();
+        let trash = home.join(".Trash");
+        let previewed = trash.join("previewed");
+        let added_later = trash.join("added-later");
+        std::fs::write(&previewed, "remove").unwrap();
+        let ctx = context(home.clone());
+        let findings = trash_findings(&ctx).unwrap();
+        std::fs::write(&added_later, "keep").unwrap();
+
+        let outcome = purge_trash(&findings, &ctx).unwrap();
+
+        assert_eq!(outcome.summary.items_touched, 1);
+        assert!(!previewed.exists());
+        assert_eq!(std::fs::read_to_string(&added_later).unwrap(), "keep");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn purge_trash_rejects_a_forged_target_outside_trash() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-trash-forged-{}", std::process::id()));
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::create_dir_all(home.join(".Trash")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let sentinel = home.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let finding = Finding::new(
+            "forged",
+            Some(sentinel.clone()),
+            4,
+            "test",
+            9,
+            Action::Shred,
+        );
+
+        let outcome = purge_trash(&[finding], &context(home.clone())).unwrap();
+
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1);
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
         std::fs::remove_dir_all(home).ok();
     }
 

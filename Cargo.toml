@@ -1,8 +1,8 @@
 [package]
 name = "devtrim"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["Marcus Neves"]
 description = "Developer-machine disk hygiene: measure, classify, trim — safely."
 license = "Apache-2.0"
@@ -19,6 +19,8 @@ colored = "3.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 serde_json = "1"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29"] }
+crossterm = "0.29.0"
 
 [profile.release]
 lto = true

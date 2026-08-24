@@ -2,11 +2,14 @@
 
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
+use std::cell::RefCell;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::cli::Cli;
 use crate::ops::Finding;
+
+pub const DATA_LOSS_NOTICE: &str = "Applying this plan can delete data. devtrim is provided AS IS, without warranties; you assume the risk for the exact targets shown. Keep backups and grant macOS permissions manually only when you understand the request.";
 
 const PROTECTED: &[&str] = &[
     "/",
@@ -35,6 +38,14 @@ pub struct Ctx {
     pub active_days: u32,
     pub home: PathBuf,
     pub interactive: bool,
+    pub(crate) diagnostic_output: DiagnosticOutput,
+    pub(crate) diagnostics: RefCell<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DiagnosticOutput {
+    Stderr,
+    Capture,
 }
 
 impl Ctx {
@@ -74,7 +85,37 @@ impl Ctx {
             active_days,
             interactive: std::io::stdin().is_terminal(),
             home,
+            diagnostic_output: if matches!(
+                cli.command.as_ref(),
+                None | Some(crate::cli::Command::Tui)
+            ) {
+                DiagnosticOutput::Capture
+            } else {
+                DiagnosticOutput::Stderr
+            },
+            diagnostics: RefCell::new(Vec::new()),
         })
+    }
+
+    pub fn diagnostic(&self, level: &str, message: impl Into<String>) {
+        let message = message.into();
+        match self.diagnostic_output {
+            DiagnosticOutput::Capture => self
+                .diagnostics
+                .borrow_mut()
+                .push(format!("{level}: {message}")),
+            DiagnosticOutput::Stderr => {
+                let label = match level {
+                    "info" => level.dimmed(),
+                    _ => level.yellow(),
+                };
+                eprintln!("{} {}", label, crate::report::terminal_safe(&message));
+            }
+        }
+    }
+
+    pub fn take_diagnostics(&self) -> Vec<String> {
+        std::mem::take(&mut *self.diagnostics.borrow_mut())
     }
 }
 
@@ -276,6 +317,23 @@ pub fn plan_danger(findings: &[Finding]) -> u8 {
     escalate(base, crate::report::actionable_bytes(findings))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationRequirement {
+    YesNo { danger: u8 },
+    TypedGigabytes { danger: u8, expected: u64 },
+}
+
+pub fn confirmation_requirement(danger: u8, findings: &[Finding]) -> ConfirmationRequirement {
+    if danger >= 9 {
+        ConfirmationRequirement::TypedGigabytes {
+            danger,
+            expected: crate::report::actionable_bytes(findings) / (1024 * 1024 * 1024),
+        }
+    } else {
+        ConfirmationRequirement::YesNo { danger }
+    }
+}
+
 pub fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
     if !ctx.interactive && !ctx.yes && !ctx.yolo {
         bail!("non-interactive run: re-run with -y to confirm danger-{max_danger} operations");
@@ -284,44 +342,42 @@ pub fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
     if ctx.yolo {
         return Ok(());
     }
-    if max_danger >= 9 {
-        if !ctx.interactive {
-            bail!(
-                "danger-{max_danger} operation requires interactive typed confirmation or --yolo"
+    match confirmation_requirement(max_danger, findings) {
+        ConfirmationRequirement::TypedGigabytes { danger, expected } => {
+            if !ctx.interactive {
+                bail!(
+                    "danger-{danger} operation requires interactive typed confirmation or --yolo"
+                );
+            }
+            eprintln!(
+                "{} about to irreversibly remove ~{expected} GB. Type the number to continue:",
+                "CRITICAL".red().bold()
             );
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            if line.trim() != expected.to_string() {
+                bail!("confirmation mismatch — aborted");
+            }
         }
-        let gb = crate::report::actionable_bytes(findings) / (1024 * 1024 * 1024);
-        eprintln!(
-            "{} about to irreversibly remove ~{gb} GB. Type the number to continue:",
-            "CRITICAL".red().bold()
-        );
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line)?;
-        if line.trim() != gb.to_string() {
-            bail!("confirmation mismatch — aborted");
+        ConfirmationRequirement::YesNo { danger } if !ctx.yes => {
+            eprintln!(
+                "{} danger-{danger}: proceed? [y/N]",
+                "confirm".yellow().bold()
+            );
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            if !line.trim().eq_ignore_ascii_case("y") {
+                bail!("aborted by user");
+            }
         }
-        return Ok(());
-    }
-    if !ctx.yes {
-        eprintln!(
-            "{} danger-{max_danger}: proceed? [y/N]",
-            "confirm".yellow().bold()
-        );
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line)?;
-        if !line.trim().eq_ignore_ascii_case("y") {
-            bail!("aborted by user");
-        }
+        ConfirmationRequirement::YesNo { .. } => {}
     }
     Ok(())
 }
 
 pub fn warn_data_loss(ctx: &Ctx) {
     if !ctx.json {
-        eprintln!(
-            "{} applying this plan can delete data. devtrim is provided AS IS, without warranties; you assume the risk for the exact targets shown. Keep backups and grant macOS permissions manually only when you understand the request.",
-            "DATA-LOSS WARNING:".red().bold()
-        );
+        eprintln!("{} {DATA_LOSS_NOTICE}", "DATA-LOSS WARNING:".red().bold(),);
     }
 }
 
@@ -519,6 +575,8 @@ mod tests {
             active_days: 30,
             home: PathBuf::from("/Users/example"),
             interactive: false,
+            diagnostic_output: DiagnosticOutput::Stderr,
+            diagnostics: Default::default(),
         };
 
         let error = gate(9, &ctx, &[]).unwrap_err();

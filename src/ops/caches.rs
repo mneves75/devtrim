@@ -29,7 +29,7 @@ impl Op for Caches {
                 findings.push(cache_finding(label, path, size, 3));
             }
         }
-        if let Some(path) = owner_cache_path("npm", &["config", "get", "cache"], &ctx.home)? {
+        if let Some(path) = owner_cache_path("npm", &["config", "get", "cache"], ctx)? {
             let size = dir_size(&path)?;
             if size > 0 {
                 findings.push(
@@ -38,7 +38,7 @@ impl Op for Caches {
                 );
             }
         }
-        if let Some(path) = owner_cache_path("brew", &["--cache"], &ctx.home)? {
+        if let Some(path) = owner_cache_path("brew", &["--cache"], ctx)? {
             let size = dir_size(&path)?;
             if size > 0 {
                 findings.push(
@@ -147,14 +147,17 @@ fn is_within(path: &Path, root: &Path) -> bool {
     path == root || path.starts_with(root)
 }
 
-fn owner_cache_path(program: &str, args: &[&str], home: &Path) -> Result<Option<PathBuf>> {
+fn owner_cache_path(program: &str, args: &[&str], ctx: &Ctx) -> Result<Option<PathBuf>> {
     let Some(path) = command_path(program, args)? else {
         return Ok(None);
     };
-    if !is_eligible_owner_cache(program, &path, home) {
-        eprintln!(
-            "warn `{program}` reports cache root {} outside a home cache location; skipping",
-            path.display()
+    if !is_eligible_owner_cache(program, &path, &ctx.home) {
+        ctx.diagnostic(
+            "warn",
+            format!(
+                "`{program}` reports cache root {} outside a home cache location; skipping",
+                path.display()
+            ),
         );
         return Ok(None);
     }
@@ -252,6 +255,8 @@ mod tests {
             active_days: 30,
             home: home.clone(),
             interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            diagnostics: Default::default(),
         };
 
         let outcome = Caches.apply(&[finding], &ctx).unwrap();

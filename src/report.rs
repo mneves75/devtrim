@@ -43,7 +43,7 @@ pub(crate) enum TargetAuthority {
     BrewCache,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct Finding {
     pub label: String,
     pub path: Option<String>,
@@ -93,6 +93,10 @@ impl Finding {
     pub(crate) fn authority(&self) -> TargetAuthority {
         self.authority
     }
+}
+
+pub fn terminal_safe(value: &str) -> String {
+    value.chars().flat_map(char::escape_debug).collect()
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -162,9 +166,9 @@ pub fn print_human(findings: &[Finding]) {
             "{:>9}  {}  {}  {}\n           └─ {}; action: {}",
             gb(finding.size_bytes),
             danger_tag(finding.danger),
-            finding.label.bold(),
-            path.dimmed(),
-            finding.note,
+            terminal_safe(&finding.label).bold(),
+            terminal_safe(path).dimmed(),
+            terminal_safe(&finding.note),
             finding.action.display()
         );
     }
@@ -177,7 +181,7 @@ pub fn print_human(findings: &[Finding]) {
 
 pub fn print_summary(summary: &Summary) {
     for note in &summary.notes {
-        println!("  {note}");
+        println!("  {}", terminal_safe(note));
     }
     println!(
         "\n{} {}: {} item(s), ~{} reclaimed estimate",
@@ -226,5 +230,25 @@ mod tests {
         ];
 
         assert_eq!(actionable_bytes(&findings), u64::MAX);
+    }
+
+    #[test]
+    fn finding_preserves_json_text_and_escapes_only_for_terminals() {
+        let finding = Finding::new(
+            "cache\u{1b}[2Jé",
+            Some(PathBuf::from("/tmp/line\nnext\u{202e}")),
+            0,
+            "note\rhidden",
+            1,
+            Action::Info,
+        );
+
+        assert_eq!(finding.label, "cache\u{1b}[2Jé");
+        assert_eq!(finding.path.as_deref(), Some("/tmp/line\nnext\u{202e}"));
+        assert_eq!(finding.note, "note\rhidden");
+        let serialized = serde_json::to_value(&finding).unwrap();
+        assert_eq!(serialized["label"], "cache\u{1b}[2Jé");
+        assert_eq!(serialized["path"], "/tmp/line\nnext\u{202e}");
+        assert_eq!(terminal_safe(&finding.label), "cache\\u{1b}[2Jé");
     }
 }

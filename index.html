@@ -21,7 +21,7 @@
     <p class="pitch">See exactly what 40&nbsp;GB of caches costs before anything moves.
       Every action is previewed and scored 1–10 for danger. Filesystem cleanup lands
       in the Trash — recoverable until you say otherwise.</p>
-    <p class="badges">Free and open source · Apache-2.0 · macOS 13+</p>
+    <p class="badges">Free and open source · Apache-2.0 · macOS 13+ · latest release v0.3.2</p>
     <div class="cta-row">
       <a class="btn primary" href="#install">Download v0.3.2</a>
       <a class="btn ghost" href="#commands">Read the manual</a>
@@ -74,8 +74,10 @@
     <p class="section-note">Videos load only when you play them.</p>
     <div class="video-card" data-reveal>
       <div class="video-head"><strong>Scan &amp; clean</strong> — see a real report, then act on one category. <a href="media/demo.mp4">Download the demo</a></div>
-      <video controls preload="none" src="media/demo.mp4"></video>
-      <ol class="transcript">
+      <video controls preload="none" src="media/demo.mp4" aria-describedby="demo-transcript">
+        <track kind="captions" srclang="en" label="English" src="media/demo-captions.vtt" default>
+      </video>
+      <ol class="transcript" id="demo-transcript">
         <li><code>devtrim scan</code> reports reclaimable categories with estimated logical sizes.</li>
         <li>Each line shows a danger score; notes explain what comes back.</li>
         <li>Totals: 69.6 GB across 13 items — measured, not guessed.</li>
@@ -88,8 +90,10 @@
 
 <section class="features" aria-labelledby="feat-h">
   <div class="wrap">
-    <h2 id="feat-h">Four top-level commands. Seven clean targets.</h2>
+    <h2 id="feat-h">One interactive TUI. Explicit commands for automation.</h2>
+    <p class="section-note">The Ratatui interface is on the unreleased 0.4.0 development line; the downloadable stable binary remains v0.3.2.</p>
     <div class="feat-grid">
+      <article data-reveal><h3><code>devtrim</code> / <code>tui</code></h3><p>Keyboard-first scan, preview, and confirmation with written risk labels. It reuses the same cleanup owners and rejects CLI bypass flags.</p></article>
       <article data-reveal><h3><code>scan</code></h3><p>Read-only report with estimated logical sizes, danger levels, and one-document JSON output for agents.</p></article>
       <article data-reveal><h3><code>caches</code></h3><p>HuggingFace models, npm, Homebrew, uv. Re-downloads on demand — devtrim tells you the bandwidth cost instead of deciding.</p></article>
       <article data-reveal><h3><code>node-modules</code></h3><p>Applies exact previewed paths only when Git activity is conclusively older than 30 days. Unknown state is refused.</p></article>
@@ -123,15 +127,15 @@
       <div data-reveal>
         <a class="btn primary big" href="https://github.com/mneves75/devtrim/releases/download/v0.3.2/devtrim-0.3.2-macos-arm64.zip">Download for Apple silicon</a>
         <p class="dim mono">SHA-256 in <a href="https://github.com/mneves75/devtrim/releases/tag/v0.3.2">release assets</a>. Verify before running:</p>
-        <pre><code>shasum -a 256 -c SHA256SUMS.txt</code></pre>
+        <pre tabindex="0"><code>shasum -a 256 -c SHA256SUMS.txt</code></pre>
       </div>
       <div data-reveal>
         <h3>Build from source</h3>
-        <pre><code>git clone https://github.com/mneves75/devtrim
+        <pre tabindex="0"><code>git clone https://github.com/mneves75/devtrim
 cd devtrim
-cargo build --release
+cargo build --release --locked
 cp target/release/devtrim /usr/local/bin/</code></pre>
-        <p class="dim">Rust ≥ 1.85. No runtime dependencies beyond macOS 13+.</p>
+        <p class="dim">Rust ≥ 1.88. No runtime dependencies beyond macOS 13+.</p>
       </div>
     </div>
   </div>

@@ -8,6 +8,9 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.3.2](https://github.com/mneves75/devtrim/releases/tag/v0.3.2)**
 
+`master` is the unreleased 0.4.0 development line. The latest published binary
+remains v0.3.2 until the 0.4.0 release is staged and promoted.
+
 ## Install
 
 Download the Apple silicon archive from the [v0.3.2 release](https://github.com/mneves75/devtrim/releases/tag/v0.3.2), then verify it with the included checksum:
@@ -57,6 +60,8 @@ documents these controls under [Privacy & Security](https://support.apple.com/gu
 ## Usage
 
 ```bash
+devtrim                                   # interactive TUI when stdin/stdout are terminals
+devtrim tui                               # explicit TUI launch
 devtrim scan                              # full read-only report
 devtrim scan --json                       # one machine-readable envelope
 devtrim clean caches --apply -y           # HF/uv/npm/brew/node download caches
@@ -70,6 +75,25 @@ devtrim icloud                            # large queued iCloud uploads
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
 devtrim trash-empty --confirm=14 --apply  # perform the verified purge
 ```
+
+`trash-empty` previews each current top-level Trash item as an exact target.
+Apply consumes only that set; anything moved to Trash after preview remains.
+
+The TUI offers the same scanners and apply owners behind a keyboard interface:
+arrow keys or `j`/`k` navigate, `Enter` previews, `a` starts confirmation, `s`
+switches an already-previewed Trash action to permanent mode, and `Esc` cancels.
+Results and outcomes scroll with arrows or `j`/`k`, including retained scanner
+warnings and partial-apply errors. Risk labels are written as text as well as
+color. Below 64×18, the interface blocks operation input and asks you to resize;
+only quit remains available. The interface requires an
+interactive stdin and stdout; bare `devtrim` prints help and exits nonzero when
+piped, while automation continues to use explicit subcommands and `--json`.
+
+TUI confirmation is deliberately separate from CLI bypass flags. `devtrim tui`
+rejects `--apply`, `-y`, `--yolo`, `--shred`, and `--json`; ordinary actions
+require `y`, critical plans require their displayed numeric size, and Trash
+purge requires the exact phrase `PURGE <gb>`. The warning is shown after the
+exact preview and before authorization.
 
 `-y` acknowledges the data-loss warning and bypasses normal y/N prompts;
 critical plans still require typed confirmation. `--yolo` acknowledges the
@@ -111,12 +135,14 @@ Applied commands additionally include `summary`. If a later target fails, the su
 | Candidate set | apply uses exact previewed findings |
 | Trash | recoverable by default; permanent mode is explicit |
 | Danger gate | maximum finding score plus aggregate estimated logical bytes |
+| TUI consent | approval capability must match the current preview and danger requirement |
 | Target identity | exact internal `PathBuf`; display text is never parsed back into authority |
 | Deletion sink | only `VerifiedTarget` reaches physical removal; action selects Trash vs. permanent mode |
 | Physical path | literal and resolved parent must agree; deny-only resolution |
 | Activity | unknown Git/toolchain ownership is ineligible |
 | Measurement | incomplete traversal, metadata, or numeric state blocks an actionable plan |
 | Automation | one JSON document; partial/failed work returns nonzero |
+| Terminal output | control and bidirectional-control characters are escaped before rendering |
 
 Sizes are estimated logical bytes. APFS clones, sparse files, and container-VM
 compaction can make immediately available disk space differ. An estimate may
@@ -131,7 +157,7 @@ ast-grep test --skip-snapshot-tests
 ast-grep scan --config sgconfig.yml
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-rustup run 1.85.0 cargo test --locked --all-targets --all-features
+rustup run 1.88.0 cargo test --locked --all-targets --all-features
 cargo audit
 cargo build --release --locked --target aarch64-apple-darwin
 bash -n scripts/release.sh && shellcheck scripts/release.sh && actionlint

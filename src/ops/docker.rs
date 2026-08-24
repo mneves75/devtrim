@@ -179,6 +179,8 @@ mod tests {
             active_days: 30,
             home: PathBuf::from("/tmp"),
             interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            diagnostics: Default::default(),
         };
         let outcome = Docker.apply(&[finding], &ctx).unwrap();
         assert_eq!(outcome.summary.items_touched, 0);

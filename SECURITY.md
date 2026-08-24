@@ -42,7 +42,9 @@ Non-negotiable boundaries:
 - Docker volumes and Xcode Archives are never pruned.
 - Confirmation bypasses never add operations.
 - Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
+- The TUI accepts no CLI confirmation bypass. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
 - Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
+- Terminal-facing findings, errors, and outcome notes escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values.
 - Failed or partial work returns nonzero; successful earlier actions remain visible in the summary.
 
 ## Defense layers
@@ -56,11 +58,13 @@ Non-negotiable boundaries:
 5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission.
 6. **Trash-first recovery** — normal filesystem removal uses macOS Trash.
 7. **Risk, danger, and non-TTY gates** — human apply displays the AS-IS/data-loss notice, every interactive mutation confirms, aggregate size can require typed input, and unattended mutation requires explicit consent.
-8. **Truthful automation** — JSON is one document; partial/failed operations
+8. **TUI authorization** — Ratatui renders the existing findings; a separate typed approval capability must still match that exact plan before the existing `Op::apply` owner runs.
+9. **Truthful automation** — JSON is one document; partial/failed operations
    return nonzero with errors.
-9. **Truthful measurement** — traversal, metadata, numeric parsing, and overflow
+10. **Truthful measurement** — traversal, metadata, numeric parsing, and overflow
    errors block actionable plans rather than producing partial estimates.
-10. **Regression gates** — macOS CI runs format, strict Clippy, tests, MSRV tests,
+11. **Terminal-safe presentation** — control characters are escaped before human rendering and never parsed back into deletion authority.
+12. **Regression gates** — macOS CI runs format, strict Clippy, tests, MSRV tests,
    dependency audit, a positive-control structural deletion-sink lint, and an explicit arm64 release build.
 
 ## Supply chain
@@ -69,6 +73,7 @@ Non-negotiable boundaries:
 - Rust is pinned in `rust-toolchain.toml`; `rust-version` records the MSRV.
 - GitHub Actions are pinned to immutable commit SHAs.
 - Dependabot checks Cargo and Actions weekly.
+- Ratatui 0.30.2 and Crossterm 0.29 require Rust 1.88. Default Ratatui features stay disabled, including the optional layout cache; the graph resolves patched `lru 0.18.2` instead of the `0.12.5` affected by RUSTSEC-2026-0002 and RUSTSEC-2026-0253.
 - Hosted release builds produce SHA-256 checksums, the full Apache-2.0 license, and signed artifact provenance.
 - GitHub releases and their tags/assets are immutable. Production promotes the exact verified beta archive from the same commit instead of rebuilding it.
 - Release preparation runs `cargo audit`, Gitleaks, and TruffleHog; results are recorded in the matching changelog section only after they execute.

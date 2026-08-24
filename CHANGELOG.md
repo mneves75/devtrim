@@ -4,6 +4,25 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [0.4.0] - Unreleased
 
+### Added
+- Original Ratatui terminal interface for interactive scan, preview, Trash-first apply, explicit permanent mode, iCloud status, and Trash purge; bare `devtrim` opens it only when stdin and stdout are terminals
+- Deterministic TestBackend coverage plus manual PTY verification for navigation, non-color risk labels, small terminals, warnings, non-TTY behavior, and confirmation state
+
+### Changed
+- CLI and TUI now derive confirmation requirements from one safety policy; automation subcommands and the one-document JSON contract remain unchanged
+- Ratatui 0.30.2 and Crossterm 0.29 raise the MSRV from Rust 1.85 to 1.88; Ratatui's optional layout cache stays disabled
+
+### Fixed
+- Removed the demo video's entirely silent audio stream, added an explicit silent-video caption linked to its transcript, and made scrollable install commands keyboard-focusable
+- The TUI now blocks hidden confirmation input below 64×18, retains scanner diagnostics inside the alternate screen, and lets users scroll long outcomes to partial-apply errors
+
+### Security
+- TUI apply requires an internal approval capability carrying the exact current preview and calculated danger; CLI bypass flags are rejected by the TUI and cannot pre-authorize an action
+- Permanent plans require typed size confirmation, while Trash purge requires the exact `PURGE <gb>` acknowledgment before the existing Trash and deletion boundaries execute
+- Replaced transitive `lru 0.12.5` after RustSec reported two soundness advisories, including potential use-after-free; Ratatui 0.30 resolves the patched `lru 0.18.2`
+- `trash-empty` now previews each exact child and applies only that immutable set, so items arriving in Trash after preview are preserved
+- Terminal-facing findings, errors, and outcome notes escape control and bidirectional-control characters while internal `PathBuf` deletion identity stays unchanged
+
 [0.4.0]: https://github.com/mneves75/devtrim/compare/v0.3.2...HEAD
 
 ## [0.3.2] - 2026-08-24

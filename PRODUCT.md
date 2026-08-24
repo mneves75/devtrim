@@ -10,6 +10,9 @@ Professional developers running heavy local toolchains (Xcode, Rust, Node,
 Python ML, Docker). They are terminal-fluent, skeptical of "cleaner" apps,
 and allergic to tools that delete things without asking.
 
+The interactive TUI serves people who want the same exact preview/apply model
+without memorizing subcommands. Automation remains explicit CLI + JSON.
+
 ## Visitor success (docs surface)
 Mode: **Read**. A visitor must (1) understand what devtrim will and will not
 touch before running anything, (2) find the exact command for their situation,
@@ -25,3 +28,6 @@ marketing voice. Never cute, never corporate-slop ("unleash", "elevate").
 - Danger semantics: green = safe, amber = think, red = irreversible.
 - Works offline, dark-first (terminal audience), light fully supported.
 - Single self-contained HTML file. No external fonts, no JS dependencies.
+- TUI safety and action meaning must be legible without color; keyboard-only
+  navigation and scrolling are complete, scanner diagnostics remain visible,
+  and terminals below the supported size block operation input visibly.

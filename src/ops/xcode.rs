@@ -131,6 +131,8 @@ mod tests {
             active_days: 30,
             home: home.clone(),
             interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            diagnostics: Default::default(),
         };
 
         let outcome = Xcode.apply(&[finding], &ctx).unwrap();

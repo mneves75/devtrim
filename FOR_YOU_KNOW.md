@@ -56,3 +56,38 @@ only `--yolo` skips critical interactive prompts. Neither flag removes an
 operation-specific acknowledgment such as `trash-empty --confirm=<gb>`.
 JSON receives no prose because its one-document contract is an automation
 boundary, not an interactive disclaimer surface.
+
+`trash-empty` used to preview one aggregate `~/.Trash` finding and enumerate
+its children only after confirmation. That broke the immutable-plan promise:
+a newly trashed file could join the purge without appearing in the preview.
+The scanner now records each exact top-level child, and apply consumes only
+those findings. Presentation also escapes terminal controls and bidi controls;
+the exact internal `PathBuf` remains untouched and is never reconstructed from
+the safe display string.
+
+The 0.4.0 TUI is another adapter, not another cleanup engine. `src/tui.rs`
+asks the existing `Op` implementations to scan and apply, renders their stored
+findings with Ratatui, and obtains a typed approval that must match the current
+danger requirement. It cannot accept `-y`, `--yolo`, `--apply`, or `--shred`
+from the command line as prepaid consent. Switching to permanent mode changes
+only already-previewed `Trash` actions, then the same owner checks and private
+`VerifiedTarget` sink run.
+
+The alternate screen owns its diagnostics as well as its pixels. Scanners send
+warnings through `Ctx`: explicit CLI commands render them to stderr, while the
+TUI retains and escapes them in its results. Long outcomes scroll to the final
+error, and a viewport below 64×18 accepts only quit input so an invisible
+confirmation cannot authorize deletion.
+
+The compact keyboard menu is behaviorally inspired by
+[Mole](https://github.com/tw93/mole), not ported from it. Mole is GPL-3.0;
+devtrim remains Apache-2.0 and uses original Rust code over Ratatui. No Mole
+source, tests, or visual assets are copied into this repository.
+
+The first implementation used Ratatui 0.29 to preserve Rust 1.85, but its
+mandatory `lru 0.12.5` dependency later failed the 2026 security review with two
+RustSec soundness advisories. Ratatui 0.30 makes its layout cache optional, so
+devtrim moved to Ratatui 0.30.2/Crossterm 0.29, resolves patched `lru 0.18.2`,
+disabled default features, and raised the proven compiler floor only to Rust
+1.88. The safer graph won over compatibility; vendoring unsafe cache code
+would have been the wrong trade.

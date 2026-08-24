@@ -413,7 +413,8 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.3.2</span>
+    <span class="chip g">v0.4.0-dev</span>
+    <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
     <span class="chip r">Protected-path denylist</span>
@@ -446,15 +447,18 @@
 cd devtrim
 cargo build --release --locked
 cargo test --locked</code></pre>
-  <p>No runtime dependencies beyond macOS itself. The release binary is ~1&nbsp;MB and self-contained:</p>
+  <p>No runtime dependencies beyond macOS itself. The current arm64 release build is about 1.5&nbsp;MB and self-contained:</p>
   <pre data-copy="safe"><code>cp target/release/devtrim /usr/local/bin/
 devtrim --version</code></pre>
-  <div class="note">Rust ≥ 1.85 (edition 2024) to build. Runtime target: macOS 13+.</div>
+  <div class="note">Rust ≥ 1.88 (edition 2024) to build. Runtime target: macOS 13+.</div>
 </section>
 
 <!-- ============ 03 QUICKSTART ============ -->
 <section id="quickstart" aria-labelledby="h-quickstart">
   <h2 id="h-quickstart"><span class="num">03</span> Quick start</h2>
+  <p>In an interactive terminal, start with the keyboard interface:</p>
+  <pre data-copy="safe"><code>devtrim</code></pre>
+  <p>Choose an operation, inspect its exact findings, and press <code>a</code> only when you intend to apply. Arrow keys or <code>j</code>/<code>k</code> navigate and scroll results; <code>Esc</code> cancels confirmation. Scanner warnings and partial-apply errors remain visible in the interface. Below 64×18, operation input is blocked until the terminal is resized. The TUI labels risk in text as well as color.</p>
   <p>Everything starts as a <strong>dry-run preview</strong>. Look first:</p>
   <pre data-copy="safe"><code>devtrim scan
 devtrim clean caches</code></pre>
@@ -475,9 +479,13 @@ devtrim clean caches</code></pre>
 <!-- ============ 04 COMMANDS ============ -->
 <section id="commands" aria-labelledby="h-commands">
   <h2 id="h-commands"><span class="num">04</span> Command reference</h2>
-  <p>Grouped by what you are here to do. Global flags (<code>--apply</code>, <code>-y</code>, <code>--yolo</code>, <code>--shred</code>, <code>--json</code>) work on any command.</p>
+  <p>Grouped by what you are here to do. Global flags (<code>--apply</code>, <code>-y</code>, <code>--yolo</code>, <code>--shred</code>, <code>--json</code>) apply to explicit reporting/cleanup commands. The TUI owns its confirmation and rejects those flags.</p>
 
   <p class="group-label" id="g-inspect">Inspect — nothing changes</p>
+  <details class="card">
+    <summary><span class="cmd-name">tui</span><span class="cmd-desc">interactive keyboard interface; also the bare-command default</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>PREVIEW</span></summary>
+    <div class="card-body"><p>Runs only when stdin and stdout are terminals. It calls the same scanners and apply owners as the CLI, shows textual risk labels, refuses CLI bypass flags, and requires a matching confirmation for the current preview. Bare <code>devtrim</code> prints help and exits nonzero instead when piped.</p></div>
+  </details>
   <details class="card">
     <summary><span class="cmd-name">scan</span><span class="cmd-desc">full reclaimable-space report</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>LOW</span></summary>
     <div class="card-body"><p>Read-only report across every category: sizes, notes, danger levels. Add <code>--json</code> for machine output.</p></div>
@@ -520,7 +528,7 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">trash-empty</span><span class="cmd-desc">purge ~/.Trash permanently</span><span class="pill r"><span class="sq"><i class="on"></i><i class="on"></i><i class="on"></i></span>NUKE</span></summary>
-    <div class="card-body"><p>Preview with <code>--confirm=&lt;gb&gt;</code>; permanent purge additionally requires <code>--apply</code>. The approximate size must match within ±2 GB.</p></div>
+    <div class="card-body"><p>Preview with <code>--confirm=&lt;gb&gt;</code>; every current top-level Trash item is shown as an exact target. Permanent purge additionally requires <code>--apply</code>, and the approximate size must match within ±2 GB. Items moved to Trash after preview are not added to the plan.</p></div>
   </details>
 </section>
 
@@ -528,7 +536,7 @@ devtrim clean caches</code></pre>
 <section id="safety" aria-labelledby="h-safety">
   <h2 id="h-safety"><span class="num">05</span> Safety model</h2>
   <div class="danger-box"><strong>Data-loss warning.</strong> devtrim is provided AS IS, without warranties. Cleanup can delete files; applying a plan means you accept the risk for the exact targets shown. Keep backups, review every preview, and grant macOS permissions manually only when you understand the request. See the <a href="https://github.com/mneves75/devtrim/blob/master/LICENSE">Apache-2.0 license</a> and Apple's <a href="https://support.apple.com/guide/mac-help/mchl211c911f/mac">Privacy &amp; Security guide</a>.</div>
-  <p>Eight independent layers stand between a typo and a tragedy:</p>
+  <p>Nine independent layers stand between a typo and a tragedy:</p>
   <div class="tbl-wrap"><table>
     <thead><tr><th>Layer</th><th>Rule</th><th>Bypass</th></tr></thead>
     <tbody>
@@ -538,6 +546,7 @@ devtrim clean caches</code></pre>
       <tr><td data-th="Layer">Single sink</td><td data-th="Rule">all filesystem removal passes one structurally enforced boundary</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Risk notice</td><td data-th="Rule">every human apply warns that cleanup can cause data loss</td><td data-th="Bypass">JSON remains machine-only</td></tr>
       <tr><td data-th="Layer">Danger gate</td><td data-th="Rule">every interactive mutation confirms; critical plans require typed input (see <a href="#danger">§06</a>)</td><td data-th="Bypass"><code>-y</code> skips y/N only; <code>--yolo</code> skips interactive prompts, never operation-specific acknowledgments</td></tr>
+      <tr><td data-th="Layer">TUI approval</td><td data-th="Rule">a typed approval must match the current preview and danger requirement</td><td data-th="Bypass"><strong>nothing</strong>; CLI bypass flags are rejected</td></tr>
       <tr><td data-th="Layer">Protected paths</td><td data-th="Rule">hard denylist below</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Non-TTY guard</td><td data-th="Rule">piped runs refuse mutation without explicit consent</td><td data-th="Bypass">explicit flag</td></tr>
     </tbody>
@@ -569,7 +578,7 @@ Developer/Xcode/DerivedData · Caches/Homebrew</code></pre>
   <div class="tbl-wrap"><table>
     <thead><tr><th>Score</th><th>Meaning</th><th>Gate</th><th>Examples</th></tr></thead>
     <tbody>
-      <tr><td data-th="Score" class="lvl-g">1–2</td><td data-th="Meaning">read-only / trivially reversible</td><td data-th="Gate">actionable plans prompt unless <code>-y</code></td><td data-th="Examples"><code>scan</code>, brew cache</td></tr>
+      <tr><td data-th="Score" class="lvl-g">1–2</td><td data-th="Meaning">read-only / trivially reversible</td><td data-th="Gate">actionable CLI plans prompt unless <code>-y</code>; TUI requires <code>y</code></td><td data-th="Examples"><code>scan</code>, brew cache</td></tr>
       <tr><td data-th="Score" class="lvl-a">3–4</td><td data-th="Meaning">regenerable caches</td><td data-th="Gate">prompt unless <code>-y</code></td><td data-th="Examples">caches, DeviceSupport, unavailable simulators</td></tr>
       <tr><td data-th="Score" class="lvl-a">5–6</td><td data-th="Meaning">rebuildable state</td><td data-th="Gate">prompt unless <code>-y</code>; non-TTY needs <code>-y</code></td><td data-th="Examples">node-modules, docker</td></tr>
       <tr><td data-th="Score" style="color:#e08a3c">7–8</td><td data-th="Meaning">large or user-visible state loss</td><td data-th="Gate">prompt unless <code>-y</code></td><td data-th="Examples">huge sweeps</td></tr>
@@ -579,7 +588,7 @@ Developer/Xcode/DerivedData · Caches/Homebrew</code></pre>
   <pre data-copy="none" tabindex="0"><code><span class="dim">$ devtrim trash-empty --confirm=14</span>
 dry-run no changes made; re-run with --apply and --confirm=14 to act
 <span class="dim">$ devtrim trash-empty --confirm=14 --apply</span>
-✓ Trash permanently purged</code></pre>
+only the exact children from the displayed preview are eligible</code></pre>
 </section>
 
 <!-- ============ 07 CONFIG ============ -->
@@ -659,6 +668,10 @@ active_days = 30                 # commit recency defining "active" repos</code>
     <div class="card-body"><p>You piped stdin without an explicit consent flag. Intentional. Add <code>-y</code> for routine ops; reserve <code>--yolo</code> for unattended maintenance windows.</p></div>
   </details>
 
+  <details class="card"><summary><span class="cmd-name">the TUI requires an interactive terminal</span></summary>
+    <div class="card-body"><p>Both stdin and stdout must be terminals. Use an explicit command such as <code>devtrim scan --json</code> in scripts, pipes, CI, or agent workflows.</p></div>
+  </details>
+
   <details class="card"><summary><span class="cmd-name">refusing protected path</span></summary>
     <div class="card-body"><p>A root or computed target intersects the denylist. Check config <code>roots</code>; remember <code>--root ~</code> makes nearly everything protected-by-design.</p></div>
   </details>
@@ -673,7 +686,7 @@ active_days = 30                 # commit recency defining "active" repos</code>
 </section>
 
 <footer>
-  <span>devtrim <b>v0.3.2</b></span>
+  <span>devtrim <b>v0.4.0-dev</b> · latest release v0.3.2</span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

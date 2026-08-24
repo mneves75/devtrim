@@ -37,3 +37,16 @@ accent oklch(50% 0.16 155) · warn oklch(62% 0.14 70) · bad oklch(52% 0.19 25)
 5. Chevron/rotation transitions inside `prefers-reduced-motion: no-preference`.
 6. Filter shows empty-state message + result count.
 7. Em-dash density in prose reduced (detector advisory).
+
+## Terminal interface
+- Preserve the same semantic palette: green = preview/read-only, amber = review,
+  red = permanent. Every meaning also appears as text (`READ-ONLY`, `TRASH`,
+  `SHRED`, `PERMANENT`) so color is never the only signal.
+- Minimum viewport is 64×18. Smaller terminals show a resize instruction rather
+  than clipping controls or confirmation copy, and accept only quit input.
+- Arrow keys and `j`/`k` are equivalent; direct number keys open operations;
+  `Esc` always cancels a confirmation.
+- The exact preview comes first. The following confirmation state repeats the
+  data-loss warning and exact requested acknowledgment before apply.
+- Results, errors, and outcomes use the same arrow/Vim scrolling; scanner
+  diagnostics remain in the alternate-screen state instead of leaking to stderr.

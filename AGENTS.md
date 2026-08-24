@@ -1,14 +1,15 @@
 # AGENTS.md — devtrim
 
-Rust CLI (edition 2024, MSRV 1.85, pinned release toolchain 1.98.0). Sync code,
-no async runtime, minimal dependencies.
+Rust CLI (edition 2024, MSRV 1.88, pinned release toolchain 1.98.0). Sync code,
+no async runtime, minimal dependencies. Ratatui 0.30 uses Crossterm 0.29 with
+default features disabled; do not enable its optional layout cache without a new audit.
 
 ## Commands
 - Format: `cargo fmt --all -- --check`
 - Lint: `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - Deletion boundary: `ast-grep test --skip-snapshot-tests` then `ast-grep scan --config sgconfig.yml`
 - Test: `cargo test --locked --all-targets --all-features`
-- MSRV: `rustup run 1.85.0 cargo test --locked --all-targets --all-features`
+- MSRV: `rustup run 1.88.0 cargo test --locked --all-targets --all-features`
 - Audit: `cargo audit`
 - Build: `cargo build --release --locked --target aarch64-apple-darwin`
 - Site/manual: `python3 -m http.server 4173`, then open `/index.html` or `/MANUAL.html`
@@ -28,12 +29,15 @@ no async runtime, minimal dependencies.
 - Whole worktrees are never deleted; `leftovers` is report-only.
 - `--json` emits exactly one document; failed/partial operations return nonzero.
 - User-facing strings are English; size values are estimated logical bytes.
+- `src/tui.rs` is a presentation adapter over existing `Op` scan/apply owners. It must not duplicate scanners, deletion logic, or danger policy. TUI apply requires a matching typed approval; CLI bypass flags never pre-authorize it.
+- Scanner diagnostics go through `Ctx`: explicit CLI commands may render stderr, while the TUI captures, escapes, and retains them in its own state.
+- Bare `devtrim` opens the TUI only with interactive stdin and stdout. Non-TTY automation uses explicit subcommands; `--json` remains exactly one document.
 - Keep CSP metadata intact in shipped HTML. Landing page is `index.html` + `styles.css`; demo media lives in `media/`.
 
 ## Release
 1. Bump `Cargo.toml` and every public version reference.
 2. Add the dated `CHANGELOG.md` section; update README, manual, site, security, and agent docs.
-3. Run every command above; MSRV must execute and may never be skipped. Also run `bash -n scripts/release.sh`, `shellcheck scripts/release.sh`, `actionlint`, Gitleaks, and TruffleHog.
+3. Run every command above; MSRV must execute and may never be skipped. Also run a real PTY TUI cancel flow against a disposable home, `bash -n scripts/release.sh`, `shellcheck scripts/release.sh`, `actionlint`, Gitleaks, and TruffleHog.
 4. Run the local autoreview helper in local mode and inspect the final diff.
 5. Commit and push a clean tree.
 6. GitHub immutable releases must be enabled. Stage with `scripts/release.sh <version>-beta<N>`; every retry uses a new `N`. The script reruns local gates, requires successful exact-commit CI, and pushes an annotated tag.

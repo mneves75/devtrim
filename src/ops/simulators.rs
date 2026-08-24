@@ -49,7 +49,7 @@ impl Op for Simulators {
             Ok(output) => output,
             Err(error) => {
                 if !ctx.json {
-                    eprintln!("warn simulators: {error:#}");
+                    ctx.diagnostic("warn", format!("simulators: {error:#}"));
                 }
                 return Ok(Vec::new());
             }
@@ -136,6 +136,8 @@ mod tests {
             active_days: 30,
             home: PathBuf::from("/tmp"),
             interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            diagnostics: Default::default(),
         };
         let outcome = Simulators.apply(&[finding], &ctx).unwrap();
         assert_eq!(outcome.summary.items_touched, 0);

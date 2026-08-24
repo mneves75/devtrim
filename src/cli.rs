@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 
     /// Apply the exact previewed actions; cleanup can delete data
     #[arg(long, global = true)]
@@ -41,6 +41,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Open the interactive terminal interface
+    Tui,
     /// Read-only report of every reclaimable category with sizes and risk
     Scan,
     /// Clean one category
@@ -73,7 +75,7 @@ impl Target {
     }
 }
 
-#[derive(ValueEnum, Clone, Copy, Debug)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Caches,
     NodeModules,

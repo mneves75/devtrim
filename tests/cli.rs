@@ -75,6 +75,51 @@ fn json(output: &Output) -> Value {
 }
 
 #[test]
+fn no_arguments_in_a_non_terminal_prints_help_and_does_not_start_tui() {
+    let sandbox = Sandbox::new("no-args");
+    let output = run(&sandbox, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stdout.contains("Usage: devtrim"));
+    assert!(!stdout.contains("\u{1b}[?1049h"));
+}
+
+#[test]
+fn explicit_tui_requires_an_interactive_terminal() {
+    let sandbox = Sandbox::new("tui-non-terminal");
+    let output = run(&sandbox, &["tui"]);
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("requires an interactive stdin and stdout terminal")
+    );
+}
+
+#[test]
+fn tui_rejects_cli_confirmation_bypasses() {
+    let sandbox = Sandbox::new("tui-flags");
+    let output = run(&sandbox, &["tui", "--apply", "--yolo"]);
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("the TUI owns preview and confirmation")
+    );
+}
+
+#[test]
+fn no_command_json_error_remains_one_document() {
+    let sandbox = Sandbox::new("no-command-json");
+    let output = run(&sandbox, &["--json"]);
+    let value = json(&output);
+
+    assert!(!output.status.success());
+    assert_eq!(value["operation"], "unknown");
+    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn empty_json_scan_is_one_document() {
     let sandbox = Sandbox::new("empty-json");
     let output = run(&sandbox, &["scan", "--json"]);

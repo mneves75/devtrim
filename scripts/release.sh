@@ -44,8 +44,8 @@ ast-grep scan --config sgconfig.yml
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
 command -v rustup >/dev/null 2>&1 || { echo "ERROR: rustup is required to execute the MSRV gate"; exit 1; }
-rustup toolchain install 1.85.0 --profile minimal
-rustup run 1.85.0 cargo test --locked --all-targets --all-features
+rustup toolchain install 1.88.0 --profile minimal
+rustup run 1.88.0 cargo test --locked --all-targets --all-features
 release_commit=$(git rev-parse HEAD)
 if ! ci_conclusion=$(gh run list --workflow ci.yml --event push --commit "$release_commit" --limit 1 --json conclusion,status --jq '.[0] | select(.status == "completed") | .conclusion'); then
   echo "ERROR: could not query CI for release commit ${release_commit}"

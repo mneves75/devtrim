@@ -6,14 +6,31 @@ mod cli;
 mod ops;
 mod report;
 mod safety;
+mod tui;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use colored::Colorize;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let cli = cli::Cli::parse();
+    if cli.command.is_none()
+        && !cli.json
+        && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
+    {
+        if let Err(error) = cli::Cli::command().print_help() {
+            eprintln!(
+                "{} {}",
+                "error:".red().bold(),
+                report::terminal_safe(&error.to_string())
+            );
+            return ExitCode::from(1);
+        }
+        println!();
+        return ExitCode::from(2);
+    }
     let json = cli.json;
     match run(cli) {
         Ok(code) => code,
@@ -21,17 +38,30 @@ fn main() -> ExitCode {
             if json {
                 report::print_error_json(&format!("{error:#}"));
             } else {
-                eprintln!("{} {error:#}", "error:".red().bold());
+                eprintln!(
+                    "{} {}",
+                    "error:".red().bold(),
+                    report::terminal_safe(&format!("{error:#}"))
+                );
             }
             ExitCode::from(1)
         }
     }
 }
 
-fn run(cli: cli::Cli) -> Result<ExitCode> {
+fn run(mut cli: cli::Cli) -> Result<ExitCode> {
     let ctx = safety::Ctx::from_cli(&cli)?;
+    let command = cli.command.take().unwrap_or(cli::Command::Tui);
 
-    match cli.command {
+    match command {
+        cli::Command::Tui => {
+            if cli.apply || cli.yes || cli.yolo || cli.shred || cli.json {
+                anyhow::bail!(
+                    "the TUI owns preview and confirmation; do not pass --apply, -y, --yolo, --shred, or --json"
+                );
+            }
+            tui::run(&ctx)
+        }
         cli::Command::Scan => {
             let mut scan = ops::scan_all(&ctx);
             report::effective_actions(&mut scan.findings, cli.shred);
@@ -40,7 +70,7 @@ fn run(cli: cli::Cli) -> Result<ExitCode> {
             } else {
                 report::print_human(&scan.findings);
                 for error in &scan.errors {
-                    eprintln!("{} {error}", "warn".yellow());
+                    eprintln!("{} {}", "warn".yellow(), report::terminal_safe(error));
                 }
             }
             if scan.errors.is_empty() {
@@ -63,18 +93,11 @@ fn run(cli: cli::Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         cli::Command::TrashEmpty { confirm_gb } => {
-            let size = match safety::dir_size(&ctx.home.join(".Trash")) {
-                Ok(size) => size,
+            let findings = match ops::trash_findings(&ctx) {
+                Ok(findings) => findings,
                 Err(error) => return command_error("trash-empty", false, &[], &ctx, error),
             };
-            let findings = vec![report::Finding::new(
-                "macOS Trash contents",
-                Some(ctx.home.join(".Trash")),
-                size,
-                "permanent purge; Finder recovery is no longer available afterward",
-                9,
-                report::Action::Shred,
-            )];
+            let size = report::actionable_bytes(&findings);
             if !cli.apply {
                 if ctx.json {
                     report::print_json("trash-empty", false, &findings, None, &[]);
@@ -92,24 +115,12 @@ fn run(cli: cli::Cli) -> Result<ExitCode> {
             if !ctx.json {
                 report::print_human(&findings);
             }
-            if let Err(error) = safety::validate_trash_root(&ctx.home) {
-                return command_error("trash-empty", false, &findings, &ctx, error);
-            }
             safety::warn_data_loss(&ctx);
             if let Err(error) = safety::trash_gate(&ctx.home, confirm_gb) {
                 return command_error("trash-empty", false, &findings, &ctx, error);
             }
-            match ops::purge_trash(&ctx) {
-                Ok(items) => {
-                    let summary = report::Summary {
-                        op: "trash-empty".into(),
-                        items_touched: items,
-                        bytes_freed_estimate: size,
-                        notes: vec!["Trash permanently purged".into()],
-                    };
-                    print_result("trash-empty", true, &findings, &summary, &ctx);
-                    Ok(ExitCode::SUCCESS)
-                }
+            match ops::purge_trash(&findings, &ctx) {
+                Ok(outcome) => Ok(print_outcome("trash-empty", &findings, &outcome, &ctx)),
                 Err(error) => command_error("trash-empty", true, &findings, &ctx, error),
             }
         }
@@ -181,20 +192,6 @@ fn clean(target: cli::Target, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitC
     }
 }
 
-fn print_result(
-    operation: &str,
-    applied: bool,
-    findings: &[report::Finding],
-    summary: &report::Summary,
-    ctx: &safety::Ctx,
-) {
-    if ctx.json {
-        report::print_json(operation, applied, findings, Some(summary), &[]);
-    } else {
-        report::print_summary(summary);
-    }
-}
-
 fn print_outcome(
     operation: &str,
     findings: &[report::Finding],
@@ -212,7 +209,7 @@ fn print_outcome(
     } else {
         report::print_summary(&outcome.summary);
         for error in &outcome.errors {
-            eprintln!("{} {error}", "error:".red().bold());
+            eprintln!("{} {}", "error:".red().bold(), report::terminal_safe(error));
         }
     }
     if outcome.errors.is_empty() {
