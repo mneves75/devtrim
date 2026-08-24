@@ -15,6 +15,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ### Fixed
 - Removed the demo video's entirely silent audio stream, added an explicit silent-video caption linked to its transcript, and made scrollable install commands keyboard-focusable
 - The TUI now blocks hidden confirmation input below 64×18, retains scanner diagnostics inside the alternate screen, and lets users scroll long outcomes to partial-apply errors
+- The landing-page “Read the manual” button now opens `MANUAL.html` instead of the in-page command section
 
 ### Security
 - TUI apply requires an internal approval capability carrying the exact current preview and calculated danger; CLI bypass flags are rejected by the TUI and cannot pre-authorize an action
