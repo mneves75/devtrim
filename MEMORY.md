@@ -23,7 +23,7 @@ manifest remains at the latest published version until the next release.
 - Actionable size measurement, Docker size parsing, and config schema parsing
   fail closed; partial or ambiguous inputs never become cleanup authority.
 - A failed final-tag workflow never moves the tag. Recovery may publish the
-  already verified beta bytes manually, then fixes the workflow on `master`.
+  already verified beta bytes manually, then fixes the workflow on `main`.
 - Every human apply states the data-loss risk. `-y` skips normal y/N only;
   `--yolo` skips interactive prompts, but operation-specific acknowledgments
   such as `trash-empty --confirm=<gb>` remain mandatory.

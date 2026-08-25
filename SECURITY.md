@@ -8,7 +8,7 @@ requests, use credentials, or send telemetry. Runtime network traffic can still
 be initiated by owner tools such as Docker when the user explicitly applies a
 command action.
 
-Supported security fixes target the latest release and `master`.
+Supported security fixes target the latest release and `main`.
 
 ## Reporting
 
