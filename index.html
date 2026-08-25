@@ -70,19 +70,19 @@
 
 <section class="demo" aria-labelledby="demo-h">
   <div class="wrap">
-    <h2 id="demo-h">From full disk to 70 GB back.</h2>
+    <h2 id="demo-h">Preview first. Approve once. 27.5 GB back.</h2>
     <p class="section-note">Videos load only when you play them.</p>
     <div class="video-card" data-reveal>
-      <div class="video-head"><strong>Scan &amp; clean</strong> — see a real report, then act on one category. <a href="media/demo.mp4">Download the demo</a></div>
+      <div class="video-head"><strong>The v0.4.0 interface</strong> — pick a category, read the preview, approve the exact plan. <a href="media/demo.mp4">Download the demo</a></div>
       <video controls preload="none" src="media/demo.mp4" aria-describedby="demo-transcript">
         <track kind="captions" srclang="en" label="English" src="media/demo-captions.vtt" default>
       </video>
       <ol class="transcript" id="demo-transcript">
-        <li><code>devtrim scan</code> reports reclaimable categories with estimated logical sizes.</li>
-        <li>Each line shows a danger score; notes explain what comes back.</li>
-        <li>Totals: 69.6 GB across 13 items — measured, not guessed.</li>
-        <li><code>devtrim clean caches --apply -y</code> acts on one category only.</li>
-        <li>The cache moves to Trash: recoverable from Finder until emptied.</li>
+        <li>Bare <code>devtrim</code> opens the Ratatui interface; every operation is labelled READ-ONLY, PREVIEW, or PERMANENT before you pick it.</li>
+        <li>Selecting <strong>Caches</strong> scans first — applying is a separate, explicit step.</li>
+        <li>The preview lists exact paths, danger scores, and sizes: 4 findings, 27.5 GB actionable, danger-3, TRASH-FIRST.</li>
+        <li>Pressing <kbd>a</kbd> raises the data-loss warning and asks to confirm that exact plan; <kbd>Esc</kbd> cancels.</li>
+        <li>The outcome reports what moved to Trash — recoverable from Finder until emptied.</li>
       </ol>
     </div>
   </div>

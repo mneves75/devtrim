@@ -4,6 +4,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [0.4.1] - Unreleased
 
+### Changed
+- The landing-page demo video now shows the v0.4.0 Ratatui interface — menu risk labels, preview, data-loss confirmation, and apply outcome — with a matching transcript and caption; the file stays video-only with no silent audio stream
+
 [0.4.1]: https://github.com/mneves75/devtrim/compare/v0.4.0...HEAD
 
 ## [0.4.0] - 2026-08-25
