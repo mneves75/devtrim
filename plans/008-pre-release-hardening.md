@@ -45,7 +45,7 @@ updated.
   shell/workflow, history/worktree secret, arm64 build, PTY, browser, and exact
   package-rehearsal gates.
 - [x] (2026-08-25) Stage only reviewed files, create one conventional commit,
-  push `master`, and prove local HEAD equals `origin/master` with a clean tree
+  push `main`, and prove local HEAD equals `origin/main` with a clean tree
   and green CI.
 - [x] (2026-08-25) Preserve all historical immutable releases and tags as
   provenance instead of deleting or rewriting public history.
@@ -267,7 +267,7 @@ authority and no publication job executing checked-out code.
 All Rust tests, exact Rust 1.88 MSRV tests, format, strict Clippy, audit, arm64
 build, shell/workflow validation, secret scans, PTY cancellation, and responsive
 static-site checks must succeed on the final tree. The pushed commit is accepted
-only when `git rev-parse HEAD` equals `git rev-parse origin/master` and
+only when `git rev-parse HEAD` equals `git rev-parse origin/main` and
 `git status -sb` is clean. Staging is accepted only when the beta release is
 immutable, the release/tag dereference to that commit, its exact asset set,
 checksum, attestation, architecture, version output, and cancellation behavior
