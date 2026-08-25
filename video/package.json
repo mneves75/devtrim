@@ -9,7 +9,7 @@
     "@remotion/cli": "4.0.512",
     "@remotion/tailwind-v4": "4.0.512",
     "react": "19.2.3",
-    "react-dom": "19.2.3",
+    "react-dom": "19.2.8",
     "remotion": "4.0.512",
     "tailwindcss": "4.0.0"
   },
