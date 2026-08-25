@@ -6,7 +6,7 @@
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
-    "@remotion/cli": "4.0.512",
+    "@remotion/cli": "4.0.515",
     "@remotion/tailwind-v4": "4.0.512",
     "react": "19.2.3",
     "react-dom": "19.2.3",
