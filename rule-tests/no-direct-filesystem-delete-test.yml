@@ -3,6 +3,13 @@ valid:
   - apply_filesystem_finding(finding, ctx)?;
   - crate::ops::remove_test_path(path);
   - std::fs::read_dir(path)?;
+  - |
+      #[cfg(test)]
+      mod tests {
+          fn cleanup() {
+              std::fs::remove_dir_all(path).ok();
+          }
+      }
 invalid:
   - std::fs::remove_file(path)?;
   - fs::remove_file(path)?;
@@ -15,3 +22,14 @@ invalid:
   - remove_dir_all(path)?;
   - trash::delete(path)?;
   - delete(path)?;
+  - |
+      fn accidental_second_sink(path: &Path) -> Result<()> {
+          std::fs::remove_file(path)?;
+          Ok(())
+      }
+  - |
+      fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
+          let path = target.path;
+          std::fs::remove_file(path)?;
+          Ok(())
+      }

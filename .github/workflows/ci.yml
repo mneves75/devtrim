@@ -19,12 +19,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install pinned Rust
         run: |
           rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
           rustup default 1.98.0
           rustup target add aarch64-apple-darwin
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: video/package-lock.json
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -50,6 +59,15 @@ jobs:
         run: |
           cargo install cargo-audit --locked --version 0.22.2
           cargo audit
+
+      - name: Video lint and dependency audit
+        working-directory: video
+        run: |
+          npm ci
+          npm audit --package-lock-only --audit-level=low
+          npm run lint
+          npm run format:check
+          npm run build
 
       - name: Locked arm64 release build
         run: |

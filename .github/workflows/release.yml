@@ -12,25 +12,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  prepare:
     runs-on: macos-14
     timeout-minutes: 30
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
-      artifact-metadata: write
-    env:
-      GH_TOKEN: ${{ github.token }}
+      actions: read
+      contents: read
+    outputs:
+      release: ${{ steps.meta.outputs.release }}
+      base: ${{ steps.meta.outputs.base }}
+      is_beta: ${{ steps.meta.outputs.is_beta }}
+      release_exists: ${{ steps.meta.outputs.release_exists }}
+      out: ${{ steps.meta.outputs.out }}
     steps:
-      - name: Checkout tagged source
+      - name: Checkout tagged source without credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate release metadata
         id: meta
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "ERROR: release requires a tag"; exit 1; }
@@ -53,7 +58,6 @@ jobs:
           grep -Fq "## [$base]" CHANGELOG.md
           grep -Fq "v$base" README.md
           grep -Fq "v$base" MANUAL.html
-          grep -Fq "v$base" index.html
 
           ci_conclusion=$(gh run list --workflow ci.yml --event push --commit "${GITHUB_SHA}" --limit 1 --json conclusion,status --jq '.[0] | select(.status == "completed") | .conclusion')
           [[ "$ci_conclusion" == "success" ]] || {
@@ -61,7 +65,8 @@ jobs:
             exit 1
           }
 
-          notes="${RUNNER_TEMP}/release-notes.md"
+          mkdir -p handoff
+          notes="handoff/release-notes.md"
           awk -v hdr="## [$base]" 'index($0,hdr)==1{found=1;next} /^## /{if(found)exit} found' CHANGELOG.md > "$notes"
           [[ -s "$notes" ]] || { echo "ERROR: release notes are empty"; exit 1; }
 
@@ -90,7 +95,6 @@ jobs:
             echo "is_beta=$is_beta"
             echo "release_exists=$release_exists"
             echo "out=devtrim-$base-macos-arm64"
-            echo "notes=$notes"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install pinned Rust
@@ -123,47 +127,106 @@ jobs:
           ( cd dist && shasum -a 256 "$out.zip" > SHA256SUMS.txt )
           unzip -l "dist/$out.zip"
           ( cd dist && shasum -a 256 -c SHA256SUMS.txt )
+          cp "dist/$out.zip" dist/SHA256SUMS.txt handoff/
 
-      - name: Attest beta artifact
-        if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+      - name: Transfer reviewed release inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          subject-path: dist/${{ steps.meta.outputs.out }}.zip
+          name: release-input-${{ github.run_id }}
+          path: handoff/
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
-      - name: Publish beta prerelease
-        if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'
+  publish:
+    needs: prepare
+    runs-on: macos-14
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download reviewed release inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-input-${{ github.run_id }}
+          path: handoff
+
+      - name: Refresh publication state
+        id: state
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          out="${{ steps.meta.outputs.out }}"
+          release_exists=false
+          if existing=$(gh release view "${GITHUB_REF_NAME}" --json isDraft,isImmutable,isPrerelease,tagName); then
+            [[ "$(jq -r .isDraft <<<"$existing")" == "false" ]] || {
+              echo "ERROR: a draft release already exists; inspect it before retrying"
+              exit 1
+            }
+            [[ "$(jq -r .isImmutable <<<"$existing")" == "true" ]] || {
+              echo "ERROR: an existing release is mutable"
+              exit 1
+            }
+            [[ "$(jq -r .isPrerelease <<<"$existing")" == "${{ needs.prepare.outputs.is_beta }}" ]] || {
+              echo "ERROR: existing release type does not match tag"
+              exit 1
+            }
+            release_exists=true
+          fi
+          echo "release_exists=$release_exists" >> "$GITHUB_OUTPUT"
+
+      - name: Attest beta artifact
+        if: needs.prepare.outputs.is_beta == 'true' && steps.state.outputs.release_exists == 'false'
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: handoff/${{ needs.prepare.outputs.out }}.zip
+
+      - name: Publish beta prerelease
+        if: needs.prepare.outputs.is_beta == 'true' && steps.state.outputs.release_exists == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out="${{ needs.prepare.outputs.out }}"
           release_args=(
             "${GITHUB_REF_NAME}"
-            "dist/$out.zip"
-            dist/SHA256SUMS.txt
+            "handoff/$out.zip"
+            handoff/SHA256SUMS.txt
             --verify-tag
             --prerelease
             --latest=false
-            --title "devtrim ${{ steps.meta.outputs.release }}"
-            --notes-file "${{ steps.meta.outputs.notes }}"
+            --title "devtrim ${{ needs.prepare.outputs.release }}"
+            --notes-file handoff/release-notes.md
           )
           gh release create "${release_args[@]}"
 
       - name: Select verified beta artifact
-        if: steps.meta.outputs.is_beta == 'false' && steps.meta.outputs.release_exists == 'false'
+        if: needs.prepare.outputs.is_beta == 'false' && steps.state.outputs.release_exists == 'false'
         id: promote
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          base="${{ steps.meta.outputs.base }}"
-          out="${{ steps.meta.outputs.out }}"
+          base="${{ needs.prepare.outputs.base }}"
+          out="${{ needs.prepare.outputs.out }}"
           beta_tag=""
           promotion_dir=""
 
           while IFS= read -r candidate; do
             [[ -n "$candidate" ]] || continue
-            git fetch --quiet origin "refs/tags/$candidate:refs/tags/$candidate" || continue
-            [[ "$(git cat-file -t "$candidate" 2>/dev/null)" == "tag" ]] || continue
-            [[ "$(git rev-list -n 1 "$candidate")" == "${GITHUB_SHA}" ]] || continue
+            ref_state=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$candidate") || continue
+            [[ "$(jq -r .object.type <<<"$ref_state")" == "tag" ]] || continue
+            tag_state=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$(jq -r .object.sha <<<"$ref_state")") || continue
+            [[ "$(jq -r .object.type <<<"$tag_state")" == "commit" ]] || continue
+            [[ "$(jq -r .object.sha <<<"$tag_state")" == "${GITHUB_SHA}" ]] || continue
 
             candidate_state=$(gh release view "$candidate" --json isDraft,isImmutable,isPrerelease,assets)
             [[ "$(jq -r .isDraft <<<"$candidate_state")" == "false" ]] || continue
@@ -212,11 +275,13 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish production release
-        if: steps.meta.outputs.is_beta == 'false' && steps.meta.outputs.release_exists == 'false'
+        if: needs.prepare.outputs.is_beta == 'false' && steps.state.outputs.release_exists == 'false'
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          out="${{ steps.meta.outputs.out }}"
+          out="${{ needs.prepare.outputs.out }}"
           promotion_dir="${{ steps.promote.outputs.promotion_dir }}"
           release_args=(
             "${GITHUB_REF_NAME}"
@@ -224,16 +289,18 @@ jobs:
             "$promotion_dir/SHA256SUMS.txt"
             --verify-tag
             --latest
-            --title "devtrim ${{ steps.meta.outputs.release }}"
-            --notes-file "${{ steps.meta.outputs.notes }}"
+            --title "devtrim ${{ needs.prepare.outputs.release }}"
+            --notes-file handoff/release-notes.md
           )
           gh release create "${release_args[@]}"
 
       - name: Verify published release
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          out="${{ steps.meta.outputs.out }}"
+          out="${{ needs.prepare.outputs.out }}"
           published="${RUNNER_TEMP}/published"
           mkdir -p "$published"
           gh release download "${GITHUB_REF_NAME}" --dir "$published" --pattern "$out.zip" --pattern SHA256SUMS.txt
@@ -248,7 +315,7 @@ jobs:
           release_state=$(gh release view "${GITHUB_REF_NAME}" --json isDraft,isImmutable,isPrerelease,tagName)
           [[ "$(jq -r .isDraft <<<"$release_state")" == "false" ]]
           [[ "$(jq -r .isImmutable <<<"$release_state")" == "true" ]]
-          [[ "$(jq -r .isPrerelease <<<"$release_state")" == "${{ steps.meta.outputs.is_beta }}" ]]
+          [[ "$(jq -r .isPrerelease <<<"$release_state")" == "${{ needs.prepare.outputs.is_beta }}" ]]
 
           release_verified=false
           for _ in {1..10}; do
@@ -267,7 +334,7 @@ jobs:
             --repo "${GITHUB_REPOSITORY}"
             --source-digest "${GITHUB_SHA}"
           )
-          if [[ "${{ steps.meta.outputs.is_beta }}" == "true" ]]; then
+          if [[ "${{ needs.prepare.outputs.is_beta }}" == "true" ]]; then
             attestation_args+=(--source-ref "${GITHUB_REF}")
           fi
           gh attestation verify "$published/$out.zip" "${attestation_args[@]}" >/dev/null

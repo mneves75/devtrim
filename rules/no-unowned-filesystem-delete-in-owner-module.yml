@@ -1,0 +1,47 @@
+id: no-unowned-filesystem-delete-in-owner-module
+language: Rust
+severity: error
+message: Filesystem deletion in src/ops/mod.rs must stay inside the verified-target sink or test cleanup scopes.
+note: Keep validation and physical removal coupled at the single shared boundary.
+files:
+  - src/ops/mod.rs
+rule:
+  all:
+    - any:
+        - pattern: $MODULE::remove_file($TARGET)
+        - pattern: remove_file($TARGET)
+        - pattern: $MODULE::remove_dir($TARGET)
+        - pattern: remove_dir($TARGET)
+        - pattern: $MODULE::remove_dir_all($TARGET)
+        - pattern: remove_dir_all($TARGET)
+        - pattern: $MODULE::delete($TARGET)
+        - pattern: delete($TARGET)
+    - not:
+        any:
+          - inside:
+              all:
+                - pattern: |
+                    fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
+                      $$$BODY
+                    }
+                - kind: source_file > function_item
+              stopBy:
+                kind: function_item
+          - inside:
+              pattern:
+                context: |
+                  #[cfg(test)]
+                  pub(crate) fn remove_test_path(path: impl AsRef<Path>) {
+                    $$$BODY
+                  }
+                selector: function_item
+              stopBy: end
+          - inside:
+              pattern:
+                context: |
+                  #[cfg(test)]
+                  mod tests {
+                    $$$BODY
+                  }
+                selector: mod_item
+              stopBy: end

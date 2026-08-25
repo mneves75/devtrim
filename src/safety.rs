@@ -223,29 +223,64 @@ pub fn is_protected(path: &Path, home: &Path) -> bool {
 }
 
 fn is_protected_abs(path: &Path, home: &Path) -> bool {
-    if path == home || path == home.join(".Trash") {
+    if path_eq_ignore_ascii_case(path, home)
+        || path_eq_ignore_ascii_case(path, &home.join(".Trash"))
+    {
         return true;
     }
     for protected in PROTECTED {
         let protected = Path::new(protected);
-        if path == protected || (protected != Path::new("/") && path.starts_with(protected)) {
+        if path_eq_ignore_ascii_case(path, protected)
+            || (protected != Path::new("/") && path_starts_with_ignore_ascii_case(path, protected))
+        {
             return true;
         }
     }
-    let Ok(relative) = path.strip_prefix(home) else {
+    let Some(relative) = path_relative_to_ignore_ascii_case(path, home) else {
         return false;
     };
     let Some(first) = relative.iter().next() else {
         return false;
     };
-    let first = first.to_string_lossy();
-    if PROTECTED_USER.contains(&first.as_ref()) {
-        if first == "Library" {
-            return !is_managed_library_subpath(relative);
+    if let Some(protected) = PROTECTED_USER.iter().find(|protected| {
+        first
+            .as_encoded_bytes()
+            .eq_ignore_ascii_case(protected.as_bytes())
+    }) {
+        if *protected == "Library" {
+            return !is_managed_library_subpath(&relative);
         }
         return true;
     }
     false
+}
+
+fn path_eq_ignore_ascii_case(left: &Path, right: &Path) -> bool {
+    path_relative_to_ignore_ascii_case(left, right)
+        .is_some_and(|relative| relative.as_os_str().is_empty())
+}
+
+fn path_starts_with_ignore_ascii_case(path: &Path, base: &Path) -> bool {
+    path_relative_to_ignore_ascii_case(path, base).is_some()
+}
+
+fn path_relative_to_ignore_ascii_case(path: &Path, base: &Path) -> Option<PathBuf> {
+    let mut path_components = path.components();
+    for expected in base.components() {
+        let actual = path_components.next()?;
+        if !actual
+            .as_os_str()
+            .as_encoded_bytes()
+            .eq_ignore_ascii_case(expected.as_os_str().as_encoded_bytes())
+        {
+            return None;
+        }
+    }
+    Some(
+        path_components
+            .map(|component| component.as_os_str())
+            .collect(),
+    )
 }
 
 fn is_managed_library_subpath(relative: &Path) -> bool {
@@ -526,6 +561,32 @@ mod tests {
         assert!(is_protected(&home, &home));
         assert!(is_protected(&home.join(".ssh/key"), &home));
         assert!(!is_protected(&home.join("dev/project"), &home));
+    }
+
+    #[test]
+    fn protects_case_variant_aliases() {
+        let home = PathBuf::from("/Users/example");
+        assert!(is_protected(Path::new("/system"), &home));
+        assert!(is_protected(Path::new("/system/tmp"), &home));
+        assert!(is_protected(Path::new("/applications"), &home));
+        assert!(is_protected(Path::new("/applications/Foo.app"), &home));
+        assert!(is_protected(Path::new("/private/var/tmp"), &home));
+        assert!(is_protected(Path::new("/volumes/Disk"), &home));
+        assert!(!is_protected(Path::new("/systematic/tmp"), &home));
+        assert!(is_protected(&home.join(".SSH"), &home));
+        assert!(is_protected(Path::new("/users/example/.SSH"), &home));
+        assert!(is_protected(Path::new("/users/example/Library"), &home));
+        assert!(!is_protected(Path::new("/users/examples/.SSH"), &home));
+        assert!(is_protected(&home.join(".GnUpG"), &home));
+        assert!(is_protected(&home.join("library"), &home));
+    }
+
+    #[test]
+    fn protected_path_comparison_uses_normalized_components() {
+        assert!(path_eq_ignore_ascii_case(
+            Path::new("/System/"),
+            Path::new("/system")
+        ));
     }
 
     #[test]

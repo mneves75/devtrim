@@ -13,7 +13,33 @@ pub enum Action {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandAuthority {
+    DockerImagePrune,
+    DockerBuilderPrune,
+    DeleteUnavailableSimulators,
+}
+
+impl CommandAuthority {
+    pub(crate) fn parts(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            Self::DockerImagePrune => ("docker", &["image", "prune", "-a", "-f"]),
+            Self::DockerBuilderPrune => ("docker", &["builder", "prune", "-a", "-f"]),
+            Self::DeleteUnavailableSimulators => ("xcrun", &["simctl", "delete", "unavailable"]),
+        }
+    }
+
+    pub(crate) fn action(self) -> Action {
+        let (program, args) = self.parts();
+        Action::Command {
+            program: program.into(),
+            args: args.iter().map(|arg| (*arg).into()).collect(),
+        }
+    }
+}
+
 impl Action {
+    #[cfg(test)]
     pub fn command(program: &str, args: &[&str]) -> Self {
         Self::Command {
             program: program.into(),
@@ -57,6 +83,8 @@ pub struct Finding {
     target: Option<PathBuf>,
     #[serde(skip)]
     authority: TargetAuthority,
+    #[serde(skip)]
+    command_authority: Option<CommandAuthority>,
 }
 
 impl Finding {
@@ -78,7 +106,20 @@ impl Finding {
             action,
             target: path,
             authority: TargetAuthority::Standard,
+            command_authority: None,
         }
+    }
+
+    pub(crate) fn command(
+        label: impl Into<String>,
+        size_bytes: u64,
+        note: impl Into<String>,
+        danger: u8,
+        authority: CommandAuthority,
+    ) -> Self {
+        let mut finding = Self::new(label, None, size_bytes, note, danger, authority.action());
+        finding.command_authority = Some(authority);
+        finding
     }
 
     pub(crate) fn target(&self) -> Option<&Path> {
@@ -92,6 +133,10 @@ impl Finding {
 
     pub(crate) fn authority(&self) -> TargetAuthority {
         self.authority
+    }
+
+    pub(crate) fn command_authority(&self) -> Option<CommandAuthority> {
+        self.command_authority
     }
 }
 

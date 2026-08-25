@@ -3,8 +3,11 @@
 ## Current state
 
 devtrim 0.3.2 is the immutable production release. It promotes the exact
-attested `v0.3.2-beta1` arm64 archive from commit `1eb6218`; 0.4.0 is the
-active development line with an unreleased Ratatui interface.
+attested `v0.3.2-beta1` arm64 archive from commit `1eb6218`. The uncommitted
+0.4.0 release candidate adds the Ratatui interface and hardens deletion,
+external-command, browser-content, dependency, and release boundaries. Its
+arm64 build is installed locally at `~/.local/bin/devtrim`; this is not a
+published stable release.
 
 ## Decisions
 
@@ -32,10 +35,33 @@ active development line with an unreleased Ratatui interface.
 - Ratatui 0.30.2/Crossterm 0.29 require MSRV 1.88. Default Ratatui features,
   including its optional layout cache, stay off; the graph resolves patched
   `lru 0.18.2` instead of affected `0.12.5`.
+- Fixed protected path components are compared ASCII case-insensitively at the
+  shared validation boundary, while component-aware matching keeps similarly
+  prefixed names such as `/systematic` outside the protected set.
+- Release builds run without write or OIDC authority. A separate publisher job
+  receives the packaged artifact and alone owns attestation and release writes;
+  retrying all jobs replaces only the intermediate handoff, while retrying the
+  publisher refreshes remote release state before deciding whether to create.
+- Structural deletion enforcement uses separate rules for ordinary Rust source
+  and the single owner module; positive controls prove a forged second sink is
+  rejected both inside and outside that module.
+- `Finding::command` alone issues the closed `CommandAuthority` capability;
+  Docker and simulator apply require that capability and its exact serialized
+  action to agree before fixed-argument execution.
+- Historical immutable tags and releases are provenance records and stay
+  intact. The earlier request to delete or rewrite them was rejected.
+- The production landing page remains on the live v0.3.2 download during beta.
+  Artifact-packaged README/manual describe v0.4.0; release validation therefore
+  does not treat `index.html` as a beta artifact version surface.
+- The demo-video dependency graph is a release gate and receives weekly npm
+  Dependabot coverage; shipped inline scripts use exact CSP hashes.
 
 ## Next boundary
 
-The 0.4.0 implementation has completed local review and release validation but
-remains unreleased. Stage it only through a new immutable beta when explicitly
-requested. Fuzzing, signing/notarization, and the documented pathname TOCTOU
-limitation remain follow-ups rather than hidden claims.
+The current combined diff passed its final P3 autoreview/fix cycle, complete
+Rust/MSRV/npm/workflow/security gates, real PTY and responsive browser E2E, and
+an exact arm64 package rehearsal. The next boundary is a fresh independent
+verifier, then commit/push, green exact-commit CI, and a new immutable beta.
+Production still requires explicit confirmation after that beta. Fuzzing,
+signing/notarization, and the documented pathname TOCTOU limitation remain
+follow-ups rather than hidden claims.

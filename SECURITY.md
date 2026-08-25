@@ -34,12 +34,14 @@ Non-negotiable boundaries:
 - Apply uses only exact previewed findings and preserves their exact non-lossy path identity.
 - Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
 - Literal and physically resolved parents must agree; symlinked ancestors fail closed.
-- System roots, the user home root, Trash root, `.ssh`, `.gnupg`, and wholesale
-  `~/Library` are protected. Only named managed Library subpaths are eligible.
+- System roots and descendants (including ASCII case variants), the user home
+  root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
+  Only named managed Library subpaths are eligible.
 - Unknown Git activity or toolchain ownership is not deletion authority.
 - Incomplete directory traversal, metadata, or numeric parsing is not size authority for an actionable plan.
 - Unknown configuration fields are rejected so a misspelled safety setting cannot appear active.
 - Docker volumes and Xcode Archives are never pruned.
+- A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize one of the fixed Docker or simulator argv variants, and apply must match both representations exactly.
 - Confirmation bypasses never add operations.
 - Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
 - The TUI accepts no CLI confirmation bypass. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
@@ -50,8 +52,7 @@ Non-negotiable boundaries:
 ## Defense layers
 
 1. **Preview/apply split** — default invocations are read-only.
-2. **Typed actions** — argv is stored separately from display text; no shell
-   command strings are evaluated.
+2. **Typed actions and command authority** — argv is stored separately from display text; no shell command strings are evaluated, and a private closed capability must match each executable action before fixed-argument dispatch.
 3. **Immutable candidates** — existing scan roots are canonicalized before
    preview, and apply does not rediscover filesystem targets.
 4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.
@@ -72,11 +73,13 @@ Non-negotiable boundaries:
 - `Cargo.lock` is committed and release builds use `--locked`.
 - Rust is pinned in `rust-toolchain.toml`; `rust-version` records the MSRV.
 - GitHub Actions are pinned to immutable commit SHAs.
-- Dependabot checks Cargo and Actions weekly.
+- Dependabot checks Cargo, the demo video's npm graph, and Actions weekly.
 - Ratatui 0.30.2 and Crossterm 0.29 require Rust 1.88. Default Ratatui features stay disabled, including the optional layout cache; the graph resolves patched `lru 0.18.2` instead of the `0.12.5` affected by RUSTSEC-2026-0002 and RUSTSEC-2026-0253.
 - Hosted release builds produce SHA-256 checksums, the full Apache-2.0 license, and signed artifact provenance.
+- Repository and dependency code runs only in a read-only release-preparation job. A separate publisher downloads packaged inputs, never checks out or compiles the repository, and alone holds release-write and OIDC permissions.
 - GitHub releases and their tags/assets are immutable. Production promotes the exact verified beta archive from the same commit instead of rebuilding it.
-- Release preparation runs `cargo audit`, Gitleaks, and TruffleHog; results are recorded in the matching changelog section only after they execute.
+- Release preparation runs `cargo audit`, a clean npm install plus low-severity audit/lint/format/build gates for the demo video, Gitleaks, and TruffleHog; results are recorded in the matching changelog section only after they execute.
+- Shipped HTML uses a deny-by-default CSP; inline scripts are admitted only by exact SHA-256 hashes.
 
 ## Known limitations
 
@@ -86,13 +89,13 @@ Non-negotiable boundaries:
   unreadable entry or overflow is an error, not a partial result.
 - The typed target prevents unvalidated and lossy-display paths from reaching removal, but path validation does not hold a directory descriptor through deletion and therefore does not claim a transaction across arbitrary concurrent hostile filesystem mutation. devtrim
   is a single-user local tool; when identity cannot be proven it refuses.
-- Targets skipped because their state could not be proven are reported on
-  stderr, not inside the JSON envelope. A JSON consumer therefore sees a
-  smaller plan rather than an explicit skip list.
+- Some targets skipped because their state could not be proven are reported on
+  stderr in explicit CLI mode, not inside the JSON envelope. A JSON consumer
+  can therefore see a smaller plan rather than an explicit skip list.
 - The `trash` crate and Finder behavior depend on macOS permissions and volume
-  support. Files & Folders or Full Disk Access authorization is a manual user
-  decision in System Settings; devtrim does not bypass it. Trash purge is
-  permanent once explicitly applied.
+  support. Files & Folders, App Management, Automation, or Full Disk Access
+  authorization is a manual user decision in System Settings; devtrim does not
+  bypass it. Trash purge is permanent once explicitly applied.
 - External commands can hang or change behavior across installed tool versions;
   broad timeout/process frameworks are deferred until a measured need exists.
 - `leftovers` is intentionally report-only because worktree or mission

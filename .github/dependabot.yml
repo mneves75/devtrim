@@ -6,6 +6,12 @@ updates:
       interval: weekly
     labels: [dependencies]
 
+  - package-ecosystem: npm
+    directory: /video
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

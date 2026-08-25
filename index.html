@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="devtrim — local-first disk hygiene for macOS developer machines. Measure, classify, trim. Trash-first deletion with danger-scored guardrails.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'sha256-Nhg61JhiS+NUPAGVlBYOekQ045ifU3ykr9ovN3pC1XM='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>devtrim — measure · classify · trim</title>
 <link rel="stylesheet" href="styles.css">
@@ -116,6 +116,7 @@
       <li>Only exact validated targets reach the single filesystem deletion sink; incomplete measurements and display strings never become authority.</li>
       <li><code>/System</code>, <code>/Applications</code>, <code>~/.ssh</code> and friends are refused unconditionally — no flag overrides.</li>
       <li>Piped runs refuse to mutate unless consent is explicit.</li>
+      <li>macOS permission prompts require your manual decision; devtrim never bypasses Privacy &amp; Security controls.</li>
     </ul>
   </div>
 </section>

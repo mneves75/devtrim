@@ -6,14 +6,15 @@ Born from a cleanup session that reclaimed 250+ GB across model caches, stale
 `node_modules`, simulator storage, Xcode support files, Docker bloat, and old
 Swift toolchains.
 
-**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Download v0.3.2](https://github.com/mneves75/devtrim/releases/tag/v0.3.2)**
+**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-`master` is the unreleased 0.4.0 development line. The latest published binary
-remains v0.3.2 until the 0.4.0 release is staged and promoted.
+This source tree and its packaged documentation describe devtrim v0.4.0.
 
 ## Install
 
-Download the Apple silicon archive from the [v0.3.2 release](https://github.com/mneves75/devtrim/releases/tag/v0.3.2), then verify it with the included checksum:
+Download the Apple silicon archive for the version you intend to run from
+[GitHub Releases](https://github.com/mneves75/devtrim/releases), then verify it
+with the included checksum:
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
@@ -38,6 +39,7 @@ cp target/release/devtrim /usr/local/bin/
   - 1–8: y/N prompt (`-y` skips it); non-TTY apply needs `-y`/`--yolo`
   - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
 - **Typed deletion boundary.** Exact `PathBuf` targets must become an internal `VerifiedTarget` immediately before the single deletion sink can consume them. Display strings are never deletion authority.
+- **Typed command boundary.** A displayed command action is not enough to execute; a private closed capability must match the exact fixed-argument Docker or simulator operation.
 - **Protected physical paths.** System roots, user secrets, the home root, Trash root, paths reached through symlinked ancestors, and owner-reported cache paths outside npm/Homebrew namespaces are refused.
 - **Volumes are sacred.** Docker volumes are never pruned.
 - **Archives are sacred.** Xcode Archives are visible but never actionable.
@@ -53,9 +55,10 @@ or `--yolo` — you accept the risk of data loss for the exact targets shown.
 
 Preview first, prefer Trash, and use `--shred` or `trash-empty` only when you
 intend permanent removal. macOS may deny access or ask you to authorize Files &
-Folders or Full Disk Access in System Settings; grant access manually only when
-you understand the request. devtrim never bypasses macOS protections. Apple
-documents these controls under [Privacy & Security](https://support.apple.com/guide/mac-help/mchl211c911f/mac).
+Folders, App Management, Automation, or Full Disk Access in System Settings;
+grant access manually only when you understand the request. devtrim never
+bypasses macOS protections. Apple documents these controls under
+[Privacy & Security](https://support.apple.com/guide/mac-help/mchl211c911f/mac).
 
 ## Usage
 
@@ -138,11 +141,13 @@ Applied commands additionally include `summary`. If a later target fails, the su
 | TUI consent | approval capability must match the current preview and danger requirement |
 | Target identity | exact internal `PathBuf`; display text is never parsed back into authority |
 | Deletion sink | only `VerifiedTarget` reaches physical removal; action selects Trash vs. permanent mode |
+| Command execution | serialized action and private closed authority must match an allowlisted fixed argv variant |
 | Physical path | literal and resolved parent must agree; deny-only resolution |
 | Activity | unknown Git/toolchain ownership is ineligible |
 | Measurement | incomplete traversal, metadata, or numeric state blocks an actionable plan |
 | Automation | one JSON document; partial/failed work returns nonzero |
 | Terminal output | control and bidirectional-control characters are escaped before rendering |
+| Release authority | build code is read-only; a separate publisher receives packaged inputs and holds release/OIDC permissions |
 
 Sizes are estimated logical bytes. APFS clones, sparse files, and container-VM
 compaction can make immediately available disk space differ. An estimate may
@@ -160,6 +165,7 @@ cargo test --locked --all-targets --all-features
 rustup run 1.88.0 cargo test --locked --all-targets --all-features
 cargo audit
 cargo build --release --locked --target aarch64-apple-darwin
+(cd video && npm ci && npm audit --package-lock-only --audit-level=low && npm run lint && npm run format:check && npm run build)
 bash -n scripts/release.sh && shellcheck scripts/release.sh && actionlint
 gitleaks git --redact --no-banner .
 trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color
@@ -171,7 +177,9 @@ pushing a version bump, enable GitHub immutable releases and run
 `scripts/release.sh <version>-beta<N>` for staging. Each retry uses a new
 counter. The script reruns local gates, requires successful CI for the exact
 commit, and pushes an annotated tag. The hosted release workflow builds the
-arm64 archive, signs SLSA provenance, publishes an immutable prerelease, and
-verifies the downloaded asset. Production uses `scripts/release.sh <version>`;
-the workflow promotes the exact highest verified beta artifact from the same
-commit without rebuilding it.
+arm64 archive in a read-only job, transfers only packaged inputs to a separate
+publisher, signs provenance, publishes an immutable prerelease, and verifies
+the downloaded asset. The privileged publisher never checks out or compiles
+repository code. Production uses `scripts/release.sh <version>`; the workflow
+promotes the exact highest verified beta artifact from the same commit without
+rebuilding it.

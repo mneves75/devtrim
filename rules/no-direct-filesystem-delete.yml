@@ -8,12 +8,23 @@ files:
 ignores:
   - src/ops/mod.rs
 rule:
-  any:
-    - pattern: $MODULE::remove_file($TARGET)
-    - pattern: remove_file($TARGET)
-    - pattern: $MODULE::remove_dir($TARGET)
-    - pattern: remove_dir($TARGET)
-    - pattern: $MODULE::remove_dir_all($TARGET)
-    - pattern: remove_dir_all($TARGET)
-    - pattern: $MODULE::delete($TARGET)
-    - pattern: delete($TARGET)
+  all:
+    - any:
+        - pattern: $MODULE::remove_file($TARGET)
+        - pattern: remove_file($TARGET)
+        - pattern: $MODULE::remove_dir($TARGET)
+        - pattern: remove_dir($TARGET)
+        - pattern: $MODULE::remove_dir_all($TARGET)
+        - pattern: remove_dir_all($TARGET)
+        - pattern: $MODULE::delete($TARGET)
+        - pattern: delete($TARGET)
+    - not:
+        inside:
+          pattern:
+            context: |
+              #[cfg(test)]
+              mod tests {
+                $$$BODY
+              }
+            selector: mod_item
+          stopBy: end

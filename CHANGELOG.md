@@ -2,7 +2,7 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-08-25
 
 ### Added
 - Original Ratatui terminal interface for interactive scan, preview, Trash-first apply, explicit permanent mode, iCloud status, and Trash purge; bare `devtrim` opens it only when stdin and stdout are terminals
@@ -11,11 +11,13 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ### Changed
 - CLI and TUI now derive confirmation requirements from one safety policy; automation subcommands and the one-document JSON contract remain unchanged
 - Ratatui 0.30.2 and Crossterm 0.29 raise the MSRV from Rust 1.85 to 1.88; Ratatui's optional layout cache stays disabled
+- Release validation now installs the demo-video lockfile exactly, audits its npm graph, and runs lint, formatting, and production-build gates
 
 ### Fixed
 - Removed the demo video's entirely silent audio stream, added an explicit silent-video caption linked to its transcript, and made scrollable install commands keyboard-focusable
 - The TUI now blocks hidden confirmation input below 64×18, retains scanner diagnostics inside the alternate screen, and lets users scroll long outcomes to partial-apply errors
 - The landing-page “Read the manual” button now opens `MANUAL.html` instead of the in-page command section
+- Protected system roots, their descendants, and protected user roots reject ASCII case variants at the shared deletion boundary
 
 ### Security
 - TUI apply requires an internal approval capability carrying the exact current preview and calculated danger; CLI bypass flags are rejected by the TUI and cannot pre-authorize an action
@@ -23,8 +25,13 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - Replaced transitive `lru 0.12.5` after RustSec reported two soundness advisories, including potential use-after-free; Ratatui 0.30 resolves the patched `lru 0.18.2`
 - `trash-empty` now previews each exact child and applies only that immutable set, so items arriving in Trash after preview are preserved
 - Terminal-facing findings, errors, and outcome notes escape control and bidirectional-control characters while internal `PathBuf` deletion identity stays unchanged
+- Release builds run with read-only repository and Actions permissions; a separate publisher receives only packaged inputs and alone holds release and OIDC authority
+- Release retries safely replace the intermediate handoff artifact and refresh immutable state inside the publisher, so a post-publication verification retry verifies the existing release instead of attempting to recreate it
+- The structural deletion rule exempts only the typed sink and test cleanup scopes, with a positive control proving a second sink is rejected
+- External command findings require a private closed command authority that must match the exact serialized preview before fixed-argument execution
+- Upgraded the demo-video ESLint toolchain past GHSA-xffm-g5w8-qvg7, added weekly npm Dependabot coverage, and replaced permissive inline-script CSP directives with exact SHA-256 hashes
 
-[0.4.0]: https://github.com/mneves75/devtrim/compare/v0.3.2...HEAD
+[0.4.0]: https://github.com/mneves75/devtrim/compare/v0.3.2...v0.4.0
 
 ## [0.3.2] - 2026-08-24
 

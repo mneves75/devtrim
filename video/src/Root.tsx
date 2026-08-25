@@ -1,6 +1,6 @@
 import React from "react";
-import {Composition} from "remotion";
-import {DevtrimDemo} from "./DevtrimDemo";
+import { Composition } from "remotion";
+import { DevtrimDemo } from "./DevtrimDemo";
 
 export const RemotionRoot: React.FC = () => {
   return (

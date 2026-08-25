@@ -231,6 +231,43 @@ fn shred_is_explicit_in_preview() {
 }
 
 #[test]
+fn owner_reported_cache_outside_namespace_is_skipped() {
+    let sandbox = Sandbox::new("owner-cache-outside");
+    let documents = sandbox.path().canonicalize().unwrap().join("Documents");
+    std::fs::create_dir_all(&documents).unwrap();
+    std::fs::write(documents.join("sentinel"), "keep").unwrap();
+    let called = sandbox.path().join("npm-called");
+    sandbox.script(
+        "npm",
+        &format!(
+            "printf '%s\\n' '{}'; : > '{}'",
+            documents.display(),
+            called.display()
+        ),
+    );
+
+    let output = run(&sandbox, &["clean", "caches", "--json"]);
+    let value = json(&output);
+
+    assert!(output.status.success());
+    assert!(
+        called.exists(),
+        "the fake npm owner command was not exercised"
+    );
+    assert!(documents.join("sentinel").exists());
+    assert!(
+        value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|finding| finding["path"].as_str() != documents.to_str())
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("outside a home cache location; skipping")
+    );
+}
+
+#[test]
 fn unavailable_simulator_json_is_detected_without_erase_all() {
     let sandbox = Sandbox::new("simulator-json");
     let log = sandbox.path().join("xcrun.log");

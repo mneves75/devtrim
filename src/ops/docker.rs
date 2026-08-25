@@ -3,7 +3,8 @@
 use anyhow::{Context, Result};
 use std::process::Command;
 
-use super::{Action, ApplyOutcome, Finding, Op};
+use super::{ApplyOutcome, Finding, Op};
+use crate::report::CommandAuthority;
 use crate::safety::{Ctx, escalate};
 
 pub struct Docker;
@@ -44,11 +45,14 @@ impl Op for Docker {
             else {
                 continue;
             };
-            let (label, args) = match kind {
-                "Images" => ("Docker Images reclaimable", ["image", "prune", "-a", "-f"]),
+            let (label, authority) = match kind {
+                "Images" => (
+                    "Docker Images reclaimable",
+                    CommandAuthority::DockerImagePrune,
+                ),
                 "Build Cache" => (
                     "Docker Build Cache reclaimable",
-                    ["builder", "prune", "-a", "-f"],
+                    CommandAuthority::DockerBuilderPrune,
                 ),
                 _ => continue,
             };
@@ -57,15 +61,14 @@ impl Op for Docker {
             if bytes == 0 {
                 continue;
             }
-            findings.push(Finding::new(
+            findings.push(Finding::command(
                 label,
-                None,
                 bytes,
                 format!(
                     "{total} total; removes every image not referenced by a container, including untagged local builds; volumes are never touched"
                 ),
                 escalate(6, bytes),
-                Action::command("docker", &args),
+                authority,
             ));
         }
         Ok(findings)
@@ -75,14 +78,19 @@ impl Op for Docker {
         let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
             let result = (|| -> Result<String> {
-                let Action::Command { program, args } = &finding.action else {
+                let Some(authority) = finding.command_authority() else {
                     anyhow::bail!("refusing unexpected Docker action");
                 };
-                let expected = args == &["image", "prune", "-a", "-f"]
-                    || args == &["builder", "prune", "-a", "-f"];
-                if program != "docker" || !expected {
+                if !matches!(
+                    authority,
+                    CommandAuthority::DockerImagePrune | CommandAuthority::DockerBuilderPrune
+                ) {
                     anyhow::bail!("refusing unexpected Docker action");
                 }
+                if finding.action != authority.action() {
+                    anyhow::bail!("refusing altered Docker action");
+                }
+                let (program, args) = authority.parts();
                 let output = Command::new(program).args(args).output()?;
                 if !output.status.success() {
                     anyhow::bail!("`{program} {}` failed", args.join(" "));
@@ -136,7 +144,23 @@ pub(crate) fn parse_size(value: &str) -> Result<u64> {
 mod tests {
     use super::*;
 
+    use crate::report::Action;
     use std::path::PathBuf;
+
+    fn test_ctx() -> Ctx {
+        Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            home: PathBuf::from("/tmp"),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            diagnostics: Default::default(),
+        }
+    }
+
     #[test]
     fn parses_docker_sizes() {
         assert_eq!(parse_size("8.376GB (59%)").unwrap(), 8_376_000_000);
@@ -171,17 +195,23 @@ mod tests {
             1,
             Action::command("docker", &["volume", "prune", "-f"]),
         );
-        let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            active_days: 30,
-            home: PathBuf::from("/tmp"),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-        };
+        let ctx = test_ctx();
+        let outcome = Docker.apply(&[finding], &ctx).unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1);
+    }
+
+    #[test]
+    fn rejects_forged_valid_looking_command_without_authority() {
+        let finding = Finding::new(
+            "forged",
+            None,
+            0,
+            "test",
+            1,
+            Action::command("docker", &["image", "prune", "-a", "-f"]),
+        );
+        let ctx = test_ctx();
         let outcome = Docker.apply(&[finding], &ctx).unwrap();
         assert_eq!(outcome.summary.items_touched, 0);
         assert_eq!(outcome.errors.len(), 1);

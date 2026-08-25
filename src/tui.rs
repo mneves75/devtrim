@@ -1247,6 +1247,63 @@ mod tests {
     }
 
     #[test]
+    fn approval_is_invalidated_when_shred_mode_changes() {
+        let mut app = App::default();
+        app.finish_results(
+            Operation::Clean(Target::Caches),
+            vec![Finding::new("cache", None, 1, "test", 2, Action::Trash)],
+            Vec::new(),
+            Vec::new(),
+        );
+        let Intent::Apply(plan) = app.approve(Approval::Yes) else {
+            panic!("expected an approved plan");
+        };
+        assert!(approved_plan_matches(&app, &plan));
+
+        app.shred = true;
+
+        assert!(!approved_plan_matches(&app, &plan));
+    }
+
+    #[test]
+    fn forged_read_only_plan_fails_closed() {
+        let mut app = App::default();
+        app.finish_results(
+            Operation::ScanAll,
+            vec![Finding::new(
+                "forged action",
+                None,
+                1,
+                "test",
+                2,
+                Action::command("test", &[]),
+            )],
+            Vec::new(),
+            Vec::new(),
+        );
+        let Intent::Apply(plan) = app.approve(Approval::Yes) else {
+            panic!("expected a forged approved plan");
+        };
+        let ctx = Ctx {
+            yes: false,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            home: std::path::PathBuf::from("/Users/example"),
+            interactive: true,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+        };
+
+        apply_operation(&mut app, &ctx, plan);
+
+        assert_eq!(app.screen, Screen::Error);
+        assert!(app.summary.is_none());
+        assert!(app.errors[0].contains("refusing to apply a read-only operation"));
+    }
+
+    #[test]
     fn control_c_quits_from_every_screen() {
         let mut app = App::default();
         let interrupt = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);

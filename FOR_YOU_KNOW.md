@@ -15,8 +15,11 @@ strings are labels on the wristband, never the identity used for removal.
 Each cleanup category lives in `src/ops/` and implements `Op`. Scans stay
 read-only. Filesystem operations default to Trash; `Action::Shred` is the
 only typed instruction for permanent removal. Docker and simulator operations
-use fixed argv allowlists, never shell strings. Docker volumes, Xcode Archives,
-and whole worktrees are deliberately outside the deletion product.
+use fixed argv allowlists, never shell strings. A serialized `Action::Command`
+is only a label: `Finding::command` must also issue a private, closed
+`CommandAuthority`, and apply rejects the finding unless both forms describe
+the same allowlisted operation. Docker volumes, Xcode Archives, and whole
+worktrees are deliberately outside the deletion product.
 
 The easy mistake is to confuse “previewed” with “authorized forever.” Apply
 rechecks facts that can change: Git activity, toolchain references, cache
@@ -49,6 +52,13 @@ The threat model assumes a single-user local tool without hostile concurrent
 filesystem mutation. A future capability-filesystem design should close that
 window instead of pretending this type already does.
 
+Protected roots need special care on macOS's commonly case-insensitive
+filesystems. The shared boundary compares fixed ASCII path components without
+case, so `/system`, `/system/tmp`, and `~/.SSH` are refused before canonicalizing
+the existing parent. Component-wise matching avoids treating a
+different name such as `/systematic` as `/System`. The test belongs at this sink
+because every current and future operation inherits the same refusal.
+
 Human consent is a separate boundary from path authority. Every human apply
 states the data-loss and AS-IS terms before mutation, and every interactive
 danger level confirms. `-y` accepts risk and skips normal y/N prompts, while
@@ -78,6 +88,13 @@ warnings through `Ctx`: explicit CLI commands render them to stderr, while the
 TUI retains and escapes them in its results. Long outcomes scroll to the final
 error, and a viewport below 64×18 accepts only quit input so an invisible
 confirmation cannot authorize deletion.
+
+Release authority follows the same separation. The job that checks out source
+and runs Cargo has only read access and cannot mint OIDC credentials. A second
+job receives the packaged archive, checksum, and notes; it never checks out or
+compiles repository code and alone can attest or publish. That boundary limits
+what a compromised build script can steal even though reviewed build output is
+still what ultimately ships.
 
 The compact keyboard menu is behaviorally inspired by
 [Mole](https://github.com/tw93/mole), not ported from it. Mole is GPL-3.0;

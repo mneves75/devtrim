@@ -2,9 +2,10 @@
 
 Generated on 2026-08-23 from devtrim commit `8dbbd6c`, after comparison with
 `tw93/mole` commit `9f2a9a3` and independent reviews by Claude Opus 5 and
-GPT-5.6 Sol. Execute in order. These plans intentionally harden devtrim's
-existing narrow product; they do not add Mole's uninstall, optimize, status,
-TUI, sudo, or app-protection scope.
+GPT-5.6 Sol. Plans 001–007 intentionally hardened devtrim's narrow cleanup
+product without importing Mole's broader uninstall, optimize, sudo, or
+app-protection scope. Plan 008 is the pre-release audit of the later original
+Ratatui interface and its shared safety/release boundaries.
 
 ## Execution order & status
 
@@ -17,6 +18,7 @@ TUI, sudo, or app-protection scope.
 | 005 | Release devtrim 0.2.1 with synchronized documentation | P1 | S | 004 | DONE |
 | 006 | Make invalid deletion targets unrepresentable | P0 | M | 001–005 | DONE |
 | 007 | Build attested betas and promote exact artifacts | P0 | M | 006 | DONE (immutable attested beta verified; production promotion remains an explicit release decision) |
+| 008 | Harden the 0.4.0 release boundary | P0 | M | 006–007 | IN PROGRESS |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 
@@ -30,9 +32,9 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 
 ## Review record
 
-Independent fresh-context reviews (Claude Opus 5 and GPT-5.6 Sol) plus two
-`autoreview` passes ran against this work. Accepted findings were fixed; the
-rejected ones are listed below with their reason.
+Independent fresh-context reviews (Claude Opus 5 and GPT-5.6 Sol) plus P3
+`autoreview` closeout passes ran against this work. Accepted findings were
+fixed; the rejected ones are listed below with their reason.
 
 ## Findings considered and rejected
 

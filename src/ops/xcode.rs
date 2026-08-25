@@ -143,4 +143,45 @@ mod tests {
 
         crate::ops::remove_test_path(home);
     }
+
+    #[test]
+    fn forged_actionable_archive_is_rejected() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-xcode-forged-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        let archive = home.join("Library/Developer/Xcode/Archives/release.xcarchive");
+        std::fs::create_dir_all(&archive).unwrap();
+        let home = home.canonicalize().unwrap();
+        let archive = home.join("Library/Developer/Xcode/Archives/release.xcarchive");
+        let sentinel = archive.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let finding = Finding::new(
+            "forged Xcode Archive",
+            Some(archive),
+            4,
+            "test",
+            9,
+            Action::Shred,
+        );
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            home: home.clone(),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            diagnostics: Default::default(),
+        };
+
+        let outcome = Xcode.apply(&[finding], &ctx).unwrap();
+
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(sentinel.exists());
+        crate::ops::remove_test_path(home);
+    }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # devtrim release: verify → tag → hosted build/promotion → attest → GitHub release
-# usage: scripts/release.sh <version>   (e.g. 0.3.2-beta1 or 0.3.2)
+# usage: scripts/release.sh <version>   (e.g. 0.4.0-beta1 or 0.4.0)
 set -euo pipefail
 
 release="${1:?usage: scripts/release.sh <version>}"
@@ -20,7 +20,6 @@ grep -Fqx "version = \"${ver}\"" Cargo.toml || { echo "ERROR: Cargo.toml version
 grep -Fq "## [${ver}]" CHANGELOG.md || { echo "ERROR: no CHANGELOG.md section for ${ver}"; exit 1; }
 grep -Fq "v${ver}" README.md || { echo "ERROR: README.md lacks v${ver}"; exit 1; }
 grep -Fq "v${ver}" MANUAL.html || { echo "ERROR: MANUAL.html lacks v${ver}"; exit 1; }
-grep -Fq "v${ver}" index.html || { echo "ERROR: index.html lacks v${ver}"; exit 1; }
 [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || { echo "ERROR: commit all changes before releasing"; exit 1; }
 upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || { echo "ERROR: current branch has no upstream"; exit 1; }
 git fetch --quiet origin || { echo "ERROR: cannot reach origin to verify release state"; exit 1; }
@@ -58,6 +57,15 @@ if [[ "$ci_conclusion" != "success" ]]; then
   exit 1
 fi
 cargo audit
+command -v npm >/dev/null 2>&1 || { echo "ERROR: npm is required for release validation"; exit 1; }
+(
+  cd video
+  npm ci
+  npm audit --package-lock-only --audit-level=low
+  npm run lint
+  npm run format:check
+  npm run build
+)
 command -v gitleaks >/dev/null 2>&1 || { echo "ERROR: gitleaks is required for release validation"; exit 1; }
 gitleaks git --redact --no-banner .
 command -v trufflehog >/dev/null 2>&1 || { echo "ERROR: trufflehog is required for release validation"; exit 1; }
@@ -66,6 +74,11 @@ bash -n scripts/release.sh
 shellcheck scripts/release.sh
 actionlint
 cmp -s AGENTS.md CLAUDE.md || { echo "ERROR: AGENTS.md and CLAUDE.md differ"; exit 1; }
+[[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
+  echo "ERROR: release gates changed the working tree"
+  git status --short
+  exit 1
+}
 
 echo "==> tag + hosted release workflow"
 gh auth status

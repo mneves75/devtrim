@@ -265,4 +265,45 @@ mod tests {
         assert!(sentinel.exists());
         crate::ops::remove_test_path(home);
     }
+
+    #[test]
+    fn standard_authority_rejects_forged_cache_subpath() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-cache-standard-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        let forged = home.join(".cache/uv/nested");
+        std::fs::create_dir_all(&forged).unwrap();
+        let home = home.canonicalize().unwrap();
+        let forged = home.join(".cache/uv/nested");
+        let sentinel = forged.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let finding = Finding::new(
+            "forged built-in cache",
+            Some(forged),
+            4,
+            "test",
+            9,
+            Action::Shred,
+        );
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            home: home.clone(),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            diagnostics: Default::default(),
+        };
+
+        let outcome = Caches.apply(&[finding], &ctx).unwrap();
+
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(sentinel.exists());
+        crate::ops::remove_test_path(home);
+    }
 }

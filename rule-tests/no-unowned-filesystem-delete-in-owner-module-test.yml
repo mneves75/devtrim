@@ -1,0 +1,41 @@
+id: no-unowned-filesystem-delete-in-owner-module
+valid:
+  - apply_filesystem_finding(finding, ctx)?;
+  - |
+      fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
+          std::fs::remove_file(&path)?;
+          trash::delete(&path)?;
+          Ok(())
+      }
+  - |
+      #[cfg(test)]
+      pub(crate) fn remove_test_path(path: impl AsRef<Path>) {
+          std::fs::remove_dir_all(path).ok();
+      }
+  - |
+      #[cfg(test)]
+      mod tests {
+          fn cleanup() {
+              std::fs::remove_dir_all(path).ok();
+          }
+      }
+invalid:
+  - |
+      fn accidental_second_sink(path: &Path) -> Result<()> {
+          std::fs::remove_file(path)?;
+          Ok(())
+      }
+  - |
+      mod forged_sink {
+          fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
+              std::fs::remove_file(&path)?;
+              Ok(())
+          }
+      }
+  - |
+      impl ForgedSink {
+          fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
+              std::fs::remove_dir_all(&path)?;
+              Ok(())
+          }
+      }
