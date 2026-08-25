@@ -55,7 +55,8 @@ updated.
   then stop for production confirmation.
 - [x] (2026-08-25) After explicit confirmation, promote the exact beta archive
   to `v0.4.0`, verify the GitHub Release, and open the next Unreleased changelog.
-- [ ] Publish and verify the updated v0.4.0 GitHub Pages landing page.
+- [x] (2026-08-25) Publish and verify the updated v0.4.0 GitHub Pages landing
+  page.
 
 ## Surprises & Discoveries
 
@@ -304,5 +305,6 @@ retry collisions, CSP, and the demo-video dependency gate. Immutable
 `v0.4.0-beta1` and `v0.4.0` releases dereference to the reviewed commit; fresh
 downloads prove production reused the exact attested beta ZIP and checksum.
 The packaged arm64 binary, full Apache-2.0 license, README, and manual match the
-release inputs. Only remote verification of the updated production landing page
-remains.
+release inputs. The deployed GitHub Pages index is byte-identical to the
+reviewed source and exposes the v0.4.0 release links without stale v0.3.2
+references.

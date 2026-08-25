@@ -17,8 +17,8 @@ Ratatui interface and its shared safety/release boundaries.
 | 004 | Add release-blocking tests, CI, and artifact safeguards | P1 | M | 001–003 | DONE (MSRV runs in CI; `scripts/release.sh` requires a green exact-commit run) |
 | 005 | Release devtrim 0.2.1 with synchronized documentation | P1 | S | 004 | DONE |
 | 006 | Make invalid deletion targets unrepresentable | P0 | M | 001–005 | DONE |
-| 007 | Build attested betas and promote exact artifacts | P0 | M | 006 | DONE (immutable attested beta verified; production promotion remains an explicit release decision) |
-| 008 | Harden the 0.4.0 release boundary | P0 | M | 006–007 | IN PROGRESS |
+| 007 | Build attested betas and promote exact artifacts | P0 | M | 006 | DONE (immutable attested beta and exact-byte production promotion verified) |
+| 008 | Harden the 0.4.0 release boundary | P0 | M | 006–007 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 
