@@ -2,12 +2,11 @@
 
 ## Current state
 
-devtrim 0.3.2 is the immutable production release. It promotes the exact
-attested `v0.3.2-beta1` arm64 archive from commit `1eb6218`. The uncommitted
-0.4.0 release candidate adds the Ratatui interface and hardens deletion,
-external-command, browser-content, dependency, and release boundaries. Its
-arm64 build is installed locally at `~/.local/bin/devtrim`; this is not a
-published stable release.
+devtrim 0.4.0 is the immutable production release. It promotes the exact
+attested `v0.4.0-beta1` arm64 archive from commit `29dbb65`; stable and beta
+ZIP/checksum bytes match. The packaged stable binary is installed locally at
+`~/.local/bin/devtrim`. The 0.4.1 Unreleased development line is open while the
+manifest remains at the latest published version until the next release.
 
 ## Decisions
 
@@ -50,18 +49,16 @@ published stable release.
   action to agree before fixed-argument execution.
 - Historical immutable tags and releases are provenance records and stay
   intact. The earlier request to delete or rewrite them was rejected.
-- The production landing page remains on the live v0.3.2 download during beta.
-  Artifact-packaged README/manual describe v0.4.0; release validation therefore
-  does not treat `index.html` as a beta artifact version surface.
+- The production landing page remains on the current stable download during a
+  beta, then advances only after exact-byte production promotion. Artifact
+  validation does not treat `index.html` as a beta package version surface.
 - The demo-video dependency graph is a release gate and receives weekly npm
   Dependabot coverage; shipped inline scripts use exact CSP hashes.
 
 ## Next boundary
 
-The current combined diff passed its final P3 autoreview/fix cycle, complete
-Rust/MSRV/npm/workflow/security gates, real PTY and responsive browser E2E, and
-an exact arm64 package rehearsal. The next boundary is a fresh independent
-verifier, then commit/push, green exact-commit CI, and a new immutable beta.
-Production still requires explicit confirmation after that beta. Fuzzing,
-signing/notarization, and the documented pathname TOCTOU limitation remain
-follow-ups rather than hidden claims.
+The 0.4.0 release passed its P3 autoreview/fix cycle, independent verification,
+complete Rust/MSRV/npm/workflow/security gates, real PTY and responsive browser
+E2E, exact-commit CI, and fresh-download artifact checks. The 0.4.1 Unreleased
+line is open. Fuzzing, Apple signing/notarization, and the documented pathname
+TOCTOU limitation remain explicit follow-ups rather than hidden claims.

@@ -44,16 +44,18 @@ updated.
   Clippy, 61 unit tests, 18 CLI tests, exact Rust 1.88 tests, RustSec, npm,
   shell/workflow, history/worktree secret, arm64 build, PTY, browser, and exact
   package-rehearsal gates.
-- [ ] Stage only reviewed files, create one conventional commit, push `master`,
-  and prove local HEAD equals `origin/master` with a clean tree and green CI.
+- [x] (2026-08-25) Stage only reviewed files, create one conventional commit,
+  push `master`, and prove local HEAD equals `origin/master` with a clean tree
+  and green CI.
 - [x] (2026-08-25) Preserve all historical immutable releases and tags as
   provenance instead of deleting or rewriting public history.
-- [x] (2026-08-25) Install and verify the local arm64 v0.4.0 candidate while
-  preserving the previous binary as a backup.
-- [ ] Create and verify the next immutable `v0.4.0-betaN` release as staging,
+- [x] (2026-08-25) Install and verify the packaged stable arm64 v0.4.0 binary
+  while preserving the previous binaries as backups.
+- [x] (2026-08-25) Create and verify immutable `v0.4.0-beta1` as staging,
   then stop for production confirmation.
-- [ ] After explicit confirmation, promote the exact beta archive to `v0.4.0`,
-  verify GitHub Release and GitHub Pages, then open the next Unreleased changelog.
+- [x] (2026-08-25) After explicit confirmation, promote the exact beta archive
+  to `v0.4.0`, verify the GitHub Release, and open the next Unreleased changelog.
+- [ ] Publish and verify the updated v0.4.0 GitHub Pages landing page.
 
 ## Surprises & Discoveries
 
@@ -295,11 +297,12 @@ audited; GitHub Actions remain SHA-pinned.
 
 ## Outcomes & Retrospective
 
-Implementation and local verification are complete. Confirmed findings closed
+Implementation, release, and local verification are complete. Confirmed findings closed
 protected-path case aliases, command-action forgery, release privilege
 separation, deletion-lint exemptions, publisher retry state, handoff-artifact
-retry collisions, CSP, and the demo-video dependency gate. The final local ZIP
-contains exactly the arm64 v0.4.0 binary, full Apache-2.0 license, README, and
-manual; all match the source inputs and checksum. Commit/CI, immutable beta,
-post-beta production confirmation, stable promotion, and the next Unreleased
-section remain pending.
+retry collisions, CSP, and the demo-video dependency gate. Immutable
+`v0.4.0-beta1` and `v0.4.0` releases dereference to the reviewed commit; fresh
+downloads prove production reused the exact attested beta ZIP and checksum.
+The packaged arm64 binary, full Apache-2.0 license, README, and manual match the
+release inputs. Only remote verification of the updated production landing page
+remains.
