@@ -21,9 +21,9 @@
     <p class="pitch">See exactly what 40&nbsp;GB of caches costs before anything moves.
       Every action is previewed and scored 1–10 for danger. Filesystem cleanup lands
       in the Trash — recoverable until you say otherwise.</p>
-    <p class="badges">Free and open source · Apache-2.0 · macOS 13+ · latest release v0.4.0</p>
+    <p class="badges">Free and open source · Apache-2.0 · macOS 13+ · latest release v0.5.0</p>
     <div class="cta-row">
-      <a class="btn primary" href="#install">Download v0.4.0</a>
+      <a class="btn primary" href="#install">Download v0.5.0</a>
       <a class="btn ghost" href="MANUAL.html">Read the manual</a>
     </div>
     <figure class="hero-fig" data-reveal>
@@ -73,7 +73,7 @@
     <h2 id="demo-h">Preview first. Approve once. 27.5 GB back.</h2>
     <p class="section-note">Videos load only when you play them.</p>
     <div class="video-card" data-reveal>
-      <div class="video-head"><strong>The v0.4.0 interface</strong> — pick a category, read the preview, approve the exact plan. <a href="media/demo.mp4">Download the demo</a></div>
+      <div class="video-head"><strong>The devtrim interface</strong> — pick a category, read the preview, approve the exact plan. <a href="media/demo.mp4">Download the demo</a></div>
       <video controls preload="none" src="media/demo.mp4" aria-describedby="demo-transcript">
         <track kind="captions" srclang="en" label="English" src="media/demo-captions.vtt" default>
       </video>
@@ -91,12 +91,14 @@
 <section class="features" aria-labelledby="feat-h">
   <div class="wrap">
     <h2 id="feat-h">One interactive TUI. Explicit commands for automation.</h2>
-    <p class="section-note">The Ratatui interface ships in v0.4.0; explicit CLI subcommands and the one-document JSON contract remain available for automation.</p>
+    <p class="section-note">The Ratatui interface has shipped since v0.4.0; explicit CLI subcommands and the one-document JSON contract remain available for automation.</p>
     <div class="feat-grid">
       <article data-reveal><h3><code>devtrim</code> / <code>tui</code></h3><p>Keyboard-first scan, preview, and confirmation with written risk labels. It reuses the same cleanup owners and rejects CLI bypass flags.</p></article>
       <article data-reveal><h3><code>scan</code></h3><p>Read-only report with estimated logical sizes, danger levels, and one-document JSON output for agents.</p></article>
       <article data-reveal><h3><code>caches</code></h3><p>HuggingFace models, npm, Homebrew, uv. Re-downloads on demand — devtrim tells you the bandwidth cost instead of deciding.</p></article>
       <article data-reveal><h3><code>node-modules</code></h3><p>Applies exact previewed paths only when Git activity is conclusively older than 30 days. Unknown state is refused.</p></article>
+      <article data-reveal><h3><code>artifacts</code></h3><p>Rust targets, virtualenvs, Pods, Gradle and bundler outputs — only with ecosystem corroboration, only in conclusively stale repos, never ambiguous names like <code>build</code> or <code>dist</code>.</p></article>
+      <article data-reveal><h3><code>history</code></h3><p>Every apply is journaled write-ahead. Review what was attempted and what completed — interrupted applies are visible, not invisible.</p></article>
       <article data-reveal><h3><code>xcode</code></h3><p>DeviceSupport symbols and DerivedData. Archives are always listed but never touched.</p></article>
       <article data-reveal><h3><code>docker</code></h3><p>Unused images and build cache. Volumes are sacred — a volume may hold your live database.</p></article>
       <article data-reveal><h3><code>simulators</code></h3><p>Deletes devices whose runtime is gone. Confirmation flags never add an unpreviewed erase-all.</p></article>
@@ -123,11 +125,14 @@
 
 <section class="install" id="install" aria-labelledby="install-h">
   <div class="wrap">
-    <h2 id="install-h">Install v0.4.0.</h2>
+    <h2 id="install-h">Install v0.5.0.</h2>
     <div class="install-grid">
       <div data-reveal>
-        <a class="btn primary big" href="https://github.com/mneves75/devtrim/releases/download/v0.4.0/devtrim-0.4.0-macos-arm64.zip">Download for Apple silicon</a>
-        <p class="dim mono">SHA-256 in <a href="https://github.com/mneves75/devtrim/releases/tag/v0.4.0">release assets</a>. Verify before running:</p>
+        <h3>Homebrew</h3>
+        <pre tabindex="0"><code>brew install mneves75/devtrim/devtrim</code></pre>
+        <p class="dim">Installs the attested release binary plus shell completions and the man page.</p>
+        <a class="btn primary big" href="https://github.com/mneves75/devtrim/releases/download/v0.5.0/devtrim-0.5.0-macos-arm64.zip">Download for Apple silicon</a>
+        <p class="dim mono">SHA-256 in <a href="https://github.com/mneves75/devtrim/releases/tag/v0.5.0">release assets</a>. Verify before running:</p>
         <pre tabindex="0"><code>shasum -a 256 -c SHA256SUMS.txt</code></pre>
       </div>
       <div data-reveal>
@@ -157,10 +162,10 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
 
 <footer>
   <div class="wrap foot">
-    <span class="mono">devtrim v0.4.0</span>
+    <span class="mono">devtrim v0.5.0</span>
     <span><a href="https://github.com/mneves75/devtrim">GitHub</a></span>
     <span><a href="MANUAL.html">Manual</a></span>
-    <span><a href="https://github.com/mneves75/devtrim/releases/tag/v0.4.0">Releases</a></span>
+    <span><a href="https://github.com/mneves75/devtrim/releases/tag/v0.5.0">Releases</a></span>
     <span class="dim">Apache-2.0 © 2026 Marcus Neves</span>
   </div>
 </footer>

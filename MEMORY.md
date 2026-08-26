@@ -2,11 +2,12 @@
 
 ## Current state
 
-devtrim 0.4.0 is the immutable production release. It promotes the exact
-attested `v0.4.0-beta1` arm64 archive from commit `29dbb65`; stable and beta
-ZIP/checksum bytes match. The packaged stable binary is installed locally at
-`~/.local/bin/devtrim`. The 0.4.1 Unreleased development line is open while the
-manifest remains at the latest published version until the next release.
+devtrim 0.5.0 is the immutable production release (commit `053c9fd`), promoting
+the exact attested `v0.5.0-beta1` arm64 archive; stable and beta bytes match
+(`dc58f370…`). 0.5.0 closed the Mole-audit gaps: `clean artifacts`, `protect`
+config, write-ahead journal + `history`, liveness guards, completions/manpage,
+lib/bin split with five cargo-fuzz targets, Homebrew tap
+`mneves75/homebrew-devtrim`. The 0.5.1 Unreleased line is open.
 
 ## Decisions
 
@@ -57,8 +58,12 @@ manifest remains at the latest published version until the next release.
 
 ## Next boundary
 
-The 0.4.0 release passed its P3 autoreview/fix cycle, independent verification,
-complete Rust/MSRV/npm/workflow/security gates, real PTY and responsive browser
-E2E, exact-commit CI, and fresh-download artifact checks. The 0.4.1 Unreleased
-line is open. Fuzzing, Apple signing/notarization, and the documented pathname
-TOCTOU limitation remain explicit follow-ups rather than hidden claims.
+The 0.5.0 release passed an independent security review plus two P3 autoreview
+rounds (13 real findings fixed pre-release, incl. protect NFC/NFD and
+ancestor/symlink bypasses and GIT_DIR stale-gate poisoning), full
+Rust/MSRV/npm/workflow/security gates, five bounded fuzz runs, a real PTY TUI
+pass, exact-commit CI, staged-binary smoke tests, and exact-byte production
+promotion. Apple signing/notarization (softened by brew distribution) and the
+documented pathname TOCTOU limitation remain explicit follow-ups. The demo
+video still shows the v0.4.0 menu (no Build artifacts entry) — refresh it in
+0.5.x. Journal rotation is unbounded by design for now.
