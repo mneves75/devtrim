@@ -73,36 +73,42 @@ const MENU: &[MenuItem] = &[
     },
     MenuItem {
         key: "4",
+        label: "Build artifacts",
+        description: "Regenerable outputs in conclusively stale Git repositories.",
+        operation: Operation::Clean(Target::Artifacts),
+    },
+    MenuItem {
+        key: "5",
         label: "Simulators",
         description: "Unavailable Apple simulator devices only.",
         operation: Operation::Clean(Target::Simulators),
     },
     MenuItem {
-        key: "5",
+        key: "6",
         label: "Xcode",
         description: "DeviceSupport and DerivedData; Archives stay excluded.",
         operation: Operation::Clean(Target::Xcode),
     },
     MenuItem {
-        key: "6",
+        key: "7",
         label: "Docker",
         description: "Unused images and build cache; volumes are never touched.",
         operation: Operation::Clean(Target::Docker),
     },
     MenuItem {
-        key: "7",
+        key: "8",
         label: "Swift toolchains",
         description: "Unreferenced swift.org toolchains only.",
         operation: Operation::Clean(Target::Toolchains),
     },
     MenuItem {
-        key: "8",
+        key: "9",
         label: "Agent leftovers",
         description: "Read-only hints; whole worktrees are never deleted.",
         operation: Operation::Clean(Target::Leftovers),
     },
     MenuItem {
-        key: "9",
+        key: "i",
         label: "iCloud status",
         description: "Read-only local-materialization status for large uploads.",
         operation: Operation::Icloud,
@@ -360,17 +366,13 @@ impl App {
                 Intent::None
             }
             KeyCode::Enter => Intent::Load(MENU[self.selected].operation),
-            KeyCode::Char(value) if value.is_ascii_digit() => {
-                let index = if value == '0' {
-                    MENU.len() - 1
-                } else {
-                    usize::try_from(value.to_digit(10).unwrap_or(1))
-                        .unwrap_or(1)
-                        .saturating_sub(1)
-                };
-                self.selected = index.min(MENU.len() - 1);
-                Intent::Load(MENU[self.selected].operation)
-            }
+            KeyCode::Char(value) => MENU
+                .iter()
+                .position(|item| item.key.chars().eq(std::iter::once(value)))
+                .map_or(Intent::None, |index| {
+                    self.selected = index;
+                    Intent::Load(MENU[index].operation)
+                }),
             _ => Intent::None,
         }
     }
@@ -548,7 +550,8 @@ fn load_operation(app: &mut App, operation: Operation, ctx: &Ctx) {
                 return;
             };
             match cleanup.scan(ctx) {
-                Ok(findings) => {
+                Ok(mut findings) => {
+                    ops::filter_protected_findings(&mut findings, ctx);
                     let warnings = ctx.take_diagnostics();
                     app.finish_results(operation, findings, Vec::new(), warnings);
                 }
@@ -644,7 +647,8 @@ fn apply_operation(app: &mut App, ctx: &Ctx, plan: ApprovedPlan) {
         }
     };
     match result {
-        Ok(outcome) => {
+        Ok(mut outcome) => {
+            outcome.errors.extend(ctx.take_journal_errors());
             if !outcome.errors.is_empty() {
                 app.failed = true;
             }
@@ -793,7 +797,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::Yellow),
         ),
         Line::raw(""),
-        Line::raw("↑/↓ or j/k navigate · Enter opens · number opens directly"),
+        Line::raw("↑/↓ or j/k navigate · Enter opens · menu key opens directly"),
     ]);
     frame.render_widget(
         Paragraph::new(detail)
@@ -1096,6 +1100,11 @@ mod tests {
         assert_eq!(app.handle_key(key(KeyCode::Char('j'))), Intent::None);
         assert_eq!(app.selected, 1);
         assert_eq!(
+            app.handle_key(key(KeyCode::Char('4'))),
+            Intent::Load(Operation::Clean(Target::Artifacts))
+        );
+        assert!(!Operation::Clean(Target::Artifacts).read_only());
+        assert_eq!(
             app.handle_key(key(KeyCode::Char('0'))),
             Intent::Load(Operation::TrashEmpty)
         );
@@ -1290,10 +1299,13 @@ mod tests {
             json: false,
             roots: Vec::new(),
             active_days: 30,
+            protect: Vec::new(),
+            journal_path: std::path::PathBuf::from("/tmp/devtrim-tui-test-journal.jsonl"),
             home: std::path::PathBuf::from("/Users/example"),
             interactive: true,
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
+            journal_errors: Default::default(),
         };
 
         apply_operation(&mut app, &ctx, plan);
@@ -1442,10 +1454,13 @@ mod tests {
             json: false,
             roots: Vec::new(),
             active_days: 30,
+            protect: Vec::new(),
+            journal_path: std::path::PathBuf::from("/tmp/devtrim-tui-test-journal.jsonl"),
             home: std::path::PathBuf::from("/Users/example"),
             interactive: true,
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
+            journal_errors: Default::default(),
         };
         ctx.diagnostic("warn", "skipped path\u{1b}[2J");
         let mut app = App::default();

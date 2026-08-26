@@ -1,6 +1,7 @@
 //! Findings model + human/JSON rendering.
 
 use colored::Colorize;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -203,38 +204,47 @@ pub fn actionable_bytes(findings: &[Finding]) -> u64 {
         .fold(0, |total, finding| total.saturating_add(finding.size_bytes))
 }
 
-pub fn print_human(findings: &[Finding]) {
+pub fn print_human(findings: &[Finding]) -> std::io::Result<()> {
     let total = actionable_bytes(findings);
+    let mut output = String::new();
     for finding in findings {
         let path = finding.path.as_deref().unwrap_or("-");
-        println!(
-            "{:>9}  {}  {}  {}\n           └─ {}; action: {}",
+        output.push_str(&format!(
+            "{:>9}  {}  {}  {}\n           └─ {}; action: {}\n",
             gb(finding.size_bytes),
             danger_tag(finding.danger),
             terminal_safe(&finding.label).bold(),
             terminal_safe(path).dimmed(),
             terminal_safe(&finding.note),
             finding.action.display()
-        );
+        ));
     }
-    println!(
-        "\n{} actionable across {} finding(s)",
+    output.push_str(&format!(
+        "\n{} actionable across {} finding(s)\n",
         gb(total).bold(),
         findings.len()
-    );
+    ));
+    write_stdout(output.as_bytes())
 }
 
-pub fn print_summary(summary: &Summary) {
+pub fn print_summary(summary: &Summary) -> std::io::Result<()> {
+    let mut output = String::new();
     for note in &summary.notes {
-        println!("  {}", terminal_safe(note));
+        output.push_str(&format!("  {}\n", terminal_safe(note)));
     }
-    println!(
-        "\n{} {}: {} item(s), ~{} reclaimed estimate",
+    output.push_str(&format!(
+        "\n{} {}: {} item(s), ~{} reclaimed estimate\n",
         "✓".green().bold(),
         summary.op,
         summary.items_touched,
         gb(summary.bytes_freed_estimate)
-    );
+    ));
+    write_stdout(output.as_bytes())
+}
+
+/// One human-facing line to stdout, tolerant of a closed downstream pipe.
+pub fn print_line(line: &str) -> std::io::Result<()> {
+    write_stdout(format!("{line}\n").as_bytes())
 }
 
 pub fn print_json(
@@ -243,7 +253,7 @@ pub fn print_json(
     findings: &[Finding],
     summary: Option<&Summary>,
     errors: &[String],
-) {
+) -> std::io::Result<()> {
     let response = Response {
         operation,
         applied,
@@ -251,15 +261,24 @@ pub fn print_json(
         summary,
         errors,
     };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&response)
-            .unwrap_or_else(|_| r#"{"operation":"unknown","applied":false,"findings":[],"errors":["serialization failed"]}"#.into())
-    );
+    let mut output = serde_json::to_string_pretty(&response)
+        .unwrap_or_else(|_| r#"{"operation":"unknown","applied":false,"findings":[],"errors":["serialization failed"]}"#.into())
+        .into_bytes();
+    output.push(b'\n');
+    write_stdout(&output)
 }
 
-pub fn print_error_json(message: &str) {
-    print_json("unknown", false, &[], None, &[message.to_string()]);
+pub fn print_error_json(message: &str) -> std::io::Result<()> {
+    print_json("unknown", false, &[], None, &[message.to_string()])
+}
+
+pub fn write_stdout(output: &[u8]) -> std::io::Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    match stdout.write_all(output).and_then(|()| stdout.flush()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]

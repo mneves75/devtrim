@@ -79,7 +79,7 @@ impl Op for Toolchains {
                         path.display()
                     );
                 }
-                apply_filesystem_finding(finding, ctx)?;
+                apply_filesystem_finding(self.name(), finding, ctx)?;
                 Ok(format!(
                     "{} {}",
                     if finding.action == Action::Shred {

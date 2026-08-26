@@ -1,0 +1,49 @@
+[package]
+name = "devtrim-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.devtrim]
+path = ".."
+
+[[bin]]
+name = "validate_path"
+path = "fuzz_targets/validate_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clean_path"
+path = "fuzz_targets/clean_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "docker_size"
+path = "fuzz_targets/docker_size.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "probe_parsers"
+path = "fuzz_targets/probe_parsers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_parse"
+path = "fuzz_targets/config_parse.rs"
+test = false
+doc = false
+bench = false

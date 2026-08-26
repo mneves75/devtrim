@@ -74,7 +74,7 @@ impl Op for Docker {
         Ok(findings)
     }
 
-    fn apply(&self, findings: &[Finding], _ctx: &Ctx) -> Result<ApplyOutcome> {
+    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
         let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
             let result = (|| -> Result<String> {
@@ -91,11 +91,21 @@ impl Op for Docker {
                     anyhow::bail!("refusing altered Docker action");
                 }
                 let (program, args) = authority.parts();
-                let output = Command::new(program).args(args).output()?;
-                if !output.status.success() {
-                    anyhow::bail!("`{program} {}` failed", args.join(" "));
-                }
-                Ok(format!("`{program} {}` completed", args.join(" ")))
+                let attempt = crate::journal::JournalRecord::command_attempt(
+                    self.name(),
+                    program,
+                    args,
+                    finding.size_bytes,
+                );
+                crate::journal::append(ctx, &attempt)?;
+                let result = (|| -> Result<String> {
+                    let output = Command::new(program).args(args).output()?;
+                    if !output.status.success() {
+                        anyhow::bail!("`{program} {}` failed", args.join(" "));
+                    }
+                    Ok(format!("`{program} {}` completed", args.join(" ")))
+                })();
+                crate::journal::finish(ctx, &attempt, result)
             })();
             match result {
                 Ok(note) => outcome.record(finding, note),
@@ -154,10 +164,13 @@ mod tests {
             json: false,
             roots: Vec::new(),
             active_days: 30,
+            protect: Vec::new(),
+            journal_path: PathBuf::from("/tmp/devtrim-docker-test-journal.jsonl"),
             home: PathBuf::from("/tmp"),
             interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
+            journal_errors: Default::default(),
         }
     }
 

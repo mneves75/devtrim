@@ -15,7 +15,9 @@ impl Sandbox {
             std::env::temp_dir().join(format!("devtrim-cli-{name}-{}-{id}", std::process::id()));
         std::fs::remove_dir_all(&path).ok();
         std::fs::create_dir_all(&path).unwrap();
-        Self(path)
+        let sandbox = Self(path);
+        sandbox.script("pgrep", "exit 1");
+        sandbox
     }
 
     fn in_target(name: &str) -> Self {
@@ -26,7 +28,9 @@ impl Sandbox {
             .join(format!("devtrim-cli-{name}-{}-{id}", std::process::id()));
         std::fs::remove_dir_all(&path).ok();
         std::fs::create_dir_all(&path).unwrap();
-        Self(path)
+        let sandbox = Self(path);
+        sandbox.script("pgrep", "exit 1");
+        sandbox
     }
 
     fn path(&self) -> &Path {
@@ -60,6 +64,7 @@ fn run(sandbox: &Sandbox, args: &[&str]) -> Output {
         .args(args)
         .env("HOME", sandbox.path())
         .env("PATH", sandbox.bin())
+        .env_remove("XDG_STATE_HOME")
         .output()
         .unwrap()
 }
@@ -161,6 +166,24 @@ fn unknown_config_field_fails_closed_with_json() {
 }
 
 #[test]
+fn relative_protect_entry_fails_closed_with_json() {
+    let sandbox = Sandbox::new("relative-protect");
+    std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
+    std::fs::write(
+        sandbox.path().join(".config/devtrim.toml"),
+        "protect = [\"dev/keep\"]\n",
+    )
+    .unwrap();
+
+    let output = run(&sandbox, &["scan", "--json"]);
+
+    assert!(!output.status.success());
+    let value = json(&output);
+    assert!(value["errors"][0].as_str().unwrap().contains("dev/keep"));
+    assert!(value["errors"][0].as_str().unwrap().contains("absolute"));
+}
+
+#[test]
 fn config_tilde_root_is_expanded() {
     let sandbox = Sandbox::new("tilde-root");
     let project = sandbox.path().join("dev/project");
@@ -185,6 +208,76 @@ fn config_tilde_root_is_expanded() {
             .unwrap()
             .starts_with(home.to_str().unwrap())
     );
+}
+
+#[test]
+fn config_tilde_protect_filters_preview_with_diagnostic() {
+    let sandbox = Sandbox::new("tilde-protect");
+    let project = sandbox.path().join("dev/project");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    std::fs::create_dir_all(project.join("node_modules")).unwrap();
+    std::fs::write(project.join("node_modules/file"), "x").unwrap();
+    std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
+    std::fs::write(
+        sandbox.path().join(".config/devtrim.toml"),
+        "roots = [\"~/dev\"]\nprotect = [\"~/dev/project/node_modules\"]\nactive_days = 30\n",
+    )
+    .unwrap();
+    sandbox.script("git", "printf '2020-01-01\\n'");
+
+    let output = run(&sandbox, &["clean", "node-modules", "--json"]);
+
+    assert!(output.status.success());
+    assert!(json(&output)["findings"].as_array().unwrap().is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("skipping protected path"));
+}
+
+#[test]
+fn artifacts_target_scans_corroborated_stale_repo() {
+    let sandbox = Sandbox::new("artifacts-target");
+    let project = sandbox.path().join("dev/project");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    std::fs::create_dir_all(project.join("target")).unwrap();
+    std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+    std::fs::write(project.join("target/output"), "x").unwrap();
+    sandbox.script("git", "printf '2020-01-01\\n'");
+
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "artifacts",
+            "--root",
+            sandbox.path().join("dev").to_str().unwrap(),
+            "--json",
+        ],
+    );
+
+    assert!(output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "artifacts");
+    assert_eq!(value["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(value["findings"][0]["label"], "stale target artifacts");
+}
+
+#[test]
+fn project_cleanup_probe_failures_are_nonzero_json_errors() {
+    let sandbox = Sandbox::new("project-probe-failure");
+    sandbox.script("pgrep", "exit 2");
+
+    for target in ["node-modules", "artifacts"] {
+        let output = run(&sandbox, &["clean", target, "--json"]);
+
+        assert!(!output.status.success());
+        let value = json(&output);
+        assert_eq!(value["operation"], target);
+        assert!(
+            value["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("cannot verify build-process liveness")
+        );
+    }
 }
 
 #[test]
@@ -279,6 +372,7 @@ fn unavailable_simulator_json_is_detected_without_erase_all() {
         .args(["clean", "simulators", "--apply", "--yolo", "--json"])
         .env("HOME", sandbox.path())
         .env("PATH", sandbox.bin())
+        .env_remove("XDG_STATE_HOME")
         .env("DEVTRIM_TEST_LOG", &log)
         .output()
         .unwrap();
@@ -292,6 +386,18 @@ fn unavailable_simulator_json_is_detected_without_erase_all() {
     assert!(calls.contains("simctl list devices --json"));
     assert!(calls.contains("simctl delete unavailable"));
     assert!(!calls.contains("erase all"));
+    let records =
+        std::fs::read_to_string(sandbox.path().join(".local/state/devtrim/journal.jsonl")).unwrap();
+    let records = records
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(records[0]["action"], "command");
+    assert_eq!(
+        records[0]["argv"],
+        serde_json::json!(["xcrun", "simctl", "delete", "unavailable"])
+    );
+    assert_eq!(records[1]["status"], "ok");
 }
 
 #[test]
@@ -355,6 +461,7 @@ fn partial_apply_serializes_first_success_then_stops() {
         ])
         .env("HOME", sandbox.path())
         .env("PATH", sandbox.bin())
+        .env_remove("XDG_STATE_HOME")
         .env("DEVTRIM_TEST_COUNT", &counter)
         .output()
         .unwrap();
@@ -404,6 +511,17 @@ fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
     );
     assert_eq!(value["findings"].as_array().unwrap().len(), 1);
     assert!(!String::from_utf8_lossy(&output.stderr).contains("DATA-LOSS WARNING"));
+    let records =
+        std::fs::read_to_string(sandbox.path().join(".local/state/devtrim/journal.jsonl")).unwrap();
+    let records = records
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        records[0]["argv"],
+        serde_json::json!(["docker", "image", "prune", "-a", "-f"])
+    );
+    assert_eq!(records[1]["status"], "error");
 }
 
 #[test]
@@ -429,4 +547,156 @@ fn help_states_that_apply_flags_accept_data_loss_risk() {
     assert!(output.status.success());
     assert!(stdout.contains("cleanup can delete data"));
     assert!(stdout.matches("Accept data-loss risk").count() >= 2);
+}
+
+#[test]
+fn history_json_is_one_document_and_skips_malformed_lines() {
+    let sandbox = Sandbox::new("history-json");
+    let journal = sandbox.path().join(".local/state/devtrim/journal.jsonl");
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(
+        &journal,
+        concat!(
+            "{\"ts\":2,\"phase\":\"result\",\"op\":\"caches\",\"action\":\"trash\",\"target\":\"/tmp/cache\",\"size_bytes\":4,\"status\":\"ok\"}\n",
+            "not-json\n"
+        ),
+    )
+    .unwrap();
+
+    let output = run(&sandbox, &["history", "--json"]);
+
+    // A partial audit is a partial operation: entries survive, errors are
+    // reported, and the status is nonzero.
+    assert!(!output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "history");
+    assert_eq!(value["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(value["entries"][0]["status"], "ok");
+    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn missing_history_is_empty_and_successful() {
+    let sandbox = Sandbox::new("history-missing");
+
+    let output = run(&sandbox, &["history", "--json"]);
+
+    assert!(output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "history");
+    assert!(value["entries"].as_array().unwrap().is_empty());
+    assert!(value["errors"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn history_human_marks_orphan_attempt_interrupted() {
+    let sandbox = Sandbox::new("history-interrupted");
+    let journal = sandbox.path().join(".local/state/devtrim/journal.jsonl");
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(
+        &journal,
+        "{\"ts\":1,\"phase\":\"attempt\",\"op\":\"xcode\",\"action\":\"shred\",\"target\":\"/tmp/build\",\"size_bytes\":8}\n",
+    )
+    .unwrap();
+
+    let output = run(&sandbox, &["history"]);
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("interrupted"));
+}
+
+#[test]
+fn unreadable_history_is_one_error_document_and_nonzero() {
+    let sandbox = Sandbox::new("history-unreadable");
+    let journal = sandbox.path().join(".local/state/devtrim/journal.jsonl");
+    std::fs::create_dir_all(&journal).unwrap();
+
+    let output = run(&sandbox, &["history", "--json"]);
+
+    assert!(!output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "history");
+    assert!(value["entries"].as_array().unwrap().is_empty());
+    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn history_uses_only_an_absolute_xdg_state_home() {
+    let record = "{\"ts\":2,\"phase\":\"result\",\"op\":\"caches\",\"action\":\"trash\",\"target\":\"/tmp/cache\",\"size_bytes\":4,\"status\":\"ok\"}\n";
+
+    let absolute = Sandbox::new("history-xdg-absolute");
+    let state_home = absolute.path().join("state");
+    let journal = state_home.join("devtrim/journal.jsonl");
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(&journal, record).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["history", "--json"])
+        .env("HOME", absolute.path())
+        .env("PATH", absolute.bin())
+        .env("XDG_STATE_HOME", &state_home)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(json(&output)["entries"].as_array().unwrap().len(), 1);
+
+    let relative = Sandbox::new("history-xdg-relative");
+    let fallback = relative.path().join(".local/state/devtrim/journal.jsonl");
+    std::fs::create_dir_all(fallback.parent().unwrap()).unwrap();
+    std::fs::write(&fallback, record).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["history", "--json"])
+        .env("HOME", relative.path())
+        .env("PATH", relative.bin())
+        .env("XDG_STATE_HOME", "relative-state")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(json(&output)["entries"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn zsh_completions_are_printed_to_piped_stdout() {
+    let sandbox = Sandbox::new("completions");
+
+    let output = run(&sandbox, &["completions", "zsh"]);
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("_devtrim"));
+}
+
+#[test]
+fn completions_reject_unsupported_shells() {
+    let sandbox = Sandbox::new("unsupported-completions");
+
+    let output = run(&sandbox, &["completions", "powershell"]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("bash, zsh, fish"));
+}
+
+#[test]
+fn manpage_is_printed_to_piped_stdout() {
+    let sandbox = Sandbox::new("manpage");
+
+    let output = run(&sandbox, &["manpage"]);
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains(".TH devtrim"));
+}
+
+#[test]
+fn generated_docs_reject_json_with_one_error_document() {
+    let sandbox = Sandbox::new("generated-docs-json");
+    for command in ["completions", "manpage"] {
+        let args = if command == "completions" {
+            vec![command, "zsh", "--json"]
+        } else {
+            vec![command, "--json"]
+        };
+        let output = run(&sandbox, &args);
+        assert!(!output.status.success());
+        let value = json(&output);
+        assert_eq!(value["operation"], command);
+        assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+    }
 }

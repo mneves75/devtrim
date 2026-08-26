@@ -1,10 +1,12 @@
 //! Op registry: every category is scan-then-apply with a danger score.
 
+pub mod artifacts;
 pub mod caches;
 pub mod docker;
 pub mod icloud;
 pub mod leftovers;
 pub mod node_modules;
+pub(crate) mod project;
 pub mod simulators;
 pub mod toolchains;
 pub mod xcode;
@@ -64,6 +66,7 @@ pub fn all() -> Vec<Box<dyn Op>> {
     vec![
         Box::new(caches::Caches),
         Box::new(node_modules::NodeModules),
+        Box::new(artifacts::Artifacts),
         Box::new(simulators::Simulators),
         Box::new(xcode::Xcode),
         Box::new(docker::Docker),
@@ -85,7 +88,10 @@ pub fn scan_all(ctx: &Ctx) -> ScanResult {
     let mut errors = Vec::new();
     for operation in all() {
         match operation.scan(ctx) {
-            Ok(mut operation_findings) => findings.append(&mut operation_findings),
+            Ok(mut operation_findings) => {
+                filter_protected_findings(&mut operation_findings, ctx);
+                findings.append(&mut operation_findings);
+            }
             Err(error) => errors.push(format!("{}: {error:#}", operation.name())),
         }
     }
@@ -96,17 +102,41 @@ pub fn dir_size(path: &Path) -> Result<u64> {
     crate::safety::dir_size(path)
 }
 
-pub fn apply_filesystem_finding(finding: &Finding, ctx: &Ctx) -> Result<()> {
-    let permanent = match finding.action {
-        Action::Trash => false,
-        Action::Shred => true,
+pub fn filter_protected_findings(findings: &mut Vec<Finding>, ctx: &Ctx) {
+    findings.retain(|finding| {
+        let protected = finding
+            .action
+            .is_actionable()
+            .then(|| finding.target())
+            .flatten()
+            .filter(|target| crate::safety::is_config_protected(target, &ctx.protect));
+        if let Some(target) = protected {
+            ctx.diagnostic(
+                "info",
+                format!("skipping protected path: {}", target.display()),
+            );
+            false
+        } else {
+            true
+        }
+    });
+}
+
+pub fn apply_filesystem_finding(op: &str, finding: &Finding, ctx: &Ctx) -> Result<()> {
+    let (permanent, action) = match finding.action {
+        Action::Trash => (false, "trash"),
+        Action::Shred => (true, "shred"),
         _ => anyhow::bail!("refusing non-filesystem action at deletion sink"),
     };
     let target = finding
         .target()
         .ok_or_else(|| anyhow::anyhow!("filesystem finding missing internal target"))?;
-    let verified = crate::safety::validate_path_for_deletion(target, &ctx.home)?;
-    remove_path(verified, permanent)
+    let attempt =
+        crate::journal::JournalRecord::filesystem_attempt(op, action, target, finding.size_bytes);
+    crate::journal::append(ctx, &attempt)?;
+    let result = crate::safety::validate_path_for_deletion(target, &ctx.home, &ctx.protect)
+        .and_then(|verified| remove_path(verified, permanent));
+    crate::journal::finish(ctx, &attempt, result)
 }
 
 fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
@@ -165,7 +195,7 @@ pub fn purge_trash(findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
             if target.parent() != Some(directory.as_path()) {
                 anyhow::bail!("refusing target outside the previewed Trash root");
             }
-            apply_filesystem_finding(finding, ctx)
+            apply_filesystem_finding("trash-empty", finding, ctx)
         })();
         if let Err(error) = result {
             outcome.fail(error);
@@ -202,10 +232,13 @@ mod tests {
             json: false,
             roots: vec![],
             active_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
             home,
             interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
+            journal_errors: Default::default(),
         }
     }
 
@@ -227,8 +260,15 @@ mod tests {
             9,
             Action::Shred,
         );
-        apply_filesystem_finding(&finding, &context(home.clone())).unwrap();
+        apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap();
         assert!(!target.exists());
+        let records = std::fs::read_to_string(home.join("journal.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records[0]["action"], "shred");
+        assert_eq!(records[1]["status"], "ok");
         std::fs::remove_dir_all(home).ok();
     }
 
@@ -260,8 +300,15 @@ mod tests {
                 return;
             }
         }
-        apply_filesystem_finding(&finding, &context(home.clone())).unwrap();
+        apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap();
         assert!(!target.exists());
+        let first = std::fs::read_to_string(home.join("journal.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .unwrap();
+        assert_eq!(first["target_lossy"], true);
         std::fs::remove_dir_all(home).ok();
     }
 
@@ -278,7 +325,7 @@ mod tests {
         let target = home.join("sentinel");
         std::fs::write(&target, "keep").unwrap();
         let missing = Finding::new("missing", None, 0, "test", 9, Action::Shred);
-        assert!(apply_filesystem_finding(&missing, &context(home.clone())).is_err());
+        assert!(apply_filesystem_finding("test", &missing, &context(home.clone())).is_err());
 
         let command = Finding::new(
             "wrong action",
@@ -288,7 +335,7 @@ mod tests {
             1,
             Action::Info,
         );
-        assert!(apply_filesystem_finding(&command, &context(home.clone())).is_err());
+        assert!(apply_filesystem_finding("test", &command, &context(home.clone())).is_err());
         assert!(target.exists());
         std::fs::remove_dir_all(home).ok();
     }
@@ -302,7 +349,7 @@ mod tests {
         symlink(home.join("Library"), home.join("dev/link")).unwrap();
         let target = home.join("dev/link/node_modules");
         let finding = Finding::new("node_modules", Some(target), 0, "test", 9, Action::Shred);
-        assert!(apply_filesystem_finding(&finding, &context(home.clone())).is_err());
+        assert!(apply_filesystem_finding("test", &finding, &context(home.clone())).is_err());
         assert!(home.join("Library/node_modules").exists());
         std::fs::remove_dir_all(home).ok();
     }
@@ -388,5 +435,140 @@ mod tests {
 
         assert_eq!(outcome.summary.items_touched, 2);
         assert_eq!(outcome.summary.bytes_freed_estimate, u64::MAX);
+    }
+
+    #[test]
+    fn journal_records_successful_trash_attempt_and_result() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-journal-trash-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        std::fs::create_dir_all(home.join("cache")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("cache");
+        let finding = Finding::new("cache", Some(target.clone()), 4, "test", 3, Action::Trash);
+        let ctx = context(home.clone());
+
+        let attempt = crate::journal::JournalRecord::filesystem_attempt(
+            "caches",
+            "trash",
+            &target,
+            finding.size_bytes,
+        );
+        crate::journal::append(&ctx, &attempt).unwrap();
+        crate::journal::finish(&ctx, &attempt, Ok(())).unwrap();
+
+        let records = std::fs::read_to_string(&ctx.journal_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["phase"], "attempt");
+        assert_eq!(records[0]["action"], "trash");
+        assert_eq!(records[1]["phase"], "result");
+        assert_eq!(records[1]["status"], "ok");
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn journal_records_refused_deletion_as_error() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-journal-refused-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        std::fs::create_dir_all(home.join("protected/child")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("protected/child");
+        let sentinel = target.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let finding = Finding::new(
+            "protected",
+            Some(target.clone()),
+            4,
+            "test",
+            9,
+            Action::Shred,
+        );
+        let mut ctx = context(home.clone());
+        ctx.protect = vec![home.join("PROTECTED")];
+
+        let error = apply_filesystem_finding("test", &finding, &ctx).unwrap_err();
+
+        assert!(error.to_string().contains("configured protected"));
+        assert!(sentinel.exists());
+        let records = std::fs::read_to_string(&ctx.journal_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["phase"], "attempt");
+        assert_eq!(records[1]["status"], "error");
+        assert!(records[1]["error"].as_str().unwrap().contains("protected"));
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn journal_write_failure_aborts_before_deletion() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-journal-unwritable-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        std::fs::create_dir_all(home.join("target")).unwrap();
+        std::fs::write(home.join("journal-parent"), "not a directory").unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("target");
+        let sentinel = target.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let finding = Finding::new("target", Some(target), 4, "test", 9, Action::Shred);
+        let mut ctx = context(home.clone());
+        ctx.journal_path = home.join("journal-parent/journal.jsonl");
+
+        let error = apply_filesystem_finding("test", &finding, &ctx).unwrap_err();
+
+        assert!(error.to_string().contains("cannot write apply journal"));
+        assert!(error.to_string().contains("journal.jsonl"));
+        assert!(sentinel.exists());
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn preview_filter_drops_only_protected_actionable_findings() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-filter-protected-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        std::fs::create_dir_all(home.join("protected")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("protected");
+        let mut ctx = context(home.clone());
+        ctx.protect = vec![target.clone()];
+        let mut findings = vec![
+            Finding::new(
+                "actionable",
+                Some(target.clone()),
+                4,
+                "test",
+                3,
+                Action::Trash,
+            ),
+            Finding::new("informational", Some(target), 4, "test", 0, Action::Info),
+        ];
+
+        filter_protected_findings(&mut findings, &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].label, "informational");
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|message| message.contains("skipping protected path"))
+        );
+        crate::ops::remove_test_path(home);
     }
 }

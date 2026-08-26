@@ -58,7 +58,7 @@ impl Op for Caches {
             }
             let result = (|| -> Result<()> {
                 authorize_cache_finding(finding, &ctx.home)?;
-                apply_filesystem_finding(finding, ctx)
+                apply_filesystem_finding(self.name(), finding, ctx)
             })()
             .with_context(|| format!("failed to remove {}", finding.label));
             if let Err(error) = result {
@@ -253,10 +253,13 @@ mod tests {
             json: false,
             roots: Vec::new(),
             active_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
             home: home.clone(),
             interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
+            journal_errors: Default::default(),
         };
 
         let outcome = Caches.apply(&[finding], &ctx).unwrap();
@@ -293,10 +296,13 @@ mod tests {
             json: false,
             roots: Vec::new(),
             active_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
             home: home.clone(),
             interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
+            journal_errors: Default::default(),
         };
 
         let outcome = Caches.apply(&[finding], &ctx).unwrap();

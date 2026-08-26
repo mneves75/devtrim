@@ -1,6 +1,7 @@
 //! CLI definition. Preview-by-default: mutation requires `--apply`.
 
 use clap::{Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -47,10 +48,23 @@ pub enum Command {
     Scan,
     /// Clean one category
     Clean {
-        /// caches | node-modules | simulators | xcode | docker | toolchains | leftovers
+        /// caches | node-modules | artifacts | simulators | xcode | docker | toolchains | leftovers
         #[arg(value_enum)]
         target: Target,
     },
+    /// Show recent apply results from the local write-ahead journal
+    History {
+        /// Maximum entries to show (clamped to 1..=1000)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Print a shell completion script
+    Completions {
+        #[arg(value_parser = completion_shell)]
+        shell: Shell,
+    },
+    /// Print the devtrim man page in roff format
+    Manpage,
     /// Show iCloud Drive queued uploads and their local-materialization status
     Icloud,
     /// Purge macOS Trash permanently; requires --apply and --confirm=<gb>
@@ -66,6 +80,7 @@ impl Target {
         match self {
             Self::Caches => "caches",
             Self::NodeModules => "node-modules",
+            Self::Artifacts => "artifacts",
             Self::Simulators => "simulators",
             Self::Xcode => "xcode",
             Self::Docker => "docker",
@@ -79,9 +94,19 @@ impl Target {
 pub enum Target {
     Caches,
     NodeModules,
+    Artifacts,
     Simulators,
     Xcode,
     Docker,
     Toolchains,
     Leftovers,
+}
+
+fn completion_shell(value: &str) -> Result<Shell, String> {
+    match value {
+        "bash" => Ok(Shell::Bash),
+        "zsh" => Ok(Shell::Zsh),
+        "fish" => Ok(Shell::Fish),
+        _ => Err("supported shells: bash, zsh, fish".into()),
+    }
 }
