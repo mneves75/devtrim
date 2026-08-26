@@ -2,12 +2,28 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.4.1] - Unreleased
+## [0.5.0] - 2026-08-26
+
+### Added
+- `devtrim clean artifacts`: multi-ecosystem build artifacts (`target`, `.venv`, `__pycache__`, tool caches, `Pods`, `.gradle`, `.next`-family, `.build`, `.dart_tool`, `.zig-cache`, and valid `CACHEDIR.TAG` directories) in conclusively stale Git repos, each requiring ecosystem corroboration before it can even be previewed; ambiguous names such as `build`, `dist`, `vendor`, `bin`, and `obj` are deliberately never matched
+- Write-ahead apply journal at `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored): an attempt record before every deletion or fixed-argv command and a result record after; an unwritable journal blocks the apply, and `devtrim history [--limit N] [--json]` renders records, flagging attempts without results as interrupted
+- `protect` config list: user-declared paths that the deletion sink refuses and previews filter out; entries expand `~`, must be absolute, and malformed entries fail closed
+- Liveness guards: `node-modules` and `artifacts` skip and refuse repos owning the working directory of a running build or package process, and `xcode` refuses DerivedData while `xcodebuild` runs; a probe that cannot complete blocks instead of passing
+- `devtrim completions <bash|zsh|fish>` and `devtrim manpage`; both refuse `--json` with the standard error envelope
+- Fuzz targets for the deletion-path validator, path normalizer, Docker size parser, and config parser join the documented local release gates
+- Homebrew tap `mneves75/devtrim` installs the attested release binary with generated completions and man page
+
+### Security
+- Independent pre-release reviews found and fixed a set of `protect` weaknesses before any release shipped: matching is now Unicode-normalization-insensitive (NFC config entries protect NFD on-disk names, the common macOS state), deleting an ancestor of a protected entry is refused, symlinked entries also match their resolved location, unresolved entries warn instead of failing quietly, and Trash purge previews filter protected items
+- The stale-repository gate clears ambient `GIT_DIR`/`GIT_WORK_TREE`-style variables so an inherited environment cannot make an active repo read as stale, and the ambiguous artifact-name denylist matches ASCII case variants (`Build`, `DIST`) before any positive evidence is considered
+- A journal write that fails after a successful deletion keeps the summary truthful while surfacing the failure in `errors` with a nonzero exit, and `history` exits nonzero when journal lines were skipped so a partial audit is never silent
 
 ### Changed
-- The landing-page demo video now shows the v0.4.0 Ratatui interface — menu risk labels, preview, data-loss confirmation, and apply outcome — with a matching transcript and caption; the file stays video-only with no silent audio stream
+- The TUI menu adds Build artifacts and opens entries by their listed key; iCloud status moved to `i`
+- Stdout writes tolerate a closed pipe, so `devtrim … | head` ends quietly instead of aborting
+- The landing-page demo video shows the v0.4.0 Ratatui interface with a matching transcript and caption; the file stays video-only with no silent audio stream
 
-[0.4.1]: https://github.com/mneves75/devtrim/compare/v0.4.0...HEAD
+[0.5.0]: https://github.com/mneves75/devtrim/compare/v0.4.0...v0.5.0
 
 ## [0.4.0] - 2026-08-25
 

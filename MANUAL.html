@@ -413,7 +413,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.4.0</span>
+    <span class="chip g">v0.5.0</span>
     <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
@@ -443,10 +443,16 @@
 <!-- ============ 02 INSTALL ============ -->
 <section id="install" aria-labelledby="h-install">
   <h2 id="h-install"><span class="num">02</span> Install &amp; build</h2>
+  <p>With Homebrew (installs the attested release binary plus completions and man page):</p>
+  <pre data-copy="safe"><code>brew install mneves75/devtrim/devtrim</code></pre>
+  <p>Or build from source:</p>
   <pre data-copy="safe"><code>git clone https://github.com/mneves75/devtrim
 cd devtrim
 cargo build --release --locked
 cargo test --locked</code></pre>
+  <p>Manual installs can generate shell integration directly:</p>
+  <pre data-copy="safe"><code>devtrim completions zsh   # bash | zsh | fish
+devtrim manpage</code></pre>
   <p>No runtime dependencies beyond macOS itself. The current arm64 release build is about 1.5&nbsp;MB and self-contained:</p>
   <pre data-copy="safe"><code>cp target/release/devtrim /usr/local/bin/
 devtrim --version</code></pre>
@@ -491,6 +497,10 @@ devtrim clean caches</code></pre>
     <div class="card-body"><p>Read-only report across every category: sizes, notes, danger levels. Add <code>--json</code> for machine output.</p></div>
   </details>
   <details class="card">
+    <summary><span class="cmd-name">history</span><span class="cmd-desc">recent journaled applies</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>LOW</span></summary>
+    <div class="card-body"><p>Read-only view of the write-ahead apply journal: what was attempted, what completed, what errored. An attempt without a result is flagged as <em>interrupted</em>. <code>--limit N</code> bounds output; <code>--json</code> emits one <code>{"operation":"history","entries":[…]}</code> document.</p></div>
+  </details>
+  <details class="card">
     <summary><span class="cmd-name">icloud</span><span class="cmd-desc">big queued uploads, local-materialization %</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>LOW</span></summary>
     <div class="card-body"><p>Files ≥ 100 MB queued in iCloud Drive Documents, with how much remains local. Eviction only succeeds after iCloud marks a file uploaded — this tells you when to try.</p></div>
   </details>
@@ -503,6 +513,10 @@ devtrim clean caches</code></pre>
   <details class="card">
     <summary><span class="cmd-name">node-modules</span><span class="cmd-desc">exact paths in conclusively stale repos</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
     <div class="card-body"><p>Maps each <code>node_modules</code> to its owning Git repo, skips recent commits, and applies only the exact paths shown. Unknown Git activity is refused. Dependency and <code>.git</code> trees are not traversed.</p></div>
+  </details>
+  <details class="card">
+    <summary><span class="cmd-name">artifacts</span><span class="cmd-desc">corroborated build artifacts in stale repos</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
+    <div class="card-body"><p>Deletes a directory only when its name is on a closed list <strong>and</strong> its ecosystem corroborates it: <code>target</code> beside <code>Cargo.toml</code>, <code>.venv</code> containing <code>pyvenv.cfg</code>, <code>Pods</code> beside <code>Podfile</code>, <code>.next</code>-family beside <code>package.json</code>, <code>.gradle</code> beside its build files, <code>.build</code> beside <code>Package.swift</code>, tool caches, or a directory carrying an exact <code>CACHEDIR.TAG</code> signature — always inside a conclusively stale Git repo. Ambiguous names (<code>build</code>, <code>dist</code>, <code>vendor</code>, <code>bin</code>, <code>obj</code>) are never matched. Corroboration, staleness, and build-process liveness are re-verified at apply.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">xcode</span><span class="cmd-desc">DeviceSupport + DerivedData</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
@@ -548,6 +562,9 @@ devtrim clean caches</code></pre>
       <tr><td data-th="Layer">Danger gate</td><td data-th="Rule">every interactive mutation confirms; critical plans require typed input (see <a href="#danger">§06</a>)</td><td data-th="Bypass"><code>-y</code> skips y/N only; <code>--yolo</code> skips interactive prompts, never operation-specific acknowledgments</td></tr>
       <tr><td data-th="Layer">TUI approval</td><td data-th="Rule">a typed approval must match the current preview and danger requirement</td><td data-th="Bypass"><strong>nothing</strong>; CLI bypass flags are rejected</td></tr>
       <tr><td data-th="Layer">Protected paths</td><td data-th="Rule">hard denylist below</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
+      <tr><td data-th="Layer">Protect config</td><td data-th="Rule">user-listed <code>protect</code> paths are refused at the sink and filtered from previews</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
+      <tr><td data-th="Layer">Liveness guard</td><td data-th="Rule">repos owning a running build process, and DerivedData under a running <code>xcodebuild</code>, are refused; probe failure blocks</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
+      <tr><td data-th="Layer">Apply journal</td><td data-th="Rule">write-ahead attempt/result records surround every deletion; an unwritable journal blocks apply</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Non-TTY guard</td><td data-th="Rule">piped runs refuse mutation without explicit consent</td><td data-th="Bypass">explicit flag</td></tr>
     </tbody>
   </table></div>
@@ -596,8 +613,9 @@ only the exact children from the displayed preview are eligible</code></pre>
   <h2 id="h-config"><span class="num">07</span> Configuration</h2>
   <p>Optional file at <code>~/.config/devtrim.toml</code>:</p>
   <pre data-copy="none" tabindex="0"><code>roots = ["~/dev", "~/sandbox"]   # scan roots (default: ~/dev)
-active_days = 30                 # commit recency defining "active" repos</code></pre>
-  <p>CLI <code>--root</code> flags override config roots entirely. Unknown keys are rejected so a misspelled safety setting cannot appear active.</p>
+active_days = 30                 # commit recency defining "active" repos
+protect = ["~/dev/keep"]         # never delete these paths or their children</code></pre>
+  <p>CLI <code>--root</code> flags override config roots entirely. Unknown keys are rejected so a misspelled safety setting cannot appear active. <code>protect</code> entries expand <code>~</code>, must be absolute, and are enforced deny-only at the deletion sink; a relative or malformed entry is an error.</p>
 </section>
 
 <!-- ============ 08 AGENTS ============ -->
@@ -624,7 +642,8 @@ active_days = 30                 # commit recency defining "active" repos</code>
     <li>actions are typed as <code>trash</code>, <code>shred</code>, <code>command</code>, <code>info</code>, or <code>none</code>; command argv is never parsed from display text</li>
     <li><code>"info"</code> / <code>"none"</code> items must never trigger mutation logic</li>
   </ul>
-  <div class="note">Pair with an <code>AGENTS.md</code> rule: “run <code>devtrim scan --json</code> before proposing disk changes; propose <code>devtrim clean …</code> rather than raw <code>rm</code>.”</div>
+  <p><code>devtrim history --json</code> emits its own single document — <code>{"operation":"history","entries":[…],"errors":[…]}</code> — where each entry carries numeric <code>ts</code>, <code>phase</code>, <code>op</code>, <code>action</code>, and either <code>target</code> or the exact <code>argv</code>. Agents can audit exactly what a previous apply attempted and what completed; an attempt without a result means the process was interrupted mid-apply.</p>
+  <div class="note">Pair with an <code>AGENTS.md</code> rule: “run <code>devtrim scan --json</code> before proposing disk changes; propose <code>devtrim clean …</code> rather than raw <code>rm</code>; audit with <code>devtrim history --json</code>.”</div>
 </section>
 
 <!-- ============ 09 RECIPES ============ -->
@@ -636,6 +655,7 @@ active_days = 30                 # commit recency defining "active" repos</code>
     <li><p><code>devtrim scan</code> <span class="dim">— eyeball the landscape. No flags, no risk.</span></p></li>
     <li><p><code>devtrim clean caches --apply -y</code> <span class="dim">— regenerable caches go to Trash.</span></p></li>
     <li><p><code>devtrim clean node-modules</code> <span class="dim">— review stale repos first, then rerun with <code>--apply -y</code>.</span></p></li>
+    <li><p><code>devtrim clean artifacts</code> <span class="dim">— corroborated build artifacts in the same stale repos; preview, then <code>--apply -y</code>.</span></p></li>
     <li><p><code>devtrim clean xcode --apply -y</code> <span class="dim">— DeviceSupport + DerivedData.</span></p></li>
     <li><p><code>df -h /System/Volumes/Data</code> <span class="dim">— verify. Trash still holds the safety net.</span></p></li>
   </ol>
@@ -673,6 +693,10 @@ active_days = 30                 # commit recency defining "active" repos</code>
     <div class="card-body"><p>Both stdin and stdout must be terminals. Use an explicit command such as <code>devtrim scan --json</code> in scripts, pipes, CI, or agent workflows.</p></div>
   </details>
 
+  <details class="card"><summary><span class="cmd-name">skipping … because a build process is active</span></summary>
+    <div class="card-body"><p>A running build or package process has its working directory inside that repo, or <code>xcodebuild</code> is running. Finish or stop the build and re-run. If the probe itself fails, devtrim blocks instead of guessing — that is the guard working.</p></div>
+  </details>
+
   <details class="card"><summary><span class="cmd-name">refusing protected path</span></summary>
     <div class="card-body"><p>A root or computed target intersects the denylist. Check config <code>roots</code>; remember <code>--root ~</code> makes nearly everything protected-by-design.</p></div>
   </details>
@@ -687,7 +711,7 @@ active_days = 30                 # commit recency defining "active" repos</code>
 </section>
 
 <footer>
-  <span>devtrim <b>v0.4.0</b></span>
+  <span>devtrim <b>v0.5.0</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

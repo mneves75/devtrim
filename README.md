@@ -8,11 +8,17 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.4.0.
+This source tree and its packaged documentation describe devtrim v0.5.0.
 
 ## Install
 
-Download the Apple silicon archive for the version you intend to run from
+With Homebrew:
+
+```bash
+brew install mneves75/devtrim/devtrim
+```
+
+Or download the Apple silicon archive for the version you intend to run from
 [GitHub Releases](https://github.com/mneves75/devtrim/releases), then verify it
 with the included checksum:
 
@@ -34,7 +40,9 @@ cp target/release/devtrim /usr/local/bin/
 - **Preview by default.** Every mutation, including `trash-empty`, requires `--apply`.
 - **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets.
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
-- **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, and failed owner commands block mutation.
+- **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation.
+- **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while `xcodebuild` runs. A probe that cannot complete blocks instead of passing.
+- **Write-ahead journal.** Every apply records an attempt line before deletion and a result line after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). If the journal cannot be written, the apply refuses to run. `devtrim history` shows recent records; an attempt without a result is reported as interrupted.
 - **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
   - 1–8: y/N prompt (`-y` skips it); non-TTY apply needs `-y`/`--yolo`
   - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
@@ -69,6 +77,7 @@ devtrim scan                              # full read-only report
 devtrim scan --json                       # one machine-readable envelope
 devtrim clean caches --apply -y           # HF/uv/npm/brew/node download caches
 devtrim clean node-modules --apply -y     # exact paths in conclusively stale Git repos
+devtrim clean artifacts --apply -y        # corroborated build artifacts in stale Git repos
 devtrim clean simulators --apply -y       # delete unavailable devices only
 devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData children
 devtrim clean docker --apply -y           # unused images + build cache; never volumes
@@ -77,7 +86,17 @@ devtrim clean leftovers                   # report-only hints; never deletes wor
 devtrim icloud                            # large queued iCloud uploads
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
 devtrim trash-empty --confirm=14 --apply  # perform the verified purge
+devtrim history                           # recent journaled applies; --json for one document
+devtrim completions zsh                   # shell completion script (bash | zsh | fish)
+devtrim manpage                           # man page in roff format
 ```
+
+`clean artifacts` deletes a directory only when its name is on a closed list
+**and** its ecosystem corroborates it — `target` next to `Cargo.toml`, `.venv`
+containing `pyvenv.cfg`, `Pods` next to `Podfile`, `.next` next to
+`package.json`, a valid `CACHEDIR.TAG` signature, and so on — inside a Git repo
+whose last commit is conclusively stale. Ambiguous names such as `build`,
+`dist`, `vendor`, `bin`, and `obj` are deliberately never matched.
 
 `trash-empty` previews each current top-level Trash item as an exact target.
 Apply consumes only that set; anything moved to Trash after preview remains.
@@ -107,9 +126,19 @@ was absent from the preview.
 ## Config — `~/.config/devtrim.toml`
 
 ```toml
-roots = ["~/dev"]        # scan roots
-active_days = 30         # newer commits make a repo active
+roots = ["~/dev"]                 # scan roots
+active_days = 30                  # newer commits make a repo active
+protect = ["~/dev/keep"]          # never delete these paths or their children
 ```
+
+`protect` entries expand `~`, must be absolute, and are enforced deny-only at
+the single deletion sink — a protected target is refused even if a scanner
+offers it, and previews filter it out with a diagnostic. Relative or malformed
+entries are an error, never silently ignored; an entry that does not resolve to
+an existing path warns loudly. Matching is Unicode-normalization-insensitive
+(NFC config text protects an NFD on-disk name) and ASCII-case-insensitive,
+symlinked entries also protect their resolved location, and deleting an
+ancestor of a protected entry is refused too.
 
 Explicit `--root` flags replace config/default roots. Existing roots are resolved
 before preview. An unreadable, malformed, or unknown config field is an error; devtrim never
@@ -130,6 +159,22 @@ JSON mode returns one envelope, including empty and failed results:
 
 Applied commands additionally include `summary`. If a later target fails, the summary retains earlier successful work, `errors` explains the stop, and the process exits nonzero. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string.
 
+`devtrim history --json` emits its own single document —
+`{"operation":"history","entries":[…],"errors":[…]}` — where each entry is a
+journal record with numeric `ts`, `phase`, `op`, `action`, and either `target`
+or the exact `argv`. `completions` and `manpage` have no JSON form and return
+the standard error envelope when `--json` is passed.
+
+### For agents
+
+devtrim is built to be operated by automation and AI agents without ambiguity:
+every invocation emits exactly one JSON document, actions are typed rather than
+parsed from display strings, partial failure exits nonzero with earlier work
+reported, mutation always requires explicit `--apply` plus explicit consent
+flags, and every apply leaves a write-ahead journal an agent can audit with
+`devtrim history --json`. Nothing devtrim does depends on parsing human-facing
+output.
+
 ## Safety model
 
 | Layer | Rule |
@@ -144,6 +189,9 @@ Applied commands additionally include `summary`. If a later target fails, the su
 | Command execution | serialized action and private closed authority must match an allowlisted fixed argv variant |
 | Physical path | literal and resolved parent must agree; deny-only resolution |
 | Activity | unknown Git/toolchain ownership is ineligible |
+| Liveness | a repo owning a running build process, or DerivedData under a running `xcodebuild`, is refused; probe failure blocks |
+| Protect config | user-listed `protect` paths are refused at the deletion sink and filtered from previews |
+| Journal | a write-ahead attempt/result record precedes and follows every deletion; an unwritable journal blocks apply |
 | Measurement | incomplete traversal, metadata, or numeric state blocks an actionable plan |
 | Automation | one JSON document; partial/failed work returns nonzero |
 | Terminal output | control and bidirectional-control characters are escaped before rendering |

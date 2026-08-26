@@ -11,6 +11,7 @@ default features disabled; do not enable its optional layout cache without a new
 - Test: `cargo test --locked --all-targets --all-features`
 - MSRV: `rustup run 1.88.0 cargo test --locked --all-targets --all-features`
 - Audit: `cargo audit`
+- Fuzz (local release gate, nightly): with the nightly toolchain's bin dir first on PATH (`PATH="$(dirname "$(rustup which cargo --toolchain nightly)"):$HOME/.cargo/bin:$PATH"`), run `cargo fuzz run <target> -- -max_total_time=60` for each target in `fuzz/fuzz_targets/`. A standalone stable cargo earlier on PATH breaks cargo-fuzz's inner build.
 - Video: `cd video && npm ci && npm audit --package-lock-only --audit-level=low && npm run lint && npm run format:check && npm run build`
 - Build: `cargo build --release --locked --target aarch64-apple-darwin`
 - Site/manual: `python3 -m http.server 4173`, then open `/index.html` or `/MANUAL.html`
@@ -28,6 +29,12 @@ default features disabled; do not enable its optional layout cache without a new
 - Never add shell-string execution; use `Command::new` with fixed arg arrays only.
 - Only `Finding::command` creates command authority from the closed `CommandAuthority` enum; apply verifies that capability and its serialized `Action` before fixed-argument execution.
 - Docker volumes are never pruned. Xcode Archives are never pruned.
+- `artifacts` matches only its closed corroborated-name list plus valid `CACHEDIR.TAG` signatures; ambiguous names (`build`, `dist`, `out`, `vendor`, `bin`, `obj`, `coverage`) are never added. Corroboration is re-verified at apply.
+- Every deletion and fixed-argv command writes a write-ahead journal record (attempt before, result after) via `src/journal.rs`; an unwritable journal blocks apply. `history` is read-only and emits its own single JSON document.
+- Config `protect` entries are deny-only, enforced inside `validate_path_for_deletion`, and fail closed on malformed input. No flag may bypass them.
+- Liveness probes (`build_process_cwds`, `xcodebuild_running`) use fixed argv `pgrep`/`lsof`; probe failure blocks the affected findings and surfaces as an error, never a silent pass.
+- `completions` and `manpage` write plain stdout and refuse `--json` with the standard error envelope.
+- AGENTS.md and CLAUDE.md must stay byte-identical (release gate compares them).
 - Whole worktrees are never deleted; `leftovers` is report-only.
 - `--json` emits exactly one document; failed/partial operations return nonzero.
 - User-facing strings are English; size values are estimated logical bytes.

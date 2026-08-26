@@ -38,6 +38,21 @@ Non-negotiable boundaries:
   root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
   Only named managed Library subpaths are eligible.
 - Unknown Git activity or toolchain ownership is not deletion authority.
+- A repo owning the working directory of a running build/package process, and
+  DerivedData while `xcodebuild` runs, are refused. Liveness probes use fixed
+  argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
+- User-configured `protect` paths are refused at the deletion sink (literal and
+  resolved, ASCII-case-insensitive and Unicode-normalization-insensitive, so
+  NFC config text still protects NFD on-disk names) and filtered from previews;
+  malformed entries are a configuration error and unresolved entries warn.
+- Every deletion and fixed-argv command is journaled write-ahead (attempt
+  before, result after) to a mode-0600 file in a mode-0700 state directory; an
+  unwritable journal blocks the apply. `history` renders records read-only and
+  reports attempts without results as interrupted.
+- `artifacts` requires both a closed directory-name list with ecosystem
+  corroboration (or an exact `CACHEDIR.TAG` signature) and a conclusively stale
+  owning Git repo; corroboration, ownership, staleness, and liveness are all
+  re-verified at apply time.
 - Incomplete directory traversal, metadata, or numeric parsing is not size authority for an actionable plan.
 - Unknown configuration fields are rejected so a misspelled safety setting cannot appear active.
 - Docker volumes and Xcode Archives are never pruned.
@@ -65,8 +80,13 @@ Non-negotiable boundaries:
 10. **Truthful measurement** — traversal, metadata, numeric parsing, and overflow
    errors block actionable plans rather than producing partial estimates.
 11. **Terminal-safe presentation** — control characters are escaped before human rendering and never parsed back into deletion authority.
-12. **Regression gates** — macOS CI runs format, strict Clippy, tests, MSRV tests,
-   dependency audit, a positive-control structural deletion-sink lint, and an explicit arm64 release build.
+12. **Liveness guards** — running build processes (by working directory) and a
+   running `xcodebuild` block the affected repo or DerivedData targets, failing
+   closed when the probe itself fails.
+13. **Write-ahead journal** — attempt/result records surround every deletion and
+   fixed-argv command; the apply refuses to run if it cannot record.
+14. **Regression gates** — macOS CI runs format, strict Clippy, tests, MSRV tests,
+   dependency audit, a positive-control structural deletion-sink lint, and an explicit arm64 release build. Local release gates additionally run bounded fuzzing of the path validator, normalizer, and parsers.
 
 ## Supply chain
 

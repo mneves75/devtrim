@@ -25,7 +25,8 @@ The easy mistake is to confuse “previewed” with “authorized forever.” Ap
 rechecks facts that can change: Git activity, toolchain references, cache
 namespace, and physical path safety. If the second target fails after the first
 succeeds, `ApplyOutcome` reports the first success, includes the error, stops,
-and exits nonzero. Trash is the recovery mechanism; there is no rollback journal.
+and exits nonzero. Trash is the recovery mechanism; the apply journal is an
+audit trail of what was attempted and what completed, not a rollback engine.
 
 The 0.2.x lesson was sharp: six tests existed, but none touched the protected
 deletion sink, and the MSRV note described a gate that had not executed. In
@@ -100,6 +101,22 @@ The compact keyboard menu is behaviorally inspired by
 [Mole](https://github.com/tw93/mole), not ported from it. Mole is GPL-3.0;
 devtrim remains Apache-2.0 and uses original Rust code over Ratatui. No Mole
 source, tests, or visual assets are copied into this repository.
+
+0.5.0 exists because of a comparison audit against Mole's public incident
+record. Mole's 2026 data-loss bugs shared one root: safety rails wired
+per-script, where one entry point can forget the whitelist. devtrim answered
+with features that all route through the existing choke points. `artifacts` is
+`node_modules` generalized — a closed name list that additionally demands
+ecosystem corroboration (`target` beside `Cargo.toml`, `.venv` containing
+`pyvenv.cfg`, an exact `CACHEDIR.TAG` signature) so an unlucky name alone is
+never authority, and ambiguous names like `build` and `dist` are refused on
+principle. The `protect` config list is enforced inside
+`validate_path_for_deletion` itself, so no future op can forget it. The
+write-ahead journal brackets every deletion with an attempt record and a
+result record; if the journal cannot be written, the apply refuses to run,
+because a safety tool that cannot remember what it did should not act.
+Liveness guards ask `pgrep`/`lsof` whether a build owns the repo before
+touching it, and a probe that fails blocks rather than passes.
 
 The first implementation used Ratatui 0.29 to preserve Rust 1.85, but its
 mandatory `lru 0.12.5` dependency later failed the 2026 security review with two
