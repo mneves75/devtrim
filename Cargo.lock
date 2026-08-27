@@ -401,6 +401,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
  "trash",
  "unicode-normalization",

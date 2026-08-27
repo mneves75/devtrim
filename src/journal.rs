@@ -444,13 +444,26 @@ fn open_history_generation(location: &JournalLocation, leaf: &OsStr) -> io::Resu
 }
 
 fn open_regular_at(parent: &File, leaf: &OsStr, flags: OFlags, mode: Mode) -> io::Result<File> {
-    let fd = openat(
-        parent,
-        leaf,
-        flags | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        mode,
-    )
-    .map_err(io::Error::from)?;
+    let open_file = || {
+        openat(
+            parent,
+            leaf,
+            flags | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            mode,
+        )
+        .map_err(io::Error::from)
+    };
+    let fd = match open_file() {
+        Ok(fd) => fd,
+        Err(error) if flags.contains(OFlags::CREATE) && error.kind() == io::ErrorKind::NotFound => {
+            // Darwin can transiently report ENOENT when processes race to
+            // create the same leaf. Retry only on the anchored parent fd;
+            // a removed parent remains unavailable and still fails closed.
+            std::thread::yield_now();
+            open_file()?
+        }
+        Err(error) => return Err(error),
+    };
     let file = File::from(fd);
     if !file.metadata()?.is_file() {
         return Err(io::Error::new(
@@ -1451,12 +1464,42 @@ mod tests {
     }
 
     fn append_writer_records(path: &Path, writer: &str) {
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            protect: Vec::new(),
+            journal_path: path.to_path_buf(),
+            home: path.parent().unwrap().to_path_buf(),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
         for sequence in 0..50 {
             let target = PathBuf::from(format!("/tmp/writer-{writer}-{sequence}"));
-            let attempt = JournalRecord::filesystem_attempt("caches", "trash", &target, 4);
-            append_to_path(path, &attempt).unwrap();
+            let record = JournalRecord::filesystem_attempt("caches", "trash", &target, 4);
+            let attempt = begin(&ctx, record).unwrap_or_else(|error| {
+                panic!(
+                    "writer {writer} pid {} attempt {sequence} begin at {} failed: {error:#}; parent_exists={}; journal_exists={}",
+                    std::process::id(),
+                    path.display(),
+                    path.parent().is_some_and(Path::exists),
+                    path.exists()
+                )
+            });
             std::thread::yield_now();
-            append_to_path(path, &JournalRecord::result(&attempt, &Ok(()))).unwrap();
+            attempt.finish(&ctx, Ok(())).unwrap_or_else(|error| {
+                panic!(
+                    "writer {writer} pid {} result {sequence} finish at {} failed: {error:#}; parent_exists={}; journal_exists={}",
+                    std::process::id(),
+                    path.display(),
+                    path.parent().is_some_and(Path::exists),
+                    path.exists()
+                )
+            });
         }
     }
 
@@ -1471,21 +1514,31 @@ mod tests {
 
     #[test]
     fn concurrent_writers_preserve_every_record() {
-        let root = temp("concurrent-writers");
-        let path = root.join("journal.jsonl");
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-journal-concurrent-writers-")
+            .tempdir()
+            .unwrap();
+        let path = root.path().canonicalize().unwrap().join("journal.jsonl");
         let executable = std::env::current_exe().unwrap();
-        let mut child = std::process::Command::new(&executable)
+        let child = std::process::Command::new(&executable)
             .arg("--exact")
             .arg("journal::tests::concurrent_writer_child")
             .arg("--ignored")
             .arg("--nocapture")
             .env("DEVTRIM_TEST_JOURNAL_PATH", &path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
         append_writer_records(&path, "parent");
-        assert!(child.wait().unwrap().success());
+        let child_output = child.wait_with_output().unwrap();
+        assert!(
+            child_output.status.success(),
+            "child writer failed with {}\nstdout:\n{}\nstderr:\n{}",
+            child_output.status,
+            String::from_utf8_lossy(&child_output.stdout),
+            String::from_utf8_lossy(&child_output.stderr)
+        );
 
         let contents = std::fs::read_to_string(&path).unwrap();
         let lines = contents.lines().collect::<Vec<_>>();
@@ -1504,6 +1557,5 @@ mod tests {
                 .iter()
                 .all(|record| record.status.as_deref() == Some("ok"))
         );
-        crate::ops::remove_test_path(root);
     }
 }

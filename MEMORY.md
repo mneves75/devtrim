@@ -20,8 +20,13 @@ final 60-second fuzz targets have passed. The blocker re-review is clear. Two P3
 autoreview rounds found four verified P2 issues; all were fixed with focused
 regressions. The final independent security review approved the release gate
 with no P0/P1; its P2 legacy cross-generation journal pairing and P3 live
-history-snapshot findings were also fixed and proved. Commit/CI and beta staging
-remain before production approval.
+history-snapshot findings were also fixed and proved. Candidate commits are
+pushed and exact-commit CI passed at `bf07ad0`. Beta1 and beta2 both failed
+before publication: first on an unsupported hosted settings check, then on a
+reproduced Darwin concurrent first-create journal race. The latter now has a
+single descriptor-anchored `O_CREAT`-only retry plus production-path
+multiprocess regression coverage; commit, exact CI, and beta3 staging remain
+before production approval.
 
 ## Decisions
 

@@ -39,3 +39,4 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 
 [dev-dependencies]
 proptest = "1.11"
+tempfile = "3.27"
