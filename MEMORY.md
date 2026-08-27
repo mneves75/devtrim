@@ -2,12 +2,12 @@
 
 ## Current state
 
-devtrim 0.5.0 is the immutable production release (commit `053c9fd`), promoting
-the exact attested `v0.5.0-beta1` arm64 archive; stable and beta bytes match
-(`dc58f370…`). 0.5.0 closed the Mole-audit gaps: `clean artifacts`, `protect`
-config, write-ahead journal + `history`, liveness guards, completions/manpage,
-lib/bin split with five cargo-fuzz targets, Homebrew tap
-`mneves75/homebrew-devtrim`. The 0.5.1 Unreleased line is open.
+devtrim 0.6.0 is the immutable production release (commit `d05c0ed`), promoting
+the exact attested `v0.6.0-beta1` archive (`e8028136…`). 0.6.0 anchored the
+deletion sink (cap-std parent handle, preview-time device/inode, quarantine +
+handle-bound recursive delete for permanent mode), added `largest`, journal
+rotation under a rustix flock, explicit ad-hoc codesign in the release
+workflow, and the refreshed demo video. The 0.6.1 Unreleased line is open.
 
 ## Decisions
 
@@ -64,6 +64,7 @@ ancestor/symlink bypasses and GIT_DIR stale-gate poisoning), full
 Rust/MSRV/npm/workflow/security gates, five bounded fuzz runs, a real PTY TUI
 pass, exact-commit CI, staged-binary smoke tests, and exact-byte production
 promotion. Apple signing/notarization (softened by brew distribution) and the
-documented pathname TOCTOU limitation remain explicit follow-ups. The demo
-video still shows the v0.4.0 menu (no Build artifacts entry) — refresh it in
-0.5.x. Journal rotation is unbounded by design for now.
+documented pathname TOCTOU limitation remain explicit follow-ups. Notarization
+remains blocked on notarytool credentials (Developer ID cert exists locally;
+runbook in SECURITY.md). Residual path-based windows (parent resolution,
+Trash, single-entry unlink) are documented, not hidden.
