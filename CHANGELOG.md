@@ -4,6 +4,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [0.6.2] - Unreleased
 
+### Changed
+- Production release closeout now re-verifies the immutable artifact, updates and audits the Homebrew tap, upgrades the maintainer installation, and proves the sole `/opt/homebrew/bin/devtrim` reports the released version
+
 [0.6.2]: https://github.com/mneves75/devtrim/compare/v0.6.1...HEAD
 
 ## [0.6.1] - 2026-08-27

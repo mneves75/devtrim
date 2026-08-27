@@ -155,13 +155,18 @@ history tail needed for the requested output, reconciles legacy pairs across
 rotations, waits for live guarded applies, and makes `history` genuinely
 read-only.
 
-The release chain applies the same authority separation. The local script that
-has permission to tag does only provenance checks; it never runs Cargo, npm, or
-repository scripts. Read-only hosted jobs rerun deterministic gates, both
+The release chain applies the same authority separation. Before tagging, the
+local script does only provenance checks; it never runs Cargo, npm, or the
+product in that privileged preflight. Read-only hosted jobs rerun deterministic gates, both
 dependency audits, all five fuzzers, PTY/UI, video, and secret scans. Only after
 they pass does a job with no source checkout receive release-write and OIDC
 authority. Production still promotes the exact immutable beta archive, so
 reviewing one sealed crate cannot accidentally ship a newly packed lookalike.
+Only then does the local closeout update Homebrew: it verifies the sealed crate
+again, changes the tap's formula URL and checksum without rewriting its body,
+pushes normally, and refuses to run the local upgrade unless the tap still
+points at that exact commit. A failed closeout is resumed with the idempotent
+Homebrew helper; neither the production tag nor release is moved.
 
 The first implementation used Ratatui 0.29 to preserve Rust 1.85, but its
 mandatory `lru 0.12.5` dependency later failed the 2026 security review with two

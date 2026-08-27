@@ -219,7 +219,8 @@ cargo audit --file fuzz/Cargo.lock
 cargo build --release --locked --target aarch64-apple-darwin
 (cd video && npm ci --strict-allow-scripts && npm audit --package-lock-only --audit-level=low && npm run lint && npm run format:check && npm run build)
 bash scripts/tests/release-policy.sh
-bash -n scripts/release.sh scripts/tests/release-policy.sh && shellcheck scripts/release.sh scripts/tests/release-policy.sh && actionlint
+bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
+shellcheck scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh && actionlint
 gitleaks git --redact --no-banner .
 trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color
 ```
@@ -228,13 +229,21 @@ See [`SECURITY.md`](SECURITY.md) for the threat model and reporting process.
 Release notes live in [`CHANGELOG.md`](CHANGELOG.md). After committing and
 pushing a version bump, enable GitHub immutable releases and run
 `scripts/release.sh <version>-beta<N>` for staging. Each retry uses a new
-counter. Run the local gates and P3 autoreview before committing. The script
-then performs only clean-tree, current-default-branch, exact-CI/autoreview, and
-immutable-release provenance checks before pushing an annotated tag; it never
-executes project or dependency code beside release credentials. Hosted
+counter. Run the local gates and P3 autoreview before committing. Before
+tagging, the script performs only clean-tree, current-default-branch,
+exact-CI/autoreview, and immutable-release provenance checks; it does not run
+project or dependency code in that privileged preflight. Hosted
 read-only jobs rerun the deterministic, fuzz, dependency, UI, video, and secret
 gates and build the arm64 archive. A no-checkout publisher alone receives
 release-write and OIDC authority, signs provenance, publishes the immutable
 prerelease, and verifies the downloaded asset. Production uses
 `scripts/release.sh <version>`; the workflow promotes the exact highest
 verified beta artifact from the same commit without rebuilding it.
+After the production release and attestation verify, the same script invokes
+the idempotent `scripts/update-homebrew.sh <version>` closeout. It validates the
+exact archive and checksum again, updates only `Formula/devtrim.rb` in
+`mneves75/homebrew-devtrim` with a normal push, audits the updated tap, upgrades
+the existing local formula, runs its test, and requires the only visible binary
+to be `/opt/homebrew/bin/devtrim` at the released version. Beta releases never
+touch Homebrew. If this post-release step fails, rerun the helper directly; the
+immutable GitHub release and tag are not moved or reused.

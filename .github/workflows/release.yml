@@ -200,8 +200,8 @@ jobs:
       - name: Release policy, shell, and workflow gates
         run: |
           bash scripts/tests/release-policy.sh
-          bash -n scripts/release.sh scripts/tests/release-policy.sh
-          shellcheck scripts/release.sh scripts/tests/release-policy.sh
+          bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
+          shellcheck scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
           actionlint
           cmp -s AGENTS.md CLAUDE.md || {
             echo "ERROR: AGENTS.md and CLAUDE.md differ"

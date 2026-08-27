@@ -122,11 +122,17 @@ Non-negotiable boundaries:
   and Actions weekly.
 - Ratatui 0.30.2 and Crossterm 0.29 require Rust 1.88. Default Ratatui features stay disabled, including the optional layout cache; the graph resolves patched `lru 0.18.2` instead of the `0.12.5` affected by RUSTSEC-2026-0002 and RUSTSEC-2026-0253.
 - Hosted release builds produce SHA-256 checksums, the full Apache-2.0 license, and signed artifact provenance.
-- Repository and dependency code runs only in read-only validation, fuzz, and
-  release-preparation jobs. A separate publisher downloads packaged inputs,
+- Hosted repository and dependency code runs only in read-only validation,
+  fuzz, and release-preparation jobs. A separate publisher downloads packaged inputs,
   never checks out or compiles the repository, and alone holds release-write
   and OIDC permissions.
 - GitHub releases and their tags/assets are immutable. Production promotes the exact verified beta archive from the same commit instead of rebuilding it.
+- Production closeout independently re-verifies that immutable archive,
+  checksum manifest, GitHub asset digest, and attestation before changing the
+  Homebrew tap. The helper permits one formula-file commit through a normal
+  push, pins local validation to that exact tap commit, scrubs GitHub credential
+  variables from Homebrew execution, and requires strict audit, upgrade, test,
+  and sole-path/version proof.
 - Release preparation runs both Cargo lockfile audits, all five bounded fuzz
   targets, a strict clean npm install plus low-severity audit/lint/format/build
   gates for the demo video, Gitleaks, and TruffleHog; results are recorded in

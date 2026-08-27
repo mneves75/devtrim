@@ -31,6 +31,10 @@ no P0/P1 blocker remained. The 0.6.2 Unreleased line is open.
 - Pathname TOCTOU remains documented rather than overstated as solved.
 - A production release may consume only an immutable, attested beta artifact
   from the same dereferenced commit; production never rebuilds it.
+- The production release script is the sole automatic Homebrew entrypoint. Its
+  idempotent closeout re-verifies the immutable artifact, updates only the tap
+  formula with a normal push, locks local validation to that commit, and proves
+  the existing sole `/opt/homebrew/bin/devtrim` installation. Beta skips it.
 - Actionable size measurement, Docker size parsing, and config schema parsing
   fail closed; partial or ambiguous inputs never become cleanup authority.
 - A failed final-tag workflow never moves the tag. Recovery may publish the
@@ -72,9 +76,11 @@ no P0/P1 blocker remained. The 0.6.2 Unreleased line is open.
 - Permanent recursive deletion performs a complete same-device/Git-marker
   preflight before the first removal, then repeats the checks while consuming
   the quarantined tree through directory handles.
-- Release credentials never share a job with repository or dependency
-  execution. The local tag script is provenance-only; hosted read-only jobs
-  produce the handoff consumed by the no-checkout publisher.
+- Hosted release credentials never share a job with repository or dependency
+  execution. The local pre-tag phase is provenance-only; hosted read-only jobs
+  produce the handoff consumed by the no-checkout publisher. After immutable
+  publication, the local Homebrew closeout uses the authenticated tap boundary
+  and scrubs token environment variables from install/test execution.
 
 ## Next boundary
 

@@ -166,4 +166,13 @@ if [[ "$expected_prerelease" == "true" ]]; then
   attestation_args+=(--source-ref "refs/tags/${tag}")
 fi
 gh attestation verify "$verify_dir/${out}.zip" "${attestation_args[@]}" >/dev/null
+
+if [[ "$expected_prerelease" == "false" ]]; then
+  echo "==> updating Homebrew distribution"
+  if ! scripts/update-homebrew.sh "$ver"; then
+    echo "ERROR: ${tag} is released, but Homebrew publication or local verification failed"
+    echo "ACTION: fix the reported issue, then resume idempotently with scripts/update-homebrew.sh ${ver}"
+    exit 1
+  fi
+fi
 echo "==> released and verified ${tag}"

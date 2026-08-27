@@ -41,7 +41,9 @@ jobs:
           npm --version | grep -Fqx '11.17.0'
 
       - name: Release policy tests
-        run: bash scripts/tests/release-policy.sh
+        run: |
+          bash scripts/tests/release-policy.sh
+          bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
 
       - name: Format
         run: cargo fmt --all -- --check
