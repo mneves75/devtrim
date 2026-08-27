@@ -2,31 +2,22 @@
 
 ## Current state
 
-devtrim 0.6.0 is the immutable production release (commit `d05c0ed`), promoting
-the exact attested `v0.6.0-beta1` archive (`e8028136…`). 0.6.0 anchored the
-deletion sink (cap-std parent handle, preview-time device/inode, quarantine +
-handle-bound recursive delete for permanent mode), added `largest`, journal
-rotation under a rustix flock, explicit ad-hoc codesign in the release
-workflow, and the refreshed demo video. The 0.6.1 release candidate follows.
+devtrim 0.6.1 is the immutable production release (commit `2dcca48`), promoting
+the exact attested `v0.6.1-beta3` archive (`e705cad0…`) without rebuilding it.
+The release makes CLI/JSON outcomes truthful, scanners fail closed, permanent
+deletion refuse nested worktrees and device crossings, journal access
+symlink-safe and process-serialized, history bounded and read-only, and release
+credentials isolated from checked-out code. The production archive and checksum
+were byte-compared with beta3; checksum, SLSA provenance, arm64 architecture,
+ad-hoc code signature, packaged license/docs, and `devtrim 0.6.1` all verified.
 
-The 0.6.1 candidate is locally hardened but not released: truthful JSON/error
-semantics and fail-closed scanners, nested-worktree/device refusal in permanent
-deletion, symlink-safe and process-serialized journaling with read-only bounded
-newest-tail history, and a credential-separated release chain are implemented.
-Rust/MSRV (121 library pass + 1 ignored test helper, 48 CLI pass), both dependency
-audits, structural deletion checks, release-policy/shell/action lint, secret
-scans, npm/video, PTY TUI, arm64 build, real browser desktop/mobile, and all five
-final 60-second fuzz targets have passed. The blocker re-review is clear. Two P3
-autoreview rounds found four verified P2 issues; all were fixed with focused
-regressions. The final independent security review approved the release gate
-with no P0/P1; its P2 legacy cross-generation journal pairing and P3 live
-history-snapshot findings were also fixed and proved. Candidate commits are
-pushed and exact-commit CI passed at `bf07ad0`. Beta1 and beta2 both failed
-before publication: first on an unsupported hosted settings check, then on a
-reproduced Darwin concurrent first-create journal race. The latter now has a
-single descriptor-anchored `O_CREAT`-only retry plus production-path
-multiprocess regression coverage; commit, exact CI, and beta3 staging remain
-before production approval.
+Rust/MSRV (121 library pass + 1 ignored test helper, 48 CLI pass), both
+dependency audits, structural deletion checks, release-policy/shell/action
+lint, secret scans, npm/video, PTY TUI, arm64 build, desktop/mobile browser
+checks, and all five 60-second fuzz targets passed locally and/or in the
+credential-separated hosted gates. Two P3 autoreview rounds and independent
+security reviews had every verified P2/P3 finding fixed with regression proof;
+no P0/P1 blocker remained. The 0.6.2 Unreleased line is open.
 
 ## Decisions
 
@@ -87,11 +78,11 @@ before production approval.
 
 ## Next boundary
 
-0.5.0 and 0.6.0 each passed an independent security review plus structured P3
-autoreview rounds (13 and 7 verified findings respectively, all fixed
-pre-release with regression tests), full Rust/MSRV/npm/workflow/security
-gates, bounded fuzz runs, real PTY TUI passes, exact-commit CI, staged-binary
-smoke tests, and exact-byte production promotion. Notarization
+0.5.0, 0.6.0, and 0.6.1 each passed independent security review plus structured
+P3 autoreview, with every verified release-scope finding fixed before
+publication; full Rust/MSRV/npm/workflow/security gates, bounded fuzz runs,
+real PTY TUI passes, exact-commit CI, staged-binary smoke tests, and exact-byte
+production promotion also passed. Notarization
 remains blocked on notarytool credentials (Developer ID cert exists locally;
 runbook in SECURITY.md). Residual path-based windows (parent resolution,
 Trash, single-entry unlink) are documented, not hidden.

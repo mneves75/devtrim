@@ -2,6 +2,10 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.6.2] - Unreleased
+
+[0.6.2]: https://github.com/mneves75/devtrim/compare/v0.6.1...HEAD
+
 ## [0.6.1] - 2026-08-27
 
 ### Changed
