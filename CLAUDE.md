@@ -30,7 +30,10 @@ default features disabled; do not enable its optional layout cache without a new
 - Only `Finding::command` creates command authority from the closed `CommandAuthority` enum; apply verifies that capability and its serialized `Action` before fixed-argument execution.
 - Docker volumes are never pruned. Xcode Archives are never pruned.
 - `artifacts` matches only its closed corroborated-name list plus valid `CACHEDIR.TAG` signatures; ambiguous names (`build`, `dist`, `out`, `vendor`, `bin`, `obj`, `coverage`) are never added. Corroboration is re-verified at apply.
-- Every deletion and fixed-argv command writes a write-ahead journal record (attempt before, result after) via `src/journal.rs`; an unwritable journal blocks apply. `history` is read-only and emits its own single JSON document.
+- Every deletion and fixed-argv command writes a write-ahead journal record (attempt before, result after) via `src/journal.rs`, synced per record; an unwritable journal blocks apply. Rotation is shift-and-rename at journal-open time only, never truncation, never mid-apply. `history` is read-only, reads rotated files, and emits its own single JSON document.
+- Findings capture preview-time device/inode identity; the sink refuses actionable filesystem findings whose identity is missing or drifted, verifying and deleting through a cap-std parent-directory handle. Trash remains path-based after the identity check (no fd-anchored macOS Trash API) — keep that disclosure accurate.
+- `largest` is report-only visibility: `Action::Info` findings, lenient traversal with disclosed skip counts, never deletion authority, no TUI entry.
+- Demo video: edit `video/src/DevtrimDemo.tsx`, render with `npx remotion render DevtrimDemo ../media/demo.mp4 --overwrite --muted` from `video/`, and verify a menu frame plus a single video stream before shipping.
 - Config `protect` entries are deny-only, enforced inside `validate_path_for_deletion`, and fail closed on malformed input. No flag may bypass them.
 - Liveness probes (`build_process_cwds`, `xcodebuild_running`) use fixed argv `pgrep`/`lsof`; probe failure blocks the affected findings and surfaces as an error, never a silent pass.
 - `completions` and `manpage` write plain stdout and refuse `--json` with the standard error envelope.

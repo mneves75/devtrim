@@ -47,11 +47,13 @@ and published as an immutable release. Production does not rebuild it; it
 promotes the exact verified bytes. Think of staging as inspecting a sealed
 shipping crate, not inspecting one crate and sending a newly packed lookalike.
 
-The remaining honest limitation is pathname TOCTOU. `VerifiedTarget` proves
-the checks ran; it does not hold an open directory descriptor through deletion.
-The threat model assumes a single-user local tool without hostile concurrent
-filesystem mutation. A future capability-filesystem design should close that
-window instead of pretending this type already does.
+Pathname TOCTOU was the honest limitation for three releases, and 0.6.0
+finally anchored it: the sink now holds an open parent-directory handle
+through identity verification and deletion, and permanent deletes quarantine
+the verified entry before removing it. What is still path-based — parent
+resolution and the recoverable move to Trash — is written down in SECURITY.md
+rather than papered over. The threat model still assumes a single-user local
+tool; the difference is how little now depends on that assumption.
 
 Protected roots need special care on macOS's commonly case-insensitive
 filesystems. The shared boundary compares fixed ASCII path components without
@@ -117,6 +119,28 @@ result record; if the journal cannot be written, the apply refuses to run,
 because a safety tool that cannot remember what it did should not act.
 Liveness guards ask `pgrep`/`lsof` whether a build owns the repo before
 touching it, and a probe that fails blocks rather than passes.
+
+0.6.0 attacked the limitation every honest release note had carried: pathname
+TOCTOU. The research trail leads straight through Rust's own CVE-2022-21658 —
+check a path, then delete by path, and an attacker who swaps the path between
+the two steps deletes something else. The fix is the same shape Rust std and
+GNU rm adopted: stop trusting names at deletion time. Every finding now
+remembers its target's device and inode from the moment it was previewed, and
+the sink opens the parent directory as a handle (cap-std), re-reads the
+identity through that handle, and deletes through that same handle. Renaming
+the target after preview no longer redirects the deletion — it refuses it.
+Permanent deletes go one step further: the verified entry is first renamed to
+a private quarantine name nobody else knows, verified again, and only then
+deleted — so even a swap in the microseconds between check and delete hits
+the quarantine wall instead of your data.
+Two things stay path-based, and the docs say so instead of hiding it: parent
+resolution, and the Trash call, because macOS simply has no fd-anchored Trash
+API. The journal also grew up: rotation is shift-and-rename at startup only —
+never truncation, the bash-history mistake — so an in-flight apply's records
+can never be clipped, and each record is synced to disk before devtrim claims
+success. Shipping binaries got an explicit ad-hoc signature in the release
+workflow, and notarization is written down as a credential runbook rather
+than pretended.
 
 The first implementation used Ratatui 0.29 to preserve Rust 1.85, but its
 mandatory `lru 0.12.5` dependency later failed the 2026 security review with two

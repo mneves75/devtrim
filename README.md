@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.5.0.
+This source tree and its packaged documentation describe devtrim v0.6.0.
 
 ## Install
 
@@ -42,7 +42,8 @@ cp target/release/devtrim /usr/local/bin/
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
 - **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation.
 - **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while `xcodebuild` runs. A probe that cannot complete blocks instead of passing.
-- **Write-ahead journal.** Every apply records an attempt line before deletion and a result line after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). If the journal cannot be written, the apply refuses to run. `devtrim history` shows recent records; an attempt without a result is reported as interrupted.
+- **Identity-verified deletion.** Every finding records its target's device/inode at preview; the sink re-checks that identity through an open parent-directory handle and deletes through the same handle. Permanent deletes additionally quarantine the verified leaf under a private unpredictable name, re-verify, and drive recursive deletion through an open handle to the verified directory — binding check to use. A target swapped after preview is refused. Trash calls remain path-based (macOS has no fd-anchored Trash API) with identity re-verified immediately before the recoverable move; that residual window is documented, not denied.
+- **Write-ahead journal.** Every apply records an attempt line before deletion and a result line after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). If the journal cannot be written, the apply refuses to run. `devtrim history` shows recent records; an attempt without a result is reported as interrupted. The journal rotates (10 MiB, keep 3) only at startup by atomic rename — an in-flight apply's records can never be split or truncated.
 - **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
   - 1–8: y/N prompt (`-y` skips it); non-TTY apply needs `-y`/`--yolo`
   - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
@@ -87,6 +88,7 @@ devtrim icloud                            # large queued iCloud uploads
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
 devtrim trash-empty --confirm=14 --apply  # perform the verified purge
 devtrim history                           # recent journaled applies; --json for one document
+devtrim largest --top 20                  # read-only: biggest directories under scan roots
 devtrim completions zsh                   # shell completion script (bash | zsh | fish)
 devtrim manpage                           # man page in roff format
 ```
@@ -184,7 +186,8 @@ output.
 | Trash | recoverable by default; permanent mode is explicit |
 | Danger gate | maximum finding score plus aggregate estimated logical bytes |
 | TUI consent | approval capability must match the current preview and danger requirement |
-| Target identity | exact internal `PathBuf`; display text is never parsed back into authority |
+| Target identity | exact internal `PathBuf` plus preview-time device/inode; display text is never parsed back into authority |
+| Anchored deletion | the sink verifies identity through an open parent-directory handle and deletes through that handle; drift refuses |
 | Deletion sink | only `VerifiedTarget` reaches physical removal; action selects Trash vs. permanent mode |
 | Command execution | serialized action and private closed authority must match an allowlisted fixed argv variant |
 | Physical path | literal and resolved parent must agree; deny-only resolution |

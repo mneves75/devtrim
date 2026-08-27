@@ -413,7 +413,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.5.0</span>
+    <span class="chip g">v0.6.0</span>
     <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
@@ -501,6 +501,10 @@ devtrim clean caches</code></pre>
     <div class="card-body"><p>Read-only view of the write-ahead apply journal: what was attempted, what completed, what errored. An attempt without a result is flagged as <em>interrupted</em>. <code>--limit N</code> bounds output; <code>--json</code> emits one <code>{"operation":"history","entries":[…]}</code> document.</p></div>
   </details>
   <details class="card">
+    <summary><span class="cmd-name">largest</span><span class="cmd-desc">biggest directories under scan roots</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>LOW</span></summary>
+    <div class="card-body"><p>Read-only ranking of the largest depth-≤2 directories under your scan roots (<code>--top N</code>, default 20). Unreadable entries are skipped and disclosed as a count — totals are lower bounds, never deletion authority.</p></div>
+  </details>
+  <details class="card">
     <summary><span class="cmd-name">icloud</span><span class="cmd-desc">big queued uploads, local-materialization %</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>LOW</span></summary>
     <div class="card-body"><p>Files ≥ 100 MB queued in iCloud Drive Documents, with how much remains local. Eviction only succeeds after iCloud marks a file uploaded — this tells you when to try.</p></div>
   </details>
@@ -558,6 +562,7 @@ devtrim clean caches</code></pre>
       <tr><td data-th="Layer">Trash-first</td><td data-th="Rule">filesystem deletes go to <code>~/.Trash</code></td><td data-th="Bypass"><code>--shred</code></td></tr>
       <tr><td data-th="Layer">Typed target</td><td data-th="Rule">only an exact validated path can reach removal; display text has no authority</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Single sink</td><td data-th="Rule">all filesystem removal passes one structurally enforced boundary</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
+      <tr><td data-th="Layer">Identity verification</td><td data-th="Rule">preview-time device/inode is re-verified through an open parent-directory handle before deletion through that handle; drift refuses</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Risk notice</td><td data-th="Rule">every human apply warns that cleanup can cause data loss</td><td data-th="Bypass">JSON remains machine-only</td></tr>
       <tr><td data-th="Layer">Danger gate</td><td data-th="Rule">every interactive mutation confirms; critical plans require typed input (see <a href="#danger">§06</a>)</td><td data-th="Bypass"><code>-y</code> skips y/N only; <code>--yolo</code> skips interactive prompts, never operation-specific acknowledgments</td></tr>
       <tr><td data-th="Layer">TUI approval</td><td data-th="Rule">a typed approval must match the current preview and danger requirement</td><td data-th="Bypass"><strong>nothing</strong>; CLI bypass flags are rejected</td></tr>
@@ -711,7 +716,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
 </section>
 
 <footer>
-  <span>devtrim <b>v0.5.0</b></span>
+  <span>devtrim <b>v0.6.0</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

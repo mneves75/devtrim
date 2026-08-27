@@ -2,9 +2,19 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.5.1] - Unreleased
+## [0.6.0] - 2026-08-27
 
-[0.5.1]: https://github.com/mneves75/devtrim/compare/v0.5.0...HEAD
+### Added
+- Identity-verified, parent-anchored deletion: every finding records its target's device/inode at preview, and the sink re-verifies that identity through an open parent-directory handle (cap-std) and deletes through the same handle — a target renamed or swapped after preview is refused; Trash calls re-verify identity immediately before the path-based call, with the residual window documented
+- `devtrim largest [--top N]`: read-only ranking of the biggest directories under the scan roots, with skipped-entry disclosure and the standard one-document JSON envelope
+- Journal rotation: writer-owned shift-and-rename at startup only (10 MiB, keep 3), never truncation, never mid-apply; history reads rotated files so attempt/result pairs cannot split, and records are synced to disk before an apply reports success
+- The release workflow explicitly ad-hoc signs and verifies the built binary before packaging; Developer ID signing and notarization are documented as a runbook pending CI credentials
+- The structural deletion lint now also blocks method-call deletion primitives (`.remove_file`, `.remove_dir_all`, …) outside the sink, with positive controls
+
+### Changed
+- The landing demo video shows the current interface (Build artifacts entry, `i` for iCloud status) with a version-neutral caption
+
+[0.6.0]: https://github.com/mneves75/devtrim/compare/v0.5.0...v0.6.0
 
 ## [0.5.0] - 2026-08-26
 

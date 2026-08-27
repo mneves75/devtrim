@@ -46,9 +46,15 @@ Non-negotiable boundaries:
   NFC config text still protects NFD on-disk names) and filtered from previews;
   malformed entries are a configuration error and unresolved entries warn.
 - Every deletion and fixed-argv command is journaled write-ahead (attempt
-  before, result after) to a mode-0600 file in a mode-0700 state directory; an
-  unwritable journal blocks the apply. `history` renders records read-only and
-  reports attempts without results as interrupted.
+  before, result after) to a mode-0600 file in a mode-0700 state directory,
+  synced to disk per record; an unwritable journal blocks the apply.
+  `history` renders records read-only and reports attempts without results as
+  interrupted. Rotation is writer-owned, shift-and-rename under an advisory
+  flock that dies with its process, re-checks size while holding the lock,
+  and happens only at journal-open time — never mid-apply, never by
+  truncation; a failed rotation keeps appending rather than losing the
+  record, and history opens the generation set under a shared lock so pairs
+  never split and generations never mix.
 - `artifacts` requires both a closed directory-name list with ecosystem
   corroboration (or an exact `CACHEDIR.TAG` signature) and a conclusively stale
   owning Git repo; corroboration, ownership, staleness, and liveness are all
@@ -72,6 +78,12 @@ Non-negotiable boundaries:
    preview, and apply does not rediscover filesystem targets.
 4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.
 5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission.
+5b. **Anchored identity verification** — the sink re-reads the target's
+   preview-time `(device, inode)` through an open parent-directory handle and
+   deletes through that same handle; identity drift refuses the deletion.
+   Permanent deletes quarantine the verified leaf under a private
+   unpredictable name, re-verify, and drive recursive deletion through an
+   open handle to the verified directory, binding check to use.
 6. **Trash-first recovery** — normal filesystem removal uses macOS Trash.
 7. **Risk, danger, and non-TTY gates** — human apply displays the AS-IS/data-loss notice, every interactive mutation confirms, aggregate size can require typed input, and unattended mutation requires explicit consent.
 8. **TUI authorization** — Ratatui renders the existing findings; a separate typed approval capability must still match that exact plan before the existing `Op::apply` owner runs.
@@ -107,8 +119,17 @@ Non-negotiable boundaries:
   APFS blocks. Clones, sparse files, Trash, and container VM compaction differ.
   The estimate is nevertheless complete for the traversed logical tree: an
   unreadable entry or overflow is an error, not a partial result.
-- The typed target prevents unvalidated and lossy-display paths from reaching removal, but path validation does not hold a directory descriptor through deletion and therefore does not claim a transaction across arbitrary concurrent hostile filesystem mutation. devtrim
-  is a single-user local tool; when identity cannot be proven it refuses.
+- The typed target prevents unvalidated and lossy-display paths from reaching
+  removal. Since 0.6.0 every finding records its target's `(device, inode)`
+  identity at preview, and the sink re-reads that identity through an open
+  parent-directory handle immediately before deleting through the same handle
+  (cap-std's dirfd-anchored implementation — the shape Rust std adopted after
+  CVE-2022-21658). A target renamed or swapped after preview is refused, not
+  followed. What remains path-based, stated plainly: resolving the parent
+  directory itself, and the Trash call (macOS offers no fd-anchored Trash
+  API) — identity is re-verified immediately before it, but removal is not
+  atomic against a concurrent rename in that final window. devtrim is a
+  single-user local tool; when identity cannot be proven it refuses.
 - Some targets skipped because their state could not be proven are reported on
   stderr in explicit CLI mode, not inside the JSON envelope. A JSON consumer
   can therefore see a smaller plan rather than an explicit skip list.
@@ -120,4 +141,20 @@ Non-negotiable boundaries:
   broad timeout/process frameworks are deferred until a measured need exists.
 - `leftovers` is intentionally report-only because worktree or mission
   staleness cannot be proven from names or branch state.
-- Release binaries are checksummed but not currently code-signed or notarized.
+- Release binaries are checksummed and carry an explicit ad-hoc code
+  signature, verified in the release workflow (Apple silicon refuses wholly
+  unsigned binaries; linker-only signatures have field reports of rejection).
+  They are not Developer-ID-signed or notarized. In practice the primary
+  install paths never quarantine — Homebrew formulae and `curl` do not set
+  the quarantine attribute; only browser-downloaded archives trigger
+  Gatekeeper, where right-click-Open or `xattr -d com.apple.quarantine`
+  applies. Enabling notarization is a maintainer credential decision with a
+  documented path: export the local "Developer ID Application" certificate,
+  create `notarytool` credentials, sign with
+  `codesign --options runtime --timestamp` and notarize the archive in a
+  workflow job that never executes repository code (the signing secret must
+  not be exposed to the build job), accepting that a bare Mach-O cannot be
+  stapled, so first launch of a quarantined copy performs an online ticket
+  check. Until those credentials exist in CI, the machinery is deliberately
+  not implemented: an untestable signing path in the release chain is risk,
+  not safety.
