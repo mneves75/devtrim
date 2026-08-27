@@ -74,12 +74,6 @@ jobs:
             exit 1
           }
 
-          immutable_enabled=$(gh api "repos/${GITHUB_REPOSITORY}/immutable-releases" --jq .enabled)
-          [[ "$immutable_enabled" == "true" ]] || {
-            echo "ERROR: GitHub immutable releases must be enabled before release preparation"
-            exit 1
-          }
-
           grep -Fqx "version = \"$base\"" Cargo.toml
           grep -Fq "## [$base]" CHANGELOG.md
           grep -Fq "v$base" README.md
@@ -407,7 +401,7 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      - name: Revalidate publication state and immutable releases
+      - name: Revalidate publication state
         id: state
         shell: bash
         env:
@@ -420,12 +414,6 @@ jobs:
             echo "ERROR: release commit is no longer the current default-branch head"
             exit 1
           }
-          immutable_enabled=$(gh api "repos/${GITHUB_REPOSITORY}/immutable-releases" --jq .enabled)
-          [[ "$immutable_enabled" == "true" ]] || {
-            echo "ERROR: GitHub immutable releases must be enabled before asset publication"
-            exit 1
-          }
-
           release_exists=false
           if existing=$(gh release view "${GITHUB_REF_NAME}" --json isDraft,isImmutable,isPrerelease,tagName); then
             [[ "$(jq -r .isDraft <<<"$existing")" == "false" ]] || {

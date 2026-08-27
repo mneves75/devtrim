@@ -96,8 +96,12 @@ require_fixed "$release_workflow" 'ERROR: fuzz gates changed the checkout'
 [[ "$(grep -c '^    runs-on: macos-15-intel$' "$release_workflow")" -eq 1 ]] ||
   fail "exactly the deterministic gate job must use the Intel runner required by pinned assets"
 
-immutable_checks=$(grep -Fc 'immutable-releases' "$release_workflow")
-[[ "$immutable_checks" -ge 2 ]] || fail "immutable-releases must be checked before preparation and publication"
+require_fixed "$release_script" 'immutable-releases'
+if grep -Fq 'immutable-releases' "$release_workflow"; then
+  fail "GITHUB_TOKEN cannot call the admin-read immutable-release settings endpoint"
+fi
+require_fixed "$release_workflow" '--json isDraft,isImmutable,isPrerelease,tagName'
+require_fixed "$release_workflow" '[[ "$(jq -r .isImmutable <<<"$release_state")" == "true" ]]'
 
 checkout_count=$(grep -Fc 'uses: actions/checkout@' "$release_workflow")
 credentialless_count=$(grep -Fc 'persist-credentials: false' "$release_workflow")
