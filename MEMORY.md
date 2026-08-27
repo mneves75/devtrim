@@ -58,13 +58,11 @@ workflow, and the refreshed demo video. The 0.6.1 Unreleased line is open.
 
 ## Next boundary
 
-The 0.5.0 release passed an independent security review plus two P3 autoreview
-rounds (13 real findings fixed pre-release, incl. protect NFC/NFD and
-ancestor/symlink bypasses and GIT_DIR stale-gate poisoning), full
-Rust/MSRV/npm/workflow/security gates, five bounded fuzz runs, a real PTY TUI
-pass, exact-commit CI, staged-binary smoke tests, and exact-byte production
-promotion. Apple signing/notarization (softened by brew distribution) and the
-documented pathname TOCTOU limitation remain explicit follow-ups. Notarization
+0.5.0 and 0.6.0 each passed an independent security review plus structured P3
+autoreview rounds (13 and 7 verified findings respectively, all fixed
+pre-release with regression tests), full Rust/MSRV/npm/workflow/security
+gates, bounded fuzz runs, real PTY TUI passes, exact-commit CI, staged-binary
+smoke tests, and exact-byte production promotion. Notarization
 remains blocked on notarytool credentials (Developer ID cert exists locally;
 runbook in SECURITY.md). Residual path-based windows (parent resolution,
 Trash, single-entry unlink) are documented, not hidden.
