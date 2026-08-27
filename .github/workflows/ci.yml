@@ -35,6 +35,14 @@ jobs:
           cache: npm
           cache-dependency-path: video/package-lock.json
 
+      - name: Install pinned npm
+        run: |
+          npm install --global npm@11.17.0 --ignore-scripts
+          npm --version | grep -Fqx '11.17.0'
+
+      - name: Release policy tests
+        run: bash scripts/tests/release-policy.sh
+
       - name: Format
         run: cargo fmt --all -- --check
 
@@ -59,11 +67,13 @@ jobs:
         run: |
           cargo install cargo-audit --locked --version 0.22.2
           cargo audit
+          cargo audit --file fuzz/Cargo.lock
 
       - name: Video lint and dependency audit
         working-directory: video
         run: |
-          npm ci
+          npm config get strict-allow-scripts | grep -Fqx 'true'
+          npm ci --strict-allow-scripts
           npm audit --package-lock-only --audit-level=low
           npm run lint
           npm run format:check

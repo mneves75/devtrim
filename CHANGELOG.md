@@ -2,9 +2,23 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.6.1] - Unreleased
+## [0.6.1] - 2026-08-27
 
-[0.6.1]: https://github.com/mneves75/devtrim/compare/v0.6.0...HEAD
+### Changed
+- `devtrim icloud` now reports a recursive inventory of large iCloud Drive files with logical and locally allocated sizes; it no longer infers upload progress from filesystem allocation
+- Scanner and apply preflights now treat unreadable roots, traversal gaps, Git ownership/activity failures, liveness-probe failures, and nonzero owner-tool exits as blocking errors instead of silently producing partial authority
+
+### Fixed
+- Every `--json` invocation, including Clap help/version/parse failures, emits exactly one JSON document with a truthful operation, error list, and nonzero exit; empty applies report a zero summary
+- Failed human and TUI applies no longer render as successful, simulator cleanup measures the previewed device directory, and Docker/simulator discovery distinguishes an absent tool from a failed one
+- Journal history reverse-scans a bounded newest tail with per-line and total-byte caps, pairs legacy records across rotations, waits for active guarded applies, serializes complete synced records, refuses symlinked path components, and creates no lock file
+
+### Security
+- Permanent recursive deletion now rejects device crossings and Git repository/worktree markers at every depth, rechecks macOS file generation as part of identity, and revalidates configured `protect` aliases immediately before mutation
+- The release chain runs project and dependency code only in read-only jobs, executes all five bounded fuzz targets, audits and monitors the separate fuzz lockfile, pins Actions and downloaded tools, requires the current default-branch head plus exact-commit CI/autoreview, and gives only the no-checkout publisher release-write and OIDC authority
+- Production promotion verifies immutable beta provenance, signer workflow, exact asset names, and checksums before reusing the same archive without rebuilding
+
+[0.6.1]: https://github.com/mneves75/devtrim/compare/v0.6.0...v0.6.1
 
 ## [0.6.0] - 2026-08-27
 

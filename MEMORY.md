@@ -7,7 +7,21 @@ the exact attested `v0.6.0-beta1` archive (`e8028136…`). 0.6.0 anchored the
 deletion sink (cap-std parent handle, preview-time device/inode, quarantine +
 handle-bound recursive delete for permanent mode), added `largest`, journal
 rotation under a rustix flock, explicit ad-hoc codesign in the release
-workflow, and the refreshed demo video. The 0.6.1 Unreleased line is open.
+workflow, and the refreshed demo video. The 0.6.1 release candidate follows.
+
+The 0.6.1 candidate is locally hardened but not released: truthful JSON/error
+semantics and fail-closed scanners, nested-worktree/device refusal in permanent
+deletion, symlink-safe and process-serialized journaling with read-only bounded
+newest-tail history, and a credential-separated release chain are implemented.
+Rust/MSRV (121 library pass + 1 ignored test helper, 48 CLI pass), both dependency
+audits, structural deletion checks, release-policy/shell/action lint, secret
+scans, npm/video, PTY TUI, arm64 build, real browser desktop/mobile, and all five
+final 60-second fuzz targets have passed. The blocker re-review is clear. Two P3
+autoreview rounds found four verified P2 issues; all were fixed with focused
+regressions. The final independent security review approved the release gate
+with no P0/P1; its P2 legacy cross-generation journal pairing and P3 live
+history-snapshot findings were also fixed and proved. Commit/CI and beta staging
+remain before production approval.
 
 ## Decisions
 
@@ -55,6 +69,16 @@ workflow, and the refreshed demo video. The 0.6.1 Unreleased line is open.
   validation does not treat `index.html` as a beta package version surface.
 - The demo-video dependency graph is a release gate and receives weekly npm
   Dependabot coverage; shipped inline scripts use exact CSP hashes.
+- Journal paths are opened component-by-component without following symlinks;
+  apply writers serialize each synced record and keep rotation coordination
+  across attempt/result, while `history` creates no state, waits for active
+  guarded attempts, pairs legacy records across generations, and bounds input.
+- Permanent recursive deletion performs a complete same-device/Git-marker
+  preflight before the first removal, then repeats the checks while consuming
+  the quarantined tree through directory handles.
+- Release credentials never share a job with repository or dependency
+  execution. The local tag script is provenance-only; hosted read-only jobs
+  produce the handoff consumed by the no-checkout publisher.
 
 ## Next boundary
 

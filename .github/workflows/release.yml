@@ -12,9 +12,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  prepare:
+  validate:
+    name: Validate tag provenance
     runs-on: macos-14
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
       actions: read
       contents: read
@@ -31,7 +32,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate release metadata
+      - name: Validate tag, default-branch head, and release metadata
         id: meta
         shell: bash
         env:
@@ -54,21 +55,42 @@ jobs:
             echo "ERROR: release tag does not dereference to workflow commit"
             exit 1
           }
+
+          default_branch=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)
+          [[ -n "$default_branch" ]] || {
+            echo "ERROR: repository default branch is unavailable"
+            exit 1
+          }
+          git -c submodule.recurse=false fetch --quiet --no-tags origin \
+            "refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"
+          origin_head=$(git rev-parse "refs/remotes/origin/${default_branch}^{commit}")
+          github_head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${default_branch}" --jq .sha)
+          [[ "$origin_head" == "$github_head" ]] || {
+            echo "ERROR: fetched origin/$default_branch does not match GitHub's current head"
+            exit 1
+          }
+          [[ "${GITHUB_SHA}" == "$origin_head" ]] || {
+            echo "ERROR: release tags must point at the current origin/$default_branch head"
+            exit 1
+          }
+
+          immutable_enabled=$(gh api "repos/${GITHUB_REPOSITORY}/immutable-releases" --jq .enabled)
+          [[ "$immutable_enabled" == "true" ]] || {
+            echo "ERROR: GitHub immutable releases must be enabled before release preparation"
+            exit 1
+          }
+
           grep -Fqx "version = \"$base\"" Cargo.toml
           grep -Fq "## [$base]" CHANGELOG.md
           grep -Fq "v$base" README.md
           grep -Fq "v$base" MANUAL.html
 
-          ci_conclusion=$(gh run list --workflow ci.yml --event push --commit "${GITHUB_SHA}" --limit 1 --json conclusion,status --jq '.[0] | select(.status == "completed") | .conclusion')
+          ci_conclusion=$(gh run list --workflow ci.yml --event push --commit "${GITHUB_SHA}" --limit 1 \
+            --json conclusion,status --jq '.[0] | select(.status == "completed") | .conclusion')
           [[ "$ci_conclusion" == "success" ]] || {
             echo "ERROR: release commit has no successful completed CI run"
             exit 1
           }
-
-          mkdir -p handoff
-          notes="handoff/release-notes.md"
-          awk -v hdr="## [$base]" 'index($0,hdr)==1{found=1;next} /^## /{if(found)exit} found' CHANGELOG.md > "$notes"
-          [[ -s "$notes" ]] || { echo "ERROR: release notes are empty"; exit 1; }
 
           is_beta=false
           [[ -z "$suffix" ]] || is_beta=true
@@ -97,36 +119,263 @@ jobs:
             echo "out=devtrim-$base-macos-arm64"
           } >> "$GITHUB_OUTPUT"
 
+  gate:
+    name: Read-only deterministic release gates
+    needs: validate
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tagged source without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchains
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.0
+          rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: video/package-lock.json
+
+      - name: Install pinned npm
+        run: |
+          npm install --global npm@11.17.0 --ignore-scripts
+          npm --version | grep -Fqx '11.17.0'
+
+      - name: Install pinned Rust release tools
+        run: |
+          cargo install ast-grep --locked --version 0.45.0
+          cargo install cargo-audit --locked --version 0.22.2
+
+      - name: Install checksum-verified release tools
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "x86_64" ]] || {
+            echo "ERROR: pinned release-tool assets require the macos-15-intel x86_64 runner"
+            exit 1
+          }
+          tool_root="${RUNNER_TEMP}/release-tools"
+          tool_bin="$tool_root/bin"
+          mkdir -p "$tool_bin"
+
+          gh release download v1.7.12 -R rhysd/actionlint \
+            --pattern actionlint_1.7.12_darwin_amd64.tar.gz --dir "$tool_root"
+          gh release download v8.30.1 -R gitleaks/gitleaks \
+            --pattern gitleaks_8.30.1_darwin_x64.tar.gz --dir "$tool_root"
+          gh release download v3.97.1 -R trufflesecurity/trufflehog \
+            --pattern trufflehog_3.97.1_darwin_amd64.tar.gz --dir "$tool_root"
+          gh release download v0.11.0 -R koalaman/shellcheck \
+            --pattern shellcheck-v0.11.0.darwin.x86_64.tar.gz --dir "$tool_root"
+
+          (
+            cd "$tool_root"
+            printf '%s  %s\n' 5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644 \
+              actionlint_1.7.12_darwin_amd64.tar.gz | shasum -a 256 -c -
+            printf '%s  %s\n' dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709 \
+              gitleaks_8.30.1_darwin_x64.tar.gz | shasum -a 256 -c -
+            printf '%s  %s\n' 1515710bb16be5653ca9986c27ecd1a0e7536fc6e53ad46f7100992692f6a05f \
+              trufflehog_3.97.1_darwin_amd64.tar.gz | shasum -a 256 -c -
+            printf '%s  %s\n' c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51 \
+              shellcheck-v0.11.0.darwin.x86_64.tar.gz | shasum -a 256 -c -
+          )
+
+          tar -xzf "$tool_root/actionlint_1.7.12_darwin_amd64.tar.gz" -C "$tool_bin" actionlint
+          tar -xzf "$tool_root/gitleaks_8.30.1_darwin_x64.tar.gz" -C "$tool_bin" gitleaks
+          tar -xzf "$tool_root/trufflehog_3.97.1_darwin_amd64.tar.gz" -C "$tool_bin" trufflehog
+          tar -xzf "$tool_root/shellcheck-v0.11.0.darwin.x86_64.tar.gz" -C "$tool_root"
+          cp "$tool_root/shellcheck-v0.11.0/shellcheck" "$tool_bin/shellcheck"
+          chmod +x "$tool_bin/actionlint" "$tool_bin/gitleaks" "$tool_bin/trufflehog" "$tool_bin/shellcheck"
+          "$tool_bin/actionlint" -version
+          "$tool_bin/gitleaks" version
+          "$tool_bin/trufflehog" --version
+          "$tool_bin/shellcheck" --version
+          echo "$tool_bin" >> "$GITHUB_PATH"
+
+      - name: Release policy, shell, and workflow gates
+        run: |
+          bash scripts/tests/release-policy.sh
+          bash -n scripts/release.sh scripts/tests/release-policy.sh
+          shellcheck scripts/release.sh scripts/tests/release-policy.sh
+          actionlint
+          cmp -s AGENTS.md CLAUDE.md || {
+            echo "ERROR: AGENTS.md and CLAUDE.md differ"
+            exit 1
+          }
+
+      - name: Rust format and deletion-boundary gates
+        run: |
+          cargo fmt --all -- --check
+          ast-grep test --skip-snapshot-tests
+          ast-grep scan --config sgconfig.yml
+
+      - name: Rust Clippy and tests
+        run: |
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-targets --all-features
+
+      - name: MSRV tests
+        run: rustup run 1.88.0 cargo test --locked --all-targets --all-features
+
+      - name: Root and fuzz dependency audits
+        run: |
+          cargo audit
+          cargo audit --file fuzz/Cargo.lock
+
+      - name: Real PTY TUI cancel flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked
+          tui_home="${RUNNER_TEMP}/devtrim-tui-home"
+          mkdir -p "$tui_home"
+          TUI_TEST_HOME="$tui_home" expect <<'EXPECT'
+          set timeout 15
+          log_user 0
+          spawn env HOME=$env(TUI_TEST_HOME) TERM=xterm-256color target/debug/devtrim
+          after 500
+          send "\033"
+          expect eof
+          set result [wait]
+          exit [lindex $result 3]
+          EXPECT
+
+      - name: Video install, audit, lint, format, and build
+        working-directory: video
+        run: |
+          npm config get strict-allow-scripts | grep -Fqx 'true'
+          npm ci --strict-allow-scripts
+          npm audit --package-lock-only --audit-level=low
+          npm run lint
+          npm run format:check
+          npm run build
+
+      - name: Full-history secret scans
+        run: |
+          gitleaks git --redact --no-banner .
+          trufflehog git "file://$(pwd)" --results=verified,unknown --fail \
+            --fail-on-scan-errors --no-update --no-color
+
+      - name: Release gates leave the checkout clean
+        run: |
+          [[ -z "$(git -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all --ignore-submodules=all)" ]] || {
+            echo "ERROR: release gates changed the checkout"
+            git status --short
+            exit 1
+          }
+
+  fuzz:
+    name: Read-only bounded fuzz gates
+    needs: validate
+    runs-on: macos-14
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tagged source without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned fuzz toolchains
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          rustup toolchain install nightly-2026-08-25 --profile minimal --component rust-src
+          cargo install cargo-fuzz --locked --version 0.13.2
+
+      - name: Fuzz all five release targets for 60 seconds each
+        shell: bash
+        run: |
+          set -euo pipefail
+          nightly_bin=$(dirname "$(rustup which cargo --toolchain nightly-2026-08-25)")
+          fuzz_path="${nightly_bin}:${HOME}/.cargo/bin:${PATH}"
+          for target in validate_path clean_path docker_size probe_parsers config_parse; do
+            echo "==> fuzzing $target for 60 seconds"
+            PATH="$fuzz_path" cargo fuzz run "$target" -- -max_total_time=60
+          done
+
+      - name: Fuzz gates leave the checkout clean
+        run: |
+          [[ -z "$(git -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all --ignore-submodules=all)" ]] || {
+            echo "ERROR: fuzz gates changed the checkout"
+            git status --short
+            exit 1
+          }
+
+  prepare:
+    name: Prepare reviewed release inputs
+    needs: [validate, gate, fuzz]
+    runs-on: macos-14
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tagged source without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Revalidate default-branch head and create release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          default_branch=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)
+          git -c submodule.recurse=false fetch --quiet --no-tags origin \
+            "refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"
+          origin_head=$(git rev-parse "refs/remotes/origin/${default_branch}^{commit}")
+          github_head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${default_branch}" --jq .sha)
+          [[ "${GITHUB_SHA}" == "$origin_head" && "$origin_head" == "$github_head" ]] || {
+            echo "ERROR: release commit is no longer the current origin/$default_branch head"
+            exit 1
+          }
+
+          mkdir -p handoff
+          notes="handoff/release-notes.md"
+          awk -v hdr="## [${{ needs.validate.outputs.base }}]" \
+            'index($0,hdr)==1{found=1;next} /^## /{if(found)exit} found' CHANGELOG.md > "$notes"
+          [[ -s "$notes" ]] || { echo "ERROR: release notes are empty"; exit 1; }
+
       - name: Install pinned Rust
-        if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'
+        if: needs.validate.outputs.is_beta == 'true' && needs.validate.outputs.release_exists == 'false'
         run: |
           rustup toolchain install 1.98.0 --profile minimal
           rustup default 1.98.0
           rustup target add aarch64-apple-darwin
 
       - name: Build beta artifact
-        if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'
+        if: needs.validate.outputs.is_beta == 'true' && needs.validate.outputs.release_exists == 'false'
         shell: bash
         run: |
           set -euo pipefail
           cargo build --release --locked --target aarch64-apple-darwin
           binary="target/aarch64-apple-darwin/release/devtrim"
           file "$binary" | grep -q 'arm64'
-          "$binary" --version | grep -Fqx "devtrim ${{ steps.meta.outputs.base }}"
-          # Strip in the release profile can invalidate the linker's ad-hoc
-          # signature, and field reports show linker-only signatures rejected
-          # by newer macOS policy. Re-sign explicitly and verify; no secret is
-          # involved, so this stays inside the read-only build job.
+          "$binary" --version | grep -Fqx "devtrim ${{ needs.validate.outputs.base }}"
           codesign --force --sign - "$binary"
           codesign --verify --strict "$binary"
           codesign --display --verbose=2 "$binary" 2>&1 | grep -E 'Signature|Identifier'
 
       - name: Package beta artifact
-        if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'
+        if: needs.validate.outputs.is_beta == 'true' && needs.validate.outputs.release_exists == 'false'
         shell: bash
         run: |
           set -euo pipefail
-          out="${{ steps.meta.outputs.out }}"
+          out="${{ needs.validate.outputs.out }}"
           mkdir -p "dist/$out"
           cp target/aarch64-apple-darwin/release/devtrim "dist/$out/devtrim"
           cp MANUAL.html README.md LICENSE "dist/$out/"
@@ -146,7 +395,8 @@ jobs:
           overwrite: true
 
   publish:
-    needs: prepare
+    name: Publish without source checkout
+    needs: [validate, prepare]
     runs-on: macos-14
     timeout-minutes: 20
     permissions:
@@ -157,19 +407,25 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      - name: Download reviewed release inputs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-input-${{ github.run_id }}
-          path: handoff
-
-      - name: Refresh publication state
+      - name: Revalidate publication state and immutable releases
         id: state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          default_branch=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)
+          default_head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${default_branch}" --jq .sha)
+          [[ "${GITHUB_SHA}" == "$default_head" ]] || {
+            echo "ERROR: release commit is no longer the current default-branch head"
+            exit 1
+          }
+          immutable_enabled=$(gh api "repos/${GITHUB_REPOSITORY}/immutable-releases" --jq .enabled)
+          [[ "$immutable_enabled" == "true" ]] || {
+            echo "ERROR: GitHub immutable releases must be enabled before asset publication"
+            exit 1
+          }
+
           release_exists=false
           if existing=$(gh release view "${GITHUB_REF_NAME}" --json isDraft,isImmutable,isPrerelease,tagName); then
             [[ "$(jq -r .isDraft <<<"$existing")" == "false" ]] || {
@@ -180,7 +436,7 @@ jobs:
               echo "ERROR: an existing release is mutable"
               exit 1
             }
-            [[ "$(jq -r .isPrerelease <<<"$existing")" == "${{ needs.prepare.outputs.is_beta }}" ]] || {
+            [[ "$(jq -r .isPrerelease <<<"$existing")" == "${{ needs.validate.outputs.is_beta }}" ]] || {
               echo "ERROR: existing release type does not match tag"
               exit 1
             }
@@ -188,20 +444,26 @@ jobs:
           fi
           echo "release_exists=$release_exists" >> "$GITHUB_OUTPUT"
 
+      - name: Download reviewed release inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-input-${{ github.run_id }}
+          path: handoff
+
       - name: Attest beta artifact
-        if: needs.prepare.outputs.is_beta == 'true' && steps.state.outputs.release_exists == 'false'
+        if: needs.validate.outputs.is_beta == 'true' && steps.state.outputs.release_exists == 'false'
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
-          subject-path: handoff/${{ needs.prepare.outputs.out }}.zip
+          subject-path: handoff/${{ needs.validate.outputs.out }}.zip
 
       - name: Publish beta prerelease
-        if: needs.prepare.outputs.is_beta == 'true' && steps.state.outputs.release_exists == 'false'
+        if: needs.validate.outputs.is_beta == 'true' && steps.state.outputs.release_exists == 'false'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          out="${{ needs.prepare.outputs.out }}"
+          out="${{ needs.validate.outputs.out }}"
           release_args=(
             "${GITHUB_REF_NAME}"
             "handoff/$out.zip"
@@ -209,21 +471,21 @@ jobs:
             --verify-tag
             --prerelease
             --latest=false
-            --title "devtrim ${{ needs.prepare.outputs.release }}"
+            --title "devtrim ${{ needs.validate.outputs.release }}"
             --notes-file handoff/release-notes.md
           )
           gh release create "${release_args[@]}"
 
       - name: Select verified beta artifact
-        if: needs.prepare.outputs.is_beta == 'false' && steps.state.outputs.release_exists == 'false'
+        if: needs.validate.outputs.is_beta == 'false' && steps.state.outputs.release_exists == 'false'
         id: promote
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          base="${{ needs.prepare.outputs.base }}"
-          out="${{ needs.prepare.outputs.out }}"
+          base="${{ needs.validate.outputs.base }}"
+          out="${{ needs.validate.outputs.out }}"
           beta_tag=""
           promotion_dir=""
 
@@ -250,6 +512,7 @@ jobs:
             ( cd "$candidate_dir" && shasum -a 256 -c SHA256SUMS.txt ) || continue
             attestation_args=(
               --repo "${GITHUB_REPOSITORY}"
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
               --source-digest "${GITHUB_SHA}"
               --source-ref "refs/tags/$candidate"
             )
@@ -282,13 +545,13 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish production release
-        if: needs.prepare.outputs.is_beta == 'false' && steps.state.outputs.release_exists == 'false'
+        if: needs.validate.outputs.is_beta == 'false' && steps.state.outputs.release_exists == 'false'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          out="${{ needs.prepare.outputs.out }}"
+          out="${{ needs.validate.outputs.out }}"
           promotion_dir="${{ steps.promote.outputs.promotion_dir }}"
           release_args=(
             "${GITHUB_REF_NAME}"
@@ -296,7 +559,7 @@ jobs:
             "$promotion_dir/SHA256SUMS.txt"
             --verify-tag
             --latest
-            --title "devtrim ${{ needs.prepare.outputs.release }}"
+            --title "devtrim ${{ needs.validate.outputs.release }}"
             --notes-file handoff/release-notes.md
           )
           gh release create "${release_args[@]}"
@@ -307,7 +570,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          out="${{ needs.prepare.outputs.out }}"
+          out="${{ needs.validate.outputs.out }}"
           published="${RUNNER_TEMP}/published"
           mkdir -p "$published"
           gh release download "${GITHUB_REF_NAME}" --dir "$published" --pattern "$out.zip" --pattern SHA256SUMS.txt
@@ -322,7 +585,7 @@ jobs:
           release_state=$(gh release view "${GITHUB_REF_NAME}" --json isDraft,isImmutable,isPrerelease,tagName)
           [[ "$(jq -r .isDraft <<<"$release_state")" == "false" ]]
           [[ "$(jq -r .isImmutable <<<"$release_state")" == "true" ]]
-          [[ "$(jq -r .isPrerelease <<<"$release_state")" == "${{ needs.prepare.outputs.is_beta }}" ]]
+          [[ "$(jq -r .isPrerelease <<<"$release_state")" == "${{ needs.validate.outputs.is_beta }}" ]]
 
           release_verified=false
           for _ in {1..10}; do
@@ -339,9 +602,10 @@ jobs:
 
           attestation_args=(
             --repo "${GITHUB_REPOSITORY}"
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
             --source-digest "${GITHUB_SHA}"
           )
-          if [[ "${{ needs.prepare.outputs.is_beta }}" == "true" ]]; then
+          if [[ "${{ needs.validate.outputs.is_beta }}" == "true" ]]; then
             attestation_args+=(--source-ref "${GITHUB_REF}")
           fi
           gh attestation verify "$published/$out.zip" "${attestation_args[@]}" >/dev/null

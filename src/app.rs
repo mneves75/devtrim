@@ -2,13 +2,20 @@
 
 use crate::{cli, journal, largest, ops, report, safety, tui};
 use anyhow::Result;
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, Parser, error::ErrorKind};
 use colored::Colorize;
+use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
 pub fn main_impl() -> ExitCode {
-    let cli = cli::Cli::parse();
+    let args = std::env::args_os().collect::<Vec<_>>();
+    let json_requested = exact_json_flag(&args);
+    let operation = operation_from_args(&args);
+    let cli = match cli::Cli::try_parse_from(&args) {
+        Ok(cli) => cli,
+        Err(error) => return clap_error(error, json_requested, operation),
+    };
     if cli.command.is_none()
         && !cli.json
         && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
@@ -46,6 +53,127 @@ pub fn main_impl() -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+fn exact_json_flag(args: &[OsString]) -> bool {
+    args.iter()
+        .skip(1)
+        .take_while(|arg| arg.as_os_str() != OsStr::new("--"))
+        .any(|arg| arg.as_os_str() == OsStr::new("--json"))
+}
+
+fn operation_from_args(args: &[OsString]) -> &'static str {
+    let mut index = 1;
+    while index < args.len() {
+        let argument = args[index].as_os_str();
+        if argument == OsStr::new("--") {
+            break;
+        }
+        if argument == OsStr::new("--root") {
+            index = index.saturating_add(2);
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--root="))
+        {
+            index = index.saturating_add(1);
+            continue;
+        }
+        if argument.to_string_lossy().starts_with('-') {
+            index = index.saturating_add(1);
+            continue;
+        }
+        return match argument.to_str() {
+            Some("clean") => clean_operation_from_args(&args[index + 1..]),
+            Some("tui") => "tui",
+            Some("scan") => "scan",
+            Some("largest") => "largest",
+            Some("history") => "history",
+            Some("completions") => "completions",
+            Some("manpage") => "manpage",
+            Some("icloud") => "icloud",
+            Some("trash-empty") => "trash-empty",
+            _ => "unknown",
+        };
+    }
+    "unknown"
+}
+
+fn clean_operation_from_args(args: &[OsString]) -> &'static str {
+    let mut index = 0;
+    while index < args.len() {
+        let argument = args[index].as_os_str();
+        if argument == OsStr::new("--") {
+            break;
+        }
+        if argument == OsStr::new("--root") {
+            index = index.saturating_add(2);
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--root="))
+        {
+            index = index.saturating_add(1);
+            continue;
+        }
+        if argument.to_string_lossy().starts_with('-') {
+            index = index.saturating_add(1);
+            continue;
+        }
+        return match argument.to_str() {
+            Some("caches") => "caches",
+            Some("node-modules") => "node-modules",
+            Some("artifacts") => "artifacts",
+            Some("simulators") => "simulators",
+            Some("xcode") => "xcode",
+            Some("docker") => "docker",
+            Some("toolchains") => "toolchains",
+            Some("leftovers") => "leftovers",
+            _ => "clean",
+        };
+    }
+    "clean"
+}
+
+fn clap_error(error: clap::Error, json: bool, operation: &str) -> ExitCode {
+    let kind = error.kind();
+    if json {
+        let (message, code) = match kind {
+            ErrorKind::DisplayHelp => ("help has no JSON form".to_string(), 1),
+            ErrorKind::DisplayVersion => ("version has no JSON form".to_string(), 1),
+            _ => (error.to_string(), error.exit_code()),
+        };
+        if let Err(output_error) =
+            report::print_json(operation, false, &[], None, std::slice::from_ref(&message))
+        {
+            eprintln!(
+                "{} {}",
+                "error:".red().bold(),
+                report::terminal_safe(&output_error.to_string())
+            );
+            return ExitCode::from(1);
+        }
+        return exit_code(code);
+    }
+
+    let code = error.exit_code();
+    if let Err(print_error) = error.print() {
+        eprintln!(
+            "{} {}",
+            "error:".red().bold(),
+            report::terminal_safe(&print_error.to_string())
+        );
+        return ExitCode::from(1);
+    }
+    exit_code(code)
+}
+
+fn exit_code(code: i32) -> ExitCode {
+    u8::try_from(code)
+        .map(ExitCode::from)
+        .unwrap_or_else(|_| ExitCode::from(1))
 }
 
 fn run_history(limit: Option<usize>, json: bool) -> Result<ExitCode> {
@@ -261,7 +389,8 @@ fn clean(target: cli::Target, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitC
 
     if findings.is_empty() {
         if ctx.json {
-            report::print_json(operation.name(), true, &findings, None, &[])?;
+            let outcome = ops::ApplyOutcome::new(operation.name());
+            return print_outcome(operation.name(), &findings, &outcome, ctx);
         } else {
             report::print_line(&format!(
                 "{} nothing to clean in '{}'",
@@ -308,7 +437,11 @@ fn print_outcome(
     if ctx.json {
         report::print_json(operation, true, findings, Some(&outcome.summary), &errors)?;
     } else {
-        report::print_summary(&outcome.summary)?;
+        if errors.is_empty() {
+            report::print_summary(&outcome.summary)?;
+        } else {
+            print_non_success_summary(&outcome.summary)?;
+        }
         for error in &errors {
             eprintln!("{} {}", "error:".red().bold(), report::terminal_safe(error));
         }
@@ -318,6 +451,23 @@ fn print_outcome(
     } else {
         Ok(ExitCode::from(1))
     }
+}
+
+fn print_non_success_summary(summary: &report::Summary) -> std::io::Result<()> {
+    for note in &summary.notes {
+        report::print_line(&format!("  {}", report::terminal_safe(note)))?;
+    }
+    let (marker, status) = if summary.items_touched == 0 {
+        ("✗".red().bold(), "failed".red().bold())
+    } else {
+        ("!".yellow().bold(), "partial".yellow().bold())
+    };
+    report::print_line(&format!(
+        "\n{marker} {} {status}: {} item(s), ~{} reclaimed estimate",
+        report::terminal_safe(&summary.op),
+        summary.items_touched,
+        report::gb(summary.bytes_freed_estimate)
+    ))
 }
 
 fn command_error(

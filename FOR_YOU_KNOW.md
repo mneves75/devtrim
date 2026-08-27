@@ -142,6 +142,27 @@ success. Shipping binaries got an explicit ad-hoc signature in the release
 workflow, and notarization is written down as a credential runbook rather
 than pretended.
 
+0.6.1 is the release where the surrounding promises caught up with that sink.
+The adversarial review found that “reject a worktree root” was weaker than
+“never delete a whole worktree”: a valid cache could contain a nested checkout.
+Permanent preflight and removal now inspect every directory for a `.git`
+marker, and a positive-control test proves the target is restored untouched.
+The same review attacked the journal as a filesystem boundary, not merely a
+logging feature. It now opens state directories component by component without
+following symlinks, serializes each complete synced JSONL append, keeps an
+attempt/result pair out of rotation, reverse-scans only the bounded newest
+history tail needed for the requested output, reconciles legacy pairs across
+rotations, waits for live guarded applies, and makes `history` genuinely
+read-only.
+
+The release chain applies the same authority separation. The local script that
+has permission to tag does only provenance checks; it never runs Cargo, npm, or
+repository scripts. Read-only hosted jobs rerun deterministic gates, both
+dependency audits, all five fuzzers, PTY/UI, video, and secret scans. Only after
+they pass does a job with no source checkout receive release-write and OIDC
+authority. Production still promotes the exact immutable beta archive, so
+reviewing one sealed crate cannot accidentally ship a newly packed lookalike.
+
 The first implementation used Ratatui 0.29 to preserve Rust 1.85, but its
 mandatory `lru 0.12.5` dependency later failed the 2026 security review with two
 RustSec soundness advisories. Ratatui 0.30 makes its layout cache optional, so

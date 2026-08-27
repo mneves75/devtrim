@@ -38,6 +38,9 @@ Non-negotiable boundaries:
   root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
   Only named managed Library subpaths are eligible.
 - Unknown Git activity or toolchain ownership is not deletion authority.
+- Permanent recursive deletion refuses foreign filesystem devices and a Git
+  repository/worktree marker at any depth; a cache cannot carry a nested
+  worktree across the deletion boundary.
 - A repo owning the working directory of a running build/package process, and
   DerivedData while `xcodebuild` runs, are refused. Liveness probes use fixed
   argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
@@ -47,14 +50,18 @@ Non-negotiable boundaries:
   malformed entries are a configuration error and unresolved entries warn.
 - Every deletion and fixed-argv command is journaled write-ahead (attempt
   before, result after) to a mode-0600 file in a mode-0700 state directory,
-  synced to disk per record; an unwritable journal blocks the apply.
-  `history` renders records read-only and reports attempts without results as
-  interrupted. Rotation is writer-owned, shift-and-rename under an advisory
-  flock that dies with its process, re-checks size while holding the lock,
-  and happens only at journal-open time — never mid-apply, never by
-  truncation; a failed rotation keeps appending rather than losing the
-  record, and history opens the generation set under a shared lock so pairs
-  never split and generations never mix.
+  with every path component opened without following symlinks. Each complete
+  JSONL record is exclusively serialized through `sync_data`; an unwritable
+  journal blocks the apply. `history` creates nothing, takes an exclusive
+  read-only snapshot lock so guarded work cannot appear interrupted, pairs
+  legacy records across generations, reverse-scans only a bounded newest tail,
+  caps each line and total scanned bytes, and reports genuinely unmatched
+  attempts as interrupted.
+  Rotation is writer-owned, shift-and-rename under an advisory flock that dies
+  with its process, re-checks size while holding the lock, and happens only at
+  journal-open time — never mid-apply, never by truncation. An apply holds
+  rotation coordination from attempt through result, so the pair stays in one
+  generation.
 - `artifacts` requires both a closed directory-name list with ecosystem
   corroboration (or an exact `CACHEDIR.TAG` signature) and a conclusively stale
   owning Git repo; corroboration, ownership, staleness, and liveness are all
@@ -79,11 +86,12 @@ Non-negotiable boundaries:
 4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.
 5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission.
 5b. **Anchored identity verification** — the sink re-reads the target's
-   preview-time `(device, inode)` through an open parent-directory handle and
-   deletes through that same handle; identity drift refuses the deletion.
+   preview-time `(device, inode, generation)` on macOS through an open
+   parent-directory handle and deletes through that same handle; identity
+   drift refuses the deletion.
    Permanent deletes quarantine the verified leaf under a private
-   unpredictable name, re-verify, and drive recursive deletion through an
-   open handle to the verified directory, binding check to use.
+   unpredictable name, re-verify, refuse device crossings and Git markers at
+   every depth, and drive recursive deletion through open handles.
 6. **Trash-first recovery** — normal filesystem removal uses macOS Trash.
 7. **Risk, danger, and non-TTY gates** — human apply displays the AS-IS/data-loss notice, every interactive mutation confirms, aggregate size can require typed input, and unattended mutation requires explicit consent.
 8. **TUI authorization** — Ratatui renders the existing findings; a separate typed approval capability must still match that exact plan before the existing `Op::apply` owner runs.
@@ -96,21 +104,33 @@ Non-negotiable boundaries:
    running `xcodebuild` block the affected repo or DerivedData targets, failing
    closed when the probe itself fails.
 13. **Write-ahead journal** — attempt/result records surround every deletion and
-   fixed-argv command; the apply refuses to run if it cannot record.
+   fixed-argv command; symlink-safe parent handles, serialized appends, and
+   bounded read-only history preserve a coherent local audit trail.
 14. **Regression gates** — macOS CI runs format, strict Clippy, tests, MSRV tests,
-   dependency audit, a positive-control structural deletion-sink lint, and an explicit arm64 release build. Local release gates additionally run bounded fuzzing of the path validator, normalizer, and parsers.
+   root and fuzz-lock dependency audits, a positive-control structural
+   deletion-sink lint, and an explicit arm64 release build. Read-only hosted
+   release jobs additionally run all five bounded fuzz targets, PTY/UI, video,
+   workflow-policy, and secret-scanning gates before publication authority is
+   available.
 
 ## Supply chain
 
 - `Cargo.lock` is committed and release builds use `--locked`.
 - Rust is pinned in `rust-toolchain.toml`; `rust-version` records the MSRV.
 - GitHub Actions are pinned to immutable commit SHAs.
-- Dependabot checks Cargo, the demo video's npm graph, and Actions weekly.
+- Dependabot checks the root and fuzz Cargo graphs, the demo video's npm graph,
+  and Actions weekly.
 - Ratatui 0.30.2 and Crossterm 0.29 require Rust 1.88. Default Ratatui features stay disabled, including the optional layout cache; the graph resolves patched `lru 0.18.2` instead of the `0.12.5` affected by RUSTSEC-2026-0002 and RUSTSEC-2026-0253.
 - Hosted release builds produce SHA-256 checksums, the full Apache-2.0 license, and signed artifact provenance.
-- Repository and dependency code runs only in a read-only release-preparation job. A separate publisher downloads packaged inputs, never checks out or compiles the repository, and alone holds release-write and OIDC permissions.
+- Repository and dependency code runs only in read-only validation, fuzz, and
+  release-preparation jobs. A separate publisher downloads packaged inputs,
+  never checks out or compiles the repository, and alone holds release-write
+  and OIDC permissions.
 - GitHub releases and their tags/assets are immutable. Production promotes the exact verified beta archive from the same commit instead of rebuilding it.
-- Release preparation runs `cargo audit`, a clean npm install plus low-severity audit/lint/format/build gates for the demo video, Gitleaks, and TruffleHog; results are recorded in the matching changelog section only after they execute.
+- Release preparation runs both Cargo lockfile audits, all five bounded fuzz
+  targets, a strict clean npm install plus low-severity audit/lint/format/build
+  gates for the demo video, Gitleaks, and TruffleHog; results are recorded in
+  the matching changelog section only after they execute.
 - Shipped HTML uses a deny-by-default CSP; inline scripts are admitted only by exact SHA-256 hashes.
 
 ## Known limitations
@@ -121,7 +141,8 @@ Non-negotiable boundaries:
   unreadable entry or overflow is an error, not a partial result.
 - The typed target prevents unvalidated and lossy-display paths from reaching
   removal. Since 0.6.0 every finding records its target's `(device, inode)`
-  identity at preview, and the sink re-reads that identity through an open
+  identity at preview (including file generation on macOS), and the sink
+  re-reads that identity through an open
   parent-directory handle immediately before deleting through the same handle
   (cap-std's dirfd-anchored implementation — the shape Rust std adopted after
   CVE-2022-21658). A target renamed or swapped after preview is refused, not
@@ -129,16 +150,23 @@ Non-negotiable boundaries:
   directory itself, and the Trash call (macOS offers no fd-anchored Trash
   API) — identity is re-verified immediately before it, but removal is not
   atomic against a concurrent rename in that final window. devtrim is a
-  single-user local tool; when identity cannot be proven it refuses.
-- Some targets skipped because their state could not be proven are reported on
-  stderr in explicit CLI mode, not inside the JSON envelope. A JSON consumer
-  can therefore see a smaller plan rather than an explicit skip list.
+  single-user local tool; when identity cannot be proven it refuses. Permanent
+  non-directory targets are finally unlinked by their private unpredictable
+  quarantine name because macOS has no general remove-by-open-file API.
+  Recursive deletion rechecks each entry, device, Git marker, and open
+  directory identity, but a concurrent post-preflight change can still stop a
+  partially completed tree; there is no rollback after deletion begins.
 - The `trash` crate and Finder behavior depend on macOS permissions and volume
   support. Files & Folders, App Management, Automation, or Full Disk Access
   authorization is a manual user decision in System Settings; devtrim does not
   bypass it. Trash purge is permanent once explicitly applied.
 - External commands can hang or change behavior across installed tool versions;
   broad timeout/process frameworks are deferred until a measured need exists.
+- Liveness probes are point-in-time snapshots. A process can start after the
+  final check; apply therefore still relies on immutable targets, identity
+  checks, and conservative refusal rather than treating liveness as a lock.
+- Journal files are bounded local audit data, not tamper-evident logs. A user or
+  fully compromised host with write access can alter past records.
 - `leftovers` is intentionally report-only because worktree or mission
   staleness cannot be proven from names or branch state.
 - Release binaries are checksummed and carry an explicit ad-hoc code

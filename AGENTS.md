@@ -52,7 +52,7 @@ default features disabled; do not enable its optional layout cache without a new
 3. Run every command above; MSRV must execute and may never be skipped. Also run a real PTY TUI cancel flow against a disposable home, `bash -n scripts/release.sh`, `shellcheck scripts/release.sh`, `actionlint`, Gitleaks, and TruffleHog.
 4. Run the local autoreview helper in local mode and inspect the final diff.
 5. Commit and push a clean tree.
-6. GitHub immutable releases must be enabled. Stage with `scripts/release.sh <version>-beta<N>`; every retry uses a new `N`. The script reruns local gates, requires successful exact-commit CI, and pushes an annotated tag.
+6. GitHub immutable releases must be enabled. Stage with `scripts/release.sh <version>-beta<N>`; every retry uses a new `N`. The credential-bearing script performs provenance-only preflight and pushes an annotated tag; read-only hosted jobs rerun every gate before the no-checkout publisher receives release-write/OIDC authority.
 7. The hosted release workflow builds/verifies arm64, packages the full Apache-2.0 license, signs artifact provenance, publishes an immutable prerelease, and verifies the remote asset.
 8. After staging verification, promote the same commit with `scripts/release.sh <version>`. Production reuses the exact highest verified beta artifact and checksum without rebuilding. After verification, update the production landing page and open the next patch `Unreleased` section.
 

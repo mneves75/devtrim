@@ -20,6 +20,10 @@ pub mod fuzz_api {
         crate::safety::validate_path_for_deletion(path, home, &[]).is_ok()
     }
 
+    pub fn is_config_protected(path: &Path, protect: &[PathBuf]) -> bool {
+        crate::safety::is_config_protected(path, protect)
+    }
+
     pub fn clean(path: &Path) -> PathBuf {
         crate::safety::clean(path)
     }

@@ -2,7 +2,6 @@
 
 use colored::Colorize;
 use std::io::Write;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::safety::FileIdentity;
@@ -106,10 +105,7 @@ impl Finding {
         let identity = path.as_ref().and_then(|target| {
             std::fs::symlink_metadata(target)
                 .ok()
-                .map(|metadata| FileIdentity {
-                    dev: metadata.dev(),
-                    ino: metadata.ino(),
-                })
+                .map(|metadata| FileIdentity::from_std_metadata(&metadata))
         });
         Self {
             label: label.into(),

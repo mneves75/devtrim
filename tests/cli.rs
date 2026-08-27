@@ -125,6 +125,98 @@ fn no_command_json_error_remains_one_document() {
 }
 
 #[test]
+fn clap_parse_errors_with_json_are_one_document_with_the_derived_operation() {
+    let sandbox = Sandbox::new("clap-json-error");
+
+    for args in [
+        vec!["--json", "clean", "node-modules", "--unknown"],
+        vec!["clean", "node-modules", "--unknown", "--json"],
+    ] {
+        let output = run(&sandbox, &args);
+
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stderr.is_empty());
+        let value = json(&output);
+        assert_eq!(value["operation"], "node-modules");
+        assert_eq!(value["applied"], false);
+        assert!(value["findings"].as_array().unwrap().is_empty());
+        assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+        assert!(
+            value["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("unexpected argument")
+        );
+    }
+
+    let output = run(
+        &sandbox,
+        &[
+            "--root",
+            "node-modules",
+            "clean",
+            "artifacts",
+            "--unknown",
+            "--json",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(json(&output)["operation"], "artifacts");
+}
+
+#[test]
+fn json_help_and_version_are_one_nonzero_error_document() {
+    let sandbox = Sandbox::new("clap-json-display");
+    for (args, operation, message) in [
+        (vec!["--help", "--json"], "unknown", "help has no JSON form"),
+        (vec!["-h", "--json"], "unknown", "help has no JSON form"),
+        (
+            vec!["clean", "node-modules", "--help", "--json"],
+            "node-modules",
+            "help has no JSON form",
+        ),
+        (
+            vec!["--version", "--json"],
+            "unknown",
+            "version has no JSON form",
+        ),
+        (vec!["-V", "--json"], "unknown", "version has no JSON form"),
+    ] {
+        let output = run(&sandbox, &args);
+
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stderr.is_empty());
+        let value = json(&output);
+        assert_eq!(value["operation"], operation);
+        assert_eq!(value["errors"], serde_json::json!([message]));
+    }
+}
+
+#[test]
+fn json_detection_requires_an_exact_flag() {
+    let sandbox = Sandbox::new("clap-exact-json");
+
+    for args in [vec!["scan", "--json=false"], vec!["scan", "--", "--json"]] {
+        let output = run(&sandbox, &args);
+
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(!output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn version_without_json_preserves_clap_output() {
+    let sandbox = Sandbox::new("clap-version");
+
+    let output = run(&sandbox, &["--version"]);
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&output.stdout).starts_with("devtrim "));
+}
+
+#[test]
 fn empty_json_scan_is_one_document() {
     let sandbox = Sandbox::new("empty-json");
     let output = run(&sandbox, &["scan", "--json"]);
@@ -371,6 +463,263 @@ fn project_cleanup_probe_failures_are_nonzero_json_errors() {
 }
 
 #[test]
+fn project_git_probe_failure_discards_all_scan_findings() {
+    let sandbox = Sandbox::new("project-git-failure");
+    let root = sandbox.path().join("dev");
+    for repo_name in ["a-good", "z-bad"] {
+        let repo = root.join(repo_name);
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("node_modules")).unwrap();
+        std::fs::write(repo.join("node_modules/payload"), "x").unwrap();
+        std::fs::create_dir_all(repo.join("target")).unwrap();
+        std::fs::write(repo.join("target/payload"), "x").unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+    }
+    sandbox.script(
+        "git",
+        "case \"$2\" in\n  *z-bad) exit 9 ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+    );
+
+    for target in ["node-modules", "artifacts"] {
+        let output = run(
+            &sandbox,
+            &["clean", target, "--root", root.to_str().unwrap(), "--json"],
+        );
+
+        assert!(!output.status.success());
+        let value = json(&output);
+        assert_eq!(value["operation"], target);
+        assert!(value["findings"].as_array().unwrap().is_empty());
+        assert!(
+            value["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("Git activity check failed")
+        );
+    }
+}
+
+#[test]
+fn project_targets_with_their_own_git_marker_are_rejected() {
+    let sandbox = Sandbox::new("nested-git-target");
+    let root = sandbox.path().join("dev");
+    for (repo_name, marker_is_dir) in [("file-marker", false), ("dir-marker", true)] {
+        let repo = root.join(repo_name);
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("node_modules")).unwrap();
+        std::fs::create_dir_all(repo.join("target")).unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+        for candidate in [repo.join("node_modules"), repo.join("target")] {
+            if marker_is_dir {
+                std::fs::create_dir_all(candidate.join(".git")).unwrap();
+            } else {
+                std::fs::write(candidate.join(".git"), "gitdir: elsewhere").unwrap();
+            }
+        }
+    }
+    sandbox.script("git", "printf '2020-01-01\\n'");
+
+    for target in ["node-modules", "artifacts"] {
+        let output = run(
+            &sandbox,
+            &["clean", target, "--root", root.to_str().unwrap(), "--json"],
+        );
+
+        assert!(output.status.success());
+        assert!(json(&output)["findings"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn overlapping_project_roots_do_not_duplicate_findings() {
+    let sandbox = Sandbox::new("overlapping-project-roots");
+    let root = sandbox.path().join("dev");
+    let repo = root.join("project");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("node_modules")).unwrap();
+    std::fs::write(repo.join("node_modules/payload"), "x").unwrap();
+    std::fs::create_dir_all(repo.join("target")).unwrap();
+    std::fs::write(repo.join("target/payload"), "x").unwrap();
+    std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+    sandbox.script("git", "printf '2020-01-01\\n'");
+
+    for target in ["node-modules", "artifacts"] {
+        let output = run(
+            &sandbox,
+            &[
+                "clean",
+                target,
+                "--root",
+                root.to_str().unwrap(),
+                "--root",
+                repo.to_str().unwrap(),
+                "--json",
+            ],
+        );
+
+        assert!(output.status.success());
+        assert_eq!(json(&output)["findings"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn project_walk_errors_discard_all_scan_findings() {
+    let sandbox = Sandbox::new("project-walk-error");
+    let root = sandbox.path().join("dev");
+    let repo = root.join("a-good");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("node_modules")).unwrap();
+    std::fs::write(repo.join("node_modules/payload"), "x").unwrap();
+    std::fs::create_dir_all(repo.join("target")).unwrap();
+    std::fs::write(repo.join("target/payload"), "x").unwrap();
+    std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+    let unreadable = root.join("z-unreadable");
+    std::fs::create_dir_all(unreadable.join("hidden")).unwrap();
+    let original = std::fs::metadata(&unreadable).unwrap().permissions();
+    let mut denied = original.clone();
+    denied.set_mode(0o000);
+    std::fs::set_permissions(&unreadable, denied).unwrap();
+    sandbox.script("git", "printf '2020-01-01\\n'");
+
+    let outputs = ["node-modules", "artifacts"].map(|target| {
+        (
+            target,
+            run(
+                &sandbox,
+                &["clean", target, "--root", root.to_str().unwrap(), "--json"],
+            ),
+        )
+    });
+    std::fs::set_permissions(&unreadable, original).unwrap();
+
+    for (target, output) in outputs {
+        assert!(!output.status.success());
+        let value = json(&output);
+        assert_eq!(value["operation"], target);
+        assert!(value["findings"].as_array().unwrap().is_empty());
+        assert!(value["errors"][0].as_str().unwrap().contains("cannot scan"));
+    }
+}
+
+#[test]
+fn leftovers_walk_errors_are_not_silently_flattened() {
+    let sandbox = Sandbox::new("leftovers-walk-error");
+    let root = sandbox.path().join("dev");
+    std::fs::create_dir_all(root.join("codex-worktree.ABC123")).unwrap();
+    let unreadable = root.join("z-unreadable");
+    std::fs::create_dir_all(unreadable.join("hidden")).unwrap();
+    let original = std::fs::metadata(&unreadable).unwrap().permissions();
+    let mut denied = original.clone();
+    denied.set_mode(0o000);
+    std::fs::set_permissions(&unreadable, denied).unwrap();
+
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            root.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    std::fs::set_permissions(&unreadable, original).unwrap();
+
+    assert!(!output.status.success());
+    let value = json(&output);
+    assert!(value["findings"].as_array().unwrap().is_empty());
+    assert!(value["errors"][0].as_str().unwrap().contains("cannot scan"));
+}
+
+#[test]
+fn icloud_recursively_reports_large_files_without_inferring_upload_status() {
+    let sandbox = Sandbox::new("icloud-recursive");
+    let cloud_docs = sandbox
+        .path()
+        .join("Library/Mobile Documents/com~apple~CloudDocs");
+    let large = cloud_docs.join("Projects/archive.bin");
+    std::fs::create_dir_all(large.parent().unwrap()).unwrap();
+    let file = std::fs::File::create(&large).unwrap();
+    file.set_len(100 * 1024 * 1024).unwrap();
+
+    let output = run(&sandbox, &["icloud", "--json"]);
+
+    assert!(output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "icloud");
+    assert_eq!(value["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["findings"][0]["path"],
+        large.canonicalize().unwrap().display().to_string()
+    );
+    assert_eq!(value["findings"][0]["size_bytes"], 100 * 1024 * 1024);
+    let text = format!(
+        "{} {}",
+        value["findings"][0]["label"].as_str().unwrap(),
+        value["findings"][0]["note"].as_str().unwrap()
+    );
+    assert!(text.contains("allocated locally"));
+    assert!(text.contains("does not indicate iCloud upload status"));
+    assert!(!text.contains("queued"));
+    assert!(!text.contains("upload in progress"));
+}
+
+#[test]
+fn icloud_traversal_errors_are_nonzero_json_errors() {
+    let sandbox = Sandbox::new("icloud-walk-error");
+    let cloud_docs = sandbox
+        .path()
+        .join("Library/Mobile Documents/com~apple~CloudDocs");
+    let unreadable = cloud_docs.join("unreadable");
+    std::fs::create_dir_all(unreadable.join("nested")).unwrap();
+    let original = std::fs::metadata(&unreadable).unwrap().permissions();
+    let mut denied = original.clone();
+    denied.set_mode(0o000);
+    std::fs::set_permissions(&unreadable, denied).unwrap();
+
+    let output = run(&sandbox, &["icloud", "--json"]);
+    std::fs::set_permissions(&unreadable, original).unwrap();
+
+    assert!(!output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "icloud");
+    assert!(value["findings"].as_array().unwrap().is_empty());
+    assert!(
+        value["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("cannot inventory")
+    );
+}
+
+#[test]
+fn empty_json_apply_includes_a_zero_summary() {
+    let sandbox = Sandbox::new("empty-apply-summary");
+    let root = sandbox.path().join("empty-root");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            root.to_str().unwrap(),
+            "--apply",
+            "--json",
+        ],
+    );
+
+    assert!(output.status.success());
+    let value = json(&output);
+    assert_eq!(value["applied"], true);
+    assert_eq!(value["summary"]["op"], "leftovers");
+    assert_eq!(value["summary"]["items_touched"], 0);
+    assert_eq!(value["summary"]["bytes_freed_estimate"], 0);
+    assert!(value["summary"]["notes"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn trash_empty_requires_apply() {
     let sandbox = Sandbox::new("trash-preview");
     std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
@@ -456,7 +805,7 @@ fn unavailable_simulator_json_is_detected_without_erase_all() {
     let log = sandbox.path().join("xcrun.log");
     sandbox.script(
         "xcrun",
-        "printf '%s\\n' \"$*\" >> \"$DEVTRIM_TEST_LOG\"\ncase \"$*\" in\n  '--version') exit 0 ;;\n  'simctl list devices --json') printf '%s\\n' '{\"devices\":{\"com.apple.CoreSimulator.SimRuntime.iOS-18-0\":[{\"dataPath\":\"/tmp/device\",\"dataPathSize\":0,\"logPath\":\"/tmp/log\",\"udid\":\"00000000-0000-0000-0000-000000000000\",\"isAvailable\":false,\"deviceTypeIdentifier\":\"com.apple.CoreSimulator.SimDeviceType.iPhone-16\",\"state\":\"Shutdown\",\"name\":\"iPhone 16\"}]}}' ;;\n  'simctl delete unavailable') exit 0 ;;\n  *) exit 1 ;;\nesac",
+        "printf '%s\\n' \"$*\" >> \"$DEVTRIM_TEST_LOG\"\ncase \"$*\" in\n  '--version') printf 'xcrun version 70\\n' ;;\n  'simctl list devices --json') printf '%s\\n' '{\"devices\":{\"com.apple.CoreSimulator.SimRuntime.iOS-18-0\":[{\"dataPath\":\"/tmp/device\",\"dataPathSize\":0,\"logPath\":\"/tmp/log\",\"udid\":\"00000000-0000-0000-0000-000000000000\",\"isAvailable\":false,\"deviceTypeIdentifier\":\"com.apple.CoreSimulator.SimDeviceType.iPhone-16\",\"state\":\"Shutdown\",\"name\":\"iPhone 16\"}]}}' ;;\n  'simctl delete unavailable') exit 0 ;;\n  *) exit 1 ;;\nesac",
     );
     let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
         .args(["clean", "simulators", "--apply", "--yolo", "--json"])
@@ -525,7 +874,7 @@ fn node_modules_apply_refuses_repo_that_became_active() {
 }
 
 #[test]
-fn partial_apply_serializes_first_success_then_stops() {
+fn project_apply_preflights_all_repo_probes_before_mutating() {
     let sandbox = Sandbox::in_target("partial-apply");
     let first = sandbox.path().join("dev/a/node_modules");
     let second = sandbox.path().join("dev/b/node_modules");
@@ -558,15 +907,61 @@ fn partial_apply_serializes_first_success_then_stops() {
 
     let value = json(&output);
     assert!(!output.status.success());
-    assert!(
-        !first.exists(),
-        "first target remained; response={value}; stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(first.join("sentinel").exists());
     assert!(second.join("sentinel").exists());
     assert_eq!(value["operation"], "node-modules");
     assert_eq!(value["applied"], true);
-    assert_eq!(value["summary"]["items_touched"], 1);
+    assert_eq!(value["summary"]["items_touched"], 0);
+    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+    assert!(
+        value["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("Git activity check failed")
+    );
+}
+
+#[test]
+fn artifact_apply_preflights_all_repo_probes_before_mutating() {
+    let sandbox = Sandbox::in_target("artifact-preflight");
+    let first = sandbox.path().join("dev/a/target");
+    let second = sandbox.path().join("dev/b/target");
+    for target in [&first, &second] {
+        let repo = target.parent().unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(target).unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+        std::fs::write(target.join("sentinel"), "keep").unwrap();
+    }
+    let counter = sandbox.path().join("git-count");
+    sandbox.script(
+        "git",
+        "count=0\nif [ -f \"$DEVTRIM_TEST_COUNT\" ]; then read count < \"$DEVTRIM_TEST_COUNT\"; fi\ncount=$((count + 1))\nprintf '%s\\n' \"$count\" > \"$DEVTRIM_TEST_COUNT\"\ncase \"$count\" in\n  1|2|3) printf '2020-01-01\\n' ;;\n  *) exit 9 ;;\nesac",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args([
+            "clean",
+            "artifacts",
+            "--apply",
+            "--shred",
+            "--yolo",
+            "--json",
+        ])
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env_remove("XDG_STATE_HOME")
+        .env("DEVTRIM_TEST_COUNT", &counter)
+        .output()
+        .unwrap();
+
+    let value = json(&output);
+    assert!(!output.status.success());
+    assert!(first.join("sentinel").exists());
+    assert!(second.join("sentinel").exists());
+    assert_eq!(value["operation"], "artifacts");
+    assert_eq!(value["applied"], true);
+    assert_eq!(value["summary"]["items_touched"], 0);
     assert_eq!(value["errors"].as_array().unwrap().len(), 1);
     assert!(
         value["errors"][0]
@@ -583,7 +978,7 @@ fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
     // would silently fall through to the catch-all and make this a scan-failure test.
     sandbox.script(
         "docker",
-        "case \"$*\" in\n  'version') exit 0 ;;\n  'system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  'image prune -a -f') exit 9 ;;\n  *) exit 1 ;;\nesac",
+        "case \"$*\" in\n  'version') printf 'Docker version 28.0.0\\n' ;;\n  'system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  'image prune -a -f') exit 9 ;;\n  *) exit 1 ;;\nesac",
     );
     let output = run(
         &sandbox,
@@ -615,11 +1010,28 @@ fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
 }
 
 #[test]
+fn failed_human_apply_does_not_print_a_success_summary() {
+    let sandbox = Sandbox::new("docker-human-failure");
+    sandbox.script(
+        "docker",
+        "case \"$*\" in\n  'version') printf 'Docker version 28.0.0\\n' ;;\n  'system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  'image prune -a -f') exit 9 ;;\n  *) exit 1 ;;\nesac",
+    );
+
+    let output = run(&sandbox, &["clean", "docker", "--apply", "-y"]);
+
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("docker failed"));
+    assert!(!stdout.contains('✓'));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("image prune -a -f"));
+}
+
+#[test]
 fn human_apply_prints_data_loss_warning_before_action() {
     let sandbox = Sandbox::new("risk-warning");
     sandbox.script(
         "docker",
-        "case \"$*\" in\n  'version') exit 0 ;;\n  'system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  'image prune -a -f') exit 0 ;;\n  *) exit 1 ;;\nesac",
+        "case \"$*\" in\n  'version') printf 'Docker version 28.0.0\\n' ;;\n  'system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  'image prune -a -f') exit 0 ;;\n  *) exit 1 ;;\nesac",
     );
 
     let output = run(&sandbox, &["clean", "docker", "--apply", "-y"]);
@@ -719,6 +1131,7 @@ fn history_uses_only_an_absolute_xdg_state_home() {
     let journal = state_home.join("devtrim/journal.jsonl");
     std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
     std::fs::write(&journal, record).unwrap();
+    let state_home = state_home.canonicalize().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
         .args(["history", "--json"])
         .env("HOME", absolute.path())

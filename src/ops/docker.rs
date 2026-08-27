@@ -1,7 +1,8 @@
 //! Docker/OrbStack pruning: unused images + build cache. Volumes are never pruned.
 
 use anyhow::{Context, Result};
-use std::process::Command;
+use std::io;
+use std::process::{Command, Output};
 
 use super::{ApplyOutcome, Finding, Op};
 use crate::report::CommandAuthority;
@@ -10,11 +11,75 @@ use crate::safety::{Ctx, escalate};
 pub struct Docker;
 
 fn docker(args: &[&str]) -> Result<String> {
-    let output = Command::new("docker").args(args).output()?;
+    let command = format!("`docker {}`", args.join(" "));
+    command_stdout(Command::new("docker").args(args).output(), &command)
+}
+
+fn command_stdout(output: io::Result<Output>, command: &str) -> Result<String> {
+    let output = output.with_context(|| format!("cannot run {command}"))?;
     if !output.status.success() {
-        anyhow::bail!("`docker {}` failed", args.join(" "));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        if detail.is_empty() {
+            anyhow::bail!("{command} failed with {}", output.status);
+        }
+        anyhow::bail!("{command} failed with {}: {detail}", output.status);
     }
-    String::from_utf8(output.stdout).context("docker returned non-UTF-8 output")
+    String::from_utf8(output.stdout).with_context(|| format!("{command} returned non-UTF-8 output"))
+}
+
+fn optional_command_stdout(output: io::Result<Output>, command: &str) -> Result<Option<String>> {
+    match output {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        output => command_stdout(output, command).map(Some),
+    }
+}
+
+fn parse_system_df(output: &str) -> Result<Vec<Finding>> {
+    if output.trim().is_empty() {
+        anyhow::bail!("docker system df returned empty output");
+    }
+    let mut findings = Vec::new();
+    for (index, line) in output.lines().enumerate() {
+        let mut columns = line.split('\t');
+        let (Some(kind), Some(total), Some(reclaimable), None) = (
+            columns.next(),
+            columns.next(),
+            columns.next(),
+            columns.next(),
+        ) else {
+            anyhow::bail!("invalid Docker system df row {}", index.saturating_add(1));
+        };
+        if kind.is_empty() || total.is_empty() || reclaimable.is_empty() {
+            anyhow::bail!("invalid Docker system df row {}", index.saturating_add(1));
+        }
+        let (label, authority) = match kind {
+            "Images" => (
+                "Docker Images reclaimable",
+                CommandAuthority::DockerImagePrune,
+            ),
+            "Build Cache" => (
+                "Docker Build Cache reclaimable",
+                CommandAuthority::DockerBuilderPrune,
+            ),
+            _ => continue,
+        };
+        let bytes = parse_size(reclaimable)
+            .with_context(|| format!("invalid Docker reclaimable size: {reclaimable}"))?;
+        if bytes == 0 {
+            continue;
+        }
+        findings.push(Finding::command(
+            label,
+            bytes,
+            format!(
+                "{total} total; removes every image not referenced by a container, including untagged local builds; volumes are never touched"
+            ),
+            escalate(6, bytes),
+            authority,
+        ));
+    }
+    Ok(findings)
 }
 
 impl Op for Docker {
@@ -23,13 +88,15 @@ impl Op for Docker {
     }
 
     fn scan(&self, _ctx: &Ctx) -> Result<Vec<Finding>> {
-        let version = match Command::new("docker").arg("version").output() {
-            Ok(output) => output,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
-        if !version.status.success() {
+        let Some(version) = optional_command_stdout(
+            Command::new("docker").arg("version").output(),
+            "`docker version`",
+        )?
+        else {
             return Ok(Vec::new());
+        };
+        if version.trim().is_empty() {
+            anyhow::bail!("`docker version` returned empty output");
         }
         let output = docker(&[
             "system",
@@ -37,41 +104,7 @@ impl Op for Docker {
             "--format",
             "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}",
         ])?;
-        let mut findings = Vec::new();
-        for line in output.lines() {
-            let mut columns = line.split('\t');
-            let (Some(kind), Some(total), Some(reclaimable)) =
-                (columns.next(), columns.next(), columns.next())
-            else {
-                continue;
-            };
-            let (label, authority) = match kind {
-                "Images" => (
-                    "Docker Images reclaimable",
-                    CommandAuthority::DockerImagePrune,
-                ),
-                "Build Cache" => (
-                    "Docker Build Cache reclaimable",
-                    CommandAuthority::DockerBuilderPrune,
-                ),
-                _ => continue,
-            };
-            let bytes = parse_size(reclaimable)
-                .with_context(|| format!("invalid Docker reclaimable size: {reclaimable}"))?;
-            if bytes == 0 {
-                continue;
-            }
-            findings.push(Finding::command(
-                label,
-                bytes,
-                format!(
-                    "{total} total; removes every image not referenced by a container, including untagged local builds; volumes are never touched"
-                ),
-                escalate(6, bytes),
-                authority,
-            ));
-        }
-        Ok(findings)
+        parse_system_df(&output)
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
@@ -91,13 +124,15 @@ impl Op for Docker {
                     anyhow::bail!("refusing altered Docker action");
                 }
                 let (program, args) = authority.parts();
-                let attempt = crate::journal::JournalRecord::command_attempt(
-                    self.name(),
-                    program,
-                    args,
-                    finding.size_bytes,
-                );
-                crate::journal::append(ctx, &attempt)?;
+                let attempt = crate::journal::begin(
+                    ctx,
+                    crate::journal::JournalRecord::command_attempt(
+                        self.name(),
+                        program,
+                        args,
+                        finding.size_bytes,
+                    ),
+                )?;
                 let result = (|| -> Result<String> {
                     let output = Command::new(program).args(args).output()?;
                     if !output.status.success() {
@@ -105,7 +140,7 @@ impl Op for Docker {
                     }
                     Ok(format!("`{program} {}` completed", args.join(" ")))
                 })();
-                crate::journal::finish(ctx, &attempt, result)
+                attempt.finish(ctx, result)
             })();
             match result {
                 Ok(note) => outcome.record(finding, note),
@@ -155,7 +190,9 @@ mod tests {
     use super::*;
 
     use crate::report::Action;
+    use std::os::unix::process::ExitStatusExt;
     use std::path::PathBuf;
+    use std::process::{ExitStatus, Output};
 
     fn test_ctx() -> Ctx {
         Ctx {
@@ -198,6 +235,46 @@ mod tests {
             assert!(parse_size(value).is_err(), "accepted {value}");
         }
     }
+
+    #[test]
+    fn optional_probe_only_treats_not_found_as_absent() {
+        let missing = optional_command_stdout(
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing")),
+            "`docker version`",
+        )
+        .unwrap();
+        assert_eq!(missing, None);
+
+        let nonzero = optional_command_stdout(
+            Ok(Output {
+                status: ExitStatus::from_raw(1 << 8),
+                stdout: Vec::new(),
+                stderr: b"daemon unavailable".to_vec(),
+            }),
+            "`docker version`",
+        )
+        .unwrap_err();
+        assert!(nonzero.to_string().contains("daemon unavailable"));
+
+        let invalid = optional_command_stdout(
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: vec![0xff],
+                stderr: Vec::new(),
+            }),
+            "`docker version`",
+        )
+        .unwrap_err();
+        assert!(invalid.to_string().contains("non-UTF-8"));
+    }
+
+    #[test]
+    fn rejects_malformed_docker_system_df_output() {
+        assert!(parse_system_df("").is_err());
+        assert!(parse_system_df("Images\t1GB").is_err());
+        assert!(parse_system_df("Images\t1GB\t500MB\textra").is_err());
+    }
+
     #[test]
     fn rejects_forged_volume_prune_action() {
         let finding = Finding::new(

@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.6.0.
+This source tree and its packaged documentation describe devtrim v0.6.1.
 
 ## Install
 
@@ -42,8 +42,8 @@ cp target/release/devtrim /usr/local/bin/
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
 - **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation.
 - **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while `xcodebuild` runs. A probe that cannot complete blocks instead of passing.
-- **Identity-verified deletion.** Every finding records its target's device/inode at preview; the sink re-checks that identity through an open parent-directory handle and deletes through the same handle. Permanent deletes additionally quarantine the verified leaf under a private unpredictable name, re-verify, and drive recursive deletion through an open handle to the verified directory — binding check to use. A target swapped after preview is refused. Trash calls remain path-based (macOS has no fd-anchored Trash API) with identity re-verified immediately before the recoverable move; that residual window is documented, not denied.
-- **Write-ahead journal.** Every apply records an attempt line before deletion and a result line after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). If the journal cannot be written, the apply refuses to run. `devtrim history` shows recent records; an attempt without a result is reported as interrupted. The journal rotates (10 MiB, keep 3) only at startup by atomic rename — an in-flight apply's records can never be split or truncated.
+- **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle and deletes through the same handle. Permanent deletes additionally quarantine the verified leaf, reject foreign devices and Git markers at every depth, and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
+- **Write-ahead journal.** Every apply records an attempt before deletion and a result after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). Symlinked path components are refused, complete records are serialized and synced, and an unwritable journal blocks apply. Rotation (10 MiB, keep 3) cannot split an in-flight pair. `devtrim history` is read-only, waits for guarded applies before snapshotting, pairs legacy records across generations, reverse-scans only the bounded newest tail needed for the requested limit, and reports a genuinely unmatched attempt as interrupted.
 - **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
   - 1–8: y/N prompt (`-y` skips it); non-TTY apply needs `-y`/`--yolo`
   - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
@@ -84,7 +84,7 @@ devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData chil
 devtrim clean docker --apply -y           # unused images + build cache; never volumes
 devtrim clean toolchains --apply -y       # only unreferenced swift.org toolchains
 devtrim clean leftovers                   # report-only hints; never deletes worktrees
-devtrim icloud                            # large queued iCloud uploads
+devtrim icloud                            # large iCloud Drive files and local allocation
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
 devtrim trash-empty --confirm=14 --apply  # perform the verified purge
 devtrim history                           # recent journaled applies; --json for one document
@@ -215,9 +215,11 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
 rustup run 1.88.0 cargo test --locked --all-targets --all-features
 cargo audit
+cargo audit --file fuzz/Cargo.lock
 cargo build --release --locked --target aarch64-apple-darwin
-(cd video && npm ci && npm audit --package-lock-only --audit-level=low && npm run lint && npm run format:check && npm run build)
-bash -n scripts/release.sh && shellcheck scripts/release.sh && actionlint
+(cd video && npm ci --strict-allow-scripts && npm audit --package-lock-only --audit-level=low && npm run lint && npm run format:check && npm run build)
+bash scripts/tests/release-policy.sh
+bash -n scripts/release.sh scripts/tests/release-policy.sh && shellcheck scripts/release.sh scripts/tests/release-policy.sh && actionlint
 gitleaks git --redact --no-banner .
 trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color
 ```
@@ -226,11 +228,13 @@ See [`SECURITY.md`](SECURITY.md) for the threat model and reporting process.
 Release notes live in [`CHANGELOG.md`](CHANGELOG.md). After committing and
 pushing a version bump, enable GitHub immutable releases and run
 `scripts/release.sh <version>-beta<N>` for staging. Each retry uses a new
-counter. The script reruns local gates, requires successful CI for the exact
-commit, and pushes an annotated tag. The hosted release workflow builds the
-arm64 archive in a read-only job, transfers only packaged inputs to a separate
-publisher, signs provenance, publishes an immutable prerelease, and verifies
-the downloaded asset. The privileged publisher never checks out or compiles
-repository code. Production uses `scripts/release.sh <version>`; the workflow
-promotes the exact highest verified beta artifact from the same commit without
-rebuilding it.
+counter. Run the local gates and P3 autoreview before committing. The script
+then performs only clean-tree, current-default-branch, exact-CI/autoreview, and
+immutable-release provenance checks before pushing an annotated tag; it never
+executes project or dependency code beside release credentials. Hosted
+read-only jobs rerun the deterministic, fuzz, dependency, UI, video, and secret
+gates and build the arm64 archive. A no-checkout publisher alone receives
+release-write and OIDC authority, signs provenance, publishes the immutable
+prerelease, and verifies the downloaded asset. Production uses
+`scripts/release.sh <version>`; the workflow promotes the exact highest
+verified beta artifact from the same commit without rebuilding it.

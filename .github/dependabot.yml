@@ -6,6 +6,12 @@ updates:
       interval: weekly
     labels: [dependencies]
 
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+
   - package-ecosystem: npm
     directory: /video
     schedule:

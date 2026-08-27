@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# devtrim release: verify → tag → hosted build/promotion → attest → GitHub release
+# devtrim release: preflight → tag → hosted gates/build/promotion → attest → release
 # usage: scripts/release.sh <version>   (e.g. 0.4.0-beta1 or 0.4.0)
 set -euo pipefail
 
@@ -20,32 +20,62 @@ grep -Fqx "version = \"${ver}\"" Cargo.toml || { echo "ERROR: Cargo.toml version
 grep -Fq "## [${ver}]" CHANGELOG.md || { echo "ERROR: no CHANGELOG.md section for ${ver}"; exit 1; }
 grep -Fq "v${ver}" README.md || { echo "ERROR: README.md lacks v${ver}"; exit 1; }
 grep -Fq "v${ver}" MANUAL.html || { echo "ERROR: MANUAL.html lacks v${ver}"; exit 1; }
-[[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || { echo "ERROR: commit all changes before releasing"; exit 1; }
+[[ -z "$(git -c core.fsmonitor=false -c submodule.recurse=false status --porcelain=v1 --untracked-files=all --ignore-submodules=all)" ]] || {
+  echo "ERROR: commit all changes before releasing"
+  exit 1
+}
+
+repo_info=$(gh repo view --json nameWithOwner,defaultBranchRef --jq '[.nameWithOwner, .defaultBranchRef.name] | @tsv') || {
+  echo "ERROR: cannot resolve the origin repository and its default branch"
+  exit 1
+}
+IFS=$'\t' read -r repo default_branch <<< "$repo_info"
+[[ -n "$repo" && -n "$default_branch" ]] || {
+  echo "ERROR: origin repository metadata is incomplete"
+  exit 1
+}
+current_branch=$(git symbolic-ref --quiet --short HEAD) || {
+  echo "ERROR: releases must run from the checked-out default branch, not detached HEAD"
+  exit 1
+}
+[[ "$current_branch" == "$default_branch" ]] || {
+  echo "ERROR: release branch $current_branch is not the origin default branch $default_branch"
+  exit 1
+}
 upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || { echo "ERROR: current branch has no upstream"; exit 1; }
-git fetch --quiet origin || { echo "ERROR: cannot reach origin to verify release state"; exit 1; }
-[[ "$(git rev-parse HEAD)" == "$(git rev-parse "$upstream")" ]] || { echo "ERROR: push the release commit and sync with $upstream first"; exit 1; }
+[[ "$upstream" == "origin/$default_branch" ]] || {
+  echo "ERROR: release branch must track origin/$default_branch, not $upstream"
+  exit 1
+}
+git -c submodule.recurse=false fetch --quiet --no-tags origin \
+  "refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" || {
+    echo "ERROR: cannot reach origin to verify the default-branch head"
+    exit 1
+  }
+release_commit=$(git rev-parse 'HEAD^{commit}')
+origin_commit=$(git rev-parse "refs/remotes/origin/${default_branch}^{commit}")
+api_commit=$(gh api "repos/${repo}/commits/${default_branch}" --jq .sha) || {
+  echo "ERROR: cannot query the current GitHub default-branch head"
+  exit 1
+}
+[[ "$origin_commit" == "$api_commit" ]] || {
+  echo "ERROR: fetched origin/$default_branch does not match GitHub's current default-branch head"
+  exit 1
+}
+[[ "$release_commit" == "$origin_commit" ]] || {
+  echo "ERROR: HEAD is not the current origin/$default_branch head; historical or superseded commits cannot be tagged"
+  exit 1
+}
 git rev-parse "$tag" >/dev/null 2>&1 && { echo "ERROR: local tag $tag already exists"; exit 1; }
 remote_tag=$(git ls-remote --tags origin "refs/tags/${tag}") || { echo "ERROR: cannot query remote tags"; exit 1; }
 [[ -z "$remote_tag" ]] || { echo "ERROR: remote tag $tag already exists"; exit 1; }
 gh release view "$tag" --json tagName >/dev/null 2>&1 && { echo "ERROR: GitHub release $tag already exists"; exit 1; }
-repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 immutable_enabled=$(gh api "repos/${repo}/immutable-releases" --jq .enabled)
 [[ "$immutable_enabled" == "true" ]] || {
   echo "ERROR: GitHub immutable releases must be enabled before tagging"
   exit 1
 }
 
-echo "==> quality gates"
-cargo fmt --all -- --check
-command -v ast-grep >/dev/null 2>&1 || { echo "ERROR: ast-grep is required for release validation"; exit 1; }
-ast-grep test --skip-snapshot-tests
-ast-grep scan --config sgconfig.yml
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-targets --all-features
-command -v rustup >/dev/null 2>&1 || { echo "ERROR: rustup is required to execute the MSRV gate"; exit 1; }
-rustup toolchain install 1.88.0 --profile minimal
-rustup run 1.88.0 cargo test --locked --all-targets --all-features
-release_commit=$(git rev-parse HEAD)
 if ! ci_conclusion=$(gh run list --workflow ci.yml --event push --commit "$release_commit" --limit 1 --json conclusion,status --jq '.[0] | select(.status == "completed") | .conclusion'); then
   echo "ERROR: could not query CI for release commit ${release_commit}"
   echo "ACTION: verify gh authentication and run: gh run list --workflow ci.yml --commit ${release_commit}"
@@ -56,34 +86,38 @@ if [[ "$ci_conclusion" != "success" ]]; then
   echo "ACTION: wait for or rerun CI on that exact pushed commit, then retry this release"
   exit 1
 fi
-cargo audit
-command -v npm >/dev/null 2>&1 || { echo "ERROR: npm is required for release validation"; exit 1; }
-(
-  cd video
-  npm ci
-  npm audit --package-lock-only --audit-level=low
-  npm run lint
-  npm run format:check
-  npm run build
-)
-command -v gitleaks >/dev/null 2>&1 || { echo "ERROR: gitleaks is required for release validation"; exit 1; }
-gitleaks git --redact --no-banner .
-command -v trufflehog >/dev/null 2>&1 || { echo "ERROR: trufflehog is required for release validation"; exit 1; }
-trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color
-bash -n scripts/release.sh
-shellcheck scripts/release.sh
-actionlint
-cmp -s AGENTS.md CLAUDE.md || { echo "ERROR: AGENTS.md and CLAUDE.md differ"; exit 1; }
-[[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
-  echo "ERROR: release gates changed the working tree"
-  git status --short
+
+[[ "${DEVTRIM_AUTOREVIEW_COMMIT:-}" == "$release_commit" ]] || {
+  echo "ERROR: manual local autoreview and final-diff inspection are required for commit $release_commit"
+  echo "ACTION: run autoreview without release credentials, inspect its output, then acknowledge that exact commit with:"
+  echo "ACTION: DEVTRIM_AUTOREVIEW_COMMIT=$release_commit scripts/release.sh $release"
+  exit 1
+}
+
+echo "==> rechecking current default-branch head before tagging"
+git -c submodule.recurse=false fetch --quiet --no-tags origin \
+  "refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" || {
+    echo "ERROR: cannot refresh origin/$default_branch before tagging"
+    exit 1
+  }
+origin_commit=$(git rev-parse "refs/remotes/origin/${default_branch}^{commit}")
+api_commit=$(gh api "repos/${repo}/commits/${default_branch}" --jq .sha) || {
+  echo "ERROR: cannot refresh the current GitHub default-branch head"
+  exit 1
+}
+[[ "$release_commit" == "$origin_commit" && "$origin_commit" == "$api_commit" ]] || {
+  echo "ERROR: origin/$default_branch advanced during preflight; do not tag a superseded commit"
+  exit 1
+}
+[[ -z "$(git -c core.fsmonitor=false -c submodule.recurse=false status --porcelain=v1 --untracked-files=all --ignore-submodules=all)" ]] || {
+  echo "ERROR: the working tree changed during release preflight"
   exit 1
 }
 
 echo "==> tag + hosted release workflow"
 gh auth status
-git tag -a "$tag" -m "$tag"
-if ! git push origin "$tag"; then
+git tag --no-sign -a "$tag" -m "$tag"
+if ! git push --no-verify origin "refs/tags/${tag}:refs/tags/${tag}"; then
   echo "ERROR: local tag $tag was created but the push failed"
   echo "RECOVER: inspect git ls-remote --tags origin refs/tags/$tag before acting"
   echo "RECOVER: if absent, fix the push issue, delete the local tag with git tag -d $tag, and rerun; if present, create the GitHub release manually"
@@ -123,7 +157,11 @@ verify_dir=$(mktemp -d "/tmp/devtrim-release-verify.XXXXXX")
 trap 'rm -r "$verify_dir"' EXIT
 gh release download "$tag" --dir "$verify_dir" --pattern "${out}.zip" --pattern SHA256SUMS.txt
 ( cd "$verify_dir" && shasum -a 256 -c SHA256SUMS.txt )
-attestation_args=(--repo "$repo" --source-digest "$release_commit")
+attestation_args=(
+  --repo "$repo"
+  --signer-workflow "$repo/.github/workflows/release.yml"
+  --source-digest "$release_commit"
+)
 if [[ "$expected_prerelease" == "true" ]]; then
   attestation_args+=(--source-ref "refs/tags/${tag}")
 fi

@@ -48,7 +48,7 @@
       <article data-reveal>
         <p class="eyebrow">The choice</p>
         <h3>Classify before you delete.</h3>
-        <p>Every target gets a danger score from 1 to 10. Caches are green.
+        <p>Every target gets a danger score from 1 to 10. Rebuildable caches are amber.
           Unavailable simulators are caution; permanent Trash purge is red.</p>
       </article>
       <article data-reveal>
@@ -103,7 +103,7 @@
       <article data-reveal><h3><code>docker</code></h3><p>Unused images and build cache. Volumes are sacred — a volume may hold your live database.</p></article>
       <article data-reveal><h3><code>simulators</code></h3><p>Deletes devices whose runtime is gone. Confirmation flags never add an unpreviewed erase-all.</p></article>
       <article data-reveal><h3><code>toolchains</code> + <code>leftovers</code></h3><p>Only provably unreferenced Swift toolchains are actionable; agent leftovers are report-only review hints.</p></article>
-      <article data-reveal><h3><code>icloud</code></h3><p>Big files queued for iCloud upload, with local-materialization status — so eviction happens after upload, not before.</p></article>
+      <article data-reveal><h3><code>icloud</code></h3><p>Large iCloud Drive files with logical and locally allocated sizes — a truthful storage inventory, not an upload-progress guess.</p></article>
     </div>
   </div>
 </section>

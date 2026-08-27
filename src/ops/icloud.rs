@@ -1,52 +1,65 @@
-//! iCloud Drive upload status: how much of each queued file is still
-//! materialized locally (evictable only after upload completes).
+//! Read-only inventory of large iCloud Drive files and local allocation.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use walkdir::WalkDir;
 
 use crate::report::{Action, Finding};
 use crate::safety::Ctx;
 
 pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
-    let docs = ctx
+    let cloud_docs = ctx
         .home
-        .join("Library/Mobile Documents/com~apple~CloudDocs/Documents");
-    if !docs.is_dir() {
-        return Ok(Vec::new());
+        .join("Library/Mobile Documents/com~apple~CloudDocs");
+    match std::fs::symlink_metadata(&cloud_docs) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => bail!(
+            "iCloud Drive root is not a directory: {}",
+            cloud_docs.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("cannot inspect iCloud Drive root {}", cloud_docs.display())
+            });
+        }
     }
+
     let mut out = Vec::new();
-    for e in WalkDir::new(&docs).max_depth(1).into_iter().flatten() {
-        let p = e.path();
-        if p == docs.as_path() || !p.is_file() {
+    for result in WalkDir::new(&cloud_docs)
+        .follow_links(false)
+        .follow_root_links(false)
+    {
+        let entry = result.with_context(|| {
+            format!(
+                "cannot inventory iCloud Drive under {}",
+                cloud_docs.display()
+            )
+        })?;
+        if !entry.file_type().is_file() {
             continue;
         }
-        let logical = e.metadata().map(|m| m.len()).unwrap_or(0);
+        let path = entry.path();
+        let logical = entry
+            .metadata()
+            .with_context(|| format!("cannot inspect iCloud file {}", path.display()))?
+            .len();
         if logical < 100 * 1024 * 1024 {
-            continue; // only interesting for big queued files
+            continue;
         }
-        let on_disk = blocks_bytes(p)?;
-        let pct = on_disk
-            .saturating_mul(100)
-            .checked_div(logical)
-            .unwrap_or(100)
-            .min(100);
-        let label = p
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let allocated = blocks_bytes(path)?;
+        let relative = path.strip_prefix(&cloud_docs).unwrap_or(path);
         out.push(Finding::new(
-            format!("{label} — {pct}% still local"),
-            Some(p.to_path_buf()),
+            format!("large iCloud Drive file: {}", relative.display()),
+            Some(path.to_path_buf()),
             logical,
-            if pct >= 99 {
-                "fully local; `brctl evict` will succeed once iCloud marks it uploaded"
-            } else {
-                "upload in progress; keep Mac awake and online; evict only after upload"
-            },
+            format!(
+                "{allocated} bytes allocated locally for {logical} logical bytes; allocation is an estimate and does not indicate iCloud upload status"
+            ),
             1,
             Action::Info,
         ));
     }
+    out.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(out)
 }
 

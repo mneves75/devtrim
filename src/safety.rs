@@ -33,6 +33,11 @@ const PROTECTED: &[&str] = &[
 
 const PROTECTED_USER: &[&str] = &["Library", ".ssh", ".gnupg"];
 
+// `Ctx::protect` predates apply-time alias revalidation and is also built
+// directly by tests in other modules. Keep its `Vec<PathBuf>` shape while
+// tagging values loaded from config as literal/resolved pairs.
+const CONFIG_PROTECT_SNAPSHOT_MARKER: &str = "devtrim:protect-snapshot:v1";
+
 pub struct Ctx {
     pub yes: bool,
     pub yolo: bool,
@@ -191,14 +196,18 @@ pub(crate) fn parse_config_str(contents: &str) -> Result<FileCfg> {
 }
 
 fn configured_protect(entries: Vec<String>, home: &Path) -> Result<(Vec<PathBuf>, Vec<String>)> {
-    let mut protect = Vec::with_capacity(entries.len());
+    let mut protect = Vec::with_capacity(entries.len().saturating_mul(2).saturating_add(1));
     let mut warnings = Vec::new();
+    if !entries.is_empty() {
+        protect.push(PathBuf::from(CONFIG_PROTECT_SNAPSHOT_MARKER));
+    }
     for entry in entries {
         let expanded = PathBuf::from(shellexpand(&entry, home));
         if !expanded.is_absolute() {
             bail!("protect entry `{entry}` must expand to an absolute path");
         }
         let cleaned = clean(&expanded);
+        let mut resolved_snapshot = cleaned.clone();
         // A protect entry that resolves to nothing usually means a typo, and a
         // typo in a safety valve must be loud, not silent.
         if cleaned.exists() {
@@ -210,15 +219,14 @@ fn configured_protect(entries: Vec<String>, home: &Path) -> Result<(Vec<PathBuf>
                     cleaned.display()
                 )
             })?;
-            if resolved != cleaned {
-                protect.push(resolved);
-            }
+            resolved_snapshot = clean(&resolved);
         } else {
             warnings.push(format!(
                 "protect entry `{entry}` does not currently resolve to an existing path"
             ));
         }
         protect.push(cleaned);
+        protect.push(resolved_snapshot);
     }
     Ok((protect, warnings))
 }
@@ -241,6 +249,32 @@ fn journal_path(home: &Path) -> PathBuf {
 pub(crate) struct FileIdentity {
     pub(crate) dev: u64,
     pub(crate) ino: u64,
+    #[cfg(target_os = "macos")]
+    pub(crate) generation: u32,
+}
+
+impl FileIdentity {
+    pub(crate) fn from_std_metadata(metadata: &std::fs::Metadata) -> Self {
+        #[cfg(target_os = "macos")]
+        use std::os::macos::fs::MetadataExt as _;
+        use std::os::unix::fs::MetadataExt as _;
+
+        Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            #[cfg(target_os = "macos")]
+            generation: metadata.st_gen(),
+        }
+    }
+
+    pub(crate) fn from_rustix_stat(metadata: &rustix::fs::Stat) -> Self {
+        Self {
+            dev: metadata.st_dev as u64,
+            ino: metadata.st_ino,
+            #[cfg(target_os = "macos")]
+            generation: metadata.st_gen,
+        }
+    }
 }
 
 /// A pathname that passed the deletion boundary's current safety checks.
@@ -261,6 +295,7 @@ pub(crate) fn validate_path_for_deletion(
     home: &Path,
     protect: &[PathBuf],
 ) -> Result<VerifiedTarget> {
+    revalidate_configured_protect_aliases(protect)?;
     let literal = abs(path);
     if is_protected(&literal, home) {
         bail!("refusing protected path: {}", literal.display());
@@ -294,7 +329,77 @@ pub(crate) fn validate_path_for_deletion(
     if is_protected_abs(&resolved, home) {
         bail!("refusing protected resolved path: {}", resolved.display());
     }
+    refuse_git_repository_root(&resolved)?;
     Ok(VerifiedTarget(literal))
+}
+
+fn revalidate_configured_protect_aliases(protect: &[PathBuf]) -> Result<()> {
+    if protect.first().map(PathBuf::as_path) != Some(Path::new(CONFIG_PROTECT_SNAPSHOT_MARKER)) {
+        return Ok(());
+    }
+    let snapshots = &protect[1..];
+    let (pairs, remainder) = snapshots.as_chunks::<2>();
+    if !remainder.is_empty() {
+        bail!("invalid configured protect snapshot; refusing deletion");
+    }
+    for pair in pairs {
+        let literal = &pair[0];
+        let expected = &pair[1];
+        let resolved = match literal.canonicalize() {
+            Ok(resolved) => resolved,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && literal == expected => {
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "cannot re-resolve protect symlink alias: {}",
+                        literal.display()
+                    )
+                });
+            }
+        };
+        let resolved = clean(&resolved);
+        if &resolved != expected {
+            bail!(
+                "protect symlink alias changed: {} resolved to {}, expected {}; refusing deletion",
+                literal.display(),
+                resolved.display(),
+                expected.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn configured_protect_values(protect: &[PathBuf]) -> &[PathBuf] {
+    if protect.first().map(PathBuf::as_path) == Some(Path::new(CONFIG_PROTECT_SNAPSHOT_MARKER)) {
+        &protect[1..]
+    } else {
+        protect
+    }
+}
+
+fn refuse_git_repository_root(path: &Path) -> Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot inspect deletion target: {}", path.display()));
+        }
+    };
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    let marker = path.join(".git");
+    match std::fs::symlink_metadata(&marker) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => bail!("refusing Git repository/worktree root: {}", path.display()),
+        Err(error) => {
+            Err(error).with_context(|| format!("cannot inspect Git marker: {}", marker.display()))
+        }
+    }
 }
 
 pub(crate) fn is_config_protected(path: &Path, protect: &[PathBuf]) -> bool {
@@ -317,7 +422,7 @@ pub(crate) fn is_config_protected(path: &Path, protect: &[PathBuf]) -> bool {
 fn is_config_protected_abs(path: &Path, protect: &[PathBuf]) -> bool {
     // Intersection in either direction is refused: deleting an ancestor of a
     // protected entry would remove the protected descendant with it.
-    protect.iter().any(|protected| {
+    configured_protect_values(protect).iter().any(|protected| {
         path_is_or_under_protect_entry(path, protected)
             || path_is_or_under_protect_entry(protected, path)
     })
@@ -830,7 +935,10 @@ mod tests {
     fn configured_protect_expands_tilde_and_rejects_relative_entries() {
         let home = Path::new("/Users/example");
         let (protect, warnings) = configured_protect(vec!["~/dev/keep".into()], home).unwrap();
-        assert_eq!(protect, vec![home.join("dev/keep")]);
+        assert_eq!(
+            configured_protect_values(&protect),
+            &[home.join("dev/keep"), home.join("dev/keep")]
+        );
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("~/dev/keep"));
         assert!(warnings[0].contains("does not currently resolve"));
@@ -849,6 +957,86 @@ mod tests {
         std::fs::create_dir_all(home.join("dev/keep")).unwrap();
         let (_, warnings) = configured_protect(vec!["~/dev/keep".into()], &home).unwrap();
         assert!(warnings.is_empty());
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn deletion_validation_refuses_git_repository_and_worktree_roots() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-git-roots-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        let repository = home.join("dev/repository");
+        let worktree = home.join("dev/worktree");
+        std::fs::create_dir_all(repository.join(".git")).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: ../repository/.git/worktrees/test\n",
+        )
+        .unwrap();
+        let home = home.canonicalize().unwrap();
+
+        for target in [home.join("dev/repository"), home.join("dev/worktree")] {
+            let error = validate_path_for_deletion(&target, &home, &[]).unwrap_err();
+            assert!(error.to_string().contains("Git repository/worktree root"));
+            assert!(target.exists());
+        }
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn deletion_validation_fails_closed_when_protect_alias_drifts() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-protect-drift-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        std::fs::create_dir_all(home.join("dev/protected-original")).unwrap();
+        std::fs::create_dir_all(home.join("dev/protected-replacement")).unwrap();
+        std::fs::create_dir_all(home.join("dev/deletable")).unwrap();
+        symlink(home.join("dev/protected-original"), home.join("keep")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let (protect, warnings) = configured_protect(vec!["~/keep".into()], &home).unwrap();
+        assert!(warnings.is_empty());
+
+        std::fs::remove_file(home.join("keep")).unwrap();
+        symlink(home.join("dev/protected-replacement"), home.join("keep")).unwrap();
+        let retargeted =
+            validate_path_for_deletion(&home.join("dev/deletable"), &home, &protect).unwrap_err();
+        assert!(
+            retargeted
+                .to_string()
+                .contains("protect symlink alias changed")
+        );
+
+        std::fs::remove_file(home.join("keep")).unwrap();
+        symlink(home.join("dev/missing"), home.join("keep")).unwrap();
+        let broken =
+            validate_path_for_deletion(&home.join("dev/deletable"), &home, &protect).unwrap_err();
+        assert!(
+            broken
+                .to_string()
+                .contains("cannot re-resolve protect symlink alias")
+        );
+
+        let (unresolved_protect, warnings) =
+            configured_protect(vec!["~/future-keep".into()], &home).unwrap();
+        assert_eq!(warnings.len(), 1);
+        symlink(
+            home.join("dev/protected-replacement"),
+            home.join("future-keep"),
+        )
+        .unwrap();
+        let appeared_alias =
+            validate_path_for_deletion(&home.join("dev/deletable"), &home, &unresolved_protect)
+                .unwrap_err();
+        assert!(
+            appeared_alias
+                .to_string()
+                .contains("protect symlink alias changed")
+        );
         crate::ops::remove_test_path(home);
     }
 

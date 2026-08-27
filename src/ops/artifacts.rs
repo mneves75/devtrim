@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use super::project::{iso_days_ago, owning_repo, repo_has_active_build, repo_last_commit};
+use super::project::{
+    has_git_marker, is_directory_if_present, iso_days_ago, normalized_roots, owning_repo,
+    repo_has_active_build, repo_last_commit,
+};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size};
 use crate::safety::{Ctx, build_process_cwds, escalate};
 
@@ -55,12 +58,12 @@ impl Artifacts {
     fn scan_with_process_cwds(&self, ctx: &Ctx, process_cwds: &[PathBuf]) -> Result<Vec<Finding>> {
         let cutoff = iso_days_ago(ctx.active_days);
         let mut groups: BTreeMap<PathBuf, Vec<ArtifactCandidate>> = BTreeMap::new();
-        for root in &ctx.roots {
-            if !root.is_dir() {
+        for root in normalized_roots(&ctx.roots) {
+            if !is_directory_if_present(root)? {
                 continue;
             }
             for candidate in find_artifacts(root)? {
-                if let Some(owner) = owning_repo(&candidate.path) {
+                if let Some(owner) = owning_repo(&candidate.path)? {
                     groups.entry(owner).or_default().push(candidate);
                 }
             }
@@ -69,22 +72,12 @@ impl Artifacts {
         let mut findings = Vec::new();
         let mut active = 0usize;
         let mut build_active = 0usize;
-        let mut unproven = 0usize;
         for (owner, candidates) in groups {
             if repo_has_active_build(&owner, process_cwds) {
                 build_active = build_active.saturating_add(candidates.len());
                 continue;
             }
-            let last_commit = match repo_last_commit(&owner) {
-                Ok(date) => date,
-                Err(error) => {
-                    unproven = unproven.saturating_add(candidates.len());
-                    if !ctx.json {
-                        ctx.diagnostic("warn", format!("skipping {}: {error:#}", owner.display()));
-                    }
-                    continue;
-                }
-            };
+            let last_commit = repo_last_commit(&owner)?;
             if last_commit > cutoff {
                 active = active.saturating_add(candidates.len());
                 continue;
@@ -118,12 +111,6 @@ impl Artifacts {
                 ),
             );
         }
-        if unproven > 0 && !ctx.json {
-            ctx.diagnostic(
-                "info",
-                format!("skipping {unproven} artifact directories whose Git activity is unproven"),
-            );
-        }
         Ok(findings)
     }
 
@@ -142,23 +129,40 @@ impl Artifacts {
                 return Ok(outcome);
             }
         };
+        let mut ready = Vec::new();
         for finding in findings {
             if !matches!(finding.action, Action::Trash | Action::Shred) {
                 continue;
             }
             let Some(path) = finding.target() else {
                 outcome.fail(anyhow::anyhow!("artifact finding missing internal target"));
-                break;
+                return Ok(outcome);
             };
-            if !path.exists() {
-                outcome
-                    .summary
-                    .notes
-                    .push(format!("skipped vanished {}", path.display()));
-                continue;
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    outcome
+                        .summary
+                        .notes
+                        .push(format!("skipped vanished {}", path.display()));
+                    continue;
+                }
+                Err(error) => {
+                    outcome.fail(
+                        anyhow::Error::new(error)
+                            .context(format!("cannot inspect artifact target {}", path.display())),
+                    );
+                    return Ok(outcome);
+                }
             }
-            let result = (|| -> Result<String> {
-                let owner = owning_repo(path).ok_or_else(|| {
+            let result = (|| -> Result<()> {
+                if has_git_marker(path)? {
+                    anyhow::bail!(
+                        "target gained its own Git marker after preview; refusing {}",
+                        path.display()
+                    );
+                }
+                let owner = owning_repo(path)?.ok_or_else(|| {
                     anyhow::anyhow!("cannot prove Git owner for {}", path.display())
                 })?;
                 if artifact_evidence(path)?.is_none() {
@@ -181,19 +185,29 @@ impl Artifacts {
                         path.display()
                     );
                 }
-                apply_filesystem_finding(self.name(), finding, ctx)?;
-                Ok(format!(
-                    "{} {}",
-                    if finding.action == Action::Shred {
-                        "permanently deleted"
-                    } else {
-                        "trashed"
-                    },
-                    path.display()
-                ))
+                Ok(())
             })();
-            match result {
-                Ok(note) => outcome.record(finding, note),
+            if let Err(error) = result {
+                outcome.fail(error);
+                return Ok(outcome);
+            }
+            ready.push((finding, path));
+        }
+
+        for (finding, path) in ready {
+            match apply_filesystem_finding(self.name(), finding, ctx) {
+                Ok(()) => outcome.record(
+                    finding,
+                    format!(
+                        "{} {}",
+                        if finding.action == Action::Shred {
+                            "permanently deleted"
+                        } else {
+                            "trashed"
+                        },
+                        path.display()
+                    ),
+                ),
                 Err(error) => {
                     outcome.fail(error);
                     break;
@@ -218,6 +232,10 @@ fn find_artifacts(root: &Path) -> Result<Vec<ArtifactCandidate>> {
             continue;
         }
         if let Some(evidence) = artifact_evidence(entry.path())? {
+            if has_git_marker(entry.path())? {
+                entries.skip_current_dir();
+                continue;
+            }
             found.push(ArtifactCandidate {
                 path: entry.path().to_path_buf(),
                 evidence,

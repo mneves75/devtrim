@@ -1,8 +1,9 @@
 //! Read-only hints for possible agent leftovers.
 //! Whole worktree staleness is not decidable, so this category never deletes them.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
+use super::project::is_directory_if_present;
 use super::{Action, ApplyOutcome, Finding, Op, dir_size};
 use crate::safety::Ctx;
 
@@ -28,12 +29,19 @@ impl Op for Leftovers {
     fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         for root in &ctx.roots {
-            if !root.is_dir() {
+            if !is_directory_if_present(root)? {
                 continue;
             }
-            for entry in std::fs::read_dir(root)?.flatten() {
+            for result in std::fs::read_dir(root)
+                .with_context(|| format!("cannot scan leftovers under {}", root.display()))?
+            {
+                let entry = result
+                    .with_context(|| format!("cannot scan leftovers under {}", root.display()))?;
                 let path = entry.path();
-                if path.is_dir() && is_agent_scratch(&entry.file_name().to_string_lossy()) {
+                let file_type = entry.file_type().with_context(|| {
+                    format!("cannot inspect leftover candidate {}", path.display())
+                })?;
+                if file_type.is_dir() && is_agent_scratch(&entry.file_name().to_string_lossy()) {
                     findings.push(Finding::new(
                         format!(
                             "possible agent scratch `{}`",
@@ -51,14 +59,15 @@ impl Op for Leftovers {
                 .max_depth(2)
                 .follow_links(false)
                 .into_iter()
-                .filter_map(|entry| entry.ok())
             {
+                let entry = entry
+                    .with_context(|| format!("cannot scan leftovers under {}", root.display()))?;
                 if entry.file_name() != ".supergoal" || !entry.file_type().is_dir() {
                     continue;
                 }
                 for child in ["evidence", "perf"] {
                     let path = entry.path().join(child);
-                    if path.is_dir() {
+                    if is_directory_if_present(&path)? {
                         findings.push(Finding::new(
                             format!("supergoal {child} artifacts"),
                             Some(path.clone()),

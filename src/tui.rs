@@ -657,6 +657,12 @@ fn apply_operation(app: &mut App, ctx: &Ctx, plan: ApprovedPlan) {
             app.screen = Screen::Outcome;
             app.status = if app.errors.is_empty() {
                 "Apply completed. Review the truthful summary below.".into()
+            } else if app
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.items_touched == 0)
+            {
+                "Apply failed before any item was changed.".into()
             } else {
                 "Apply stopped after an error; earlier successes remain reported.".into()
             };
@@ -905,10 +911,10 @@ fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
                 report::gb(summary.bytes_freed_estimate)
             ),
             Style::default()
-                .fg(if app.errors.is_empty() {
-                    Color::Green
-                } else {
-                    Color::Yellow
+                .fg(match (app.errors.is_empty(), summary.items_touched) {
+                    (true, _) => Color::Green,
+                    (false, 0) => Color::Red,
+                    (false, _) => Color::Yellow,
                 })
                 .add_modifier(Modifier::BOLD),
         ));

@@ -12,7 +12,6 @@ pub mod toolchains;
 pub mod xcode;
 
 use anyhow::{Context, Result};
-use cap_std::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -135,9 +134,11 @@ pub fn apply_filesystem_finding(op: &str, finding: &Finding, ctx: &Ctx) -> Resul
     let target = finding
         .target()
         .ok_or_else(|| anyhow::anyhow!("filesystem finding missing internal target"))?;
-    let attempt =
-        crate::journal::JournalRecord::filesystem_attempt(op, action, target, finding.size_bytes);
-    crate::journal::append(ctx, &attempt)?;
+    let attempt = crate::journal::begin(
+        ctx,
+        crate::journal::JournalRecord::filesystem_attempt(op, action, target, finding.size_bytes),
+    )
+    .with_context(|| format!("cannot write apply journal: {}", ctx.journal_path.display()))?;
     let result = crate::safety::validate_path_for_deletion(target, &ctx.home, &ctx.protect)
         .and_then(|verified| {
             let expected = finding
@@ -145,7 +146,7 @@ pub fn apply_filesystem_finding(op: &str, finding: &Finding, ctx: &Ctx) -> Resul
                 .ok_or_else(|| anyhow::anyhow!("finding lacks preview identity"))?;
             remove_path(verified, permanent, expected)
         });
-    crate::journal::finish(ctx, &attempt, result)
+    attempt.finish(ctx, result)
 }
 
 fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
@@ -162,16 +163,20 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
     // documented path-based resolution before check and deletion share this handle.
     let dir = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())
         .with_context(|| format!("cannot open target parent: {}", parent.display()))?;
-    let metadata = dir
-        .symlink_metadata(leaf)
+    let actual = file_identity_at(&dir, leaf)
         .with_context(|| format!("cannot inspect deletion target: {}", path.display()))?;
-    let actual = FileIdentity {
-        dev: metadata.dev(),
-        ino: metadata.ino(),
-    };
     if actual != expected {
         anyhow::bail!("target identity changed after preview; refusing");
     }
+
+    let deletion_device = if permanent {
+        let parent_identity = file_identity_for_dir(&dir)
+            .with_context(|| format!("cannot inspect target parent: {}", parent.display()))?;
+        ensure_same_device(actual, parent_identity.dev, &path)?;
+        parent_identity.dev
+    } else {
+        expected.dev
+    };
 
     if !permanent {
         // macOS Trash has no descriptor-relative API; a residual rename window
@@ -208,33 +213,165 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                 );
             }
         };
-        let handle_metadata = target_dir.dir_metadata().with_context(|| {
-            format!(
-                "cannot verify quarantined directory handle: {}",
-                quarantine_path.display()
-            )
-        })?;
-        let handle_identity = FileIdentity {
-            dev: handle_metadata.dev(),
-            ino: handle_metadata.ino(),
-        };
-        if handle_identity != expected {
+        let mut removal_started = false;
+        let removal_result = (|| -> Result<()> {
+            let handle_identity = file_identity_for_dir(&target_dir).with_context(|| {
+                format!(
+                    "cannot verify quarantined directory handle: {}",
+                    quarantine_path.display()
+                )
+            })?;
+            if handle_identity != expected {
+                anyhow::bail!("quarantined directory identity changed");
+            }
+            preflight_same_device_tree(&target_dir, deletion_device, &quarantine_path)
+                .context("permanent deletion preflight failed")?;
+            struct RemovalFrame {
+                dir: cap_std::fs::Dir,
+                path: PathBuf,
+                identity: FileIdentity,
+                names: Vec<std::ffi::OsString>,
+                next: usize,
+            }
+            enum RemovalStep {
+                Continue,
+                Descend(RemovalFrame),
+                Finish,
+            }
+
+            let root_identity = file_identity_for_dir(&target_dir).with_context(|| {
+                format!(
+                    "cannot inspect open directory: {}",
+                    quarantine_path.display()
+                )
+            })?;
+            ensure_same_device(root_identity, deletion_device, &quarantine_path)?;
+            refuse_git_repository_root_handle(&target_dir, &quarantine_path)?;
+            let names = directory_entry_names(&target_dir, &quarantine_path)?;
+            if names.iter().any(|name| name == ".git") {
+                anyhow::bail!(
+                    "refusing Git repository/worktree root: {}",
+                    quarantine_path.display()
+                );
+            }
+            let mut frames = vec![RemovalFrame {
+                dir: target_dir,
+                path: quarantine_path.clone(),
+                identity: root_identity,
+                names,
+                next: 0,
+            }];
+            loop {
+                let step = {
+                    let Some(frame) = frames.last_mut() else {
+                        break;
+                    };
+                    if frame.next < frame.names.len() {
+                        let name = frame.names[frame.next].clone();
+                        frame.next += 1;
+                        let child_path = frame.path.join(&name);
+                        let metadata = frame.dir.symlink_metadata(&name).with_context(|| {
+                            format!("cannot inspect entry: {}", child_path.display())
+                        })?;
+                        let entry_identity = file_identity_at(&frame.dir, Path::new(&name))
+                            .with_context(|| {
+                                format!("cannot inspect entry identity: {}", child_path.display())
+                            })?;
+                        ensure_same_device(entry_identity, deletion_device, &child_path)?;
+                        if metadata.is_dir() {
+                            let child = frame.dir.open_dir(&name).with_context(|| {
+                                format!("cannot open directory: {}", child_path.display())
+                            })?;
+                            let opened_identity =
+                                file_identity_for_dir(&child).with_context(|| {
+                                    format!(
+                                        "cannot inspect open directory: {}",
+                                        child_path.display()
+                                    )
+                                })?;
+                            ensure_same_device(opened_identity, deletion_device, &child_path)?;
+                            if opened_identity != entry_identity {
+                                anyhow::bail!(
+                                    "directory identity changed during permanent deletion: {}",
+                                    child_path.display()
+                                );
+                            }
+                            refuse_git_repository_root_handle(&child, &child_path)?;
+                            let names = directory_entry_names(&child, &child_path)?;
+                            RemovalStep::Descend(RemovalFrame {
+                                dir: child,
+                                path: child_path,
+                                identity: opened_identity,
+                                names,
+                                next: 0,
+                            })
+                        } else {
+                            let current_identity = file_identity_at(&frame.dir, Path::new(&name))
+                                .with_context(|| {
+                                format!("cannot recheck entry identity: {}", child_path.display())
+                            })?;
+                            ensure_same_device(current_identity, deletion_device, &child_path)?;
+                            if current_identity != entry_identity {
+                                anyhow::bail!(
+                                    "entry identity changed during permanent deletion: {}",
+                                    child_path.display()
+                                );
+                            }
+                            removal_started = true;
+                            frame.dir.remove_file(&name).with_context(|| {
+                                format!("cannot delete entry: {}", child_path.display())
+                            })?;
+                            RemovalStep::Continue
+                        }
+                    } else {
+                        refuse_git_repository_root_handle(&frame.dir, &frame.path)?;
+                        let final_identity =
+                            file_identity_for_dir(&frame.dir).with_context(|| {
+                                format!("cannot recheck open directory: {}", frame.path.display())
+                            })?;
+                        ensure_same_device(final_identity, deletion_device, &frame.path)?;
+                        if final_identity != frame.identity {
+                            anyhow::bail!(
+                                "directory identity changed during permanent deletion: {}",
+                                frame.path.display()
+                            );
+                        }
+                        RemovalStep::Finish
+                    }
+                };
+                match step {
+                    RemovalStep::Continue => {}
+                    RemovalStep::Descend(frame) => frames.push(frame),
+                    RemovalStep::Finish => {
+                        let Some(frame) = frames.pop() else {
+                            anyhow::bail!("deletion traversal stack unexpectedly empty");
+                        };
+                        removal_started = true;
+                        frame.dir.remove_open_dir().with_context(|| {
+                            format!("cannot delete open directory: {}", frame.path.display())
+                        })?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = removal_result {
+            if removal_started {
+                return Err(error);
+            }
             if let Err(restore_error) =
                 restore_quarantined_target(&dir, leaf, &quarantine_name, &quarantine_path)
             {
                 anyhow::bail!(
-                    "quarantined directory identity changed at {}; restore failed and nothing was deleted: {restore_error:#}",
+                    "permanent deletion preparation refused {}; restore failed and nothing was deleted: {restore_error:#} (preparation error: {error:#})",
                     quarantine_path.display()
                 );
             }
-            anyhow::bail!("quarantined directory identity changed; entry was restored");
-        }
-        target_dir.remove_open_dir_all().with_context(|| {
-            format!(
-                "cannot delete quarantined directory: {}",
+            anyhow::bail!(
+                "permanent deletion preparation refused {}; entry was restored: {error:#}",
                 quarantine_path.display()
-            )
-        })?;
+            );
+        }
     } else {
         // macOS has no fd-relative unlink, so the final single-entry removal is
         // by the private, unpredictable quarantine name after re-verification.
@@ -244,6 +381,89 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                 quarantine_path.display()
             )
         })?;
+    }
+    Ok(())
+}
+
+fn file_identity_at(dir: &cap_std::fs::Dir, path: &Path) -> Result<FileIdentity> {
+    let metadata = rustix::fs::statat(dir, path, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
+    Ok(FileIdentity::from_rustix_stat(&metadata))
+}
+
+fn file_identity_for_dir(dir: &cap_std::fs::Dir) -> Result<FileIdentity> {
+    let metadata = rustix::fs::fstat(dir)?;
+    Ok(FileIdentity::from_rustix_stat(&metadata))
+}
+
+fn ensure_same_device(identity: FileIdentity, expected_device: u64, path: &Path) -> Result<()> {
+    if identity.dev != expected_device {
+        anyhow::bail!(
+            "refusing foreign filesystem device at {} (device {}, expected {})",
+            path.display(),
+            identity.dev,
+            expected_device
+        );
+    }
+    Ok(())
+}
+
+fn refuse_git_repository_root_handle(dir: &cap_std::fs::Dir, path: &Path) -> Result<()> {
+    match dir.symlink_metadata(Path::new(".git")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => anyhow::bail!("refusing Git repository/worktree root: {}", path.display()),
+        Err(error) => Err(error)
+            .with_context(|| format!("cannot inspect Git marker under {}", path.display())),
+    }
+}
+
+fn directory_entry_names(dir: &cap_std::fs::Dir, path: &Path) -> Result<Vec<std::ffi::OsString>> {
+    dir.entries()
+        .with_context(|| format!("cannot read directory: {}", path.display()))?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name())
+                .with_context(|| format!("cannot read directory entry under {}", path.display()))
+        })
+        .collect()
+}
+
+fn preflight_same_device_tree(
+    dir: &cap_std::fs::Dir,
+    expected_device: u64,
+    path: &Path,
+) -> Result<()> {
+    let root_identity = file_identity_for_dir(dir)
+        .with_context(|| format!("cannot inspect open directory: {}", path.display()))?;
+    ensure_same_device(root_identity, expected_device, path)?;
+    refuse_git_repository_root_handle(dir, path)?;
+
+    for name in directory_entry_names(dir, path)? {
+        if name == ".git" {
+            anyhow::bail!("refusing Git repository/worktree root: {}", path.display());
+        }
+        let child_path = path.join(&name);
+        let metadata = dir
+            .symlink_metadata(&name)
+            .with_context(|| format!("cannot inspect entry: {}", child_path.display()))?;
+        let entry_identity = file_identity_at(dir, Path::new(&name))
+            .with_context(|| format!("cannot inspect entry identity: {}", child_path.display()))?;
+        ensure_same_device(entry_identity, expected_device, &child_path)?;
+        if metadata.is_dir() {
+            let child = dir
+                .open_dir(&name)
+                .with_context(|| format!("cannot open directory: {}", child_path.display()))?;
+            let opened_identity = file_identity_for_dir(&child).with_context(|| {
+                format!("cannot inspect open directory: {}", child_path.display())
+            })?;
+            ensure_same_device(opened_identity, expected_device, &child_path)?;
+            if opened_identity != entry_identity {
+                anyhow::bail!(
+                    "directory identity changed during deletion preflight: {}",
+                    child_path.display()
+                );
+            }
+            preflight_same_device_tree(&child, expected_device, &child_path)?;
+        }
     }
     Ok(())
 }
@@ -305,9 +525,22 @@ fn verify_quarantined_target(
             });
         }
     };
-    let actual = FileIdentity {
-        dev: metadata.dev(),
-        ino: metadata.ino(),
+    let actual = match file_identity_at(dir, quarantine_name) {
+        Ok(identity) => identity,
+        Err(error) => {
+            if let Err(restore_error) =
+                restore_quarantined_target(dir, leaf, quarantine_name, quarantine_path)
+            {
+                anyhow::bail!(
+                    "cannot inspect quarantined target identity {}; restore failed and nothing was deleted: {restore_error:#} (identity error: {error:#})",
+                    quarantine_path.display()
+                );
+            }
+            anyhow::bail!(
+                "cannot inspect quarantined target identity {}; entry was restored: {error:#}",
+                quarantine_path.display()
+            );
+        }
     };
     if actual == expected {
         return Ok(metadata);
@@ -443,7 +676,11 @@ mod tests {
             .join("target")
             .join(format!("devtrim-normal-{}", std::process::id()));
         std::fs::remove_dir_all(&home).ok();
-        std::fs::create_dir_all(home.join("dev/node_modules")).unwrap();
+        std::fs::create_dir_all(home.join("dev/node_modules/nested")).unwrap();
+        std::fs::write(home.join("dev/node_modules/nested/payload"), "delete").unwrap();
+        std::fs::create_dir_all(home.join("dev/outside")).unwrap();
+        std::fs::write(home.join("dev/outside/sentinel"), "keep").unwrap();
+        symlink(home.join("dev/outside"), home.join("dev/node_modules/link")).unwrap();
         let home = home.canonicalize().unwrap();
         let target = home.join("dev/node_modules");
         let finding = Finding::new(
@@ -456,6 +693,10 @@ mod tests {
         );
         apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap();
         assert!(!target.exists());
+        assert_eq!(
+            std::fs::read_to_string(home.join("dev/outside/sentinel")).unwrap(),
+            "keep"
+        );
         assert!(std::fs::read_dir(home.join("dev")).unwrap().all(|entry| {
             !entry
                 .unwrap()
@@ -474,6 +715,131 @@ mod tests {
     }
 
     #[test]
+    fn permanent_sink_rechecks_git_marker_after_validation() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-git-recheck-{}", std::process::id()));
+        remove_test_path(&home);
+        let target = home.join("dev/cache");
+        std::fs::create_dir_all(&target).unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("dev/cache");
+        let finding = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
+        let expected = finding.identity().unwrap();
+        let verified = crate::safety::validate_path_for_deletion(&target, &home, &[]).unwrap();
+        std::fs::write(target.join(".git"), "gitdir: elsewhere\n").unwrap();
+
+        let error = remove_path(verified, true, expected).unwrap_err();
+
+        assert!(error.to_string().contains("Git repository/worktree root"));
+        assert_eq!(
+            std::fs::read_to_string(target.join(".git")).unwrap(),
+            "gitdir: elsewhere\n"
+        );
+        assert!(std::fs::read_dir(home.join("dev")).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".devtrim-quarantine-")
+        }));
+        remove_test_path(home);
+    }
+
+    #[test]
+    fn permanent_sink_refuses_nested_git_worktree_before_deletion() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-nested-git-{}", std::process::id()));
+        remove_test_path(&home);
+        let target = home.join("dev/cache");
+        let nested = target.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            nested.join(".git"),
+            "gitdir: ../repository/.git/worktrees/nested\n",
+        )
+        .unwrap();
+        let sentinel = target.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("dev/cache");
+        let finding = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
+        let expected = finding.identity().unwrap();
+        let verified = crate::safety::validate_path_for_deletion(&target, &home, &[]).unwrap();
+
+        let error = remove_path(verified, true, expected).unwrap_err();
+
+        assert!(error.to_string().contains("Git repository/worktree root"));
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
+        assert_eq!(
+            std::fs::read_to_string(target.join("nested/.git")).unwrap(),
+            "gitdir: ../repository/.git/worktrees/nested\n"
+        );
+        assert!(target.is_dir());
+        assert!(std::fs::read_dir(home.join("dev")).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".devtrim-quarantine-")
+        }));
+        remove_test_path(home);
+    }
+
+    #[test]
+    fn same_device_preflight_refuses_a_foreign_directory_before_deletion() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-foreign-device-{}", std::process::id()));
+        remove_test_path(&home);
+        let target = home.join("cache");
+        std::fs::create_dir_all(&target).unwrap();
+        let sentinel = target.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("cache");
+        let target_dir =
+            cap_std::fs::Dir::open_ambient_dir(&target, cap_std::ambient_authority()).unwrap();
+        let actual_device = file_identity_for_dir(&target_dir).unwrap().dev;
+
+        let error = preflight_same_device_tree(&target_dir, actual_device.wrapping_add(1), &target)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("foreign filesystem device"));
+        assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
+        remove_test_path(home);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn preview_and_handle_relative_identity_include_the_same_generation() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-generation-{}", std::process::id()));
+        remove_test_path(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let target = home.join("cache");
+        std::fs::write(&target, "content").unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("cache");
+        let preview = Finding::new("cache", Some(target), 0, "test", 9, Action::Shred)
+            .identity()
+            .unwrap();
+        let dir = cap_std::fs::Dir::open_ambient_dir(&home, cap_std::ambient_authority()).unwrap();
+
+        let handle_relative = file_identity_at(&dir, Path::new("cache")).unwrap();
+
+        assert_eq!(preview, handle_relative);
+        assert_eq!(preview.generation, handle_relative.generation);
+        remove_test_path(home);
+    }
+
+    #[test]
     fn quarantine_identity_mismatch_restores_the_original_name() {
         let home = std::env::current_dir()
             .unwrap()
@@ -489,8 +855,8 @@ mod tests {
             .identity()
             .unwrap();
         let mismatched = FileIdentity {
-            dev: expected.dev,
             ino: expected.ino.wrapping_add(1),
+            ..expected
         };
         let dir =
             cap_std::fs::Dir::open_ambient_dir(&parent, cap_std::ambient_authority()).unwrap();
@@ -528,8 +894,8 @@ mod tests {
             .identity()
             .unwrap();
         let mismatched = FileIdentity {
-            dev: expected.dev,
             ino: expected.ino.wrapping_add(1),
+            ..expected
         };
         let dir =
             cap_std::fs::Dir::open_ambient_dir(&parent, cap_std::ambient_authority()).unwrap();
@@ -854,14 +1220,17 @@ mod tests {
         let finding = Finding::new("cache", Some(target.clone()), 4, "test", 3, Action::Trash);
         let ctx = context(home.clone());
 
-        let attempt = crate::journal::JournalRecord::filesystem_attempt(
-            "caches",
-            "trash",
-            &target,
-            finding.size_bytes,
-        );
-        crate::journal::append(&ctx, &attempt).unwrap();
-        crate::journal::finish(&ctx, &attempt, Ok(())).unwrap();
+        let attempt = crate::journal::begin(
+            &ctx,
+            crate::journal::JournalRecord::filesystem_attempt(
+                "caches",
+                "trash",
+                &target,
+                finding.size_bytes,
+            ),
+        )
+        .unwrap();
+        attempt.finish(&ctx, Ok(())).unwrap();
 
         let records = std::fs::read_to_string(&ctx.journal_path)
             .unwrap()

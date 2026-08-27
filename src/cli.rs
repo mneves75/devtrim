@@ -71,7 +71,7 @@ pub enum Command {
     },
     /// Print the devtrim man page in roff format
     Manpage,
-    /// Show iCloud Drive queued uploads and their local-materialization status
+    /// Show large iCloud Drive files and their locally allocated storage
     Icloud,
     /// Purge macOS Trash permanently; requires --apply and --confirm=<gb>
     TrashEmpty {

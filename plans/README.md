@@ -19,6 +19,9 @@ Ratatui interface and its shared safety/release boundaries.
 | 006 | Make invalid deletion targets unrepresentable | P0 | M | 001–005 | DONE |
 | 007 | Build attested betas and promote exact artifacts | P0 | M | 006 | DONE (immutable attested beta and exact-byte production promotion verified) |
 | 008 | Harden the 0.4.0 release boundary | P0 | M | 006–007 | DONE |
+| 009 | Close the 0.5.0 production-readiness gaps | P0 | M | 008 | DONE |
+| 010 | Anchor deletion identity and close 0.6.0 | P0 | L | 009 | DONE |
+| 011 | Harden shared boundaries and ship 0.6.1 | P0 | L | 010 | IN PROGRESS |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 

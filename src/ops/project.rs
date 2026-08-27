@@ -4,15 +4,52 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub(crate) fn owning_repo(path: &Path) -> Option<PathBuf> {
+pub(crate) fn owning_repo(path: &Path) -> Result<Option<PathBuf>> {
     let mut current = path.to_path_buf();
     while current.parent().is_some() {
         current.pop();
-        if current.join(".git").exists() {
-            return Some(current);
+        if has_git_marker(&current)? {
+            return Ok(Some(current));
         }
     }
-    None
+    Ok(None)
+}
+
+pub(crate) fn has_git_marker(path: &Path) -> Result<bool> {
+    let marker = path.join(".git");
+    match std::fs::symlink_metadata(&marker) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(error).with_context(|| format!("cannot inspect Git marker {}", marker.display()))
+        }
+    }
+}
+
+pub(crate) fn normalized_roots(roots: &[PathBuf]) -> Vec<&Path> {
+    let mut roots = roots.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    roots.sort_unstable();
+    roots.dedup();
+    let mut normalized = Vec::new();
+    for root in roots {
+        if !normalized.iter().any(|parent| root.starts_with(*parent)) {
+            normalized.push(root);
+        }
+    }
+    normalized
+}
+
+pub(crate) fn is_directory_if_present(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => std::fs::metadata(path)
+            .map(|target| target.is_dir())
+            .with_context(|| format!("cannot resolve scan root symlink {}", path.display())),
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(error).with_context(|| format!("cannot inspect scan root {}", path.display()))
+        }
+    }
 }
 
 pub(crate) fn repo_last_commit(root: &Path) -> Result<String> {
@@ -20,7 +57,7 @@ pub(crate) fn repo_last_commit(root: &Path) -> Result<String> {
 }
 
 pub(crate) fn repo_last_commit_with(root: &Path, git: &str) -> Result<String> {
-    if !root.join(".git").exists() {
+    if !has_git_marker(root)? {
         anyhow::bail!("not a Git repository: {}", root.display());
     }
     // Neutralize repository-controlled config while inspecting an untrusted
@@ -104,6 +141,7 @@ pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf]) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink;
 
     fn temp(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("devtrim-{name}-{}", std::process::id()));
@@ -125,8 +163,57 @@ mod tests {
         let project = base.join("project/sub/node_modules");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::create_dir_all(base.join("project/.git")).unwrap();
-        assert_eq!(owning_repo(&project), Some(base.join("project")));
-        assert_eq!(owning_repo(&base.join("orphan/node_modules")), None);
+        assert_eq!(owning_repo(&project).unwrap(), Some(base.join("project")));
+        assert_eq!(
+            owning_repo(&base.join("orphan/node_modules")).unwrap(),
+            None
+        );
+        crate::ops::remove_test_path(base);
+    }
+
+    #[test]
+    fn detects_file_and_directory_git_markers() {
+        let base = temp("git-marker");
+        let file_target = base.join("file-target");
+        let directory_target = base.join("directory-target");
+        std::fs::create_dir_all(&file_target).unwrap();
+        std::fs::create_dir_all(directory_target.join(".git")).unwrap();
+        std::fs::write(file_target.join(".git"), "gitdir: elsewhere").unwrap();
+
+        assert!(has_git_marker(&file_target).unwrap());
+        assert!(has_git_marker(&directory_target).unwrap());
+        assert!(!has_git_marker(&base.join("missing")).unwrap());
+        crate::ops::remove_test_path(base);
+    }
+
+    #[test]
+    fn normalizes_duplicate_and_descendant_roots() {
+        let roots = vec![
+            PathBuf::from("/tmp/work/project"),
+            PathBuf::from("/tmp/work"),
+            PathBuf::from("/tmp/work"),
+            PathBuf::from("/tmp/other"),
+        ];
+
+        assert_eq!(
+            normalized_roots(&roots),
+            vec![Path::new("/tmp/other"), Path::new("/tmp/work")]
+        );
+    }
+
+    #[test]
+    fn directory_roots_follow_readable_symlinks_and_reject_broken_ones() {
+        let base = temp("root-symlink");
+        let target = base.join("target");
+        let readable = base.join("readable");
+        let broken = base.join("broken");
+        std::fs::create_dir_all(&target).unwrap();
+        symlink(&target, &readable).unwrap();
+        symlink(base.join("missing-target"), &broken).unwrap();
+
+        assert!(is_directory_if_present(&readable).unwrap());
+        assert!(!is_directory_if_present(&base.join("missing-root")).unwrap());
+        assert!(is_directory_if_present(&broken).is_err());
         crate::ops::remove_test_path(base);
     }
 
