@@ -79,12 +79,13 @@ const MENU = [
   ["1", "Scan everything", "READ-ONLY"],
   ["2", "Caches", "PREVIEW"],
   ["3", "node_modules", "PREVIEW"],
-  ["4", "Simulators", "PREVIEW"],
-  ["5", "Xcode", "PREVIEW"],
-  ["6", "Docker", "PREVIEW"],
-  ["7", "Swift toolchains", "PREVIEW"],
-  ["8", "Agent leftovers", "READ-ONLY"],
-  ["9", "iCloud status", "READ-ONLY"],
+  ["4", "Build artifacts", "PREVIEW"],
+  ["5", "Simulators", "PREVIEW"],
+  ["6", "Xcode", "PREVIEW"],
+  ["7", "Docker", "PREVIEW"],
+  ["8", "Swift toolchains", "PREVIEW"],
+  ["9", "Agent leftovers", "READ-ONLY"],
+  ["i", "iCloud status", "READ-ONLY"],
   ["0", "Empty Trash", "PERMANENT"],
 ];
 
@@ -142,7 +143,7 @@ const header = (operation: string): Row[] =>
   boxed(" measure · classify · trim ", COLS, 3, [
     [
       { t: " devtrim ", c: GREEN, b: true },
-      { t: "v0.4.0  ", c: DIM },
+      { t: "v0.6.0  ", c: DIM },
       { t: operation },
     ],
   ]);
@@ -168,7 +169,7 @@ const menuBody = (selected: number): Row[] => {
     ...wrap(d[2], 52).map((t): Row => [{ t, c: AMBER }]),
     [],
     ...wrap(
-      "↑/↓ or j/k navigate · Enter opens · number opens directly",
+      "↑/↓ or j/k navigate · Enter opens · menu key opens directly",
       52,
     ).map((t): Row => [{ t }]),
   ];
@@ -437,7 +438,7 @@ export const DevtrimDemo: React.FC = () => {
           dev<span style={{ color: GREEN }}>trim</span>
         </div>
         <div style={{ fontSize: 30, color: MUTED }}>
-          v0.4.0 · interactive Ratatui interface
+          v0.6.0 · interactive Ratatui interface
         </div>
         <div style={{ fontSize: 26, color: DIM }}>
           github.com/mneves75/devtrim
