@@ -18,6 +18,13 @@ rule:
         - pattern: remove_dir_all($TARGET)
         - pattern: $MODULE::delete($TARGET)
         - pattern: delete($TARGET)
+        - pattern: $RECV.remove_file($$$ARGS)
+        - pattern: $RECV.remove_dir($$$ARGS)
+        - pattern: $RECV.remove_dir_all($$$ARGS)
+        - pattern: $RECV.remove_open_dir_all($$$ARGS)
+        - pattern: $RECV.remove_open_dir($$$ARGS)
+        - pattern: $MODULE::unlinkat($$$ARGS)
+        - pattern: unlinkat($$$ARGS)
     - not:
         inside:
           pattern:

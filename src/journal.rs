@@ -1,13 +1,17 @@
 //! Write-ahead apply journal and read-only history rendering.
 
 use anyhow::{Context, Result};
-use std::fs::{OpenOptions, Permissions};
-use std::io::{Read, Write};
+use rustix::fs::{FlockOperation, flock};
+use std::fs::{File, OpenOptions, Permissions};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::ops::project::iso_from_epoch_days;
 use crate::safety::Ctx;
+
+const MAX_JOURNAL_BYTES: u64 = 10 * 1024 * 1024;
+const KEEP_ROTATED: usize = 3;
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 pub(crate) struct JournalRecord {
@@ -133,26 +137,150 @@ fn append_to_path(path: &Path, record: &JournalRecord) -> Result<()> {
     line.push(b'\n');
     file.write_all(&line)?;
     file.flush()?;
+    file.sync_data()?;
     Ok(())
 }
 
-pub(crate) fn read_history(path: &Path, limit: usize) -> Result<History> {
-    let mut file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(History {
-                entries: Vec::new(),
-                errors: Vec::new(),
-            });
+pub(crate) fn rotate_if_needed(path: &Path) -> Result<Vec<String>> {
+    let mut warnings = Vec::new();
+    if journal_is_oversized(path, &mut warnings) != Some(true) {
+        return Ok(warnings);
+    }
+
+    let lock_path = path.with_file_name("journal.lock");
+    // The lock file intentionally persists; flock ownership follows this fd.
+    let _lock = match try_acquire_rotation_lock(&lock_path) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            warnings.push("journal rotation skipped: journal.lock is already held".into());
+            return Ok(warnings);
         }
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("cannot read apply journal: {}", path.display()));
+            warnings.push(format!(
+                "journal rotation skipped: cannot acquire {}: {error}",
+                lock_path.display()
+            ));
+            return Ok(warnings);
         }
     };
+    if journal_is_oversized(path, &mut warnings) != Some(true) {
+        return Ok(warnings);
+    }
+
+    for index in (1..KEEP_ROTATED).rev() {
+        let source = rotated_path(path, index);
+        let destination = rotated_path(path, index + 1);
+        if !rename_rotation_source(&source, &destination, &mut warnings) {
+            return Ok(warnings);
+        }
+    }
+    let destination = rotated_path(path, 1);
+    rename_rotation_source(path, &destination, &mut warnings);
+    Ok(warnings)
+}
+
+fn journal_is_oversized(path: &Path, warnings: &mut Vec<String>) -> Option<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Some(metadata.len() > MAX_JOURNAL_BYTES),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Some(false),
+        Err(error) => {
+            warnings.push(format!(
+                "cannot inspect apply journal for rotation at {}: {error}",
+                path.display()
+            ));
+            None
+        }
+    }
+}
+
+fn rename_rotation_source(source: &Path, destination: &Path, warnings: &mut Vec<String>) -> bool {
+    match std::fs::symlink_metadata(source) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return true,
+        Err(error) => {
+            warnings.push(format!(
+                "journal rotation stopped while inspecting {}: {error}",
+                source.display()
+            ));
+            return false;
+        }
+    }
+    if let Err(error) = std::fs::rename(source, destination) {
+        warnings.push(format!(
+            "journal rotation stopped while renaming {} to {}: {error}",
+            source.display(),
+            destination.display()
+        ));
+        return false;
+    }
+    true
+}
+
+fn rotated_path(path: &Path, index: usize) -> PathBuf {
+    let mut rotated = path.as_os_str().to_os_string();
+    rotated.push(format!(".{index}"));
+    PathBuf::from(rotated)
+}
+
+fn open_journal_lock(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+}
+
+fn try_acquire_rotation_lock(path: &Path) -> io::Result<Option<File>> {
+    let file = open_journal_lock(path)?;
+    match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn acquire_history_lock(path: &Path) -> Result<Option<File>> {
+    let file = match open_journal_lock(path) {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+    flock(&file, FlockOperation::LockShared)
+        .map_err(io::Error::from)
+        .with_context(|| format!("cannot lock apply journal history: {}", path.display()))?;
+    Ok(Some(file))
+}
+
+pub(crate) fn read_history(path: &Path, limit: usize) -> Result<History> {
     let mut contents = Vec::new();
-    file.read_to_end(&mut contents)
-        .with_context(|| format!("cannot read apply journal: {}", path.display()))?;
+    let history_lock = acquire_history_lock(&path.with_file_name("journal.lock"))?;
+    let paths = (1..=KEEP_ROTATED)
+        .rev()
+        .map(|index| rotated_path(path, index))
+        .chain(std::iter::once(path.to_path_buf()));
+    let mut files = Vec::new();
+    for history_path in paths {
+        match File::open(&history_path) {
+            Ok(file) => files.push((history_path, file)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot read apply journal: {}", history_path.display())
+                });
+            }
+        }
+    }
+    drop(history_lock);
+
+    for (history_path, mut file) in files {
+        let previous_len = contents.len();
+        file.read_to_end(&mut contents)
+            .with_context(|| format!("cannot read apply journal: {}", history_path.display()))?;
+        if contents.len() > previous_len && contents.last() != Some(&b'\n') {
+            contents.push(b'\n');
+        }
+    }
 
     let mut malformed = 0usize;
     let mut records = Vec::new();
@@ -320,6 +448,17 @@ mod tests {
         path
     }
 
+    fn write_oversized(path: &Path) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        file.write_all(b"oversized current journal").unwrap();
+        file.set_len(MAX_JOURNAL_BYTES + 1).unwrap();
+    }
+
     #[test]
     fn formats_epoch_seconds_as_utc() {
         assert_eq!(format_utc_timestamp(0), "1970-01-01 00:00:00");
@@ -411,6 +550,86 @@ mod tests {
         let limited = read_history(&path, 1).unwrap();
         assert_eq!(limited.entries.len(), 1);
         assert_eq!(limited.entries[0].target.as_deref(), Some("/tmp/second"));
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn rotation_shifts_files_and_clobbers_the_oldest_generation() {
+        let root = temp("rotation-shift");
+        let path = root.join("journal.jsonl");
+        write_oversized(&path);
+        std::fs::write(rotated_path(&path, 1), "generation one").unwrap();
+        std::fs::write(rotated_path(&path, 2), "generation two").unwrap();
+        std::fs::write(rotated_path(&path, 3), "old generation three").unwrap();
+
+        let warnings = rotate_if_needed(&path).unwrap();
+
+        assert!(warnings.is_empty());
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::metadata(rotated_path(&path, 1)).unwrap().len(),
+            MAX_JOURNAL_BYTES + 1
+        );
+        assert_eq!(
+            std::fs::read_to_string(rotated_path(&path, 2)).unwrap(),
+            "generation one"
+        );
+        assert_eq!(
+            std::fs::read_to_string(rotated_path(&path, 3)).unwrap(),
+            "generation two"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn held_lock_skips_rotation_with_a_warning() {
+        let root = temp("rotation-held-lock");
+        let path = root.join("journal.jsonl");
+        write_oversized(&path);
+        let held_lock = open_journal_lock(&root.join("journal.lock")).unwrap();
+        flock(&held_lock, FlockOperation::LockExclusive).unwrap();
+
+        let warnings = rotate_if_needed(&path).unwrap();
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("already held"));
+        assert!(path.exists());
+        assert!(!rotated_path(&path, 1).exists());
+        drop(held_lock);
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn persistent_unlocked_lock_file_does_not_block_rotation() {
+        let root = temp("rotation-persistent-lock-file");
+        let path = root.join("journal.jsonl");
+        let lock_path = root.join("journal.lock");
+        write_oversized(&path);
+        drop(open_journal_lock(&lock_path).unwrap());
+
+        let warnings = rotate_if_needed(&path).unwrap();
+
+        assert!(warnings.is_empty());
+        assert!(rotated_path(&path, 1).exists());
+        assert!(lock_path.exists());
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn history_pairs_attempt_and_result_across_rotation_boundary() {
+        let root = temp("history-rotation-pair");
+        let path = root.join("journal.jsonl");
+        let attempt =
+            JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
+        append_to_path(&rotated_path(&path, 1), &attempt).unwrap();
+        append_to_path(&path, &JournalRecord::result(&attempt, &Ok(()))).unwrap();
+
+        let history = read_history(&path, 20).unwrap();
+
+        assert!(history.errors.is_empty());
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(history.entries[0].phase, "result");
+        assert_eq!(history.entries[0].status.as_deref(), Some("ok"));
         crate::ops::remove_test_path(root);
     }
 }

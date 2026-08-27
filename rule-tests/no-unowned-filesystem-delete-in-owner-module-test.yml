@@ -2,8 +2,8 @@ id: no-unowned-filesystem-delete-in-owner-module
 valid:
   - apply_filesystem_finding(finding, ctx)?;
   - |
-      fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
-          std::fs::remove_file(&path)?;
+      fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
+          dir.remove_file(&path)?;
           trash::delete(&path)?;
           Ok(())
       }
@@ -26,15 +26,25 @@ invalid:
           Ok(())
       }
   - |
+      fn accidental_method_sink(dir: &Dir, path: &Path) -> Result<()> {
+          dir.remove_dir_all(path)?;
+          Ok(())
+      }
+  - |
+      fn accidental_unlinkat_sink(dirfd: i32, path: &Path) -> Result<()> {
+          rustix::fs::unlinkat(dirfd, path, flags)?;
+          Ok(())
+      }
+  - |
       mod forged_sink {
-          fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
+          fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
               std::fs::remove_file(&path)?;
               Ok(())
           }
       }
   - |
       impl ForgedSink {
-          fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
+          fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
               std::fs::remove_dir_all(&path)?;
               Ok(())
           }

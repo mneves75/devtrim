@@ -11,11 +11,15 @@ pub mod simulators;
 pub mod toolchains;
 pub mod xcode;
 
-use anyhow::Result;
-use std::path::Path;
+use anyhow::{Context, Result};
+use cap_std::fs::MetadataExt as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::report::{Action, Finding, Summary};
-use crate::safety::{Ctx, VerifiedTarget};
+use crate::safety::{Ctx, FileIdentity, VerifiedTarget};
+
+static QUARANTINE_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
 pub use icloud::icloud_status;
 
@@ -135,29 +139,218 @@ pub fn apply_filesystem_finding(op: &str, finding: &Finding, ctx: &Ctx) -> Resul
         crate::journal::JournalRecord::filesystem_attempt(op, action, target, finding.size_bytes);
     crate::journal::append(ctx, &attempt)?;
     let result = crate::safety::validate_path_for_deletion(target, &ctx.home, &ctx.protect)
-        .and_then(|verified| remove_path(verified, permanent));
+        .and_then(|verified| {
+            let expected = finding
+                .identity()
+                .ok_or_else(|| anyhow::anyhow!("finding lacks preview identity"))?;
+            remove_path(verified, permanent, expected)
+        });
     crate::journal::finish(ctx, &attempt, result)
 }
 
-fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
+fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
     let path = target.into_path();
-    let metadata = std::fs::symlink_metadata(&path)?;
-    if metadata.file_type().is_symlink() {
-        if permanent {
-            std::fs::remove_file(&path)?;
-        } else {
-            trash::delete(&path)?;
-        }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("refusing target without parent: {}", path.display()))?;
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("refusing target without leaf: {}", path.display()))?;
+    let leaf = Path::new(leaf);
+
+    // Validation rejected symlinked ancestors; opening the parent is still a
+    // documented path-based resolution before check and deletion share this handle.
+    let dir = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())
+        .with_context(|| format!("cannot open target parent: {}", parent.display()))?;
+    let metadata = dir
+        .symlink_metadata(leaf)
+        .with_context(|| format!("cannot inspect deletion target: {}", path.display()))?;
+    let actual = FileIdentity {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    };
+    if actual != expected {
+        anyhow::bail!("target identity changed after preview; refusing");
+    }
+
+    if !permanent {
+        // macOS Trash has no descriptor-relative API; a residual rename window
+        // remains after the parent-anchored identity check.
+        trash::delete(&path)?;
         return Ok(());
     }
-    if permanent && metadata.is_dir() {
-        std::fs::remove_dir_all(&path)?;
-    } else if permanent {
-        std::fs::remove_file(&path)?;
+
+    let quarantine_name = next_quarantine_name(&dir)?;
+    let quarantine_path = parent.join(&quarantine_name);
+    dir.rename(leaf, &dir, &quarantine_name)
+        .with_context(|| format!("cannot quarantine deletion target: {}", path.display()))?;
+    let quarantined =
+        verify_quarantined_target(&dir, leaf, &quarantine_name, &quarantine_path, expected)?;
+    if quarantined.is_dir() {
+        // Bind the recursive deletion to the verified object itself: open the
+        // quarantined directory, re-verify identity on the open handle, and
+        // delete through that handle. Even a raced rename of the quarantine
+        // name can no longer redirect the recursion to a different tree.
+        let target_dir = match dir.open_dir(&quarantine_name) {
+            Ok(target_dir) => target_dir,
+            Err(error) => {
+                if let Err(restore_error) =
+                    restore_quarantined_target(&dir, leaf, &quarantine_name, &quarantine_path)
+                {
+                    anyhow::bail!(
+                        "cannot open quarantined directory {}; restore failed and nothing was deleted: {restore_error:#} (open error: {error})",
+                        quarantine_path.display()
+                    );
+                }
+                anyhow::bail!(
+                    "cannot open quarantined directory {}; entry was restored: {error}",
+                    quarantine_path.display()
+                );
+            }
+        };
+        let handle_metadata = target_dir.dir_metadata().with_context(|| {
+            format!(
+                "cannot verify quarantined directory handle: {}",
+                quarantine_path.display()
+            )
+        })?;
+        let handle_identity = FileIdentity {
+            dev: handle_metadata.dev(),
+            ino: handle_metadata.ino(),
+        };
+        if handle_identity != expected {
+            if let Err(restore_error) =
+                restore_quarantined_target(&dir, leaf, &quarantine_name, &quarantine_path)
+            {
+                anyhow::bail!(
+                    "quarantined directory identity changed at {}; restore failed and nothing was deleted: {restore_error:#}",
+                    quarantine_path.display()
+                );
+            }
+            anyhow::bail!("quarantined directory identity changed; entry was restored");
+        }
+        target_dir.remove_open_dir_all().with_context(|| {
+            format!(
+                "cannot delete quarantined directory: {}",
+                quarantine_path.display()
+            )
+        })?;
     } else {
-        trash::delete(&path)?;
+        // macOS has no fd-relative unlink, so the final single-entry removal is
+        // by the private, unpredictable quarantine name after re-verification.
+        dir.remove_file(&quarantine_name).with_context(|| {
+            format!(
+                "cannot delete quarantined entry: {}",
+                quarantine_path.display()
+            )
+        })?;
     }
     Ok(())
+}
+
+fn next_quarantine_name(dir: &cap_std::fs::Dir) -> Result<PathBuf> {
+    for _ in 0..128 {
+        let attempt = QUARANTINE_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+        // RandomState carries process-random SipHash keys, making the name
+        // unpredictable to a concurrent process without adding a dependency.
+        let token = {
+            use std::hash::{BuildHasher, Hasher};
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        };
+        let candidate = PathBuf::from(format!(
+            ".devtrim-quarantine-{}-{token:016x}-{attempt}",
+            std::process::id()
+        ));
+        match dir.symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Ok(_) => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "cannot inspect quarantine name candidate: {}",
+                        candidate.display()
+                    )
+                });
+            }
+        }
+    }
+    anyhow::bail!("cannot allocate a private quarantine name")
+}
+
+fn verify_quarantined_target(
+    dir: &cap_std::fs::Dir,
+    leaf: &Path,
+    quarantine_name: &Path,
+    quarantine_path: &Path,
+    expected: FileIdentity,
+) -> Result<cap_std::fs::Metadata> {
+    let metadata = match dir.symlink_metadata(quarantine_name) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            if let Err(restore_error) =
+                restore_quarantined_target(dir, leaf, quarantine_name, quarantine_path)
+            {
+                anyhow::bail!(
+                    "cannot inspect quarantined target {}; restore failed and nothing was deleted: {restore_error:#}",
+                    quarantine_path.display()
+                );
+            }
+            return Err(error).with_context(|| {
+                format!(
+                    "cannot inspect quarantined target: {}",
+                    quarantine_path.display()
+                )
+            });
+        }
+    };
+    let actual = FileIdentity {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    };
+    if actual == expected {
+        return Ok(metadata);
+    }
+
+    if let Err(restore_error) =
+        restore_quarantined_target(dir, leaf, quarantine_name, quarantine_path)
+    {
+        anyhow::bail!(
+            "target identity changed after quarantine; cannot restore {}; nothing was deleted: {restore_error:#}",
+            quarantine_path.display()
+        );
+    }
+    anyhow::bail!("target identity changed after quarantine; restored original name and refusing")
+}
+
+fn restore_quarantined_target(
+    dir: &cap_std::fs::Dir,
+    leaf: &Path,
+    quarantine_name: &Path,
+    quarantine_path: &Path,
+) -> Result<()> {
+    match dir.symlink_metadata(leaf) {
+        Ok(_) => anyhow::bail!(
+            "cannot restore {} because the original name is occupied",
+            quarantine_path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "cannot verify the original name before restoring {}",
+                    quarantine_path.display()
+                )
+            });
+        }
+    }
+    dir.rename(quarantine_name, dir, leaf).with_context(|| {
+        format!(
+            "cannot restore quarantined target {}; nothing was deleted",
+            quarantine_path.display()
+        )
+    })
 }
 
 pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
@@ -224,6 +417,7 @@ mod tests {
     use super::*;
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
     use std::path::PathBuf;
+    use std::process::Command;
 
     fn context(home: PathBuf) -> Ctx {
         Ctx {
@@ -243,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_sink_deletes_a_verified_normal_path() {
+    fn permanent_sink_quarantines_and_deletes_a_verified_normal_path() {
         let home = std::env::current_dir()
             .unwrap()
             .join("target")
@@ -262,6 +456,13 @@ mod tests {
         );
         apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap();
         assert!(!target.exists());
+        assert!(std::fs::read_dir(home.join("dev")).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".devtrim-quarantine-")
+        }));
         let records = std::fs::read_to_string(home.join("journal.jsonl"))
             .unwrap()
             .lines()
@@ -270,6 +471,92 @@ mod tests {
         assert_eq!(records[0]["action"], "shred");
         assert_eq!(records[1]["status"], "ok");
         std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn quarantine_identity_mismatch_restores_the_original_name() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-quarantine-restore-{}", std::process::id()));
+        remove_test_path(&home);
+        std::fs::create_dir_all(home.join("dev")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let parent = home.join("dev");
+        let target = parent.join("cache");
+        std::fs::write(&target, "original").unwrap();
+        let expected = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred)
+            .identity()
+            .unwrap();
+        let mismatched = FileIdentity {
+            dev: expected.dev,
+            ino: expected.ino.wrapping_add(1),
+        };
+        let dir =
+            cap_std::fs::Dir::open_ambient_dir(&parent, cap_std::ambient_authority()).unwrap();
+        let leaf = Path::new("cache");
+        let quarantine_name = PathBuf::from(format!(
+            ".devtrim-quarantine-test-restore-{}",
+            std::process::id()
+        ));
+        let quarantine_path = parent.join(&quarantine_name);
+        dir.rename(leaf, &dir, &quarantine_name).unwrap();
+
+        let error =
+            verify_quarantined_target(&dir, leaf, &quarantine_name, &quarantine_path, mismatched)
+                .unwrap_err();
+
+        assert!(error.to_string().contains("identity changed"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+        assert!(std::fs::symlink_metadata(&quarantine_path).is_err());
+        remove_test_path(home);
+    }
+
+    #[test]
+    fn quarantine_restore_failure_preserves_both_names_and_reports_quarantine_path() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-quarantine-held-{}", std::process::id()));
+        remove_test_path(&home);
+        std::fs::create_dir_all(home.join("dev")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let parent = home.join("dev");
+        let target = parent.join("cache");
+        std::fs::write(&target, "quarantined").unwrap();
+        let expected = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred)
+            .identity()
+            .unwrap();
+        let mismatched = FileIdentity {
+            dev: expected.dev,
+            ino: expected.ino.wrapping_add(1),
+        };
+        let dir =
+            cap_std::fs::Dir::open_ambient_dir(&parent, cap_std::ambient_authority()).unwrap();
+        let leaf = Path::new("cache");
+        let quarantine_name = PathBuf::from(format!(
+            ".devtrim-quarantine-test-held-{}",
+            std::process::id()
+        ));
+        let quarantine_path = parent.join(&quarantine_name);
+        dir.rename(leaf, &dir, &quarantine_name).unwrap();
+        std::fs::write(&target, "replacement").unwrap();
+
+        let error =
+            verify_quarantined_target(&dir, leaf, &quarantine_name, &quarantine_path, mismatched)
+                .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains(&quarantine_path.to_string_lossy().into_owned())
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "replacement");
+        assert_eq!(
+            std::fs::read_to_string(&quarantine_path).unwrap(),
+            "quarantined"
+        );
+        remove_test_path(home);
     }
 
     #[test]
@@ -284,6 +571,13 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let target = home.join(std::ffi::OsString::from_vec(vec![b'c', 0xff]));
         assert!(target.to_str().is_none());
+        match std::fs::create_dir_all(&target) {
+            Ok(()) => {}
+            Err(_) => {
+                std::fs::remove_dir_all(home).ok();
+                return;
+            }
+        }
         let finding = Finding::new(
             "non-UTF-8 cache",
             Some(target.clone()),
@@ -293,13 +587,6 @@ mod tests {
             Action::Shred,
         );
         assert_eq!(finding.target(), Some(target.as_path()));
-        match std::fs::create_dir_all(&target) {
-            Ok(()) => {}
-            Err(_) => {
-                std::fs::remove_dir_all(home).ok();
-                return;
-            }
-        }
         apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap();
         assert!(!target.exists());
         let first = std::fs::read_to_string(home.join("journal.jsonl"))
@@ -310,6 +597,100 @@ mod tests {
             .unwrap();
         assert_eq!(first["target_lossy"], true);
         std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn shared_sink_refuses_directory_identity_swap() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-dir-swap-{}", std::process::id()));
+        remove_test_path(&home);
+        let target = home.join("dev/cache");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("original"), "keep original").unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("dev/cache");
+        let moved = home.join("dev/cache-moved");
+        let finding = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
+        std::fs::rename(&target, &moved).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let sentinel = target.join("sentinel");
+        std::fs::write(&sentinel, "keep replacement").unwrap();
+
+        let error = apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap_err();
+
+        assert!(error.to_string().contains("identity changed"));
+        assert_eq!(
+            std::fs::read_to_string(sentinel).unwrap(),
+            "keep replacement"
+        );
+        assert_eq!(
+            std::fs::read_to_string(moved.join("original")).unwrap(),
+            "keep original"
+        );
+        remove_test_path(home);
+    }
+
+    #[test]
+    fn shared_sink_refuses_file_swap_to_symlink() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-file-swap-{}", std::process::id()));
+        remove_test_path(&home);
+        std::fs::create_dir_all(home.join("dev")).unwrap();
+        std::fs::create_dir_all(home.join("Library")).unwrap();
+        let target = home.join("dev/cache-file");
+        let protected = home.join("Library/protected");
+        std::fs::write(&target, "previewed").unwrap();
+        std::fs::write(&protected, "keep protected").unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("dev/cache-file");
+        let protected = home.join("Library/protected");
+        let finding = Finding::new(
+            "cache file",
+            Some(target.clone()),
+            0,
+            "test",
+            9,
+            Action::Shred,
+        );
+        std::fs::remove_file(&target).unwrap();
+        symlink(&protected, &target).unwrap();
+
+        let error = apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap_err();
+
+        assert!(error.to_string().contains("identity changed"));
+        assert!(
+            std::fs::symlink_metadata(&target)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(protected).unwrap(),
+            "keep protected"
+        );
+        remove_test_path(home);
+    }
+
+    #[test]
+    fn shared_sink_refuses_finding_without_preview_identity() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-missing-identity-{}", std::process::id()));
+        remove_test_path(&home);
+        std::fs::create_dir_all(home.join("dev")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("dev/missing");
+        let finding = Finding::new("missing", Some(target), 0, "test", 9, Action::Shred);
+
+        let error = apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap_err();
+
+        assert!(error.to_string().contains("finding lacks preview identity"));
+        remove_test_path(home);
     }
 
     #[test]
@@ -395,6 +776,29 @@ mod tests {
         assert!(!previewed.exists());
         assert_eq!(std::fs::read_to_string(&added_later).unwrap(), "keep");
         std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn permanent_trash_purge_deletes_a_fifo() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-trash-fifo-{}", std::process::id()));
+        remove_test_path(&home);
+        std::fs::create_dir_all(home.join(".Trash")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let fifo = home.join(".Trash/pipe");
+        let status = Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(status.success());
+        let ctx = context(home.clone());
+        let findings = trash_findings(&ctx).unwrap();
+
+        let outcome = purge_trash(&findings, &ctx).unwrap();
+
+        assert_eq!(outcome.summary.items_touched, 1);
+        assert!(outcome.errors.is_empty());
+        assert!(std::fs::symlink_metadata(&fifo).is_err());
+        remove_test_path(home);
     }
 
     #[test]

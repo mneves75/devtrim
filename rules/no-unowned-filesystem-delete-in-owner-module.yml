@@ -16,12 +16,19 @@ rule:
         - pattern: remove_dir_all($TARGET)
         - pattern: $MODULE::delete($TARGET)
         - pattern: delete($TARGET)
+        - pattern: $RECV.remove_file($$$ARGS)
+        - pattern: $RECV.remove_dir($$$ARGS)
+        - pattern: $RECV.remove_dir_all($$$ARGS)
+        - pattern: $RECV.remove_open_dir_all($$$ARGS)
+        - pattern: $RECV.remove_open_dir($$$ARGS)
+        - pattern: $MODULE::unlinkat($$$ARGS)
+        - pattern: unlinkat($$$ARGS)
     - not:
         any:
           - inside:
               all:
                 - pattern: |
-                    fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
+                    fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
                       $$$BODY
                     }
                 - kind: source_file > function_item

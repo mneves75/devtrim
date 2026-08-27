@@ -5,6 +5,7 @@
 pub mod app;
 mod cli;
 mod journal;
+mod largest;
 mod ops;
 mod report;
 mod safety;

@@ -90,6 +90,10 @@ impl Ctx {
             })
             .collect::<Result<Vec<_>>>()?;
         let journal_path = journal_path(&home);
+        let journal_warnings = match crate::journal::rotate_if_needed(&journal_path) {
+            Ok(warnings) => warnings,
+            Err(error) => vec![format!("cannot rotate apply journal: {error:#}")],
+        };
         let ctx = Self {
             yes: cli.yes,
             yolo: cli.yolo,
@@ -112,6 +116,9 @@ impl Ctx {
             journal_errors: RefCell::new(Vec::new()),
         };
         for warning in protect_warnings {
+            ctx.diagnostic("warn", warning);
+        }
+        for warning in journal_warnings {
             ctx.diagnostic("warn", warning);
         }
         Ok(ctx)
@@ -230,10 +237,16 @@ fn journal_path(home: &Path) -> PathBuf {
     clean(&state_home.join("devtrim/journal.jsonl"))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileIdentity {
+    pub(crate) dev: u64,
+    pub(crate) ino: u64,
+}
+
 /// A pathname that passed the deletion boundary's current safety checks.
 ///
-/// Validation has a documented pathname TOCTOU limitation: it does not hold an
-/// open descriptor across deletion, so ambiguous identity must still fail closed.
+/// Validation resolves the parent before the sink opens its directory handle;
+/// target identity is rechecked through that handle before deletion.
 #[derive(Debug)]
 pub(crate) struct VerifiedTarget(PathBuf);
 

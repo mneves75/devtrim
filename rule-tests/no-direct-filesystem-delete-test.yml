@@ -22,13 +22,16 @@ invalid:
   - remove_dir_all(path)?;
   - trash::delete(path)?;
   - delete(path)?;
+  - dir.remove_file(path)?;
+  - dir.remove_open_dir()?;
+  - rustix::fs::unlinkat(dirfd, path, flags)?;
   - |
       fn accidental_second_sink(path: &Path) -> Result<()> {
           std::fs::remove_file(path)?;
           Ok(())
       }
   - |
-      fn remove_path(target: VerifiedTarget, permanent: bool) -> Result<()> {
+      fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
           let path = target.path;
           std::fs::remove_file(path)?;
           Ok(())

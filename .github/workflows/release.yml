@@ -113,6 +113,13 @@ jobs:
           binary="target/aarch64-apple-darwin/release/devtrim"
           file "$binary" | grep -q 'arm64'
           "$binary" --version | grep -Fqx "devtrim ${{ steps.meta.outputs.base }}"
+          # Strip in the release profile can invalidate the linker's ad-hoc
+          # signature, and field reports show linker-only signatures rejected
+          # by newer macOS policy. Re-sign explicitly and verify; no secret is
+          # involved, so this stays inside the read-only build job.
+          codesign --force --sign - "$binary"
+          codesign --verify --strict "$binary"
+          codesign --display --verbose=2 "$binary" 2>&1 | grep -E 'Signature|Identifier'
 
       - name: Package beta artifact
         if: steps.meta.outputs.is_beta == 'true' && steps.meta.outputs.release_exists == 'false'

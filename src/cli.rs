@@ -46,6 +46,12 @@ pub enum Command {
     Tui,
     /// Read-only report of every reclaimable category with sizes and risk
     Scan,
+    /// Show the largest directories one and two levels below scan roots
+    Largest {
+        /// Number of entries to show (clamped 1..=100)
+        #[arg(long)]
+        top: Option<usize>,
+    },
     /// Clean one category
     Clean {
         /// caches | node-modules | artifacts | simulators | xcode | docker | toolchains | leftovers

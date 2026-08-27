@@ -135,6 +135,96 @@ fn empty_json_scan_is_one_document() {
 }
 
 #[test]
+fn largest_json_is_one_read_only_document() {
+    let sandbox = Sandbox::new("largest-json");
+    let root = sandbox.path().join("largest-root");
+    std::fs::create_dir_all(root.join("project/cache")).unwrap();
+    std::fs::write(root.join("project/cache/payload"), vec![0; 12]).unwrap();
+
+    let output = run(
+        &sandbox,
+        &[
+            "largest",
+            "--root",
+            root.to_str().unwrap(),
+            "--apply",
+            "--shred",
+            "--json",
+        ],
+    );
+
+    assert!(output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "largest");
+    assert_eq!(value["applied"], false);
+    assert_eq!(value["findings"][0]["label"], "large directory");
+    assert_eq!(value["findings"][0]["action"]["type"], "info");
+    assert!(value["errors"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn largest_unreadable_entry_is_disclosed_and_nonzero() {
+    let sandbox = Sandbox::new("largest-unreadable");
+    let root = sandbox.path().join("largest-root");
+    let unreadable = root.join("project/private");
+    std::fs::create_dir_all(&unreadable).unwrap();
+    std::fs::write(unreadable.join("hidden"), "not measured").unwrap();
+    let original = std::fs::metadata(&unreadable).unwrap().permissions();
+    let mut denied = original.clone();
+    denied.set_mode(0o000);
+    std::fs::set_permissions(&unreadable, denied).unwrap();
+
+    let output = run(
+        &sandbox,
+        &["largest", "--root", root.to_str().unwrap(), "--json"],
+    );
+    std::fs::set_permissions(&unreadable, original).unwrap();
+
+    // Partial visibility matches the scan contract: errors AND nonzero status.
+    assert!(!output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "largest");
+    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+    assert!(
+        value["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("totals are lower bounds")
+    );
+}
+
+#[test]
+fn oversized_journal_rotates_once_when_context_opens() {
+    let sandbox = Sandbox::new("journal-open-rotation");
+    let root = sandbox.path().join("largest-root");
+    std::fs::create_dir_all(&root).unwrap();
+    let journal = sandbox.path().join(".local/state/devtrim/journal.jsonl");
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&journal)
+        .unwrap();
+    file.set_len(10 * 1024 * 1024 + 1).unwrap();
+    drop(file);
+    let args = ["largest", "--root", root.to_str().unwrap(), "--json"];
+
+    let first = run(&sandbox, &args);
+    let second = run(&sandbox, &args);
+
+    assert!(first.status.success());
+    assert!(second.status.success());
+    assert_eq!(
+        std::fs::metadata(journal.with_extension("jsonl.1"))
+            .unwrap()
+            .len(),
+        10 * 1024 * 1024 + 1
+    );
+    assert!(!journal.with_extension("jsonl.2").exists());
+    assert!(!journal.exists());
+}
+
+#[test]
 fn malformed_config_fails_closed_with_json() {
     let sandbox = Sandbox::new("bad-config");
     std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();

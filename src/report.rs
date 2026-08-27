@@ -2,7 +2,10 @@
 
 use colored::Colorize;
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+
+use crate::safety::FileIdentity;
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -83,6 +86,8 @@ pub struct Finding {
     #[serde(skip)]
     target: Option<PathBuf>,
     #[serde(skip)]
+    identity: Option<FileIdentity>,
+    #[serde(skip)]
     authority: TargetAuthority,
     #[serde(skip)]
     command_authority: Option<CommandAuthority>,
@@ -98,6 +103,14 @@ impl Finding {
         action: Action,
     ) -> Self {
         let display_path = path.as_ref().map(|value| value.display().to_string());
+        let identity = path.as_ref().and_then(|target| {
+            std::fs::symlink_metadata(target)
+                .ok()
+                .map(|metadata| FileIdentity {
+                    dev: metadata.dev(),
+                    ino: metadata.ino(),
+                })
+        });
         Self {
             label: label.into(),
             path: display_path,
@@ -106,6 +119,7 @@ impl Finding {
             danger,
             action,
             target: path,
+            identity,
             authority: TargetAuthority::Standard,
             command_authority: None,
         }
@@ -125,6 +139,10 @@ impl Finding {
 
     pub(crate) fn target(&self) -> Option<&Path> {
         self.target.as_deref()
+    }
+
+    pub(crate) fn identity(&self) -> Option<FileIdentity> {
+        self.identity
     }
 
     pub(crate) fn with_authority(mut self, authority: TargetAuthority) -> Self {
@@ -313,6 +331,7 @@ mod tests {
         let serialized = serde_json::to_value(&finding).unwrap();
         assert_eq!(serialized["label"], "cache\u{1b}[2Jé");
         assert_eq!(serialized["path"], "/tmp/line\nnext\u{202e}");
+        assert!(serialized.get("identity").is_none());
         assert_eq!(terminal_safe(&finding.label), "cache\\u{1b}[2Jé");
     }
 }

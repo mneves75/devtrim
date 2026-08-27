@@ -1,6 +1,6 @@
 //! CLI application flow.
 
-use crate::{cli, journal, ops, report, safety, tui};
+use crate::{cli, journal, largest, ops, report, safety, tui};
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use colored::Colorize;
@@ -146,6 +146,24 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                 }
             }
             if scan.errors.is_empty() {
+                Ok(ExitCode::SUCCESS)
+            } else {
+                Ok(ExitCode::from(1))
+            }
+        }
+        cli::Command::Largest { top } => {
+            let result = largest::scan(&ctx, top);
+            if ctx.json {
+                report::print_json("largest", false, &result.findings, None, &result.errors)?;
+            } else {
+                report::print_human(&result.findings)?;
+                for error in &result.errors {
+                    ctx.diagnostic("warn", error.clone());
+                }
+            }
+            // Partial visibility follows the same contract as scan: disclosed
+            // in errors AND in the exit status.
+            if result.errors.is_empty() {
                 Ok(ExitCode::SUCCESS)
             } else {
                 Ok(ExitCode::from(1))
