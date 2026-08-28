@@ -143,7 +143,7 @@ const header = (operation: string): Row[] =>
   boxed(" measure · classify · trim ", COLS, 3, [
     [
       { t: " devtrim ", c: GREEN, b: true },
-      { t: "v0.6.0  ", c: DIM },
+      { t: "v0.6.2  ", c: DIM },
       { t: operation },
     ],
   ]);
@@ -438,7 +438,7 @@ export const DevtrimDemo: React.FC = () => {
           dev<span style={{ color: GREEN }}>trim</span>
         </div>
         <div style={{ fontSize: 30, color: MUTED }}>
-          v0.6.0 · interactive Ratatui interface
+          v0.6.2 · interactive Ratatui interface
         </div>
         <div style={{ fontSize: 26, color: DIM }}>
           github.com/mneves75/devtrim

@@ -16,27 +16,59 @@ pub enum Action {
     None,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandAuthority {
-    DockerImagePrune,
-    DockerBuilderPrune,
-    DeleteUnavailableSimulators,
+    DockerImagePrune { host: String },
+    DockerBuilderPrune { host: String },
+    DeleteSimulator { udid: String },
 }
 
 impl CommandAuthority {
-    pub(crate) fn parts(self) -> (&'static str, &'static [&'static str]) {
+    pub(crate) fn parts(&self) -> (&'static str, Vec<String>) {
         match self {
-            Self::DockerImagePrune => ("docker", &["image", "prune", "-a", "-f"]),
-            Self::DockerBuilderPrune => ("docker", &["builder", "prune", "-a", "-f"]),
-            Self::DeleteUnavailableSimulators => ("xcrun", &["simctl", "delete", "unavailable"]),
+            Self::DockerImagePrune { host } => (
+                "docker",
+                ["--host", host, "image", "prune", "-a", "-f"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            ),
+            Self::DockerBuilderPrune { host } => (
+                "docker",
+                ["--host", host, "builder", "prune", "-a", "-f"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            ),
+            Self::DeleteSimulator { udid } => (
+                "xcrun",
+                ["simctl", "delete", udid]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            ),
         }
     }
 
-    pub(crate) fn action(self) -> Action {
+    pub(crate) fn action(&self) -> Action {
         let (program, args) = self.parts();
         Action::Command {
             program: program.into(),
-            args: args.iter().map(|arg| (*arg).into()).collect(),
+            args,
+        }
+    }
+
+    pub(crate) fn docker_host(&self) -> Option<&str> {
+        match self {
+            Self::DockerImagePrune { host } | Self::DockerBuilderPrune { host } => Some(host),
+            Self::DeleteSimulator { .. } => None,
+        }
+    }
+
+    pub(crate) fn simulator_udid(&self) -> Option<&str> {
+        match self {
+            Self::DeleteSimulator { udid } => Some(udid),
+            Self::DockerImagePrune { .. } | Self::DockerBuilderPrune { .. } => None,
         }
     }
 }
@@ -150,8 +182,8 @@ impl Finding {
         self.authority
     }
 
-    pub(crate) fn command_authority(&self) -> Option<CommandAuthority> {
-        self.command_authority
+    pub(crate) fn command_authority(&self) -> Option<&CommandAuthority> {
+        self.command_authority.as_ref()
     }
 }
 

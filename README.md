@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.6.1.
+This source tree and its packaged documentation describe devtrim v0.6.2.
 
 ## Install
 
@@ -42,13 +42,13 @@ cp target/release/devtrim /usr/local/bin/
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
 - **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation.
 - **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while `xcodebuild` runs. A probe that cannot complete blocks instead of passing.
-- **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle and deletes through the same handle. Permanent deletes additionally quarantine the verified leaf, reject foreign devices and Git markers at every depth, and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
+- **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle. Every directory action rejects foreign devices and Git repository/worktree markers at any depth before mutation. Permanent deletes additionally quarantine the verified leaf and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
 - **Write-ahead journal.** Every apply records an attempt before deletion and a result after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). Symlinked path components are refused, complete records are serialized and synced, and an unwritable journal blocks apply. Rotation (10 MiB, keep 3) cannot split an in-flight pair. `devtrim history` is read-only, waits for guarded applies before snapshotting, pairs legacy records across generations, reverse-scans only the bounded newest tail needed for the requested limit, and reports a genuinely unmatched attempt as interrupted.
 - **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
   - 1–8: y/N prompt (`-y` skips it); non-TTY apply needs `-y`/`--yolo`
   - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
 - **Typed deletion boundary.** Exact `PathBuf` targets must become an internal `VerifiedTarget` immediately before the single deletion sink can consume them. Display strings are never deletion authority.
-- **Typed command boundary.** A displayed command action is not enough to execute; a private closed capability must match the exact fixed-argument Docker or simulator operation.
+- **Typed command boundary.** A displayed command action is not enough to execute; a private closed capability binds the exact operation and its validated arguments. Docker cleanup accepts only the previewed absolute local Unix-socket endpoint; simulator cleanup accepts only the previewed device UDID and rechecks that it is still unavailable.
 - **Protected physical paths.** System roots, user secrets, the home root, Trash root, paths reached through symlinked ancestors, and owner-reported cache paths outside npm/Homebrew namespaces are refused.
 - **Volumes are sacred.** Docker volumes are never pruned.
 - **Archives are sacred.** Xcode Archives are visible but never actionable.
@@ -79,9 +79,9 @@ devtrim scan --json                       # one machine-readable envelope
 devtrim clean caches --apply -y           # HF/uv/npm/brew/node download caches
 devtrim clean node-modules --apply -y     # exact paths in conclusively stale Git repos
 devtrim clean artifacts --apply -y        # corroborated build artifacts in stale Git repos
-devtrim clean simulators --apply -y       # delete unavailable devices only
+devtrim clean simulators --apply -y       # delete exact previewed unavailable devices
 devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData children
-devtrim clean docker --apply -y           # unused images + build cache; never volumes
+devtrim clean docker --apply -y           # local daemon images + build cache; never volumes
 devtrim clean toolchains --apply -y       # only unreferenced swift.org toolchains
 devtrim clean leftovers                   # report-only hints; never deletes worktrees
 devtrim icloud                            # large iCloud Drive files and local allocation
@@ -187,10 +187,11 @@ output.
 | Danger gate | maximum finding score plus aggregate estimated logical bytes |
 | TUI consent | approval capability must match the current preview and danger requirement |
 | Target identity | exact internal `PathBuf` plus preview-time device/inode; display text is never parsed back into authority |
-| Anchored deletion | the sink verifies identity through an open parent-directory handle and deletes through that handle; drift refuses |
+| Anchored deletion | the sink verifies identity through an open parent-directory handle; permanent deletion continues through that handle and drift refuses |
 | Deletion sink | only `VerifiedTarget` reaches physical removal; action selects Trash vs. permanent mode |
-| Command execution | serialized action and private closed authority must match an allowlisted fixed argv variant |
+| Command execution | serialized action and private closed authority must match the operation and its validated arguments |
 | Physical path | literal and resolved parent must agree; deny-only resolution |
+| Directory preflight | foreign devices and nested Git repository/worktree markers are refused before Trash or permanent mutation |
 | Activity | unknown Git/toolchain ownership is ineligible |
 | Liveness | a repo owning a running build process, or DerivedData under a running `xcodebuild`, is refused; probe failure blocks |
 | Protect config | user-listed `protect` paths are refused at the deletion sink and filtered from previews |

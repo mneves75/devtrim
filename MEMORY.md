@@ -17,7 +17,15 @@ lint, secret scans, npm/video, PTY TUI, arm64 build, desktop/mobile browser
 checks, and all five 60-second fuzz targets passed locally and/or in the
 credential-separated hosted gates. Two P3 autoreview rounds and independent
 security reviews had every verified P2/P3 finding fixed with regression proof;
-no P0/P1 blocker remained. The 0.6.2 Unreleased line is open.
+no P0/P1 blocker remained.
+
+The 0.6.2 local release candidate binds Docker cleanup to one validated local
+Unix-socket endpoint, replaces aggregate simulator deletion with exact rechecked
+UDIDs, extends same-device/nested-Git preflight to Trash directories, and makes
+metadata and liveness uncertainty fail closed. Full current/MSRV tests, strict
+Clippy, structural controls, both audits, five 60-second fuzz targets, arm64,
+PTY, secret, workflow/shell, video, browser, P3 autoreview, and independent
+verification passed. It is not staged or promoted yet; production remains 0.6.1.
 
 ## Decisions
 
@@ -63,8 +71,8 @@ no P0/P1 blocker remained. The 0.6.2 Unreleased line is open.
   and the single owner module; positive controls prove a forged second sink is
   rejected both inside and outside that module.
 - `Finding::command` alone issues the closed `CommandAuthority` capability;
-  Docker and simulator apply require that capability and its exact serialized
-  action to agree before fixed-argument execution.
+  Docker and simulator apply require that capability, its validated endpoint or
+  UDID, and its exact serialized action to agree before execution.
 - Historical immutable tags and releases are provenance records and stay
   intact. The earlier request to delete or rewrite them was rejected.
 - The production landing page remains on the current stable download during a
@@ -88,10 +96,11 @@ no P0/P1 blocker remained. The 0.6.2 Unreleased line is open.
 ## Next boundary
 
 0.5.0, 0.6.0, and 0.6.1 each passed independent security review plus structured
-P3 autoreview, with every verified release-scope finding fixed before
-publication; full Rust/MSRV/npm/workflow/security gates, bounded fuzz runs,
-real PTY TUI passes, exact-commit CI, staged-binary smoke tests, and exact-byte
-production promotion also passed. Notarization
+P3 autoreview, and the 0.6.2 local candidate passed the same review boundary,
+with every verified release-scope finding fixed before publication; full
+Rust/MSRV/npm/workflow/security gates, bounded fuzz runs, real PTY TUI passes,
+exact-commit CI, staged-binary smoke tests, and exact-byte production promotion
+also passed. Notarization
 remains blocked on notarytool credentials (Developer ID cert exists locally;
 runbook in SECURITY.md). Residual path-based windows (parent resolution,
 Trash, single-entry unlink) are documented, not hidden.

@@ -271,11 +271,11 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
         return Ok(None);
     }
 
-    let named = match name {
+    let named: Result<Option<String>> = match name {
         Some("target") => sibling_evidence(path, &["Cargo.toml"]),
         Some(".venv" | "venv") => contained_evidence(path, "pyvenv.cfg"),
         Some(name @ ("__pycache__" | ".pytest_cache" | ".mypy_cache" | ".ruff_cache")) => {
-            Some(format!("directory name {name}"))
+            Ok(Some(format!("directory name {name}")))
         }
         Some(".tox") => sibling_evidence(path, &["tox.ini", "setup.cfg", "pyproject.toml"]),
         Some(".nox") => sibling_evidence(path, &["noxfile.py"]),
@@ -296,9 +296,9 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
         Some(".build") => sibling_evidence(path, &["Package.swift"]),
         Some(".dart_tool") => sibling_evidence(path, &["pubspec.yaml"]),
         Some(".zig-cache" | "zig-out") => sibling_evidence(path, &["build.zig"]),
-        _ => None,
+        _ => Ok(None),
     };
-    if let Some(corroboration) = named {
+    if let Some(corroboration) = named? {
         let name = name.unwrap_or("artifact");
         return Ok(Some(ArtifactEvidence {
             label: format!("stale {name} artifacts"),
@@ -314,26 +314,34 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
     Ok(None)
 }
 
-fn sibling_evidence(path: &Path, filenames: &[&str]) -> Option<String> {
-    let parent = path.parent()?;
-    filenames.iter().find_map(|filename| {
-        regular_file(&parent.join(filename)).then(|| format!("sibling {filename}"))
-    })
+fn sibling_evidence(path: &Path, filenames: &[&str]) -> Result<Option<String>> {
+    let Some(parent) = path.parent() else {
+        return Ok(None);
+    };
+    for filename in filenames {
+        if regular_file(&parent.join(filename))? {
+            return Ok(Some(format!("sibling {filename}")));
+        }
+    }
+    Ok(None)
 }
 
-fn contained_evidence(path: &Path, filename: &str) -> Option<String> {
-    regular_file(&path.join(filename)).then(|| format!("contained {filename}"))
+fn contained_evidence(path: &Path, filename: &str) -> Result<Option<String>> {
+    Ok(regular_file(&path.join(filename))?.then(|| format!("contained {filename}")))
 }
 
-fn regular_file(path: &Path) -> bool {
-    std::fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_type().is_file())
-        .unwrap_or(false)
+fn regular_file(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.file_type().is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("cannot inspect artifact evidence {}", path.display())),
+    }
 }
 
 fn cachedir_tag_matches(path: &Path) -> Result<bool> {
     let tag = path.join("CACHEDIR.TAG");
-    if !regular_file(&tag) {
+    if !regular_file(&tag)? {
         return Ok(false);
     }
     let mut file = std::fs::File::open(&tag)

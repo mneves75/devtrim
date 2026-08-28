@@ -26,12 +26,13 @@ default features disabled; do not enable its optional layout cache without a new
 - Only `safety::validate_path_for_deletion` creates `VerifiedTarget`; only the private sink in `src/ops/mod.rs` consumes it. Raw filesystem deletion anywhere else is a blocking ast-grep violation.
 - Apply derives Trash versus permanent mode from the previewed typed `Action`, never from a runtime flag.
 - Permanent deletion must be explicit in preview and danger scoring.
-- Never add shell-string execution; use `Command::new` with fixed arg arrays only.
-- Only `Finding::command` creates command authority from the closed `CommandAuthority` enum; apply verifies that capability and its serialized `Action` before fixed-argument execution.
+- Never add shell-string execution. Process execution uses a fixed program; a dynamic argument is allowed only when a closed typed authority validates and carries it.
+- Only `Finding::command` creates command authority from the closed `CommandAuthority` enum; apply verifies that capability, its validated arguments, and its serialized `Action` before execution. Docker authority binds an absolute local Unix-socket endpoint; simulator authority binds one exact UDID.
 - Docker volumes are never pruned. Xcode Archives are never pruned.
+- Every directory deletion preflights device boundaries and nested Git repository/worktree markers before either Trash or permanent mutation.
 - `artifacts` matches only its closed corroborated-name list plus valid `CACHEDIR.TAG` signatures; ambiguous names (`build`, `dist`, `out`, `vendor`, `bin`, `obj`, `coverage`) are never added. Corroboration is re-verified at apply.
-- Every deletion and fixed-argv command writes a write-ahead journal record (attempt before, result after) via `src/journal.rs`, synced per record; an unwritable journal blocks apply. Rotation is shift-and-rename at journal-open time only, never truncation, never mid-apply. `history` is read-only, reads rotated files, and emits its own single JSON document.
-- Findings capture preview-time device/inode identity; the sink refuses actionable filesystem findings whose identity is missing or drifted, verifying and deleting through a cap-std parent-directory handle. Trash remains path-based after the identity check (no fd-anchored macOS Trash API) — keep that disclosure accurate.
+- Every deletion and typed command writes a write-ahead journal record (attempt before, result after) via `src/journal.rs`, synced per record; an unwritable journal blocks apply. Rotation is shift-and-rename at journal-open time only, never truncation, never mid-apply. `history` is read-only, reads rotated files, and emits its own single JSON document.
+- Findings capture preview-time device/inode identity; the sink refuses actionable filesystem findings whose identity is missing or drifted and verifies it through a cap-std parent-directory handle. Permanent deletion continues through that handle. Trash remains path-based after the identity check (no fd-anchored macOS Trash API) — keep that disclosure accurate.
 - `largest` is report-only visibility: `Action::Info` findings, lenient traversal with disclosed skip counts, never deletion authority, no TUI entry.
 - Demo video: edit `video/src/DevtrimDemo.tsx`, render with `npx remotion render DevtrimDemo ../media/demo.mp4 --overwrite --muted` from `video/`, and verify a menu frame plus a single video stream before shipping.
 - Config `protect` entries are deny-only, enforced inside `validate_path_for_deletion`, and fail closed on malformed input. No flag may bypass them.

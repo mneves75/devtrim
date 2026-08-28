@@ -159,8 +159,9 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
         .ok_or_else(|| anyhow::anyhow!("refusing target without leaf: {}", path.display()))?;
     let leaf = Path::new(leaf);
 
-    // Validation rejected symlinked ancestors; opening the parent is still a
-    // documented path-based resolution before check and deletion share this handle.
+    // Validation rejected symlinked ancestors. The open parent anchors identity
+    // checks and permanent deletion; Trash remains the documented path-based
+    // exception.
     let dir = cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority())
         .with_context(|| format!("cannot open target parent: {}", parent.display()))?;
     let actual = file_identity_at(&dir, leaf)
@@ -179,8 +180,34 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
     };
 
     if !permanent {
+        let metadata = dir
+            .symlink_metadata(leaf)
+            .with_context(|| format!("cannot inspect deletion target: {}", path.display()))?;
+        if metadata.is_dir() {
+            let target_dir = dir
+                .open_dir(leaf)
+                .with_context(|| format!("cannot open deletion target: {}", path.display()))?;
+            let handle_identity = file_identity_for_dir(&target_dir)
+                .with_context(|| format!("cannot inspect deletion target: {}", path.display()))?;
+            if handle_identity != expected {
+                anyhow::bail!(
+                    "directory identity changed during Trash preflight: {}",
+                    path.display()
+                );
+            }
+            preflight_same_device_tree(&target_dir, deletion_device, &path)
+                .context("Trash deletion preflight failed")?;
+        }
+        let final_identity = file_identity_at(&dir, leaf)
+            .with_context(|| format!("cannot recheck deletion target: {}", path.display()))?;
+        if final_identity != expected {
+            anyhow::bail!(
+                "target identity changed during Trash preflight: {}",
+                path.display()
+            );
+        }
         // macOS Trash has no descriptor-relative API; a residual rename window
-        // remains after the parent-anchored identity check.
+        // remains after this final parent-anchored identity check.
         trash::delete(&path)?;
         return Ok(());
     }
@@ -744,6 +771,41 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".devtrim-quarantine-")
         }));
+        remove_test_path(home);
+    }
+
+    #[test]
+    fn trash_sink_refuses_nested_git_worktree_before_mutation() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-trash-nested-git-{}", std::process::id()));
+        remove_test_path(&home);
+        let target = home.join("dev/cache");
+        let nested = target.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            nested.join(".git"),
+            "gitdir: ../repository/.git/worktrees/nested\n",
+        )
+        .unwrap();
+        let sentinel = target.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("dev/cache");
+        let finding = Finding::new("cache", Some(target.clone()), 0, "test", 5, Action::Trash);
+        let expected = finding.identity().unwrap();
+        let verified = crate::safety::validate_path_for_deletion(&target, &home, &[]).unwrap();
+
+        let error = remove_path(verified, false, expected).unwrap_err();
+
+        assert!(format!("{error:#}").contains("Git repository/worktree root"));
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
+        assert_eq!(
+            std::fs::read_to_string(target.join("nested/.git")).unwrap(),
+            "gitdir: ../repository/.git/worktrees/nested\n"
+        );
+        assert!(target.is_dir());
         remove_test_path(home);
     }
 

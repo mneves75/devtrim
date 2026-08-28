@@ -2,14 +2,24 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.6.2] - Unreleased
+## [0.6.2] - 2026-08-28
 
 ### Changed
 - Production release closeout now re-verifies the immutable artifact, updates and audits the Homebrew tap, upgrades the maintainer installation, and proves the sole `/opt/homebrew/bin/devtrim` reports the released version
 - The crate now forbids `unsafe` and denies `unwrap`/`expect`/`panic`/`unreachable`/`todo`/`unimplemented`/`dbg!` and unreasoned lint suppression outside tests, and structural lints with positive-control tests now cover shell invocation and binding names alongside the deletion sink
 - `CODING_STANDARDS.md` documents the review-time rules that tooling cannot check, as citable `S<n>` entries
 
-[0.6.2]: https://github.com/mneves75/devtrim/compare/v0.6.1...HEAD
+### Fixed
+- Filesystem size and artifact/toolchain evidence checks now treat metadata errors as blocking failures instead of silently reporting an absent or empty path
+- Build-process liveness checks now reject every nonzero `lsof` result after `pgrep` finds candidate processes instead of treating an uncertain probe as no activity
+
+### Security
+- Docker cleanup rejects remote contexts, previews the exact absolute local Unix-socket endpoint, and pins that endpoint into the typed command authority used by apply
+- Simulator cleanup previews and authorizes one validated UDID per finding, then rechecks that exact device is still unavailable before deletion
+- Trash-mode directory cleanup now rejects foreign filesystem devices and nested Git repository/worktree markers before the path-based Trash call, matching the permanent-deletion preflight
+- Release verification passed the full and MSRV test suites, strict Clippy, structural controls and positive controls, dependency audits, five 60-second fuzz targets, the arm64 build, PTY TUI cancellation, workflow and shell policy checks, secret scans, P3 autoreview, video build and render, and desktop/mobile layout and accessibility checks
+
+[0.6.2]: https://github.com/mneves75/devtrim/compare/v0.6.1...v0.6.2
 
 ## [0.6.1] - 2026-08-27
 

@@ -38,9 +38,9 @@ Non-negotiable boundaries:
   root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
   Only named managed Library subpaths are eligible.
 - Unknown Git activity or toolchain ownership is not deletion authority.
-- Permanent recursive deletion refuses foreign filesystem devices and a Git
-  repository/worktree marker at any depth; a cache cannot carry a nested
-  worktree across the deletion boundary.
+- Every directory deletion preflights foreign filesystem devices and Git
+  repository/worktree markers at any depth before either Trash or permanent
+  mutation. Permanent recursion repeats those checks through open handles.
 - A repo owning the working directory of a running build/package process, and
   DerivedData while `xcodebuild` runs, are refused. Liveness probes use fixed
   argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
@@ -48,7 +48,7 @@ Non-negotiable boundaries:
   resolved, ASCII-case-insensitive and Unicode-normalization-insensitive, so
   NFC config text still protects NFD on-disk names) and filtered from previews;
   malformed entries are a configuration error and unresolved entries warn.
-- Every deletion and fixed-argv command is journaled write-ahead (attempt
+- Every deletion and typed command is journaled write-ahead (attempt
   before, result after) to a mode-0600 file in a mode-0700 state directory,
   with every path component opened without following symlinks. Each complete
   JSONL record is exclusively serialized through `sync_data`; an unwritable
@@ -69,7 +69,11 @@ Non-negotiable boundaries:
 - Incomplete directory traversal, metadata, or numeric parsing is not size authority for an actionable plan.
 - Unknown configuration fields are rejected so a misspelled safety setting cannot appear active.
 - Docker volumes and Xcode Archives are never pruned.
-- A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize one of the fixed Docker or simulator argv variants, and apply must match both representations exactly.
+- Docker cleanup refuses remote contexts and pins the previewed absolute local
+  Unix-socket endpoint into the command authority.
+- Simulator cleanup creates one finding and command authority per validated
+  UDID, then rechecks that exact device is still unavailable before deletion.
+- A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize a typed Docker or simulator operation with validated arguments, and apply must match both representations exactly.
 - Confirmation bypasses never add operations.
 - Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
 - The TUI accepts no CLI confirmation bypass. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
@@ -80,18 +84,19 @@ Non-negotiable boundaries:
 ## Defense layers
 
 1. **Preview/apply split** — default invocations are read-only.
-2. **Typed actions and command authority** — argv is stored separately from display text; no shell command strings are evaluated, and a private closed capability must match each executable action before fixed-argument dispatch.
+2. **Typed actions and command authority** — argv is stored separately from display text; no shell command strings are evaluated, and a private closed capability must match each executable action and its validated arguments before dispatch.
 3. **Immutable candidates** — existing scan roots are canonicalized before
    preview, and apply does not rediscover filesystem targets.
 4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.
 5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission.
 5b. **Anchored identity verification** — the sink re-reads the target's
    preview-time `(device, inode, generation)` on macOS through an open
-   parent-directory handle and deletes through that same handle; identity
-   drift refuses the deletion.
-   Permanent deletes quarantine the verified leaf under a private
-   unpredictable name, re-verify, refuse device crossings and Git markers at
-   every depth, and drive recursive deletion through open handles.
+   parent-directory handle; identity drift refuses the deletion.
+   Every directory action first walks the opened tree and refuses device
+   crossings and Git markers before a path-based Trash call or permanent
+   mutation. Permanent deletes quarantine the verified leaf under a private
+   unpredictable name, re-verify, repeat those checks, and drive recursive
+   deletion through open handles.
 6. **Trash-first recovery** — normal filesystem removal uses macOS Trash.
 7. **Risk, danger, and non-TTY gates** — human apply displays the AS-IS/data-loss notice, every interactive mutation confirms, aggregate size can require typed input, and unattended mutation requires explicit consent.
 8. **TUI authorization** — Ratatui renders the existing findings; a separate typed approval capability must still match that exact plan before the existing `Op::apply` owner runs.
@@ -104,7 +109,7 @@ Non-negotiable boundaries:
    running `xcodebuild` block the affected repo or DerivedData targets, failing
    closed when the probe itself fails.
 13. **Write-ahead journal** — attempt/result records surround every deletion and
-   fixed-argv command; symlink-safe parent handles, serialized appends, and
+   typed command; symlink-safe parent handles, serialized appends, and
    bounded read-only history preserve a coherent local audit trail.
 14. **Regression gates** — macOS CI runs format, strict Clippy (which forbids
    `unsafe`, `unwrap`/`expect`, and unreasoned lint suppression in the crate),
@@ -150,20 +155,23 @@ Non-negotiable boundaries:
 - The typed target prevents unvalidated and lossy-display paths from reaching
   removal. Since 0.6.0 every finding records its target's `(device, inode)`
   identity at preview (including file generation on macOS), and the sink
-  re-reads that identity through an open
-  parent-directory handle immediately before deleting through the same handle
-  (cap-std's dirfd-anchored implementation — the shape Rust std adopted after
-  CVE-2022-21658). A target renamed or swapped after preview is refused, not
-  followed. What remains path-based, stated plainly: resolving the parent
-  directory itself, and the Trash call (macOS offers no fd-anchored Trash
-  API) — identity is re-verified immediately before it, but removal is not
-  atomic against a concurrent rename in that final window. devtrim is a
-  single-user local tool; when identity cannot be proven it refuses. Permanent
-  non-directory targets are finally unlinked by their private unpredictable
-  quarantine name because macOS has no general remove-by-open-file API.
-  Recursive deletion rechecks each entry, device, Git marker, and open
-  directory identity, but a concurrent post-preflight change can still stop a
-  partially completed tree; there is no rollback after deletion begins.
+  re-reads that identity through an open parent-directory handle (cap-std's
+  dirfd-anchored implementation — the shape Rust std adopted after
+  CVE-2022-21658) immediately before mutation. Permanent deletion continues
+  through that handle; a target renamed or swapped before final verification is
+  refused, not followed. What remains path-based, stated plainly: resolving the
+  parent directory itself, and the Trash call (macOS offers no fd-anchored
+  Trash API). Identity is re-verified immediately before the call, but removal
+  is not atomic against a concurrent rename in that final window. Directory
+  targets are fully preflighted for foreign devices and nested Git markers
+  before the Trash call, but that preflight cannot make Finder's path-based move
+  atomic. devtrim is a single-user local tool; when identity cannot be proven
+  it refuses. Permanent non-directory targets are finally unlinked by their
+  private unpredictable quarantine name because macOS has no general
+  remove-by-open-file API. Recursive deletion rechecks each entry, device, Git
+  marker, and open directory identity, but a concurrent post-preflight change
+  can still stop a partially completed tree; there is no rollback after
+  deletion begins.
 - The `trash` crate and Finder behavior depend on macOS permissions and volume
   support. Files & Folders, App Management, Automation, or Full Disk Access
   authorization is a manual user decision in System Settings; devtrim does not

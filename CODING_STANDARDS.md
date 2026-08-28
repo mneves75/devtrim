@@ -10,27 +10,29 @@ block on their own.
 
 ## Already enforced — do not report
 
-These run in `.githooks/pre-commit` and CI. A diff that violates one cannot
-merge, so reporting it wastes the review.
+These are automated by `.githooks/pre-commit` and/or required CI. A diff that
+violates one cannot merge, so reporting it wastes the review.
 
 | Gate | Covers |
 | --- | --- |
 | `cargo fmt --all -- --check` | all formatting |
 | `cargo clippy --all-targets --all-features -- -D warnings` | every default clippy lint, plus `unsafe_code = "forbid"`, `unwrap_used`, `expect_used`, `panic`, `unreachable`, `todo`, `unimplemented`, `dbg_macro`, and `allow_attributes_without_reason` |
 | `ast-grep scan --config sgconfig.yml` | `no-direct-filesystem-delete` and `no-unowned-filesystem-delete-in-owner-module` (which pin the sink signature `fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity)` and sanction `crate::ops::remove_test_path` as the only test escape hatch); `no-shell-invocation`; `no-abbreviated-bindings` |
-| `cargo test --all-targets --all-features` | 170 tests |
+| `cargo test --all-targets --all-features` | unit and CLI integration coverage |
 | `rustup run 1.88.0 cargo test` | MSRV |
 | `cargo audit` (root and `fuzz/`) | advisories |
-| five `cargo fuzz` targets | path validation, size and probe parsers, config parsing |
 | `cmp -s AGENTS.md CLAUDE.md` | the two agent docs are byte-identical |
 
+The five bounded fuzz targets are release gates, not merge gates. Review may
+still report missing fuzz coverage for a changed parser or safety boundary.
+
 Both new rules have a stated blind spot, and the blind spot is where review
-still has work to do. `no-abbreviated-bindings` checks binding positions — `let`
-patterns, closure parameters, function parameter patterns, tuple, struct, and
-tuple-struct patterns — against a fixed denylist, so an abbreviation outside
-that list is S6's job. `no-shell-invocation` matches the program name only where
-it appears as a literal at the call site; a shell reached through a variable is
-invisible to it, which is S12's job.
+still has work to do. `no-abbreviated-bindings` checks binding positions —
+`let` patterns, closure parameters, function parameter patterns, tuple, struct,
+and tuple-struct patterns — against a fixed denylist, so an abbreviation
+outside that list is S6's job. `no-shell-invocation` matches the program name
+only where it appears as a literal at the call site; a shell reached through a
+variable is invisible to it, which is S12's job.
 
 ## Inherited invariants — cite, do not restate
 
@@ -176,8 +178,10 @@ the call site, so `let program = "sh"; Command::new(program)` passes the lint.
 Fix: name the program as a literal at the call site, or take it from
 `CommandAuthority::parts()`. The existing dynamic call sites in
 `src/ops/docker.rs`, `src/ops/simulators.rs`, and `src/ops/caches.rs` are
-approved because their program comes from a closed enum or an owner namespace,
-and `repo_last_commit_with` takes `"git"` from its only production caller.
+approved because their program comes from a closed enum or an owner namespace.
+Docker's absolute local Unix-socket endpoint and the simulator UDID must be
+validated and carried by the closed authority. `repo_last_commit_with` takes
+`"git"` from its only production caller.
 
 ## Adding a rule
 

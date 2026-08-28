@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use super::project::is_directory_if_present;
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size};
 use crate::safety::{Ctx, escalate};
 
@@ -17,7 +18,7 @@ impl Op for Toolchains {
 
     fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
         let directory = ctx.home.join("Library/Developer/Toolchains");
-        if !directory.is_dir() {
+        if !is_directory_if_present(&directory)? {
             return Ok(Vec::new());
         }
         let Some(preserved) = preserved_targets(&directory)? else {

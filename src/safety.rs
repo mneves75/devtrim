@@ -694,8 +694,12 @@ pub fn trash_gate(home: &Path, confirm_gb: Option<u64>) -> Result<()> {
 
 pub fn dir_size(path: &Path) -> Result<u64> {
     let mut bytes = 0u64;
-    if !path.exists() {
-        return Ok(0);
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
+        }
     }
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
@@ -773,7 +777,7 @@ pub(crate) fn parse_pgrep_pids(output: &[u8], exit_code: Option<i32>) -> Result<
 
 pub(crate) fn parse_lsof_cwds(output: &[u8], exit_code: Option<i32>) -> Result<Vec<PathBuf>> {
     match exit_code {
-        Some(0 | 1) => {}
+        Some(0) => {}
         Some(code) => bail!("lsof cwd probe exited with status {code}"),
         None => bail!("lsof cwd probe terminated without an exit status"),
     }
@@ -1261,8 +1265,20 @@ mod tests {
 
         let cwds = parse_lsof_cwds(b"p12\nfcwd\nn/tmp/a\np34\nfcwd\nn/tmp/b\n", Some(0)).unwrap();
         assert_eq!(cwds, vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]);
-        assert!(parse_lsof_cwds(b"", Some(1)).unwrap().is_empty());
+        assert!(parse_lsof_cwds(b"", Some(1)).is_err());
         assert!(parse_lsof_cwds(b"", Some(0)).is_err());
         assert!(parse_lsof_cwds(b"n/tmp\n", Some(3)).is_err());
+    }
+
+    #[test]
+    fn size_lookup_errors_are_not_reported_as_empty_paths() {
+        let root = temp("size-lookup-error");
+        let non_directory = root.join("file");
+        std::fs::write(&non_directory, "data").unwrap();
+
+        let error = dir_size(&non_directory.join("child")).unwrap_err();
+
+        assert!(error.to_string().contains("cannot inspect"));
+        crate::ops::remove_test_path(root);
     }
 }

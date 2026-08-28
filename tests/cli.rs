@@ -604,7 +604,16 @@ fn project_walk_errors_discard_all_scan_findings() {
         let value = json(&output);
         assert_eq!(value["operation"], target);
         assert!(value["findings"].as_array().unwrap().is_empty());
-        assert!(value["errors"][0].as_str().unwrap().contains("cannot scan"));
+        let error = value["errors"][0].as_str().unwrap();
+        let expected = if target == "artifacts" {
+            "cannot inspect artifact evidence"
+        } else {
+            "cannot scan"
+        };
+        assert!(
+            error.contains(expected) && error.contains("z-unreadable"),
+            "{target}: {error}"
+        );
     }
 }
 
@@ -807,12 +816,12 @@ fn owner_reported_cache_outside_namespace_is_skipped() {
 }
 
 #[test]
-fn unavailable_simulator_json_is_detected_without_erase_all() {
+fn unavailable_simulator_json_authorizes_only_the_previewed_device() {
     let sandbox = Sandbox::new("simulator-json");
     let log = sandbox.path().join("xcrun.log");
     sandbox.script(
         "xcrun",
-        "printf '%s\\n' \"$*\" >> \"$DEVTRIM_TEST_LOG\"\ncase \"$*\" in\n  '--version') printf 'xcrun version 70\\n' ;;\n  'simctl list devices --json') printf '%s\\n' '{\"devices\":{\"com.apple.CoreSimulator.SimRuntime.iOS-18-0\":[{\"dataPath\":\"/tmp/device\",\"dataPathSize\":0,\"logPath\":\"/tmp/log\",\"udid\":\"00000000-0000-0000-0000-000000000000\",\"isAvailable\":false,\"deviceTypeIdentifier\":\"com.apple.CoreSimulator.SimDeviceType.iPhone-16\",\"state\":\"Shutdown\",\"name\":\"iPhone 16\"}]}}' ;;\n  'simctl delete unavailable') exit 0 ;;\n  *) exit 1 ;;\nesac",
+        "printf '%s\\n' \"$*\" >> \"$DEVTRIM_TEST_LOG\"\ncase \"$*\" in\n  '--version') printf 'xcrun version 70\\n' ;;\n  'simctl list devices --json') printf '%s\\n' '{\"devices\":{\"com.apple.CoreSimulator.SimRuntime.iOS-18-0\":[{\"dataPath\":\"/tmp/device\",\"dataPathSize\":0,\"logPath\":\"/tmp/log\",\"udid\":\"00000000-0000-0000-0000-000000000000\",\"isAvailable\":false,\"deviceTypeIdentifier\":\"com.apple.CoreSimulator.SimDeviceType.iPhone-16\",\"state\":\"Shutdown\",\"name\":\"iPhone 16\"}]}}' ;;\n  'simctl delete 00000000-0000-0000-0000-000000000000') exit 0 ;;\n  *) exit 1 ;;\nesac",
     );
     let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
         .args(["clean", "simulators", "--apply", "--yolo", "--json"])
@@ -826,11 +835,12 @@ fn unavailable_simulator_json_is_detected_without_erase_all() {
     let value = json(&output);
     assert_eq!(
         value["findings"][0]["label"],
-        "unavailable Apple simulator devices"
+        "unavailable Apple simulator device 00000000-0000-0000-0000-000000000000"
     );
     let calls = std::fs::read_to_string(log).unwrap();
     assert!(calls.contains("simctl list devices --json"));
-    assert!(calls.contains("simctl delete unavailable"));
+    assert!(calls.contains("simctl delete 00000000-0000-0000-0000-000000000000"));
+    assert!(!calls.contains("simctl delete unavailable"));
     assert!(!calls.contains("erase all"));
     let records =
         std::fs::read_to_string(sandbox.path().join(".local/state/devtrim/journal.jsonl")).unwrap();
@@ -841,7 +851,12 @@ fn unavailable_simulator_json_is_detected_without_erase_all() {
     assert_eq!(records[0]["action"], "command");
     assert_eq!(
         records[0]["argv"],
-        serde_json::json!(["xcrun", "simctl", "delete", "unavailable"])
+        serde_json::json!([
+            "xcrun",
+            "simctl",
+            "delete",
+            "00000000-0000-0000-0000-000000000000"
+        ])
     );
     assert_eq!(records[1]["status"], "ok");
 }
@@ -979,13 +994,36 @@ fn artifact_apply_preflights_all_repo_probes_before_mutating() {
 }
 
 #[test]
+fn docker_remote_context_is_rejected_before_any_prune_capability_is_created() {
+    let sandbox = Sandbox::new("docker-remote-context");
+    sandbox.script(
+        "docker",
+        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"ssh://production.example\"}}}]\\n' ;;\n  *) : > \"$HOME/unexpected-docker-command\"; exit 91 ;;\nesac",
+    );
+
+    let output = run(&sandbox, &["clean", "docker", "--json"]);
+
+    assert!(!output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "docker");
+    assert_eq!(value["findings"].as_array().unwrap().len(), 0);
+    assert!(
+        value["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("refusing non-local Docker endpoint")
+    );
+    assert!(!sandbox.path().join("unexpected-docker-command").exists());
+}
+
+#[test]
 fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
     let sandbox = Sandbox::new("docker-failure");
     // The format argument contains a real tab, so match on a prefix: an exact pattern
     // would silently fall through to the catch-all and make this a scan-failure test.
     sandbox.script(
         "docker",
-        "case \"$*\" in\n  'version') printf 'Docker version 28.0.0\\n' ;;\n  'system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  'image prune -a -f') exit 9 ;;\n  *) exit 1 ;;\nesac",
+        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') exit 9 ;;\n  *) exit 1 ;;\nesac",
     );
     let output = run(
         &sandbox,
@@ -1011,7 +1049,15 @@ fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
         .collect::<Vec<_>>();
     assert_eq!(
         records[0]["argv"],
-        serde_json::json!(["docker", "image", "prune", "-a", "-f"])
+        serde_json::json!([
+            "docker",
+            "--host",
+            "unix:///var/run/docker.sock",
+            "image",
+            "prune",
+            "-a",
+            "-f"
+        ])
     );
     assert_eq!(records[1]["status"], "error");
 }
@@ -1021,7 +1067,7 @@ fn failed_human_apply_does_not_print_a_success_summary() {
     let sandbox = Sandbox::new("docker-human-failure");
     sandbox.script(
         "docker",
-        "case \"$*\" in\n  'version') printf 'Docker version 28.0.0\\n' ;;\n  'system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  'image prune -a -f') exit 9 ;;\n  *) exit 1 ;;\nesac",
+        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') exit 9 ;;\n  *) exit 1 ;;\nesac",
     );
 
     let output = run(&sandbox, &["clean", "docker", "--apply", "-y"]);
@@ -1038,7 +1084,7 @@ fn human_apply_prints_data_loss_warning_before_action() {
     let sandbox = Sandbox::new("risk-warning");
     sandbox.script(
         "docker",
-        "case \"$*\" in\n  'version') printf 'Docker version 28.0.0\\n' ;;\n  'system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  'image prune -a -f') exit 0 ;;\n  *) exit 1 ;;\nesac",
+        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') exit 0 ;;\n  *) exit 1 ;;\nesac",
     );
 
     let output = run(&sandbox, &["clean", "docker", "--apply", "-y"]);

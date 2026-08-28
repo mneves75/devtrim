@@ -1,8 +1,8 @@
-//! Simulator hygiene via `xcrun simctl delete unavailable`.
+//! Simulator hygiene via exact per-device `xcrun simctl delete <UDID>` actions.
 //! Confirmation flags never add an unpreviewed erase-all operation.
 
 use anyhow::{Context, Result};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Component, Path};
 use std::process::{Command, Output};
@@ -54,10 +54,11 @@ fn optional_command_stdout(output: io::Result<Output>, command: &str) -> Result<
 }
 
 fn simulator_device_path(root: &Path, udid: &str) -> Result<std::path::PathBuf> {
-    if udid.is_empty()
-        || !udid
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    let mut bytes = udid.bytes();
+    if !bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     {
         anyhow::bail!("invalid simulator device identifier `{udid}`");
     }
@@ -68,46 +69,46 @@ fn simulator_device_path(root: &Path, udid: &str) -> Result<std::path::PathBuf> 
     }
 }
 
-fn findings_from_simctl(output: &str, ctx: &Ctx) -> Result<Vec<Finding>> {
+fn simulator_states(output: &str) -> Result<BTreeMap<String, bool>> {
     let devices: DeviceList =
         serde_json::from_str(output).context("simctl returned invalid device JSON")?;
-    let device_root = ctx.home.join("Library/Developer/CoreSimulator/Devices");
-    let mut unavailable_paths = BTreeSet::new();
-    for device in devices
-        .devices
-        .values()
-        .flatten()
-        .filter(|device| !device.is_available)
-    {
-        let path = simulator_device_path(&device_root, &device.udid)?;
-        if !unavailable_paths.insert(path) {
+    let mut states = BTreeMap::new();
+    for device in devices.devices.values().flatten() {
+        simulator_device_path(Path::new("/"), &device.udid)?;
+        if states
+            .insert(device.udid.clone(), device.is_available)
+            .is_some()
+        {
             anyhow::bail!(
                 "simctl returned duplicate device identifier `{}`",
                 device.udid
             );
         }
     }
-    if unavailable_paths.is_empty() {
-        return Ok(Vec::new());
-    }
-    let storage = unavailable_paths.iter().try_fold(0u64, |total, path| {
-        let size = dir_size(path)
-            .with_context(|| format!("cannot measure simulator device {}", path.display()))?;
-        total
-            .checked_add(size)
-            .ok_or_else(|| anyhow::anyhow!("simulator device size overflow"))
-    })?;
-    let unavailable = unavailable_paths.len();
-    Ok(vec![Finding::command(
-        "unavailable Apple simulator devices",
-        storage,
-        format!(
-            "{unavailable} device(s) reference missing runtimes; their device data uses ~{}",
-            crate::report::gb(storage)
-        ),
-        escalate(4, storage),
-        CommandAuthority::DeleteUnavailableSimulators,
-    )])
+    Ok(states)
+}
+
+fn findings_from_simctl(output: &str, ctx: &Ctx) -> Result<Vec<Finding>> {
+    let device_root = ctx.home.join("Library/Developer/CoreSimulator/Devices");
+    simulator_states(output)?
+        .into_iter()
+        .filter(|(_, is_available)| !is_available)
+        .map(|(udid, _)| {
+            let path = simulator_device_path(&device_root, &udid)?;
+            let size = dir_size(&path)
+                .with_context(|| format!("cannot measure simulator device {}", path.display()))?;
+            Ok(Finding::command(
+                format!("unavailable Apple simulator device {udid}"),
+                size,
+                format!(
+                    "references a missing runtime; its device data uses ~{}",
+                    crate::report::gb(size)
+                ),
+                escalate(4, size),
+                CommandAuthority::DeleteSimulator { udid },
+            ))
+        })
+        .collect()
 }
 
 impl Op for Simulators {
@@ -138,11 +139,21 @@ impl Op for Simulators {
                 let Some(authority) = finding.command_authority() else {
                     anyhow::bail!("refusing unexpected simulator action");
                 };
-                if authority != CommandAuthority::DeleteUnavailableSimulators {
+                let Some(udid) = authority.simulator_udid() else {
                     anyhow::bail!("refusing unexpected simulator action");
-                }
+                };
                 if finding.action != authority.action() {
                     anyhow::bail!("refusing altered simulator action");
+                }
+                let current = simulator_states(&simctl(&["list", "devices", "--json"])?)?;
+                match current.get(udid) {
+                    Some(false) => {}
+                    Some(true) => anyhow::bail!(
+                        "simulator device became available after preview; refusing `{udid}`"
+                    ),
+                    None => {
+                        anyhow::bail!("simulator device vanished after preview; refusing `{udid}`")
+                    }
                 }
                 let (program, args) = authority.parts();
                 let attempt = crate::journal::begin(
@@ -150,16 +161,16 @@ impl Op for Simulators {
                     crate::journal::JournalRecord::command_attempt(
                         self.name(),
                         program,
-                        args,
+                        &args,
                         finding.size_bytes,
                     ),
                 )?;
                 let result = (|| -> Result<String> {
-                    let output = Command::new(program).args(args).output()?;
+                    let output = Command::new(program).args(&args).output()?;
                     if !output.status.success() {
-                        anyhow::bail!("`xcrun simctl delete unavailable` failed");
+                        anyhow::bail!("`xcrun simctl delete {udid}` failed");
                     }
-                    Ok("deleted unavailable simulator devices".into())
+                    Ok(format!("deleted unavailable simulator device {udid}"))
                 })();
                 attempt.finish(ctx, result)
             })();
@@ -274,20 +285,43 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].size_bytes, measured);
         assert_eq!(findings[0].danger, crate::safety::escalate(4, measured));
+        assert_eq!(
+            findings[0].action,
+            Action::command("xcrun", &["simctl", "delete", "DEVICE-1"])
+        );
         crate::ops::remove_test_path(root);
     }
 
     #[test]
     fn malformed_simulator_device_id_is_an_error() {
         let ctx = test_ctx();
-        let output = r#"{"devices":{"runtime":[{"isAvailable":false,"udid":"../../escape"}]}}"#;
+        for udid in ["../../escape", "--help"] {
+            let output =
+                format!(r#"{{"devices":{{"runtime":[{{"isAvailable":false,"udid":"{udid}"}}]}}}}"#);
+            let error = findings_from_simctl(&output, &ctx).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("invalid simulator device identifier")
+            );
+        }
+    }
 
-        let error = findings_from_simctl(output, &ctx).unwrap_err();
+    #[test]
+    fn preview_never_authorizes_a_broad_simulator_delete() {
+        let ctx = test_ctx();
+        let output = r#"{"devices":{"runtime":[{"isAvailable":false,"udid":"DEVICE-A"},{"isAvailable":false,"udid":"DEVICE-B"}]}}"#;
 
-        assert!(
-            error
-                .to_string()
-                .contains("invalid simulator device identifier")
+        let findings = findings_from_simctl(output, &ctx).unwrap();
+
+        assert_eq!(findings.len(), 2);
+        assert_eq!(
+            findings[0].action,
+            Action::command("xcrun", &["simctl", "delete", "DEVICE-A"])
+        );
+        assert_eq!(
+            findings[1].action,
+            Action::command("xcrun", &["simctl", "delete", "DEVICE-B"])
         );
     }
 

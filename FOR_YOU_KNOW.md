@@ -15,11 +15,13 @@ strings are labels on the wristband, never the identity used for removal.
 Each cleanup category lives in `src/ops/` and implements `Op`. Scans stay
 read-only. Filesystem operations default to Trash; `Action::Shred` is the
 only typed instruction for permanent removal. Docker and simulator operations
-use fixed argv allowlists, never shell strings. A serialized `Action::Command`
-is only a label: `Finding::command` must also issue a private, closed
-`CommandAuthority`, and apply rejects the finding unless both forms describe
-the same allowlisted operation. Docker volumes, Xcode Archives, and whole
-worktrees are deliberately outside the deletion product.
+use typed command allowlists, never shell strings. A serialized
+`Action::Command` is only a label: `Finding::command` must also issue a private,
+closed `CommandAuthority`, and apply rejects the finding unless both forms
+describe the same operation and validated arguments. Docker authority carries
+one absolute local Unix-socket endpoint; simulator authority carries one
+validated UDID. Docker volumes, Xcode Archives, and whole worktrees are
+deliberately outside the deletion product.
 
 The easy mistake is to confuse “previewed” with “authorized forever.” Apply
 rechecks facts that can change: Git activity, toolchain references, cache
@@ -127,8 +129,9 @@ the two steps deletes something else. The fix is the same shape Rust std and
 GNU rm adopted: stop trusting names at deletion time. Every finding now
 remembers its target's device and inode from the moment it was previewed, and
 the sink opens the parent directory as a handle (cap-std), re-reads the
-identity through that handle, and deletes through that same handle. Renaming
-the target after preview no longer redirects the deletion — it refuses it.
+identity through that handle, and permanent deletion continues through that
+same handle. Renaming the target before final verification no longer redirects
+the deletion — it refuses it.
 Permanent deletes go one step further: the verified entry is first renamed to
 a private quarantine name nobody else knows, verified again, and only then
 deleted — so even a swap in the microseconds between check and delete hits
@@ -154,6 +157,22 @@ attempt/result pair out of rotation, reverse-scans only the bounded newest
 history tail needed for the requested output, reconciles legacy pairs across
 rotations, waits for live guarded applies, and makes `history` genuinely
 read-only.
+
+0.6.2 asks whether the same safety statement remains true through every mode.
+The nested-worktree preflight had protected permanent recursion but not the
+default Trash move, even though moving a directory can carry the same hidden
+checkout. The shared sink now opens and walks every directory target before
+either mode mutates it, refusing foreign devices and Git markers while the
+sentinel is still untouched.
+
+Command authority was also narrower on paper than in execution. Docker followed
+the active context, which could point at a remote daemon, and one aggregate
+simulator action delegated target selection back to `simctl` after preview.
+The Docker plan now refuses non-Unix contexts and binds its exact local socket;
+the simulator plan creates one authority per UDID and rechecks that device
+before deletion. Metadata and liveness probes follow the same rule: permission
+errors and nonzero owner-tool results are uncertainty, so they block rather
+than manufacture an empty plan.
 
 The release chain applies the same authority separation. Before tagging, the
 local script does only provenance checks; it never runs Cargo, npm, or the

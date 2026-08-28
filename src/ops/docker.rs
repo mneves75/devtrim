@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::io;
+use std::path::{Component, Path};
 use std::process::{Command, Output};
 
 use super::{ApplyOutcome, Finding, Op};
@@ -10,9 +11,33 @@ use crate::safety::{Ctx, escalate};
 
 pub struct Docker;
 
-fn docker(args: &[&str]) -> Result<String> {
-    let command = format!("`docker {}`", args.join(" "));
-    command_stdout(Command::new("docker").args(args).output(), &command)
+#[derive(serde::Deserialize)]
+struct DockerContext {
+    #[serde(rename = "Endpoints")]
+    endpoints: DockerEndpoints,
+}
+
+#[derive(serde::Deserialize)]
+struct DockerEndpoints {
+    docker: DockerEndpoint,
+}
+
+#[derive(serde::Deserialize)]
+struct DockerEndpoint {
+    #[serde(rename = "Host")]
+    host: String,
+}
+
+fn docker(host: &str, args: &[&str]) -> Result<String> {
+    let command = format!("`docker --host {host} {}`", args.join(" "));
+    command_stdout(
+        Command::new("docker")
+            .arg("--host")
+            .arg(host)
+            .args(args)
+            .output(),
+        &command,
+    )
 }
 
 fn command_stdout(output: io::Result<Output>, command: &str) -> Result<String> {
@@ -35,7 +60,43 @@ fn optional_command_stdout(output: io::Result<Output>, command: &str) -> Result<
     }
 }
 
-fn parse_system_df(output: &str) -> Result<Vec<Finding>> {
+fn docker_host() -> Result<Option<String>> {
+    let Some(output) = optional_command_stdout(
+        Command::new("docker").args(["context", "inspect"]).output(),
+        "`docker context inspect`",
+    )?
+    else {
+        return Ok(None);
+    };
+    parse_docker_host(&output).map(Some)
+}
+
+fn parse_docker_host(output: &str) -> Result<String> {
+    let contexts: Vec<DockerContext> =
+        serde_json::from_str(output).context("docker context inspect returned invalid JSON")?;
+    let [context] = contexts.as_slice() else {
+        anyhow::bail!("docker context inspect must return exactly one active context");
+    };
+    let host = context.endpoints.docker.host.trim();
+    if !is_local_docker_host(host) {
+        anyhow::bail!("refusing non-local Docker endpoint `{host}`");
+    }
+    Ok(host.to_string())
+}
+
+fn is_local_docker_host(host: &str) -> bool {
+    let Some(socket) = host.strip_prefix("unix://") else {
+        return false;
+    };
+    let path = Path::new(socket);
+    path.is_absolute()
+        && path.file_name().is_some()
+        && path
+            .components()
+            .all(|component| !matches!(component, Component::CurDir | Component::ParentDir))
+}
+
+fn parse_system_df(output: &str, host: &str) -> Result<Vec<Finding>> {
     if output.trim().is_empty() {
         anyhow::bail!("docker system df returned empty output");
     }
@@ -56,11 +117,15 @@ fn parse_system_df(output: &str) -> Result<Vec<Finding>> {
         let (label, authority) = match kind {
             "Images" => (
                 "Docker Images reclaimable",
-                CommandAuthority::DockerImagePrune,
+                CommandAuthority::DockerImagePrune {
+                    host: host.to_string(),
+                },
             ),
             "Build Cache" => (
                 "Docker Build Cache reclaimable",
-                CommandAuthority::DockerBuilderPrune,
+                CommandAuthority::DockerBuilderPrune {
+                    host: host.to_string(),
+                },
             ),
             _ => continue,
         };
@@ -73,7 +138,7 @@ fn parse_system_df(output: &str) -> Result<Vec<Finding>> {
             label,
             bytes,
             format!(
-                "{total} total; removes every image not referenced by a container, including untagged local builds; volumes are never touched"
+                "{total} total on local endpoint {host}; removes every image not referenced by a container, including untagged local builds; volumes are never touched"
             ),
             escalate(6, bytes),
             authority,
@@ -88,23 +153,23 @@ impl Op for Docker {
     }
 
     fn scan(&self, _ctx: &Ctx) -> Result<Vec<Finding>> {
-        let Some(version) = optional_command_stdout(
-            Command::new("docker").arg("version").output(),
-            "`docker version`",
-        )?
-        else {
+        let Some(host) = docker_host()? else {
             return Ok(Vec::new());
         };
+        let version = docker(&host, &["version"])?;
         if version.trim().is_empty() {
             anyhow::bail!("`docker version` returned empty output");
         }
-        let output = docker(&[
-            "system",
-            "df",
-            "--format",
-            "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}",
-        ])?;
-        parse_system_df(&output)
+        let output = docker(
+            &host,
+            &[
+                "system",
+                "df",
+                "--format",
+                "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}",
+            ],
+        )?;
+        parse_system_df(&output, &host)
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
@@ -116,9 +181,16 @@ impl Op for Docker {
                 };
                 if !matches!(
                     authority,
-                    CommandAuthority::DockerImagePrune | CommandAuthority::DockerBuilderPrune
+                    CommandAuthority::DockerImagePrune { .. }
+                        | CommandAuthority::DockerBuilderPrune { .. }
                 ) {
                     anyhow::bail!("refusing unexpected Docker action");
+                }
+                let host = authority
+                    .docker_host()
+                    .ok_or_else(|| anyhow::anyhow!("Docker action missing endpoint authority"))?;
+                if !is_local_docker_host(host) {
+                    anyhow::bail!("refusing non-local Docker endpoint `{host}`");
                 }
                 if finding.action != authority.action() {
                     anyhow::bail!("refusing altered Docker action");
@@ -129,12 +201,12 @@ impl Op for Docker {
                     crate::journal::JournalRecord::command_attempt(
                         self.name(),
                         program,
-                        args,
+                        &args,
                         finding.size_bytes,
                     ),
                 )?;
                 let result = (|| -> Result<String> {
-                    let output = Command::new(program).args(args).output()?;
+                    let output = Command::new(program).args(&args).output()?;
                     if !output.status.success() {
                         anyhow::bail!("`{program} {}` failed", args.join(" "));
                     }
@@ -270,9 +342,29 @@ mod tests {
 
     #[test]
     fn rejects_malformed_docker_system_df_output() {
-        assert!(parse_system_df("").is_err());
-        assert!(parse_system_df("Images\t1GB").is_err());
-        assert!(parse_system_df("Images\t1GB\t500MB\textra").is_err());
+        let host = "unix:///var/run/docker.sock";
+        assert!(parse_system_df("", host).is_err());
+        assert!(parse_system_df("Images\t1GB", host).is_err());
+        assert!(parse_system_df("Images\t1GB\t500MB\textra", host).is_err());
+    }
+
+    #[test]
+    fn docker_context_must_resolve_to_an_absolute_local_socket() {
+        let local = r#"[{"Endpoints":{"docker":{"Host":"unix:///Users/example/.docker/run/docker.sock"}}}]"#;
+        assert_eq!(
+            parse_docker_host(local).unwrap(),
+            "unix:///Users/example/.docker/run/docker.sock"
+        );
+
+        for host in [
+            "ssh://prod.example",
+            "tcp://127.0.0.1:2375",
+            "unix://relative.sock",
+            "unix:///tmp/../remote.sock",
+        ] {
+            let document = format!(r#"[{{"Endpoints":{{"docker":{{"Host":"{host}"}}}}}}]"#);
+            assert!(parse_docker_host(&document).is_err(), "accepted {host}");
+        }
     }
 
     #[test]

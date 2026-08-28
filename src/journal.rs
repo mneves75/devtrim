@@ -63,10 +63,15 @@ impl JournalRecord {
         }
     }
 
-    pub(crate) fn command_attempt(op: &str, program: &str, args: &[&str], size_bytes: u64) -> Self {
+    pub(crate) fn command_attempt(
+        op: &str,
+        program: &str,
+        args: &[String],
+        size_bytes: u64,
+    ) -> Self {
         let mut argv = Vec::with_capacity(args.len().saturating_add(1));
         argv.push(program.to_string());
-        argv.extend(args.iter().map(|arg| (*arg).to_string()));
+        argv.extend_from_slice(args);
         Self {
             id: Some(next_record_id()),
             ts: unix_secs(),

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Publish a verified production release to Homebrew and verify the local install.
-# usage: scripts/update-homebrew.sh <version>   (e.g. 0.6.1)
+# usage: scripts/update-homebrew.sh <version>   (e.g. 1.2.3)
 set -euo pipefail
 
 version="${1:?usage: scripts/update-homebrew.sh <version>}"
