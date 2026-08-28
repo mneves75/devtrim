@@ -7,7 +7,7 @@ default features disabled; do not enable its optional layout cache without a new
 ## Commands
 - Format: `cargo fmt --all -- --check`
 - Lint: `cargo clippy --locked --all-targets --all-features -- -D warnings`
-- Deletion boundary: `ast-grep test --skip-snapshot-tests` then `ast-grep scan --config sgconfig.yml`
+- Structural lint: `ast-grep test --skip-snapshot-tests` then `ast-grep scan --config sgconfig.yml`
 - Test: `cargo test --locked --all-targets --all-features`
 - MSRV: `rustup run 1.88.0 cargo test --locked --all-targets --all-features`
 - Audit: `cargo audit`
@@ -45,6 +45,7 @@ default features disabled; do not enable its optional layout cache without a new
 - Scanner diagnostics go through `Ctx`: explicit CLI commands may render stderr, while the TUI captures, escapes, and retains them in its own state.
 - Bare `devtrim` opens the TUI only with interactive stdin and stdout. Non-TTY automation uses explicit subcommands; `--json` remains exactly one document.
 - Keep CSP metadata intact in shipped HTML. Landing page is `index.html` + `styles.css`; demo media lives in `media/`.
+- Code review reads `CODING_STANDARDS.md`. Every bullet in this section is a hard standard, citable as `CLAUDE.md § Conventions`.
 
 ## Release
 1. Bump `Cargo.toml` and every version reference packaged with the artifact.

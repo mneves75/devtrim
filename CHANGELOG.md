@@ -6,6 +6,8 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ### Changed
 - Production release closeout now re-verifies the immutable artifact, updates and audits the Homebrew tap, upgrades the maintainer installation, and proves the sole `/opt/homebrew/bin/devtrim` reports the released version
+- The crate now forbids `unsafe` and denies `unwrap`/`expect`/`panic`/`unreachable`/`todo`/`unimplemented`/`dbg!` and unreasoned lint suppression outside tests, and structural lints with positive-control tests now cover shell invocation and binding names alongside the deletion sink
+- `CODING_STANDARDS.md` documents the review-time rules that tooling cannot check, as citable `S<n>` entries
 
 [0.6.2]: https://github.com/mneves75/devtrim/compare/v0.6.1...HEAD
 

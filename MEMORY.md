@@ -28,6 +28,9 @@ no P0/P1 blocker remained. The 0.6.2 Unreleased line is open.
 - The structural deletion rule has positive-control tests and runs in
   pre-commit, CI, and release validation.
 - MSRV is a mandatory executed gate; absence of its toolchain is a failure.
+- An invariant a machine can check becomes a gate, not prose. `CODING_STANDARDS.md`
+  carries only what clippy and ast-grep cannot see, as citable `S<n>` rules, and
+  states each gate's blind spot so review knows where its work actually is.
 - Pathname TOCTOU remains documented rather than overstated as solved.
 - A production release may consume only an immutable, attested beta artifact
   from the same dereferenced commit; production never rebuilds it.

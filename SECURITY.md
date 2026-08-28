@@ -106,9 +106,11 @@ Non-negotiable boundaries:
 13. **Write-ahead journal** — attempt/result records surround every deletion and
    fixed-argv command; symlink-safe parent handles, serialized appends, and
    bounded read-only history preserve a coherent local audit trail.
-14. **Regression gates** — macOS CI runs format, strict Clippy, tests, MSRV tests,
-   root and fuzz-lock dependency audits, a positive-control structural
-   deletion-sink lint, and an explicit arm64 release build. Read-only hosted
+14. **Regression gates** — macOS CI runs format, strict Clippy (which forbids
+   `unsafe`, `unwrap`/`expect`, and unreasoned lint suppression in the crate),
+   tests, MSRV tests, root and fuzz-lock dependency audits, positive-control
+   structural lints for the deletion sink, shell invocation, and naming, and an
+   explicit arm64 release build. Read-only hosted
    release jobs additionally run all five bounded fuzz targets, PTY/UI, video,
    workflow-policy, and secret-scanning gates before publication authority is
    available.
