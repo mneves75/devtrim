@@ -7,6 +7,12 @@ use crate::safety::{Ctx, escalate, xcodebuild_running};
 
 pub struct Xcode;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum XcodeTargetKind {
+    DeviceSupport,
+    DerivedData,
+}
+
 const TARGETS: &[(&str, &str, &str)] = &[
     (
         "iOS DeviceSupport",
@@ -32,9 +38,10 @@ impl Op for Xcode {
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
         let needs_probe = findings.iter().any(|finding| {
             matches!(finding.action, Action::Trash | Action::Shred)
-                && finding
-                    .target()
-                    .is_some_and(|path| is_derived_data_child(path, &ctx.home))
+                && finding.target().is_some_and(|path| {
+                    authorize_xcode_target(path, &ctx.home)
+                        .is_ok_and(|kind| kind == XcodeTargetKind::DerivedData)
+                })
         });
         let xcodebuild_state = needs_probe.then(xcodebuild_running);
         self.apply_with_xcodebuild_state(findings, ctx, xcodebuild_state)
@@ -122,7 +129,8 @@ impl Xcode {
                 let path = finding
                     .target()
                     .ok_or_else(|| anyhow::anyhow!("Xcode finding missing internal target"))?;
-                if is_derived_data_child(path, &ctx.home) {
+                let target_kind = authorize_xcode_target(path, &ctx.home)?;
+                if target_kind == XcodeTargetKind::DerivedData {
                     match xcodebuild_state.as_ref() {
                         Some(Ok(false)) => {}
                         Some(Ok(true)) => {
@@ -166,8 +174,22 @@ impl Xcode {
     }
 }
 
-fn is_derived_data_child(path: &std::path::Path, home: &std::path::Path) -> bool {
-    path.parent() == Some(home.join("Library/Developer/Xcode/DerivedData").as_path())
+fn authorize_xcode_target(
+    path: &std::path::Path,
+    home: &std::path::Path,
+) -> Result<XcodeTargetKind> {
+    let device_support = home.join("Library/Developer/Xcode/iOS DeviceSupport");
+    if path.parent() == Some(device_support.as_path()) {
+        return Ok(XcodeTargetKind::DeviceSupport);
+    }
+    let derived_data = home.join("Library/Developer/Xcode/DerivedData");
+    if path.parent() == Some(derived_data.as_path()) {
+        return Ok(XcodeTargetKind::DerivedData);
+    }
+    anyhow::bail!(
+        "refusing Xcode target outside direct DeviceSupport or DerivedData children: {}",
+        path.display()
+    )
 }
 
 #[cfg(test)]
@@ -305,6 +327,70 @@ mod tests {
     }
 
     #[test]
+    fn direct_device_support_child_can_be_applied() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-xcode-direct-{}", std::process::id()));
+        crate::ops::remove_test_path(&root);
+        let target = root.join("Library/Developer/Xcode/iOS DeviceSupport/device");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("sentinel"), "remove").unwrap();
+        let home = root.canonicalize().unwrap();
+        let target = home.join("Library/Developer/Xcode/iOS DeviceSupport/device");
+        let finding = Finding::new(
+            "DeviceSupport: device",
+            Some(target.clone()),
+            6,
+            "test",
+            9,
+            Action::Shred,
+        );
+
+        let outcome = Xcode
+            .apply_with_xcodebuild_state(&[finding], &test_context(home.clone()), None)
+            .unwrap();
+
+        assert!(outcome.errors.is_empty());
+        assert_eq!(outcome.summary.items_touched, 1);
+        assert!(!target.exists());
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn forged_nested_derived_data_target_is_rejected_before_liveness() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-xcode-nested-{}", std::process::id()));
+        crate::ops::remove_test_path(&root);
+        let target = root.join("Library/Developer/Xcode/DerivedData/project/nested");
+        std::fs::create_dir_all(&target).unwrap();
+        let sentinel = target.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let home = root.canonicalize().unwrap();
+        let target = home.join("Library/Developer/Xcode/DerivedData/project/nested");
+        let finding = Finding::new(
+            "forged nested DerivedData",
+            Some(target),
+            4,
+            "test",
+            9,
+            Action::Shred,
+        );
+
+        let outcome = Xcode
+            .apply_with_xcodebuild_state(&[finding], &test_context(home.clone()), None)
+            .unwrap();
+
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(outcome.errors[0].contains("outside direct DeviceSupport or DerivedData"));
+        assert!(sentinel.exists());
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
     fn derived_data_apply_refuses_running_or_unknown_xcodebuild() {
         let home = std::env::temp_dir().join(format!("devtrim-xcode-live-{}", std::process::id()));
         crate::ops::remove_test_path(&home);
@@ -350,10 +436,6 @@ mod tests {
             .unwrap();
         assert!(unknown.errors[0].contains("cannot verify xcodebuild activity"));
         assert!(sentinel.exists());
-        assert!(!is_derived_data_child(
-            &home.join("Library/Developer/Xcode/iOS DeviceSupport/device"),
-            &home
-        ));
         crate::ops::remove_test_path(home);
     }
 }

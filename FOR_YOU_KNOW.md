@@ -187,6 +187,24 @@ pushes normally, and refuses to run the local upgrade unless the tap still
 points at that exact commit. A failed closeout is resumed with the idempotent
 Homebrew helper; neither the production tag nor release is moved.
 
+0.6.3 audits the handoff between a scanner's decision and the final action.
+Think of a finding as a boarding pass: the shared deletion sink already checked
+the passenger's identity, but the Xcode and toolchain desks also need to prove
+that the pass is for their flight. Apply now reasserts the exact direct-child
+shape each scanner can issue, so a forged nested finding cannot borrow a valid
+path's general deletion authority.
+
+The same review tightened what users can trust before apply. The TUI removes
+configured protected Trash items before calculating danger or asking for
+approval. A present but unverifiable `swift-latest.xctoolchain` reference is an
+error instead of an empty success. Mutation flags that a command cannot use are
+rejected rather than silently ignored: Docker and simulator command actions do
+not pretend to honor filesystem-only `--shred`, and bare `devtrim --json`
+cannot fall through into the interactive TUI. Complete command actions are
+escaped at the terminal sink while JSON keeps the original structured values.
+Release version checks likewise compare the authoritative heading and exact
+unique documentation declarations, not convenient substrings.
+
 The first implementation used Ratatui 0.29 to preserve Rust 1.85, but its
 mandatory `lru 0.12.5` dependency later failed the 2026 security review with two
 RustSec soundness advisories. Ratatui 0.30 makes its layout cache optional, so

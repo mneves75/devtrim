@@ -17,9 +17,36 @@ cd "$(dirname "$0")/.."
 
 echo "==> verifying release state"
 grep -Fqx "version = \"${ver}\"" Cargo.toml || { echo "ERROR: Cargo.toml version != ${ver}"; exit 1; }
-grep -Fq "## [${ver}]" CHANGELOG.md || { echo "ERROR: no CHANGELOG.md section for ${ver}"; exit 1; }
-grep -Fq "v${ver}" README.md || { echo "ERROR: README.md lacks v${ver}"; exit 1; }
-grep -Fq "v${ver}" MANUAL.html || { echo "ERROR: MANUAL.html lacks v${ver}"; exit 1; }
+version_pattern="${ver//./\\.}"
+first_release_heading=$(grep -m1 '^## \[' CHANGELOG.md || true)
+[[ "$first_release_heading" =~ ^##\ \[$version_pattern\]\ -\ [0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || {
+  echo "ERROR: first CHANGELOG.md release heading is not ${ver}"
+  exit 1
+}
+grep -Fqx "This source tree and its packaged documentation describe devtrim v${ver}." README.md || {
+  echo "ERROR: README.md source-tree version != v${ver}"
+  exit 1
+}
+[[ "$(grep -Ec "^This source tree and its packaged documentation describe devtrim v[0-9]+\\.[0-9]+\\.[0-9]+\\.$" README.md)" -eq 1 ]] || {
+  echo "ERROR: README.md must contain exactly one source-tree version declaration"
+  exit 1
+}
+grep -Fqx "    <span class=\"chip g\">v${ver}</span>" MANUAL.html || {
+  echo "ERROR: MANUAL.html version chip != v${ver}"
+  exit 1
+}
+[[ "$(grep -Ec "^    <span class=\\\"chip g\\\">v[0-9]+\\.[0-9]+\\.[0-9]+</span>$" MANUAL.html)" -eq 1 ]] || {
+  echo "ERROR: MANUAL.html must contain exactly one version chip"
+  exit 1
+}
+grep -Fqx "  <span>devtrim <b>v${ver}</b></span>" MANUAL.html || {
+  echo "ERROR: MANUAL.html footer version != v${ver}"
+  exit 1
+}
+[[ "$(grep -Ec "^  <span>devtrim <b>v[0-9]+\\.[0-9]+\\.[0-9]+</b></span>$" MANUAL.html)" -eq 1 ]] || {
+  echo "ERROR: MANUAL.html must contain exactly one footer version"
+  exit 1
+}
 [[ -z "$(git -c core.fsmonitor=false -c submodule.recurse=false status --porcelain=v1 --untracked-files=all --ignore-submodules=all)" ]] || {
   echo "ERROR: commit all changes before releasing"
   exit 1

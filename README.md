@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.6.2.
+This source tree and its packaged documentation describe devtrim v0.6.3.
 
 ## Install
 
@@ -38,7 +38,7 @@ cp target/release/devtrim /usr/local/bin/
 ## Principles
 
 - **Preview by default.** Every mutation, including `trash-empty`, requires `--apply`.
-- **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets.
+- **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets. Xcode and Swift toolchain apply also reassert that each target still has the exact direct-child shape its scanner authorized.
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
 - **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation.
 - **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while `xcodebuild` runs. A probe that cannot complete blocks instead of passing.
@@ -52,6 +52,7 @@ cp target/release/devtrim /usr/local/bin/
 - **Protected physical paths.** System roots, user secrets, the home root, Trash root, paths reached through symlinked ancestors, and owner-reported cache paths outside npm/Homebrew namespaces are refused.
 - **Volumes are sacred.** Docker volumes are never pruned.
 - **Archives are sacred.** Xcode Archives are visible but never actionable.
+- **Capability-scoped flags.** Mutation flags are rejected when a command cannot use them; they never become silent no-ops. `scan --shred` remains meaningful because it changes the previewed action, while report-only commands reject it.
 - **Agent-friendly.** Every `--json` invocation emits exactly one JSON document and failures return nonzero.
 
 ## Data-loss risk, warranty, and macOS permissions
@@ -92,6 +93,15 @@ devtrim largest --top 20                  # read-only: biggest directories under
 devtrim completions zsh                   # shell completion script (bash | zsh | fish)
 devtrim manpage                           # man page in roff format
 ```
+
+Global flags are capability-scoped. Read-only/report-only commands reject
+`--apply`, `-y`, `--yolo`, and `--shred` instead of pretending to honor
+them. `scan --shred` is the exception because it explicitly previews
+permanent actions. Docker and simulator cleanup reject `--shred` because they
+execute exact typed commands rather than filesystem deletion actions.
+`trash-empty` accepts apply/confirmation flags but rejects `--shred`: its
+preview is already permanent and its exact `--confirm=<gb>` acknowledgment
+remains mandatory.
 
 `clean artifacts` deletes a directory only when its name is on a closed list
 **and** its ecosystem corroborates it — `target` next to `Cargo.toml`, `.venv`
@@ -183,6 +193,7 @@ output.
 |---|---|
 | Preview | `--apply` is mandatory for every mutation |
 | Candidate set | apply uses exact previewed findings |
+| Category authority | Xcode and toolchain apply reassert the scanner's exact direct-child target shape |
 | Trash | recoverable by default; permanent mode is explicit |
 | Danger gate | maximum finding score plus aggregate estimated logical bytes |
 | TUI consent | approval capability must match the current preview and danger requirement |
@@ -198,7 +209,7 @@ output.
 | Journal | a write-ahead attempt/result record precedes and follows every deletion; an unwritable journal blocks apply |
 | Measurement | incomplete traversal, metadata, or numeric state blocks an actionable plan |
 | Automation | one JSON document; partial/failed work returns nonzero |
-| Terminal output | control and bidirectional-control characters are escaped before rendering |
+| Terminal output | complete human-facing actions, findings, errors, and notes escape control and bidirectional-control characters before rendering |
 | Release authority | build code is read-only; a separate publisher receives packaged inputs and holds release/OIDC permissions |
 
 Sizes are estimated logical bytes. APFS clones, sparse files, and container-VM

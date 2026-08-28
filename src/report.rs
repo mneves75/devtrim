@@ -250,6 +250,10 @@ pub fn actionable_bytes(findings: &[Finding]) -> u64 {
         .fold(0, |total, finding| total.saturating_add(finding.size_bytes))
 }
 
+fn human_action_display(action: &Action) -> String {
+    terminal_safe(&action.display())
+}
+
 pub fn print_human(findings: &[Finding]) -> std::io::Result<()> {
     let total = actionable_bytes(findings);
     let mut output = String::new();
@@ -262,7 +266,7 @@ pub fn print_human(findings: &[Finding]) -> std::io::Result<()> {
             terminal_safe(&finding.label).bold(),
             terminal_safe(path).dimmed(),
             terminal_safe(&finding.note),
-            finding.action.display()
+            human_action_display(&finding.action)
         ));
     }
     output.push_str(&format!(
@@ -361,5 +365,22 @@ mod tests {
         assert_eq!(serialized["path"], "/tmp/line\nnext\u{202e}");
         assert!(serialized.get("identity").is_none());
         assert_eq!(terminal_safe(&finding.label), "cache\\u{1b}[2Jé");
+    }
+
+    #[test]
+    fn human_command_action_escapes_controls_without_changing_json() {
+        let raw = "unix:///tmp/\u{1b}]8;;https://example.com\u{7}\nnext\u{202e}";
+        let action = Action::command("docker", &["--host", raw, "image", "prune"]);
+
+        let serialized = serde_json::to_value(&action).unwrap();
+        assert_eq!(serialized["args"][1], raw);
+
+        let rendered = human_action_display(&action);
+        assert!(!rendered.as_bytes().contains(&0x1b));
+        assert!(!rendered.contains(raw));
+        assert!(rendered.contains("\\u{1b}"));
+        assert!(rendered.contains("\\u{7}"));
+        assert!(rendered.contains("\\n"));
+        assert!(rendered.contains("\\u{202e}"));
     }
 }

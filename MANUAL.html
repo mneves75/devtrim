@@ -413,7 +413,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.6.2</span>
+    <span class="chip g">v0.6.3</span>
     <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
@@ -485,7 +485,7 @@ devtrim clean caches</code></pre>
 <!-- ============ 04 COMMANDS ============ -->
 <section id="commands" aria-labelledby="h-commands">
   <h2 id="h-commands"><span class="num">04</span> Command reference</h2>
-  <p>Grouped by what you are here to do. Global flags (<code>--apply</code>, <code>-y</code>, <code>--yolo</code>, <code>--shred</code>, <code>--json</code>) apply to explicit reporting/cleanup commands. The TUI owns its confirmation and rejects those flags.</p>
+  <p>Grouped by what you are here to do. Global flags are capability-scoped: read-only/report-only commands reject mutation flags they cannot honor instead of silently ignoring them. <code>scan --shred</code> intentionally changes the previewed action; Docker and simulator cleanup reject <code>--shred</code> because they execute exact typed commands rather than filesystem deletion actions; <code>trash-empty</code> rejects it because its preview is already permanent. The TUI owns its confirmation and rejects CLI mutation flags plus <code>--json</code>.</p>
 
   <p class="group-label" id="g-inspect">Inspect — nothing changes</p>
   <details class="card">
@@ -524,11 +524,11 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">xcode</span><span class="cmd-desc">DeviceSupport + DerivedData</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Clears symbol caches and DerivedData children; both rebuild on next use. <strong>Archives exempt by design</strong> — they're release artifacts.</p></div>
+    <div class="card-body"><p>Clears only direct DeviceSupport and DerivedData children; apply reasserts that exact category shape before removal. Both rebuild on next use. <strong>Archives exempt by design</strong> — they're release artifacts.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">toolchains</span><span class="cmd-desc">old swift.org toolchains</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Removes <code>.xctoolchain</code> directories not referenced by any verified symlink in the Toolchains directory, and only when <code>swift-latest</code> resolves safely. Xcode's built-in chain is unaffected. Reinstallable from swift.org.</p></div>
+    <div class="card-body"><p>Removes only direct <code>.xctoolchain</code> directories not referenced by any verified symlink in the Toolchains directory. A present but missing, broken, escaping, or invalid <code>swift-latest</code> reference blocks the scan; apply reasserts the exact direct-child shape. Xcode's built-in chain is unaffected. Reinstallable from swift.org.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">docker</span><span class="cmd-desc">unused images + build cache</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
@@ -561,6 +561,7 @@ devtrim clean caches</code></pre>
       <tr><td data-th="Layer">Preview default</td><td data-th="Rule">without <code>--apply</code>, nothing mutates — ever</td><td data-th="Bypass">none needed (default)</td></tr>
       <tr><td data-th="Layer">Trash-first</td><td data-th="Rule">filesystem deletes go to <code>~/.Trash</code></td><td data-th="Bypass"><code>--shred</code></td></tr>
       <tr><td data-th="Layer">Typed target</td><td data-th="Rule">only an exact validated path can reach removal; display text has no authority</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
+      <tr><td data-th="Layer">Category authority</td><td data-th="Rule">Xcode and toolchain apply reassert the scanner's exact direct-child target shape</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Single sink</td><td data-th="Rule">all filesystem removal passes one structurally enforced boundary</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Identity verification</td><td data-th="Rule">preview-time device/inode is re-verified through an open parent-directory handle; drift refuses</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Directory preflight</td><td data-th="Rule">foreign devices and nested Git repository/worktree markers are refused before Trash or permanent mutation</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
@@ -715,7 +716,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
 </section>
 
 <footer>
-  <span>devtrim <b>v0.6.2</b></span>
+  <span>devtrim <b>v0.6.3</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

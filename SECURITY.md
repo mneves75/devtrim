@@ -32,6 +32,7 @@ Non-negotiable boundaries:
 
 - Every mutation requires `--apply`.
 - Apply uses only exact previewed findings and preserves their exact non-lossy path identity.
+- Xcode and Swift toolchain apply reassert that every target still has the exact direct-child category shape its scanner authorized before the shared deletion sink can consume it.
 - Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
 - Literal and physically resolved parents must agree; symlinked ancestors fail closed.
 - System roots and descendants (including ASCII case variants), the user home
@@ -74,19 +75,20 @@ Non-negotiable boundaries:
 - Simulator cleanup creates one finding and command authority per validated
   UDID, then rechecks that exact device is still unavailable before deletion.
 - A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize a typed Docker or simulator operation with validated arguments, and apply must match both representations exactly.
-- Confirmation bypasses never add operations.
+- Mutation flags are capability-scoped and rejected when the selected command cannot honor them; confirmation bypasses never add operations.
 - Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
 - The TUI accepts no CLI confirmation bypass. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
 - Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
-- Terminal-facing findings, errors, and outcome notes escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values.
+- Complete human-facing actions, findings, errors, and outcome notes escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values and JSON retains its original data.
 - Failed or partial work returns nonzero; successful earlier actions remain visible in the summary.
 
 ## Defense layers
 
 1. **Preview/apply split** — default invocations are read-only.
 2. **Typed actions and command authority** — argv is stored separately from display text; no shell command strings are evaluated, and a private closed capability must match each executable action and its validated arguments before dispatch.
-3. **Immutable candidates** — existing scan roots are canonicalized before
-   preview, and apply does not rediscover filesystem targets.
+3. **Immutable candidates and category authority** — existing scan roots are
+   canonicalized before preview, apply does not rediscover filesystem targets,
+   and Xcode/toolchain owners reassert each target's exact scanner shape.
 4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.
 5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission.
 5b. **Anchored identity verification** — the sink re-reads the target's
@@ -104,7 +106,7 @@ Non-negotiable boundaries:
    return nonzero with errors.
 10. **Truthful measurement** — traversal, metadata, numeric parsing, and overflow
    errors block actionable plans rather than producing partial estimates.
-11. **Terminal-safe presentation** — control characters are escaped before human rendering and never parsed back into deletion authority.
+11. **Terminal-safe presentation** — complete human-facing actions and other untrusted text escape control characters before rendering and are never parsed back into deletion authority.
 12. **Liveness guards** — running build processes (by working directory) and a
    running `xcodebuild` block the affected repo or DerivedData targets, failing
    closed when the probe itself fails.

@@ -16,6 +16,20 @@ pub fn main_impl() -> ExitCode {
         Ok(cli) => cli,
         Err(error) => return clap_error(error, json_requested, operation),
     };
+    if let Some(message) = incompatible_flags(&cli) {
+        if cli.json {
+            if let Err(error) = report::print_json(operation, false, &[], None, &[message]) {
+                eprintln!(
+                    "{} {}",
+                    "error:".red().bold(),
+                    report::terminal_safe(&error.to_string())
+                );
+            }
+        } else {
+            eprintln!("{} {}", "error:".red().bold(), message);
+        }
+        return ExitCode::from(2);
+    }
     if cli.command.is_none()
         && !cli.json
         && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
@@ -53,6 +67,50 @@ pub fn main_impl() -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
+    let (operation, allow_apply, allow_yes, allow_yolo, allow_shred) = match cli.command.as_ref() {
+        None | Some(cli::Command::Tui) => ("tui", false, false, false, false),
+        Some(cli::Command::Scan) => ("scan", false, false, false, true),
+        Some(cli::Command::Clean { target }) if *target == cli::Target::Leftovers => {
+            ("leftovers", false, false, false, false)
+        }
+        Some(cli::Command::Clean { target })
+            if matches!(*target, cli::Target::Docker | cli::Target::Simulators) =>
+        {
+            (target.as_str(), true, true, true, false)
+        }
+        Some(cli::Command::Clean { target }) => (target.as_str(), true, true, true, true),
+        Some(cli::Command::TrashEmpty { .. }) => ("trash-empty", true, true, true, false),
+        Some(cli::Command::Largest { .. }) => ("largest", false, false, false, false),
+        Some(cli::Command::History { .. }) => ("history", false, false, false, false),
+        Some(cli::Command::Completions { .. }) => ("completions", false, false, false, false),
+        Some(cli::Command::Manpage) => ("manpage", false, false, false, false),
+        Some(cli::Command::Icloud) => ("icloud", false, false, false, false),
+    };
+    let mut rejected = Vec::new();
+    if cli.apply && !allow_apply {
+        rejected.push("--apply");
+    }
+    if cli.yes && !allow_yes {
+        rejected.push("-y/--yes");
+    }
+    if cli.yolo && !allow_yolo {
+        rejected.push("--yolo");
+    }
+    if cli.shred && !allow_shred {
+        rejected.push("--shred");
+    }
+    if matches!(cli.command, None | Some(cli::Command::Tui)) && cli.json {
+        rejected.push("--json");
+    }
+    (!rejected.is_empty()).then(|| {
+        format!(
+            "{operation} does not accept flag(s): {}",
+            rejected.join(", ")
+        )
+    })
 }
 
 fn exact_json_flag(args: &[OsString]) -> bool {
@@ -254,14 +312,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
     let command = cli.command.take().unwrap_or(cli::Command::Tui);
 
     match command {
-        cli::Command::Tui => {
-            if cli.apply || cli.yes || cli.yolo || cli.shred || cli.json {
-                anyhow::bail!(
-                    "the TUI owns preview and confirmation; do not pass --apply, -y, --yolo, --shred, or --json"
-                );
-            }
-            tui::run(&ctx)
-        }
+        cli::Command::Tui => tui::run(&ctx),
         cli::Command::Scan => {
             let mut scan = ops::scan_all(&ctx);
             report::effective_actions(&mut scan.findings, cli.shred);

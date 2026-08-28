@@ -2,6 +2,26 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.6.3] - 2026-08-28
+
+### Changed
+- Global mutation flags are now capability-scoped: report-only commands reject flags they cannot honor, while `scan --shred` and Trash purge retain only their meaningful controls
+- Docker and simulator cleanup now reject `--shred` instead of accepting a flag that cannot affect their exact typed command actions
+- Release version validation now checks the authoritative changelog heading and exact, unique README and manual version declarations instead of accepting substring matches
+
+### Fixed
+- The TUI now filters configured protected Trash items before it calculates danger or asks for approval
+- Bare `devtrim --json` now rejects the implicit TUI before terminal launch, matching explicit `devtrim tui --json` and preserving automation-only JSON behavior
+- A present but missing, broken, escaping, or otherwise invalid `swift-latest.xctoolchain` reference now blocks toolchain cleanup instead of producing an empty successful scan
+- The production landing page now points to the actual stable v0.6.2 archive and release while the v0.6.3 candidate is in beta staging
+
+### Security
+- Human command previews escape the complete action string, closing terminal control-character injection through dynamic but validated command arguments without altering JSON data
+- Xcode and Swift toolchain apply now reassert each scanner's exact direct-child target shape before the shared deletion sink, so a forged nested finding cannot borrow the category's authority
+- Release verification passed current and MSRV suites, strict Clippy, structural positive controls, root and fuzz dependency audits, all five 60-second fuzz targets, the arm64 build, PTY cancellation, workflow/shell/secret gates, P3 autoreview, Matt Pocock standards/spec review, video build/render/container checks, desktop/mobile browser checks, and a fresh independent verifier
+
+[0.6.3]: https://github.com/mneves75/devtrim/compare/v0.6.2...v0.6.3
+
 ## [0.6.2] - 2026-08-28
 
 ### Changed

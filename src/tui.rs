@@ -572,7 +572,8 @@ fn load_operation(app: &mut App, operation: Operation, ctx: &Ctx) {
             }
         },
         Operation::TrashEmpty => match ops::trash_findings(ctx) {
-            Ok(findings) => {
+            Ok(mut findings) => {
+                ops::filter_protected_findings(&mut findings, ctx);
                 let warnings = ctx.take_diagnostics();
                 app.finish_results(operation, findings, Vec::new(), warnings);
             }
@@ -1208,6 +1209,55 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn trash_preview_filters_protected_items_before_approval() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-tui-trash-protect-{}", std::process::id()));
+        crate::ops::remove_test_path(&root);
+        let trash = root.join(".Trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        let ordinary = trash.join("ordinary");
+        let protected = trash.join("protected");
+        std::fs::write(&ordinary, "visible positive control").unwrap();
+        std::fs::write(&protected, "keep").unwrap();
+        let home = root.canonicalize().unwrap();
+        let mut app = App::default();
+        let ctx = Ctx {
+            yes: false,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            protect: vec![protected.clone()],
+            journal_path: home.join("journal.jsonl"),
+            home: home.clone(),
+            interactive: true,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
+
+        load_operation(&mut app, Operation::TrashEmpty, &ctx);
+
+        assert_eq!(
+            app.findings.len(),
+            1,
+            "the ordinary item proves the scan ran"
+        );
+        assert_eq!(app.findings[0].target(), Some(ordinary.as_path()));
+        assert!(app.warnings.iter().any(|warning| {
+            warning.contains("skipping protected path") && warning.contains("protected")
+        }));
+        app.begin_confirmation();
+        assert_eq!(
+            app.confirmation,
+            Some(ConfirmationKind::TrashPurge { expected_gb: 0 })
+        );
+        crate::ops::remove_test_path(root);
     }
 
     #[test]

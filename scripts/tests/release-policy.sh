@@ -214,8 +214,8 @@ EOF
 chmod +x "$seed/scripts/update-homebrew.sh"
 printf '%s\n' '[package]' 'name = "fixture"' 'version = "1.2.3"' > "$seed/Cargo.toml"
 printf '%s\n' '# Changelog' '## [1.2.3] - 2099-01-01' '- fixture' > "$seed/CHANGELOG.md"
-printf '%s\n' '# fixture v1.2.3' > "$seed/README.md"
-printf '%s\n' '<p>fixture v1.2.3</p>' > "$seed/MANUAL.html"
+printf '%s\n' 'This source tree and its packaged documentation describe devtrim v1.2.3.' > "$seed/README.md"
+printf '%s\n' '    <span class="chip g">v1.2.3</span>' '  <span>devtrim <b>v1.2.3</b></span>' > "$seed/MANUAL.html"
 git -C "$seed" add Cargo.toml CHANGELOG.md README.md MANUAL.html scripts/release.sh scripts/update-homebrew.sh
 git -C "$seed" commit -m 'fixture: release candidate' >/dev/null
 git -C "$seed" remote add origin "$origin"
@@ -227,6 +227,53 @@ git -C "$subject" config user.email release-policy@example.invalid
 
 for tool in gh cargo npm npx rustup ast-grep gitleaks trufflehog shellcheck actionlint; do
   ln -s "$script_dir/release-policy.sh" "$fake_bin/$tool"
+done
+
+for stale_surface in changelog readme readme-duplicate manual-chip manual-chip-duplicate manual-footer manual-footer-duplicate; do
+  fixture="$test_root/version-$stale_surface"
+  mkdir -p "$fixture/scripts"
+  cp "$release_script" "$fixture/scripts/release.sh"
+  printf '%s\n' '[package]' 'name = "fixture"' 'version = "1.2.3"' > "$fixture/Cargo.toml"
+  printf '%s\n' '# Changelog' '## [1.2.3] - 2099-01-01' '- fixture' > "$fixture/CHANGELOG.md"
+  printf '%s\n' 'This source tree and its packaged documentation describe devtrim v1.2.3.' > "$fixture/README.md"
+  printf '%s\n' '    <span class="chip g">v1.2.3</span>' '  <span>devtrim <b>v1.2.3</b></span>' > "$fixture/MANUAL.html"
+  case "$stale_surface" in
+    changelog)
+      printf '%s\n' '# Changelog' '## [1.2.2] - 2099-01-01' 'mentions v1.2.3 later' '## [1.2.3] - 2099-01-02' > "$fixture/CHANGELOG.md"
+      expected_error='first CHANGELOG.md release heading is not 1.2.3'
+      ;;
+    readme)
+      printf '%s\n' 'This source tree and its packaged documentation describe devtrim v1.2.2.' 'incidental v1.2.3 mention' > "$fixture/README.md"
+      expected_error='README.md source-tree version != v1.2.3'
+      ;;
+    readme-duplicate)
+      printf '%s\n' 'This source tree and its packaged documentation describe devtrim v1.2.3.' 'This source tree and its packaged documentation describe devtrim v1.2.2.' > "$fixture/README.md"
+      expected_error='README.md must contain exactly one source-tree version declaration'
+      ;;
+    manual-chip)
+      printf '%s\n' '    <span class="chip g">v1.2.2</span>' '  <span>devtrim <b>v1.2.3</b></span>' '<p>incidental v1.2.3 mention</p>' > "$fixture/MANUAL.html"
+      expected_error='MANUAL.html version chip != v1.2.3'
+      ;;
+    manual-chip-duplicate)
+      printf '%s\n' '    <span class="chip g">v1.2.3</span>' '    <span class="chip g">v1.2.2</span>' '  <span>devtrim <b>v1.2.3</b></span>' > "$fixture/MANUAL.html"
+      expected_error='MANUAL.html must contain exactly one version chip'
+      ;;
+    manual-footer)
+      printf '%s\n' '    <span class="chip g">v1.2.3</span>' '  <span>devtrim <b>v1.2.2</b></span>' '<p>incidental v1.2.3 mention</p>' > "$fixture/MANUAL.html"
+      expected_error='MANUAL.html footer version != v1.2.3'
+      ;;
+    manual-footer-duplicate)
+      printf '%s\n' '    <span class="chip g">v1.2.3</span>' '  <span>devtrim <b>v1.2.3</b></span>' '  <span>devtrim <b>v1.2.2</b></span>' > "$fixture/MANUAL.html"
+      expected_error='MANUAL.html must contain exactly one footer version'
+      ;;
+  esac
+  set +e
+  stale_output=$(cd "$fixture" && bash scripts/release.sh 1.2.3 2>&1)
+  stale_status=$?
+  set -e
+  [[ "$stale_status" -ne 0 ]] || fail "$stale_surface version drift unexpectedly passed"
+  grep -Fq "$expected_error" <<<"$stale_output" ||
+    fail "$stale_surface version drift did not report its authoritative surface"
 done
 
 printf '%s\n' superseding > "$seed/superseding-commit"

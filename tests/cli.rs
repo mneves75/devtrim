@@ -6,7 +6,7 @@
 )]
 
 use serde_json::Value;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -115,9 +115,88 @@ fn tui_rejects_cli_confirmation_bypasses() {
     let output = run(&sandbox, &["tui", "--apply", "--yolo"]);
 
     assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("the TUI owns preview and confirmation")
+    assert!(String::from_utf8_lossy(&output.stderr).contains("tui does not accept flag(s)"));
+}
+
+#[test]
+fn tui_json_flag_error_names_the_tui_operation() {
+    let sandbox = Sandbox::new("tui-json-flag");
+    let output = run(&sandbox, &["tui", "--json"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stderr.is_empty());
+    let value = json(&output);
+    assert_eq!(value["operation"], "tui");
+    assert_eq!(value["applied"], false);
+    assert!(value["errors"][0].as_str().unwrap().contains("--json"));
+}
+
+#[test]
+fn read_only_commands_reject_mutation_flags() {
+    let sandbox = Sandbox::new("read-only-mutation-flags");
+    for (args, operation) in [
+        (vec!["scan", "--apply", "--json"], "scan"),
+        (vec!["largest", "--shred", "--json"], "largest"),
+        (vec!["icloud", "--yolo", "--json"], "icloud"),
+        (vec!["history", "--apply", "--json"], "history"),
+        (
+            vec!["completions", "zsh", "--apply", "--json"],
+            "completions",
+        ),
+        (vec!["manpage", "--shred", "--json"], "manpage"),
+        (vec!["clean", "leftovers", "--apply", "--json"], "leftovers"),
+    ] {
+        let output = run(&sandbox, &args);
+        assert_eq!(output.status.code(), Some(2), "args: {args:?}");
+        assert!(output.stderr.is_empty(), "args: {args:?}");
+        let value = json(&output);
+        assert_eq!(value["operation"], operation, "args: {args:?}");
+        assert_eq!(value["applied"], false, "args: {args:?}");
+        assert!(
+            value["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("does not accept flag"),
+            "args: {args:?}"
+        );
+    }
+}
+
+#[test]
+fn mutation_flags_remain_available_only_where_they_have_meaning() {
+    let sandbox = Sandbox::new("valid-mutation-flags");
+    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
+
+    for target in ["docker", "simulators"] {
+        let output = run(&sandbox, &["clean", target, "--shred", "--json"]);
+        assert_eq!(output.status.code(), Some(2), "target: {target}");
+        assert!(output.stderr.is_empty(), "target: {target}");
+        let value = json(&output);
+        assert_eq!(value["operation"], target, "target: {target}");
+        assert_eq!(value["applied"], false, "target: {target}");
+        assert!(
+            value["errors"][0].as_str().unwrap().contains("--shred"),
+            "target: {target}"
+        );
+    }
+
+    let scan = run(&sandbox, &["scan", "--shred", "--json"]);
+    assert!(scan.status.success());
+    assert_eq!(json(&scan)["operation"], "scan");
+
+    let clean = run(
+        &sandbox,
+        &["clean", "caches", "--apply", "-y", "--shred", "--json"],
     );
+    assert!(clean.status.success());
+    assert_eq!(json(&clean)["operation"], "caches");
+
+    let trash = run(
+        &sandbox,
+        &["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"],
+    );
+    assert!(trash.status.success());
+    assert_eq!(json(&trash)["operation"], "trash-empty");
 }
 
 #[test]
@@ -126,9 +205,15 @@ fn no_command_json_error_remains_one_document() {
     let output = run(&sandbox, &["--json"]);
     let value = json(&output);
 
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     assert_eq!(value["operation"], "unknown");
     assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+    assert!(
+        value["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("tui does not accept flag(s): --json")
+    );
 }
 
 #[test]
@@ -242,14 +327,7 @@ fn largest_json_is_one_read_only_document() {
 
     let output = run(
         &sandbox,
-        &[
-            "largest",
-            "--root",
-            root.to_str().unwrap(),
-            "--apply",
-            "--shred",
-            "--json",
-        ],
+        &["largest", "--root", root.to_str().unwrap(), "--json"],
     );
 
     assert!(output.status.success());
@@ -419,6 +497,31 @@ fn config_tilde_protect_filters_preview_with_diagnostic() {
     assert!(output.status.success());
     assert!(json(&output)["findings"].as_array().unwrap().is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("skipping protected path"));
+}
+
+#[test]
+fn broken_swift_latest_is_a_nonzero_json_error() {
+    let sandbox = Sandbox::new("broken-swift-latest");
+    let directory = sandbox.path().join("Library/Developer/Toolchains");
+    std::fs::create_dir_all(directory.join("swift-1.xctoolchain")).unwrap();
+    symlink(
+        "missing.xctoolchain",
+        directory.join("swift-latest.xctoolchain"),
+    )
+    .unwrap();
+
+    let output = run(&sandbox, &["clean", "toolchains", "--json"]);
+
+    assert!(!output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "toolchains");
+    assert!(value["findings"].as_array().unwrap().is_empty());
+    assert!(
+        value["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("cannot resolve Swift toolchain reference")
+    );
 }
 
 #[test]
@@ -711,25 +814,12 @@ fn icloud_traversal_errors_are_nonzero_json_errors() {
 #[test]
 fn empty_json_apply_includes_a_zero_summary() {
     let sandbox = Sandbox::new("empty-apply-summary");
-    let root = sandbox.path().join("empty-root");
-    std::fs::create_dir_all(&root).unwrap();
-
-    let output = run(
-        &sandbox,
-        &[
-            "clean",
-            "leftovers",
-            "--root",
-            root.to_str().unwrap(),
-            "--apply",
-            "--json",
-        ],
-    );
+    let output = run(&sandbox, &["clean", "caches", "--apply", "-y", "--json"]);
 
     assert!(output.status.success());
     let value = json(&output);
     assert_eq!(value["applied"], true);
-    assert_eq!(value["summary"]["op"], "leftovers");
+    assert_eq!(value["summary"]["op"], "caches");
     assert_eq!(value["summary"]["items_touched"], 0);
     assert_eq!(value["summary"]["bytes_freed_estimate"], 0);
     assert!(value["summary"]["notes"].as_array().unwrap().is_empty());

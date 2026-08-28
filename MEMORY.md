@@ -2,30 +2,25 @@
 
 ## Current state
 
-devtrim 0.6.1 is the immutable production release (commit `2dcca48`), promoting
-the exact attested `v0.6.1-beta3` archive (`e705cad0…`) without rebuilding it.
-The release makes CLI/JSON outcomes truthful, scanners fail closed, permanent
-deletion refuse nested worktrees and device crossings, journal access
-symlink-safe and process-serialized, history bounded and read-only, and release
-credentials isolated from checked-out code. The production archive and checksum
-were byte-compared with beta3; checksum, SLSA provenance, arm64 architecture,
-ad-hoc code signature, packaged license/docs, and `devtrim 0.6.1` all verified.
+devtrim 0.6.2 is the immutable production release. Production reused the exact
+verified beta artifact, and the Homebrew tap plus the sole visible local
+installation report 0.6.2. That release binds Docker cleanup to one validated
+local Unix-socket endpoint, replaces aggregate simulator deletion with exact
+rechecked UDIDs, extends same-device/nested-Git preflight to Trash directories,
+and makes metadata and liveness uncertainty fail closed.
 
-Rust/MSRV (121 library pass + 1 ignored test helper, 48 CLI pass), both
-dependency audits, structural deletion checks, release-policy/shell/action
-lint, secret scans, npm/video, PTY TUI, arm64 build, desktop/mobile browser
-checks, and all five 60-second fuzz targets passed locally and/or in the
-credential-separated hosted gates. Two P3 autoreview rounds and independent
-security reviews had every verified P2/P3 finding fixed with regression proof;
-no P0/P1 blocker remained.
+The 0.6.3 candidate completed local release verification and is ready for beta
+staging; production remains 0.6.2. Its source/security review
+closed eight evidence-backed gaps: terminal-safe complete command actions, TUI
+protected-Trash filtering before approval, fail-closed present Swift aliases,
+capability-scoped global flags (including command-only `--shred` rejection),
+implicit-TUI JSON rejection, exact release-version declarations, and
+category-specific apply authorization for Xcode/toolchain direct children.
 
-The 0.6.2 local release candidate binds Docker cleanup to one validated local
-Unix-socket endpoint, replaces aggregate simulator deletion with exact rechecked
-UDIDs, extends same-device/nested-Git preflight to Trash directories, and makes
-metadata and liveness uncertainty fail closed. Full current/MSRV tests, strict
-Clippy, structural controls, both audits, five 60-second fuzz targets, arm64,
-PTY, secret, workflow/shell, video, browser, P3 autoreview, and independent
-verification passed. It is not staged or promoted yet; production remains 0.6.1.
+On a controlled `node_modules` corpus, devtrim and Mole 1.52.0 both found the
+same 20 stale trees and excluded all 5 recent controls. Under high machine load,
+15 alternating samples averaged 0.481 s for devtrim and 5.800 s for Mole; this
+is a narrow scanner-path comparison, not a whole-product performance claim.
 
 ## Decisions
 
@@ -57,6 +52,13 @@ verification passed. It is not staged or promoted yet; production remains 0.6.1.
   closed before they can lower a danger score or authorize mutation.
 - The TUI is a presentation adapter over existing `Op` owners. A matching typed
   approval is required at apply time, and CLI bypass flags are rejected.
+- Global mutation flags are capability-scoped and rejected when the selected
+  command cannot honor them; command-only Docker and simulator cleanup reject
+  filesystem-only `--shred`, so flags never become silent no-ops.
+- Xcode and Swift toolchain apply reassert the scanner's exact direct-child
+  category shape before passing a target to the shared deletion sink.
+- Terminal escaping happens at the final human rendering sink for the complete
+  action or message; structured JSON retains the original value.
 - Ratatui 0.30.2/Crossterm 0.29 require MSRV 1.88. Default Ratatui features,
   including its optional layout cache, stay off; the graph resolves patched
   `lru 0.18.2` instead of affected `0.12.5`.

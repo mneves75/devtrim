@@ -21,6 +21,7 @@ default features disabled; do not enable its optional layout cache without a new
 - Findings use typed actions. Confirmation flags may bypass a gate but MUST NOT add or widen actions.
 - Apply consumes only exact previewed findings; never rescan for deletion targets after confirmation.
 - Every human apply prints the data-loss notice; every interactive mutation confirms regardless of danger. `-y` skips y/N only; `--yolo` skips all interactive prompts. Operation-specific acknowledgments such as `trash-empty --confirm=<gb>` still apply; JSON remains machine-only.
+- Global flags are capability-scoped: commands reject mutation flags they cannot honor. `scan --shred` may change previewed actions; Docker and simulator cleanup reject `--shred` because they execute typed commands rather than filesystem deletion actions; `trash-empty` accepts apply/confirmation flags but rejects `--shred`; report-only commands accept no mutation flags.
 - Unknown activity, ownership, symlink resolution, owner-command status, configuration fields, or size measurement fails closed.
 - Filesystem findings retain an exact internal `PathBuf`; serialized display text is never parsed back into deletion authority.
 - Only `safety::validate_path_for_deletion` creates `VerifiedTarget`; only the private sink in `src/ops/mod.rs` consumes it. Raw filesystem deletion anywhere else is a blocking ast-grep violation.
@@ -29,6 +30,7 @@ default features disabled; do not enable its optional layout cache without a new
 - Never add shell-string execution. Process execution uses a fixed program; a dynamic argument is allowed only when a closed typed authority validates and carries it.
 - Only `Finding::command` creates command authority from the closed `CommandAuthority` enum; apply verifies that capability, its validated arguments, and its serialized `Action` before execution. Docker authority binds an absolute local Unix-socket endpoint; simulator authority binds one exact UDID.
 - Docker volumes are never pruned. Xcode Archives are never pruned.
+- Xcode and Swift toolchain apply must reassert the scanner's exact direct-child target shape before calling the shared deletion sink.
 - Every directory deletion preflights device boundaries and nested Git repository/worktree markers before either Trash or permanent mutation.
 - `artifacts` matches only its closed corroborated-name list plus valid `CACHEDIR.TAG` signatures; ambiguous names (`build`, `dist`, `out`, `vendor`, `bin`, `obj`, `coverage`) are never added. Corroboration is re-verified at apply.
 - Every deletion and typed command writes a write-ahead journal record (attempt before, result after) via `src/journal.rs`, synced per record; an unwritable journal blocks apply. Rotation is shift-and-rename at journal-open time only, never truncation, never mid-apply. `history` is read-only, reads rotated files, and emits its own single JSON document.
@@ -44,6 +46,7 @@ default features disabled; do not enable its optional layout cache without a new
 - User-facing strings are English; size values are estimated logical bytes.
 - `src/tui.rs` is a presentation adapter over existing `Op` scan/apply owners. It must not duplicate scanners, deletion logic, or danger policy. TUI apply requires a matching typed approval; CLI bypass flags never pre-authorize it.
 - Scanner diagnostics go through `Ctx`: explicit CLI commands may render stderr, while the TUI captures, escapes, and retains them in its own state.
+- Complete human-facing actions, findings, errors, and notes are terminal-escaped at their final rendering sink; JSON data remains unmodified.
 - Bare `devtrim` opens the TUI only with interactive stdin and stdout. Non-TTY automation uses explicit subcommands; `--json` remains exactly one document.
 - Keep CSP metadata intact in shipped HTML. Landing page is `index.html` + `styles.css`; demo media lives in `media/`.
 - Code review reads `CODING_STANDARDS.md`. Every bullet in this section is a hard standard, citable as `CLAUDE.md § Conventions`.
