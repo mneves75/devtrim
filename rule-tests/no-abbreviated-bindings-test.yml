@@ -1,0 +1,32 @@
+id: no-abbreviated-bindings
+valid:
+  - '.map_err(|error| anyhow!("cannot read {error}"))?;'
+  - |
+      match outcome {
+          Ok(findings) => findings,
+          Err(error) => return Err(error),
+      }
+  - let metadata = std::fs::metadata(path)?;
+  - '.map(|finding| finding.size_bytes)'
+  - if let Some(identity) = finding.identity() { }
+  - 'fn scan(&self, context: &Ctx) -> Result<Vec<Finding>> { }'
+  - let (destination, source) = pair;
+  - let total = compute(idx_of(value));
+invalid:
+  - '.map_err(|e| anyhow!("cannot read {e}"))?;'
+  - '.map_err(|err| err)?;'
+  - '.map_err(|mut err| err)?;'
+  - '.for_each(|&e| drop(e))'
+  - '.map(|(val, _)| val)'
+  - |
+      match outcome {
+          Ok(value) => value,
+          Err(e) => return Err(e),
+      }
+  - if let Some(md) = metadata { }
+  - if let Some(ref res) = outcome { }
+  - '.map(|val| val + 1)'
+  - 'fn probe(e: Error) -> Result<()> { }'
+  - let val = value;
+  - let mut tmp = staging_path;
+  - let (err, value) = outcome;

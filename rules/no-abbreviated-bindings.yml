@@ -1,0 +1,32 @@
+id: no-abbreviated-bindings
+language: Rust
+severity: error
+message: 'Spell the binding out: error, metadata, destination, result, value, index, temporary.'
+note: This codebase names every binding in full; an abbreviation reads as a different codebase.
+files:
+  - src/**/*.rs
+rule:
+  all:
+    - kind: identifier
+    - regex: ^(e|err|md|dst|tmp|val|idx|res|ret|cnt|num|arr|obj|str)$
+    - any:
+        - inside:
+            kind: closure_parameters
+            stopBy: end
+        - inside:
+            kind: tuple_struct_pattern
+            stopBy: end
+        - inside:
+            kind: tuple_pattern
+            stopBy: end
+        - inside:
+            kind: struct_pattern
+            stopBy: end
+        - inside:
+            kind: parameter
+            field: pattern
+            stopBy: end
+        - inside:
+            kind: let_declaration
+            field: pattern
+            stopBy: end

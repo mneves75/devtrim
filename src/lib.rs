@@ -2,6 +2,16 @@
 //!
 //! Measure first, classify by risk, and apply only the reviewed plan.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "test assertions fail by panicking"
+    )
+)]
+
 pub mod app;
 mod cli;
 mod journal;

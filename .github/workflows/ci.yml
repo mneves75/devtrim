@@ -48,7 +48,7 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      - name: Deletion-boundary lint
+      - name: Structural lint
         run: |
           cargo install ast-grep --locked --version 0.45.0
           ast-grep test --skip-snapshot-tests

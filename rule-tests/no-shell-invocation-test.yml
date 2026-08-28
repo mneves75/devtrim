@@ -1,0 +1,25 @@
+id: no-shell-invocation
+valid:
+  - Command::new("pgrep").args(["-x", pattern]).output()?;
+  - Command::new("docker").args(args).output()?;
+  - std::process::Command::new(program).args(args).output()?;
+  - Command::new("lsof").args(["-a", "-p", &pid_list, "-d", "cwd"]).output()?;
+  - Command::new("xcrun").arg("simctl").args(args).output()?;
+  - Command::new(git).arg("-C").args(["-c", "core.hooksPath=/dev/null"]).output()?;
+  - Command::new("shasum").arg(path).output()?;
+  - Command::new("/usr/bin/xcrun").output()?;
+invalid:
+  - Command::new("sh").arg("-c").arg(script).output()?;
+  - Command::new("bash");
+  - Command::new("zsh");
+  - Command::new("dash");
+  - Command::new("fish");
+  - Command::new("/bin/sh");
+  - Command::new("/bin/bash");
+  - Command::new("/usr/bin/bash");
+  - Command::new("/usr/bin/zsh");
+  - Command::new("/opt/homebrew/bin/fish");
+  - Command::new("/usr/bin/env");
+  - Command::new("xargs");
+  - std::process::Command::new("zsh");
+  - std::process::Command::new("/bin/sh").arg("-c").arg(script);

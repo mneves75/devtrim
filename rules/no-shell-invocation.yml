@@ -1,0 +1,17 @@
+id: no-shell-invocation
+language: Rust
+severity: error
+message: Never spawn a shell; run the target program directly with a fixed argv.
+note: >-
+  A shell interprets its argument, so any path or name reaching it becomes
+  executable text. This rule bans the shell itself; the fixed-argv half of the
+  convention is carried by the closed CommandAuthority enum in src/report.rs.
+files:
+  - src/**/*.rs
+rule:
+  any:
+    - pattern: Command::new($PROGRAM)
+    - pattern: $MODULE::Command::new($PROGRAM)
+constraints:
+  PROGRAM:
+    regex: ^"(/usr/local/bin/|/usr/bin/|/bin/|/opt/homebrew/bin/|/sbin/)?(sh|bash|zsh|dash|ksh|fish|csh|tcsh|ash|busybox|env|xargs|eval)"$

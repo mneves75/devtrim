@@ -298,6 +298,10 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             }
         }
         cli::Command::Clean { target } => clean(target, &cli, &ctx),
+        #[allow(
+            clippy::unreachable,
+            reason = "context-free commands return earlier in run(), so no configuration failure can reach this arm"
+        )]
         cli::Command::History { .. } | cli::Command::Completions { .. } | cli::Command::Manpage => {
             unreachable!("context-free commands are dispatched before configuration loads")
         }
