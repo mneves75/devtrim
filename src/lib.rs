@@ -20,6 +20,7 @@ mod largest;
 mod ops;
 mod report;
 mod safety;
+mod status;
 mod theme;
 mod tui;
 

@@ -46,6 +46,8 @@ pub enum Command {
     Tui,
     /// Read-only report of every reclaimable category with sizes and risk
     Scan,
+    /// Read-only machine vitals: load, memory, disk, battery, thermals, processes
+    Status,
     /// Explore disk usage interactively, largest first; never deletes anything
     Analyze {
         /// Directory to start from (default: your home directory)
