@@ -53,6 +53,7 @@ cp target/release/devtrim /usr/local/bin/
 - **Volumes are sacred.** Docker volumes are never pruned.
 - **Archives are sacred.** Xcode Archives are visible but never actionable.
 - **Capability-scoped flags.** Mutation flags are rejected when a command cannot use them; they never become silent no-ops. `scan --shred` remains meaningful because it changes the previewed action, while report-only commands reject it.
+- **Color is never the only signal.** The terminal interface styles through semantic tokens and honors `NO_COLOR`, degrading each token to a modifier that preserves the same distinction; the danger ladder stays ordered even with color stripped. Colors are named ANSI, so they resolve through your own terminal theme instead of a fixed palette that matches nowhere.
 - **Agent-friendly.** Every `--json` invocation emits exactly one JSON document and failures return nonzero.
 
 ## Data-loss risk, warranty, and macOS permissions
@@ -84,6 +85,7 @@ devtrim clean simulators --apply -y       # delete exact previewed unavailable d
 devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData children
 devtrim clean docker --apply -y           # local daemon images + build cache; never volumes
 devtrim clean toolchains --apply -y       # only unreferenced swift.org toolchains
+devtrim clean installers --apply -y       # stale installer archives in Downloads/Desktop
 devtrim clean leftovers                   # report-only hints; never deletes worktrees
 devtrim icloud                            # large iCloud Drive files and local allocation
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
@@ -111,6 +113,23 @@ whose last commit is conclusively stale. Ambiguous names such as `build`,
 `dist`, `vendor`, `bin`, and `obj` are deliberately never matched, and the
 scanner/apply owner refuse artifacts below every ASCII-case variant of
 `node_modules`.
+
+`clean installers` considers only direct children of `Downloads` and `Desktop`
+whose extension is on a closed list (`dmg`, `pkg`, `mpkg`, `iso`, `xip`) and
+which have been untouched for longer than the configured active window.
+Scanning is deliberately non-recursive, because those directories routinely hold
+extracted project trees whose bundled installers are not loose clutter. Formats
+that can carry source or user data, such as `zip` and `tar`, are never matched.
+Apply re-checks the whole shape and refuses symlinks and any target outside
+those two directories.
+
+`clean docker` also reports the host-side VM disk image for OrbStack and Docker
+Desktop, as a report-only finding that is never actionable. `docker system df`
+measures space *inside* the guest, while the host pays for a sparse image that
+pruning does not shrink — the runtime compacts it on its own schedule, in
+practice after the VM stops. That finding is measured in allocated blocks rather
+than logical length, and it is shown even when the daemon is not running, which
+is the one state where the cost is invisible to `docker` and still present.
 
 `trash-empty` previews each current top-level Trash item as an exact target.
 Apply consumes only that set; anything moved to Trash after preview remains.

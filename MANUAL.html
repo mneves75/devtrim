@@ -533,7 +533,11 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">docker</span><span class="cmd-desc">unused images + build cache</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p><code>image prune -a</code> + <code>builder prune</code> on the exact previewed local Unix-socket endpoint. Remote Docker contexts are refused. <strong>Volumes are never touched</strong> — a volume can hold your live database. OrbStack users: restart the VM afterwards to trigger TRIM compaction.</p></div>
+    <div class="card-body"><p><code>image prune -a</code> + <code>builder prune</code> on the exact previewed local Unix-socket endpoint. Remote Docker contexts are refused. <strong>Volumes are never touched</strong> — a volume can hold your live database. The scan also reports the host-side VM disk image as a non-actionable finding measured in allocated blocks: <code>docker system df</code> measures inside the guest, while that sparse image is what the host actually pays for, and pruning does not shrink it. Restart the VM to trigger compaction. The disclosure appears even when the daemon is stopped, which is the one state where the cost is invisible to <code>docker</code> and still present.</p></div>
+  </details>
+  <details class="card">
+    <summary><span class="cmd-name">installers</span><span class="cmd-desc">stale downloaded installer archives</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
+    <div class="card-body"><p>Direct children of <code>Downloads</code> and <code>Desktop</code> whose extension is on a closed list (<code>dmg</code>, <code>pkg</code>, <code>mpkg</code>, <code>iso</code>, <code>xip</code>) and untouched for longer than the active window. Scanning never recurses, so a bundled installer inside an extracted project tree is left alone, and formats that can carry source or user data are never matched. Apply refuses symlinks and any target outside those two directories. <strong>Not a cache</strong> — nothing re-downloads these automatically.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">leftovers</span><span class="cmd-desc">report-only review hints</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>INFO</span></summary>
