@@ -137,6 +137,12 @@ fn read_only_commands_reject_mutation_flags() {
     for (args, operation) in [
         (vec!["scan", "--apply", "--json"], "scan"),
         (vec!["largest", "--shred", "--json"], "largest"),
+        // analyze is a read-only explorer: it must reject every mutation flag
+        // rather than accept one as a silent no-op.
+        (vec!["analyze", "--apply", "--json"], "analyze"),
+        (vec!["analyze", "--shred", "--json"], "analyze"),
+        (vec!["analyze", "--yolo", "--json"], "analyze"),
+        (vec!["analyze", "-y", "--json"], "analyze"),
         (vec!["icloud", "--yolo", "--json"], "icloud"),
         (vec!["history", "--apply", "--json"], "history"),
         (

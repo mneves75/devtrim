@@ -5,6 +5,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ## [Unreleased]
 
 ### Added
+- `devtrim analyze [path]` is an interactive, read-only disk explorer: it measures each child on a worker thread and streams results in as they land, so a directory that takes minutes to size never freezes the interface, and leaving a directory cancels its in-flight walk. Symbolic links are reported at their own size rather than followed, a different device is never entered, and unreadable entries are disclosed as `(partial)` lower bounds. `--json` emits one document; every mutation flag is rejected
 - The terminal interface honors `NO_COLOR`, degrading every style to a modifier that preserves the same distinction — the danger ladder stays ordered as dim, plain, bold, bold+reversed — so the interface remains usable with color stripped entirely
 - `?` opens a full keybinding reference over any screen, deliberately except the confirmation prompt, where a second overlay would obscure the plan being approved; the footer keeps only the few keys that apply to the current screen
 - `clean installers` reclaims downloaded installer archives (`dmg`, `pkg`, `mpkg`, `iso`, `xip`) left as direct children of `Downloads` and `Desktop` after the configured active window, refusing symlinks, nested copies inside extracted project trees, and any target outside those two directories at apply time

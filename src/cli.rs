@@ -46,6 +46,11 @@ pub enum Command {
     Tui,
     /// Read-only report of every reclaimable category with sizes and risk
     Scan,
+    /// Explore disk usage interactively, largest first; never deletes anything
+    Analyze {
+        /// Directory to start from (default: your home directory)
+        path: Option<String>,
+    },
     /// Show the largest directories one and two levels below scan roots
     Largest {
         /// Number of entries to show (clamped 1..=100)
