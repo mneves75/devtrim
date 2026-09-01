@@ -108,7 +108,9 @@ pub(crate) enum TargetAuthority {
 pub struct Finding {
     pub label: String,
     pub path: Option<String>,
-    /// Estimated logical bytes. APFS clones and sparse files can differ on disk.
+    /// Estimated logical bytes by default; APFS clones and sparse files can
+    /// differ on disk. A finding whose subject is inherently sparse may report
+    /// allocated bytes instead, and must disclose that basis in its `note`.
     pub size_bytes: u64,
     pub note: String,
     /// 1-10

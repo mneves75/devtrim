@@ -5,11 +5,35 @@ use std::io;
 use std::path::{Component, Path};
 use std::process::{Command, Output};
 
-use super::{ApplyOutcome, Finding, Op};
+use super::{Action, ApplyOutcome, Finding, Op};
 use crate::report::CommandAuthority;
 use crate::safety::{Ctx, escalate};
 
 pub struct Docker;
+
+/// Host-side virtual disk images for the supported local Docker runtimes,
+/// relative to the user's home directory.
+///
+/// `docker system df` reports space *inside* the guest filesystem. The host
+/// pays for these files instead, and pruning inside the VM never shrinks them:
+/// the runtime compacts its own image on its own schedule, in practice after
+/// the VM stops. Reporting only the guest number understates the host cost and
+/// hides the fact that reclaiming it needs a separate step, so devtrim
+/// discloses the image itself.
+const VM_DISK_IMAGES: &[(&str, &str)] = &[
+    (
+        "OrbStack",
+        "Library/Group Containers/HUAQ24HBR6.dev.orbstack/data/data.img.raw",
+    ),
+    (
+        "Docker Desktop",
+        "Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw",
+    ),
+    (
+        "Docker Desktop",
+        "Library/Containers/com.docker.docker/Data/vms/0/Docker.raw",
+    ),
+];
 
 #[derive(serde::Deserialize)]
 struct DockerContext {
@@ -96,6 +120,65 @@ fn is_local_docker_host(host: &str) -> bool {
             .all(|component| !matches!(component, Component::CurDir | Component::ParentDir))
 }
 
+/// Blocks actually allocated on the host, not the logical length.
+///
+/// A VM disk image is sparse, so the two differ by orders of magnitude: a real
+/// OrbStack image measured 926 GB logical against 35 GB allocated. The crate's
+/// `dir_size` convention is documented as logical bytes, which is right for
+/// ordinary directories and wrong by ~26x here, so this measurement is separate
+/// and deliberate. Returns `None` when the path is absent or is not a regular
+/// file; a stat failure for a path that does exist fails closed.
+fn allocated_bytes(path: &Path) -> Result<Option<u64>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
+        }
+    };
+    if !metadata.file_type().is_file() {
+        return Ok(None);
+    }
+    Ok(Some(metadata.blocks().saturating_mul(512)))
+}
+
+/// Report-only disclosure of the host cost of each present runtime disk image.
+///
+/// These findings are never actionable: compacting or deleting a live VM image
+/// is the runtime's job, and doing it from here would destroy every container
+/// and volume on the machine.
+fn vm_disk_findings(home: &Path) -> Result<Vec<Finding>> {
+    let mut findings = Vec::new();
+    for (runtime, relative) in VM_DISK_IMAGES {
+        let path = home.join(relative);
+        let Some(allocated) = allocated_bytes(&path)? else {
+            continue;
+        };
+        if allocated == 0 {
+            continue;
+        }
+        let logical = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("cannot inspect {}", path.display()))?
+            .len();
+        findings.push(Finding::new(
+            format!("{runtime} VM disk image"),
+            Some(path),
+            allocated,
+            format!(
+                "EXCLUDED: host-side virtual disk for the local Docker runtime, listed for visibility only. \
+                 Shown size is allocated blocks; the file is sparse and reports {logical} logical bytes. \
+                 Pruning images or build cache frees space inside the VM but does not shrink this file: \
+                 {runtime} compacts it on its own schedule, in practice after the VM stops"
+            ),
+            0,
+            Action::None,
+        ));
+    }
+    Ok(findings)
+}
+
 fn parse_system_df(output: &str, host: &str) -> Result<Vec<Finding>> {
     if output.trim().is_empty() {
         anyhow::bail!("docker system df returned empty output");
@@ -152,24 +235,41 @@ impl Op for Docker {
         "docker"
     }
 
-    fn scan(&self, _ctx: &Ctx) -> Result<Vec<Finding>> {
+    fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
+        // The host image is disclosed even when the daemon is unreachable. A
+        // stopped VM is precisely when its disk image is invisible to `docker`
+        // and still occupying the host, so making this disclosure depend on a
+        // live daemon would hide the cost in the one state that matters most.
+        let mut findings = vm_disk_findings(&ctx.home)?;
+        // A refused endpoint or a malformed response stays a hard error: those
+        // are the fail-closed boundaries that must never degrade to a warning.
+        // Only a daemon that is simply not running is treated as normal, and
+        // that is exactly the state in which the host image matters most.
         let Some(host) = docker_host()? else {
-            return Ok(Vec::new());
+            return Ok(findings);
         };
-        let version = docker(&host, &["version"])?;
-        if version.trim().is_empty() {
-            anyhow::bail!("`docker version` returned empty output");
+        match docker(&host, &["version"]) {
+            Ok(version) if version.trim().is_empty() => {
+                anyhow::bail!("`docker version` returned empty output")
+            }
+            Ok(_) => {
+                let output = docker(
+                    &host,
+                    &[
+                        "system",
+                        "df",
+                        "--format",
+                        "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}",
+                    ],
+                )?;
+                findings.extend(parse_system_df(&output, &host)?);
+            }
+            Err(error) => ctx.diagnostic(
+                "warn",
+                format!("Docker daemon unreachable, no image or build-cache actions: {error:#}"),
+            ),
         }
-        let output = docker(
-            &host,
-            &[
-                "system",
-                "df",
-                "--format",
-                "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}",
-            ],
-        )?;
-        parse_system_df(&output, &host)
+        Ok(findings)
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
@@ -281,6 +381,82 @@ mod tests {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
         }
+    }
+
+    /// Positive control for the measurement basis itself: a purely logical
+    /// measurement passes every other assertion here, so without this the fix
+    /// could regress to `len()` silently.
+    #[test]
+    fn allocated_bytes_measures_allocation_not_logical_length() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-docker-sparse")
+            .tempdir()
+            .unwrap();
+        let path = root.path().join("data.img.raw");
+        let file = std::fs::File::create(&path).unwrap();
+        // A hole, not a write: logical length grows to 1 GiB while almost no
+        // blocks are allocated. This is the exact shape of a VM disk image.
+        file.set_len(1024 * 1024 * 1024).unwrap();
+        file.sync_all().unwrap();
+
+        let logical = std::fs::symlink_metadata(&path).unwrap().len();
+        let allocated = allocated_bytes(&path).unwrap().unwrap();
+
+        assert_eq!(logical, 1024 * 1024 * 1024);
+        assert!(
+            allocated < logical / 100,
+            "allocated {allocated} should be far below logical {logical}"
+        );
+    }
+
+    #[test]
+    fn allocated_bytes_ignores_missing_paths_and_directories() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-docker-absent")
+            .tempdir()
+            .unwrap();
+        assert_eq!(
+            allocated_bytes(&root.path().join("missing.raw")).unwrap(),
+            None
+        );
+        assert_eq!(allocated_bytes(root.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn vm_disk_image_is_disclosed_but_never_actionable() {
+        use std::io::Write;
+
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-docker-home")
+            .tempdir()
+            .unwrap();
+        let image = home.path().join(VM_DISK_IMAGES[0].1);
+        std::fs::create_dir_all(image.parent().unwrap()).unwrap();
+        let mut file = std::fs::File::create(&image).unwrap();
+        file.write_all(b"x").unwrap();
+        file.set_len(64 * 1024 * 1024).unwrap();
+        file.sync_all().unwrap();
+
+        let findings = vm_disk_findings(home.path()).unwrap();
+        assert_eq!(findings.len(), 1);
+        let finding = &findings[0];
+        assert_eq!(finding.action, Action::None);
+        assert!(!finding.action.is_actionable());
+        assert_eq!(finding.danger, 0);
+        assert!(
+            finding.note.contains("does not shrink this file"),
+            "note must disclose that pruning does not reclaim the host image: {}",
+            finding.note
+        );
+    }
+
+    #[test]
+    fn absent_vm_disk_image_yields_no_finding() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-docker-empty-home")
+            .tempdir()
+            .unwrap();
+        assert!(vm_disk_findings(home.path()).unwrap().is_empty());
     }
 
     #[test]

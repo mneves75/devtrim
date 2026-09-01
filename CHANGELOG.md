@@ -10,6 +10,8 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - Ordinary PR/main CI now installs checksum-verified arm64 Gitleaks 8.30.1 and TruffleHog 3.97.1, proves Gitleaks detects a non-allowlisted synthetic PAT, then runs the same full-history secret scans that release gates already run
 
 ### Fixed
+- `clean docker` under-reported reclaimable space by roughly 7x because `docker system df` measures only inside the guest: the host-side OrbStack/Docker Desktop VM disk image is now disclosed as a report-only finding measured in allocated blocks, with a note stating that pruning frees guest space but never shrinks that sparse file until the runtime compacts it
+- The Docker VM disk image is now reported even when the daemon is not running, which is the one state where it is invisible to `docker` and still occupying the host; a refused remote endpoint and a malformed `docker` response remain hard errors
 - Artifact scanning and apply now both refuse targets below every ASCII-case variant of `node_modules`, closing the sibling dependency-namespace deletion path with an end-to-end surviving-sentinel regression
 - `trash-empty` now warns and leaves a direct `.git` case variant in place without letting that protected item block other exact previewed Trash children
 - Permanent and Trash preflight reuse each directory listing for Git-marker checks instead of enumerating every directory twice, while retaining the final mutation-time recheck
