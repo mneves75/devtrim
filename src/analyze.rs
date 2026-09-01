@@ -309,6 +309,25 @@ impl Explorer {
             return;
         }
         let path = entry.path.clone();
+        // `is_dir` was decided when the entry was measured. Re-check it here,
+        // immediately before entering, because measurement calls `read_dir`,
+        // which follows symlinks: a path swapped for a link after the listing
+        // would otherwise be walked outside this tree.
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => {
+                self.errors.push(format!(
+                    "refusing to enter {}: it is no longer a directory",
+                    path.display()
+                ));
+                return;
+            }
+            Err(error) => {
+                self.errors
+                    .push(format!("cannot enter {}: {error}", path.display()));
+                return;
+            }
+        }
         self.stack.push(path);
         self.begin_scan();
     }
@@ -758,6 +777,50 @@ mod tests {
         }];
         explorer.descend();
         assert_eq!(explorer.current(), Path::new("/tmp"));
+    }
+
+    /// `is_dir` is decided at measurement time; measurement itself uses
+    /// `read_dir`, which follows links. A path swapped for a symlink between
+    /// the listing and the keypress must be refused, not walked.
+    #[test]
+    fn descend_refuses_an_entry_swapped_for_a_symlink_after_listing() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-analyze-swap")
+            .tempdir()
+            .unwrap();
+        let outside = tempfile::Builder::new()
+            .prefix("devtrim-analyze-swap-target")
+            .tempdir()
+            .unwrap();
+        let real = root.path().join("child");
+        std::fs::create_dir_all(&real).unwrap();
+
+        let mut explorer = Explorer::new(root.path().to_path_buf(), theme());
+        explorer.entries = vec![Entry {
+            path: real.clone(),
+            size: 0,
+            is_dir: true,
+            partial: false,
+        }];
+
+        // The listing said "directory"; the filesystem now says "symlink".
+        std::fs::remove_dir(&real).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &real).unwrap();
+
+        explorer.descend();
+        assert_eq!(
+            explorer.current(),
+            root.path(),
+            "a swapped symlink must not be entered"
+        );
+        assert!(
+            explorer
+                .errors
+                .iter()
+                .any(|error| error.contains("refusing to enter")),
+            "the refusal must be visible: {:?}",
+            explorer.errors
+        );
     }
 
     #[test]
