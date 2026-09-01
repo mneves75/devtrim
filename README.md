@@ -91,6 +91,9 @@ devtrim icloud                            # large iCloud Drive files and local a
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
 devtrim trash-empty --confirm=14 --apply  # perform the verified purge
 devtrim history                           # recent journaled applies; --json for one document
+devtrim analyze                           # interactive read-only disk explorer (never deletes)
+devtrim analyze ~/Library --json          # one-shot breakdown of a directory
+devtrim status                            # read-only machine vitals and a health score
 devtrim largest --top 20                  # read-only: biggest directories under scan roots
 devtrim completions zsh                   # shell completion script (bash | zsh | fish)
 devtrim manpage                           # man page in roff format
@@ -122,6 +125,21 @@ extracted project trees whose bundled installers are not loose clutter. Formats
 that can carry source or user data, such as `zip` and `tar`, are never matched.
 Apply re-checks the whole shape and refuses symlinks and any target outside
 those two directories.
+
+`analyze` is navigation, never deletion, and that boundary is deliberate. Every
+cleanup category binds deletion to structural corroboration — a `target` beside
+`Cargo.toml`, a `.venv` containing `pyvenv.cfg` — and an explorer that deleted
+whatever the cursor was on would swap that evidence for the operator's aim. It
+measures on a worker thread and streams results in, so a directory that takes
+minutes to size never freezes the screen; leaving a directory cancels its walk.
+Symlinks are reported at their own size rather than followed, a different device
+is never entered, and anything unreadable is disclosed as a `(partial)` lower
+bound.
+
+`status` reads machine vitals through fixed-argv system tools and reports a
+health score that **names every input it could not read** rather than scoring
+over the gap. Memory used is stated as `active + wired + compressed`: counting
+macOS's reclaimable inactive pages as used reports a healthy machine at 96%.
 
 `clean docker` also reports the host-side VM disk image for OrbStack and Docker
 Desktop, as a report-only finding that is never actionable. `docker system df`
