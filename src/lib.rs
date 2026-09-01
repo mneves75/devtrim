@@ -19,6 +19,7 @@ mod largest;
 mod ops;
 mod report;
 mod safety;
+mod theme;
 mod tui;
 
 #[cfg(fuzzing)]

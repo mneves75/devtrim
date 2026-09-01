@@ -5,9 +5,12 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ## [Unreleased]
 
 ### Added
+- The terminal interface honors `NO_COLOR`, degrading every style to a modifier that preserves the same distinction — the danger ladder stays ordered as dim, plain, bold, bold+reversed — so the interface remains usable with color stripped entirely
+- `?` opens a full keybinding reference over any screen, deliberately except the confirmation prompt, where a second overlay would obscure the plan being approved; the footer keeps only the few keys that apply to the current screen
 - `clean installers` reclaims downloaded installer archives (`dmg`, `pkg`, `mpkg`, `iso`, `xip`) left as direct children of `Downloads` and `Desktop` after the configured active window, refusing symlinks, nested copies inside extracted project trees, and any target outside those two directories at apply time
 
 ### Changed
+- Terminal styling moved from 30 inline color literals to semantic tokens in `src/theme.rs`, so call sites name what a span means and one module decides how it looks; colors remain named ANSI rather than RGB so they keep resolving through the user's own terminal theme
 - Every tracked `*.sh` plus the pre-commit hook now pass `shellcheck` before local commits and in CI through one fail-closed, NUL-safe helper; CI installs the official ShellCheck 0.11.0 arm64 asset only after checksum verification
 - CI and non-Intel release jobs move from the deprecated `macos-14` image to the supported `macos-15` arm64 image with exact runner-policy checks; the deterministic x86 release gate remains on `macos-15-intel`
 - Ordinary PR/main CI now installs checksum-verified arm64 Gitleaks 8.30.1 and TruffleHog 3.97.1, proves Gitleaks detects a non-allowlisted synthetic PAT, then runs the same full-history secret scans that release gates already run

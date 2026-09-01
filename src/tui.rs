@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
@@ -15,6 +15,7 @@ use crate::cli::Target;
 use crate::ops::{self, Action, ApplyOutcome, Finding};
 use crate::report::{self, Summary};
 use crate::safety::{self, ConfirmationRequirement, Ctx};
+use crate::theme::{Theme, Token, danger_token};
 
 const MIN_WIDTH: u16 = 64;
 const MIN_HEIGHT: u16 = 18;
@@ -174,6 +175,11 @@ struct App {
     input: String,
     status: String,
     failed: bool,
+    /// Resolved once at construction so every frame renders from the same
+    /// decision rather than re-reading the environment per widget.
+    theme: Theme,
+    /// Whether the full keybinding reference is open over the current screen.
+    help: bool,
 }
 
 impl Default for App {
@@ -192,6 +198,8 @@ impl Default for App {
             input: String::new(),
             status: "Preview first. Nothing changes until you explicitly approve.".into(),
             failed: false,
+            theme: Theme::from_env(),
+            help: false,
         }
     }
 }
@@ -313,6 +321,26 @@ impl App {
         }
         if key.modifiers.contains(event::KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Intent::Quit;
+        }
+        // The help overlay is deliberately unavailable on the confirmation
+        // screen: that screen demands an exact typed acknowledgment, and
+        // stacking a second overlay over it would obscure the plan being
+        // approved. Everywhere else `?` opens it and any of `?`/Esc/q closes it
+        // without reaching the screen underneath.
+        if self.screen != Screen::Confirm {
+            if self.help {
+                if matches!(
+                    key.code,
+                    KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q')
+                ) {
+                    self.help = false;
+                }
+                return Intent::None;
+            }
+            if key.code == KeyCode::Char('?') {
+                self.help = true;
+                return Intent::None;
+            }
         }
         match self.screen {
             Screen::Menu => self.handle_menu_key(key.code),
@@ -686,9 +714,7 @@ fn render(frame: &mut Frame, app: &App) {
         let message = Paragraph::new(Text::from(vec![
             Line::styled(
                 "devtrim — terminal too small",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+                app.theme.bold(Token::Warning),
             ),
             Line::raw(format!(
                 "Need at least {MIN_WIDTH}×{MIN_HEIGHT}; current {}×{}.",
@@ -720,20 +746,78 @@ fn render(frame: &mut Frame, app: &App) {
     if app.screen == Screen::Confirm {
         render_confirmation(frame, area, app);
     }
+    if app.help {
+        render_help(frame, area, app);
+    }
 }
+
+/// Complete keybinding reference, the second tier of progressive disclosure
+/// behind the footer's few contextual keys.
+fn render_help(frame: &mut Frame, area: Rect, app: &App) {
+    let popup = confirmation_rect(area);
+    frame.render_widget(Clear, popup);
+    let mut lines = vec![
+        Line::styled("Keys", app.theme.bold(Token::Accent)),
+        Line::raw(""),
+    ];
+    for (group, keys) in HELP_KEYS {
+        lines.push(Line::styled(
+            *group,
+            app.theme.style(Token::AccentSecondary),
+        ));
+        for (key, description) in *keys {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {key:<12}"), app.theme.style(Token::Muted)),
+                Span::raw(*description),
+            ]));
+        }
+        lines.push(Line::raw(""));
+    }
+    lines.push(Line::styled(
+        "Nothing is applied without an explicit, separate approval.",
+        app.theme.style(Token::Warning),
+    ));
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(" Help · ? or Esc closes ")),
+        popup,
+    );
+}
+
+/// Grouped by the layer an operator reaches for: universal movement first,
+/// then the actions that change what happens.
+type HelpGroup = (&'static str, &'static [(&'static str, &'static str)]);
+const HELP_KEYS: &[HelpGroup] = &[
+    (
+        "Move",
+        &[
+            ("↑/↓, k/j", "navigate lists and scroll output"),
+            ("Enter", "open the selected operation"),
+            ("b, Esc", "back to the menu"),
+        ],
+    ),
+    (
+        "Act",
+        &[
+            ("a", "apply the exact previewed plan"),
+            ("s", "toggle Trash-first and permanent deletion"),
+            ("r", "rescan the current operation"),
+        ],
+    ),
+    (
+        "Session",
+        &[("?", "open or close this reference"), ("q, Ctrl+C", "quit")],
+    ),
+];
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     let operation = app.operation.map_or("choose an operation", Operation::name);
     let line = Line::from(vec![
-        Span::styled(
-            " devtrim ",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(" devtrim ", app.theme.bold(Token::Accent)),
         Span::styled(
             format!("v{}  ", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(Color::DarkGray),
+            app.theme.style(Token::Muted),
         ),
         Span::raw(operation),
     ]);
@@ -755,19 +839,16 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             "PREVIEW"
         };
         ListItem::new(Line::from(vec![
-            Span::styled(
-                format!(" {} ", item.key),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(format!(" {} ", item.key), app.theme.style(Token::Muted)),
             Span::raw(item.label),
             Span::styled(
                 format!("  {marker}"),
-                Style::default().fg(if marker == "PERMANENT" {
-                    Color::Red
+                app.theme.style(if marker == "PERMANENT" {
+                    Token::Critical
                 } else if marker == "READ-ONLY" {
-                    Color::Blue
+                    Token::Info
                 } else {
-                    Color::Green
+                    Token::Success
                 }),
             ),
         ]))
@@ -775,23 +856,14 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     let list = List::new(items)
         .block(Block::bordered().title(" Operations "))
         .highlight_symbol("▶ ")
-        .highlight_style(
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        );
+        .highlight_style(app.theme.bold(Token::Accent));
     let mut state = ListState::default();
     state.select(Some(app.selected));
     frame.render_stateful_widget(list, menu_area, &mut state);
 
     let selected = &MENU[app.selected];
     let detail = Text::from(vec![
-        Line::styled(
-            selected.label,
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Line::styled(selected.label, app.theme.bold(Token::Accent)),
         Line::raw(""),
         Line::raw(selected.description),
         Line::raw(""),
@@ -801,10 +873,10 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 "Selecting this operation scans first. Apply is a separate, explicit step."
             },
-            Style::default().fg(Color::Yellow),
+            app.theme.style(Token::Warning),
         ),
         Line::raw(""),
-        Line::raw("↑/↓ or j/k navigate · Enter opens · menu key opens directly"),
+        Line::raw("↑/↓ or j/k navigate · Enter opens · menu key opens directly · ? all keys"),
     ]);
     frame.render_widget(
         Paragraph::new(detail)
@@ -841,16 +913,15 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     if findings.is_empty() {
         lines.push(Line::styled(
             "No findings.",
-            Style::default().fg(Color::Green),
+            app.theme.style(Token::Success),
         ));
     }
     for (index, finding) in findings.iter().enumerate() {
         let action = action_label(&finding.action);
-        let color = danger_color(finding.danger);
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{:>2}. danger-{}  ", index + 1, finding.danger),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                app.theme.bold(danger_token(finding.danger)),
             ),
             Span::styled(
                 report::terminal_safe(&finding.label),
@@ -858,7 +929,7 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
             ),
             Span::styled(
                 format!("  {}  {action}", report::gb(finding.size_bytes)),
-                Style::default().fg(Color::Cyan),
+                app.theme.style(Token::AccentSecondary),
             ),
         ]));
         lines.push(Line::raw(report::terminal_safe(
@@ -866,28 +937,18 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
         )));
         lines.push(Line::styled(
             report::terminal_safe(&finding.note),
-            Style::default().fg(Color::DarkGray),
+            app.theme.style(Token::Muted),
         ));
         lines.push(Line::raw(""));
     }
     if !app.errors.is_empty() {
-        lines.push(Line::styled(
-            "Scan errors",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ));
+        lines.push(Line::styled("Scan errors", app.theme.bold(Token::Warning)));
         for error in &app.errors {
             lines.push(Line::raw(format!("• {}", report::terminal_safe(error))));
         }
     }
     if !app.warnings.is_empty() {
-        lines.push(Line::styled(
-            "Warnings",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ));
+        lines.push(Line::styled("Warnings", app.theme.bold(Token::Warning)));
         for warning in &app.warnings {
             lines.push(Line::raw(format!("• {}", report::terminal_safe(warning))));
         }
@@ -911,13 +972,12 @@ fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
                 summary.items_touched,
                 report::gb(summary.bytes_freed_estimate)
             ),
-            Style::default()
-                .fg(match (app.errors.is_empty(), summary.items_touched) {
-                    (true, _) => Color::Green,
-                    (false, 0) => Color::Red,
-                    (false, _) => Color::Yellow,
-                })
-                .add_modifier(Modifier::BOLD),
+            app.theme
+                .bold(match (app.errors.is_empty(), summary.items_touched) {
+                    (true, _) => Token::Success,
+                    (false, 0) => Token::Critical,
+                    (false, _) => Token::Warning,
+                }),
         ));
         lines.push(Line::raw(""));
         for note in &summary.notes {
@@ -926,10 +986,7 @@ fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
     }
     if !app.errors.is_empty() {
         lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            "Errors",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ));
+        lines.push(Line::styled("Errors", app.theme.bold(Token::Critical)));
         for error in &app.errors {
             lines.push(Line::raw(format!("• {}", report::terminal_safe(error))));
         }
@@ -946,7 +1003,7 @@ fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
 fn render_error(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![Line::styled(
         "Operation refused or failed",
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        app.theme.bold(Token::Critical),
     )];
     for error in &app.errors {
         lines.push(Line::raw(report::terminal_safe(error)));
@@ -955,7 +1012,7 @@ fn render_error(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::raw(""));
         lines.push(Line::styled(
             "Warnings captured before the failure",
-            Style::default().fg(Color::Yellow),
+            app.theme.style(Token::Warning),
         ));
         for warning in &app.warnings {
             lines.push(Line::raw(report::terminal_safe(warning)));
@@ -971,23 +1028,26 @@ fn render_error(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
+    // Progressive disclosure: the footer carries only the few keys that matter
+    // on this screen, and `?` opens the complete reference. Listing everything
+    // here would make the one key the operator needs harder to find.
     let keys = match app.screen {
-        Screen::Menu => "↑/↓ navigate · Enter select · q quit",
+        Screen::Menu => "↑/↓ navigate · Enter select · ? keys · q quit",
         Screen::Results => {
             if app.can_toggle_shred() {
-                "a apply · s Trash/permanent · r rescan · b back · q quit"
+                "a apply · s Trash/permanent · r rescan · b back · ? keys"
             } else {
-                "a apply when available · r rescan · b back · q quit"
+                "a apply when available · r rescan · b back · ? keys"
             }
         }
         Screen::Confirm => "Esc cancel · type the exact requested acknowledgment",
-        Screen::Outcome | Screen::Error => "↑/↓ or j/k scroll · b back to menu · q quit",
+        Screen::Outcome | Screen::Error => "↑/↓ or j/k scroll · b back to menu · ? keys",
         Screen::Loading => "Scanning and apply are synchronous; please wait",
     };
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled(keys, Style::default().fg(Color::Cyan)),
-            Line::styled(app.status.as_str(), Style::default().fg(Color::Yellow)),
+            Line::styled(keys, app.theme.style(Token::AccentSecondary)),
+            Line::styled(app.status.as_str(), app.theme.style(Token::Warning)),
         ])
         .block(Block::bordered()),
         area,
@@ -1015,23 +1075,15 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App) {
         ),
     };
     let text = Text::from(vec![
-        Line::styled(
-            "DATA-LOSS WARNING",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ),
+        Line::styled("DATA-LOSS WARNING", app.theme.bold(Token::Critical)),
         Line::raw(""),
         Line::raw(safety::DATA_LOSS_NOTICE),
         Line::raw(""),
-        Line::styled(prompt, Style::default().fg(Color::Yellow)),
+        Line::styled(prompt, app.theme.style(Token::Warning)),
         Line::raw(""),
         Line::from(vec![
             Span::raw("> "),
-            Span::styled(
-                app.input.as_str(),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(app.input.as_str(), app.theme.bold(Token::Accent)),
         ]),
     ]);
     frame.render_widget(
@@ -1049,15 +1101,6 @@ fn action_label(action: &Action) -> &'static str {
         Action::Command { .. } => "COMMAND",
         Action::Info => "INFO",
         Action::None => "EXCLUDED",
-    }
-}
-
-fn danger_color(danger: u8) -> Color {
-    match danger {
-        0..=2 => Color::Green,
-        3..=5 => Color::Yellow,
-        6..=8 => Color::LightRed,
-        _ => Color::Red,
     }
 }
 
@@ -1099,6 +1142,129 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<Vec<_>>()
             .join("")
+    }
+
+    /// Structural guard for the monochrome baseline. Every screen, including
+    /// both overlays, must render with no cell carrying a color once the theme
+    /// says color is unavailable. A single inline `Color::` literal
+    /// reintroduced anywhere in the render path fails here, which the theme's
+    /// own unit tests cannot see.
+    #[test]
+    fn monochrome_theme_leaves_no_colored_cell_on_any_screen() {
+        use crate::theme::ColorSupport;
+        use ratatui::style::Color;
+
+        let screens = [
+            Screen::Menu,
+            Screen::Loading,
+            Screen::Results,
+            Screen::Confirm,
+            Screen::Outcome,
+            Screen::Error,
+        ];
+        for screen in screens {
+            for help in [false, true] {
+                let app = App {
+                    screen,
+                    help,
+                    theme: Theme::new(ColorSupport::None),
+                    errors: vec!["a scan error".into()],
+                    warnings: vec!["a warning".into()],
+                    confirmation: Some(ConfirmationKind::Critical {
+                        danger: 9,
+                        expected_gb: 12,
+                    }),
+                    ..App::default()
+                };
+                let backend = TestBackend::new(100, 30);
+                let mut terminal = Terminal::new(backend).unwrap();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                for cell in terminal.backend().buffer().content() {
+                    assert_eq!(
+                        cell.fg,
+                        Color::Reset,
+                        "{screen:?} (help={help}) painted a color under NO_COLOR"
+                    );
+                    assert_eq!(
+                        cell.bg,
+                        Color::Reset,
+                        "{screen:?} (help={help}) painted a background under NO_COLOR"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Positive control for the guard above: with color available the same
+    /// screens must actually paint something, otherwise the monochrome
+    /// assertion would pass over an interface that never colors anything.
+    #[test]
+    fn colored_theme_still_paints_the_results_screen() {
+        use ratatui::style::Color;
+
+        let app = App {
+            screen: Screen::Results,
+            errors: vec!["a scan error".into()],
+            ..App::default()
+        };
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| cell.fg != Color::Reset),
+            "the colored theme must paint at least one cell"
+        );
+    }
+
+    #[test]
+    fn help_overlay_opens_and_closes_without_reaching_the_screen_beneath() {
+        for closing in [KeyCode::Char('?'), KeyCode::Esc, KeyCode::Char('q')] {
+            let mut app = App::default();
+            assert_eq!(app.handle_key(key(KeyCode::Char('?'))), Intent::None);
+            assert!(app.help);
+            // While open, a key that would otherwise launch an operation must be
+            // swallowed rather than acted on behind the overlay.
+            assert_eq!(app.handle_key(key(KeyCode::Char('4'))), Intent::None);
+            assert!(app.help, "an unrelated key must not close the overlay");
+            assert_eq!(app.selected, 0, "the menu must not move behind the overlay");
+
+            assert_eq!(app.handle_key(key(closing)), Intent::None);
+            assert!(!app.help, "{closing:?} must close the overlay");
+        }
+    }
+
+    #[test]
+    fn help_overlay_renders_the_full_key_reference() {
+        let mut app = App::default();
+        app.handle_key(key(KeyCode::Char('?')));
+        let frame = rendered(&app, 100, 30);
+        assert!(frame.contains("Help"));
+        for (_, keys) in HELP_KEYS {
+            for (_, description) in *keys {
+                assert!(
+                    frame.contains(description),
+                    "help overlay must document: {description}"
+                );
+            }
+        }
+    }
+
+    /// The confirmation screen demands an exact typed acknowledgment, so a
+    /// second overlay must never cover the plan being approved.
+    #[test]
+    fn help_overlay_never_opens_over_a_confirmation() {
+        let mut app = App {
+            screen: Screen::Confirm,
+            confirmation: Some(ConfirmationKind::YesNo { danger: 5 }),
+            ..App::default()
+        };
+        app.handle_key(key(KeyCode::Char('?')));
+        assert!(!app.help);
     }
 
     #[test]
