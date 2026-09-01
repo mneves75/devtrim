@@ -275,6 +275,13 @@ impl Op for Docker {
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
         let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
+            // The host VM disk image is a report-only disclosure, not an action.
+            // The skip is on ACTIONABILITY, never on whether an authority is
+            // present: an actionable finding that carries no authority is a
+            // forgery and must still be refused below.
+            if !finding.action.is_actionable() {
+                continue;
+            }
             let result = (|| -> Result<String> {
                 let Some(authority) = finding.command_authority() else {
                     anyhow::bail!("refusing unexpected Docker action");
@@ -447,6 +454,50 @@ mod tests {
             finding.note.contains("does not shrink this file"),
             "note must disclose that pruning does not reclaim the host image: {}",
             finding.note
+        );
+    }
+
+    /// Regression: the disclosure is pushed FIRST by `scan`, and an apply loop
+    /// that refused it would abort before any prune ran — turning
+    /// `clean docker --apply` into a no-op that reports failure on every
+    /// machine that actually has a VM image.
+    #[test]
+    fn apply_skips_the_report_only_vm_disk_finding_instead_of_refusing_it() {
+        use std::io::Write;
+
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-docker-apply")
+            .tempdir()
+            .unwrap();
+        let image = home.path().join(VM_DISK_IMAGES[0].1);
+        std::fs::create_dir_all(image.parent().unwrap()).unwrap();
+        let mut file = std::fs::File::create(&image).unwrap();
+        file.write_all(b"x").unwrap();
+        file.sync_all().unwrap();
+
+        let findings = vm_disk_findings(home.path()).unwrap();
+        assert_eq!(findings.len(), 1);
+
+        let mut ctx = test_ctx();
+        ctx.home = home.path().to_path_buf();
+        let outcome = Docker.apply(&findings, &ctx).unwrap();
+        assert!(
+            outcome.errors.is_empty(),
+            "a report-only finding must not fail the apply: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.summary.items_touched, 0);
+    }
+
+    /// The skip above must not become a hole: an actionable finding that
+    /// carries no command authority is a forgery and stays refused.
+    #[test]
+    fn apply_still_refuses_an_actionable_finding_without_authority() {
+        let forged = Finding::new("forged docker action", None, 1, "forged", 6, Action::Trash);
+        let outcome = Docker.apply(&[forged], &test_ctx()).unwrap();
+        assert!(
+            !outcome.errors.is_empty(),
+            "an actionable finding with no authority must be refused"
         );
     }
 

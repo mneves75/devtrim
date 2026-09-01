@@ -103,6 +103,12 @@ const MENU: &[MenuItem] = &[
         operation: Operation::Clean(Target::Toolchains),
     },
     MenuItem {
+        key: "d",
+        label: "Installers",
+        description: "Stale .dmg/.pkg archives in Downloads and Desktop.",
+        operation: Operation::Clean(Target::Installers),
+    },
+    MenuItem {
         key: "9",
         label: "Agent leftovers",
         description: "Read-only hints; whole worktrees are never deleted.",
@@ -1142,6 +1148,33 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<Vec<_>>()
             .join("")
+    }
+
+    /// A cleanup category registered in `ops::all()` but absent from `MENU` is
+    /// reachable from the CLI and invisible in the interface. Nothing else
+    /// catches that: `MenuItem` is a hand-written list with no exhaustiveness
+    /// check, which is exactly how `installers` shipped unreachable.
+    #[test]
+    fn every_cleanup_target_is_reachable_from_the_menu() {
+        use clap::ValueEnum;
+
+        for target in Target::value_variants() {
+            assert!(
+                MENU.iter()
+                    .any(|item| item.operation == Operation::Clean(*target)),
+                "`{}` has no menu entry, so the TUI cannot reach it",
+                target.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn menu_keys_are_unique() {
+        let mut keys: Vec<_> = MENU.iter().map(|item| item.key).collect();
+        keys.sort_unstable();
+        let count = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), count, "two menu entries share a key");
     }
 
     /// Structural guard for the monochrome baseline. Every screen, including
