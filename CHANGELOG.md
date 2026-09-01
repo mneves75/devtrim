@@ -4,6 +4,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+### Added
+- `clean installers` reclaims downloaded installer archives (`dmg`, `pkg`, `mpkg`, `iso`, `xip`) left as direct children of `Downloads` and `Desktop` after the configured active window, refusing symlinks, nested copies inside extracted project trees, and any target outside those two directories at apply time
+
 ### Changed
 - Every tracked `*.sh` plus the pre-commit hook now pass `shellcheck` before local commits and in CI through one fail-closed, NUL-safe helper; CI installs the official ShellCheck 0.11.0 arm64 asset only after checksum verification
 - CI and non-Intel release jobs move from the deprecated `macos-14` image to the supported `macos-15` arm64 image with exact runner-policy checks; the deterministic x86 release gate remains on `macos-15-intel`

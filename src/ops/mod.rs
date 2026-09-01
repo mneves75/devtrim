@@ -4,6 +4,7 @@ pub mod artifacts;
 pub mod caches;
 pub mod docker;
 pub mod icloud;
+pub mod installers;
 pub mod leftovers;
 pub mod node_modules;
 pub(crate) mod project;
@@ -87,6 +88,7 @@ pub fn all() -> Vec<Box<dyn Op>> {
         Box::new(xcode::Xcode),
         Box::new(docker::Docker),
         Box::new(toolchains::Toolchains),
+        Box::new(installers::Installers),
         Box::new(leftovers::Leftovers),
     ]
 }
