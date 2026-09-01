@@ -760,8 +760,6 @@ fn render(frame: &mut Frame, app: &App) {
 /// Complete keybinding reference, the second tier of progressive disclosure
 /// behind the footer's few contextual keys.
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
-    let popup = confirmation_rect(area);
-    frame.render_widget(Clear, popup);
     let mut lines = vec![
         Line::styled("Keys", app.theme.bold(Token::Accent)),
         Line::raw(""),
@@ -783,12 +781,32 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "Nothing is applied without an explicit, separate approval.",
         app.theme.style(Token::Warning),
     ));
+    // Sized to its own content, not to the confirmation popup's fixed 16 rows:
+    // the reference is 17 logical lines and was being clipped from the last
+    // binding onward. A reference that hides the keys it advertises is worse
+    // than none, because the reader has no way to know it was truncated.
+    let popup = centered_rect(area, 72, lines.len());
+    frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .wrap(Wrap { trim: false })
             .block(Block::bordered().title(" Help · ? or Esc closes ")),
         popup,
     );
+}
+
+/// Centers a popup wide enough for `max_width` and tall enough for `content`
+/// lines plus its border, never exceeding the area it sits in.
+fn centered_rect(area: Rect, max_width: u16, content: usize) -> Rect {
+    let width = area.width.saturating_sub(4).min(max_width);
+    let wanted = u16::try_from(content).unwrap_or(u16::MAX).saturating_add(2);
+    let height = wanted.min(area.height.saturating_sub(2));
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
 }
 
 /// Grouped by the layer an operator reaches for: universal movement first,
@@ -927,7 +945,12 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{:>2}. danger-{}  ", index + 1, finding.danger),
-                app.theme.bold(danger_token(finding.danger)),
+                // `style`, not `bold`: adding BOLD to every level collapses the
+                // monochrome ladder, because moderate carries no modifier and
+                // high carries BOLD. The theme's own test cannot see this — it
+                // exercises `style()` — so the distinction has to be preserved
+                // at the call site.
+                app.theme.style(danger_token(finding.danger)),
             ),
             Span::styled(
                 report::terminal_safe(&finding.label),
@@ -1228,6 +1251,78 @@ mod tests {
         }
     }
 
+    /// The theme's ladder test proves `style()` keeps danger levels distinct;
+    /// it cannot see a render site that adds the same modifier to all of them.
+    /// This asserts the property where it actually has to hold — on the painted
+    /// screen — which is where it was in fact broken.
+    #[test]
+    fn monochrome_results_screen_keeps_danger_levels_distinguishable() {
+        use crate::theme::ColorSupport;
+
+        let levels = [1u8, 4, 7, 10];
+        let findings: Vec<Finding> = levels
+            .iter()
+            .map(|danger| {
+                Finding::new(
+                    format!("finding {danger}"),
+                    None,
+                    1024,
+                    "note",
+                    *danger,
+                    Action::Trash,
+                )
+            })
+            .collect();
+        let app = App {
+            screen: Screen::Results,
+            findings,
+            theme: Theme::new(ColorSupport::None),
+            ..App::default()
+        };
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        let height = usize::from(buffer.area.height);
+        let content = buffer.content();
+
+        let modifiers: Vec<_> = levels
+            .iter()
+            .enumerate()
+            .map(|(position, danger)| {
+                // Located by CELL COLUMN, never by byte offset: rows begin with
+                // a multi-byte border glyph, so `str::find` points at the wrong
+                // cell. The row number anchors the match to a finding row —
+                // the panel title also contains `danger-N`, rendered with no
+                // modifier, and matched first without it.
+                let needle = format!("{}. danger-{danger} ", position + 1);
+                (0..height)
+                    .find_map(|y| {
+                        let symbols: Vec<&str> = (0..width)
+                            .map(|x| content[y * width + x].symbol())
+                            .collect();
+                        (0..width).find_map(|start| {
+                            symbols[start..]
+                                .concat()
+                                .starts_with(&needle)
+                                .then(|| content[y * width + start].modifier)
+                        })
+                    })
+                    .unwrap_or_else(|| panic!("{needle} was never rendered"))
+            })
+            .collect();
+
+        for (index, modifier) in modifiers.iter().enumerate() {
+            for other in modifiers.iter().skip(index + 1) {
+                assert_ne!(
+                    modifier, other,
+                    "danger levels must stay distinguishable under NO_COLOR: {modifiers:?}"
+                );
+            }
+        }
+    }
+
     /// Positive control for the guard above: with color available the same
     /// screens must actually paint something, otherwise the monochrome
     /// assertion would pass over an interface that never colors anything.
@@ -1290,6 +1385,30 @@ mod tests {
                 );
             }
         }
+        // The clipping canary, and the reason the loop above is not enough:
+        // the footer also contains the word "quit", so a truncated overlay
+        // satisfied every description assertion while hiding its last binding.
+        // This line is rendered last, so if it is visible nothing above it was
+        // cut.
+        assert!(
+            frame.contains("Nothing is applied without an explicit"),
+            "the overlay's final line must be visible, or bindings above it are hidden too"
+        );
+    }
+
+    /// The overlay must fit its own content at the supported minimum size, not
+    /// merely on a roomy terminal.
+    #[test]
+    fn help_overlay_is_sized_to_its_content() {
+        let area = Rect::new(0, 0, 100, 40);
+        let popup = centered_rect(area, 72, 17);
+        assert_eq!(popup.height, 19, "17 content rows plus two borders");
+        assert!(popup.width <= area.width && popup.height <= area.height);
+
+        // Never larger than the space available.
+        let cramped = centered_rect(Rect::new(0, 0, 40, 10), 72, 17);
+        assert!(cramped.height <= 8);
+        assert!(cramped.width <= 36);
     }
 
     /// The confirmation screen demands an exact typed acknowledgment, so a

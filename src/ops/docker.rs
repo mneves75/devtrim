@@ -254,7 +254,24 @@ impl Op for Docker {
         let Some(host) = docker_host()? else {
             return Ok(findings);
         };
-        let version = docker(&host, &["version"])?;
+        let version = docker(&host, &["version"]).map_err(|error| {
+            // The disclosure is lost with the op, so the error carries what the
+            // operator would otherwise never learn: that a host image exists,
+            // how large it is, and that starting the runtime reveals it.
+            let disclosed = findings
+                .iter()
+                .map(|finding| {
+                    format!(
+                        "; {} is {} on this host",
+                        finding.label,
+                        crate::report::gb(finding.size_bytes)
+                    )
+                })
+                .collect::<String>();
+            error.context(format!(
+                "Docker daemon unreachable, so no image or build-cache plan was produced{disclosed}"
+            ))
+        })?;
         if version.trim().is_empty() {
             anyhow::bail!("`docker version` returned empty output");
         }

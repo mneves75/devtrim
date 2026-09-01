@@ -31,6 +31,7 @@ enum SystemTool {
     LogicalCpuCount,
     PhysicalMemory,
     VmStat,
+    DataVolume,
     RootFilesystem,
     Battery,
     Thermal,
@@ -46,6 +47,7 @@ impl SystemTool {
             Self::LogicalCpuCount => ("sysctl", &["-n", "hw.logicalcpu"]),
             Self::PhysicalMemory => ("sysctl", &["-n", "hw.memsize"]),
             Self::VmStat => ("vm_stat", &[]),
+            Self::DataVolume => ("df", &["-k", "/System/Volumes/Data"]),
             Self::RootFilesystem => ("df", &["-k", "/"]),
             Self::Battery => ("pmset", &["-g", "batt"]),
             Self::Thermal => ("pmset", &["-g", "therm"]),
@@ -61,7 +63,7 @@ impl SystemTool {
             Self::LoadAverage => "load",
             Self::LogicalCpuCount => "cpu",
             Self::PhysicalMemory | Self::VmStat => "memory",
-            Self::RootFilesystem => "disk",
+            Self::DataVolume | Self::RootFilesystem => "disk",
             Self::Battery => "battery",
             Self::Thermal => "thermal",
             Self::NetworkInterfaces => "network",
@@ -363,10 +365,21 @@ pub(crate) fn parse_battery(output: &str) -> Result<Option<Battery>> {
 /// `pmset -g therm`
 pub(crate) fn parse_thermal(output: &str) -> Result<Thermal> {
     let Some(line) = output.lines().find(|line| line.contains("CPU_Speed_Limit")) else {
-        // No recorded limit is the nominal state, not missing data.
-        return Ok(Thermal {
-            cpu_speed_limit_percent: None,
-        });
+        // Nominal is a specific answer, not merely the absence of a key. Empty,
+        // truncated, or reshaped output would otherwise be reported as "no
+        // limit recorded", and `health` would then count thermal as read and
+        // score the machine higher than the evidence supports.
+        if output
+            .lines()
+            .any(|line| line.contains("has been recorded"))
+        {
+            return Ok(Thermal {
+                cpu_speed_limit_percent: None,
+            });
+        }
+        anyhow::bail!(
+            "unrecognized `pmset -g therm` output: no CPU_Speed_Limit and no recorded-status note"
+        );
     };
     let value = line.rsplit('=').next().unwrap_or_default().trim();
     let percent = value
@@ -595,9 +608,23 @@ fn collect() -> StatusReport {
             parse_vm_stat(&output, total)
         })
     });
-    let disk = read(&mut unavailable, SystemTool::RootFilesystem, |output| {
-        parse_df(&output)
-    });
+    // On a modern macOS the root volume is the SEALED system snapshot: `df /`
+    // reports it as barely used while the writable Data volume holds everything
+    // the user owns. Measured on a real machine, `/` read 12 GB used (17%) with
+    // `/System/Volumes/Data` at 840 GB (94%) — a disk-hygiene tool that reports
+    // the first number is reassuring exactly when it should not be.
+    //
+    // `statfs`, which is what `df` uses, is the only thing that separates the
+    // two: `st_dev` is identical across `/`, `/System/Volumes/Data` and
+    // `/Users`, so no metadata comparison can find this boundary. The Data
+    // volume is preferred and the root is the fallback for older layouts; a
+    // Data-volume failure is not recorded when the fallback succeeds.
+    let disk = match capture(SystemTool::DataVolume).and_then(|output| parse_df(&output)) {
+        Ok(disk) => Some(disk),
+        Err(_) => read(&mut unavailable, SystemTool::RootFilesystem, |output| {
+            parse_df(&output)
+        }),
+    };
     // The parser distinguishes "no battery" (a desktop) from "unreadable"; only
     // the second is an unavailable metric.
     let battery = read(&mut unavailable, SystemTool::Battery, |output| {
@@ -702,7 +729,7 @@ fn print_human(report: &StatusReport) -> Result<()> {
     if let Some(disk) = report.disk {
         let _ = writeln!(
             out,
-            "  disk /          {} of {} used ({:.0}%), {} available",
+            "  disk            {} of {} used ({:.0}%), {} available",
             report::gb(disk.used_bytes),
             report::gb(disk.total_bytes),
             disk.used_percent(),
@@ -957,6 +984,11 @@ en0        1500  <Link#12>   a4:83:e7:11:22:33     50000     0    1000000    400
             Some(70)
         );
         assert!(parse_thermal("CPU_Speed_Limit = 400\n").is_err());
+
+        // Nominal must be an answer, not an absence: empty or reshaped output
+        // would otherwise be scored as a healthy thermal reading.
+        assert!(parse_thermal("").is_err());
+        assert!(parse_thermal("some future pmset format\n").is_err());
     }
 
     /// Each interface appears once per configured address; only the link rows

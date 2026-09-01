@@ -149,12 +149,42 @@ pub(crate) fn measure_children(
         if cancel.load(Ordering::Relaxed) {
             return Ok(());
         }
-        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-            continue;
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            // Only a genuine disappearance between listing and stat is a race
+            // worth ignoring. Any other error would otherwise drop a child from
+            // the view with no `(partial)` marker and no error, which
+            // contradicts this command's lower-bound disclosure.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
+            }
         };
         // A symlink is listed at its own size, never resolved: its target may
         // live outside this tree entirely.
         if metadata.file_type().is_dir() {
+            // A foreign mount must be refused BEFORE the walk starts.
+            // `measure_tree` roots a new `WalkDir` at this child, and
+            // `same_file_system` takes its boundary from the walk's own root —
+            // so entering a mount would authorize that mount's device and
+            // traverse all of it, which is exactly the network-mount hang the
+            // boundary exists to prevent.
+            //
+            // What this does NOT catch, and cannot: the macOS system/data
+            // firmlink. `/`, `/System/Volumes/Data` and `/Users` all report the
+            // same `st_dev` even though `df` shows separate APFS volumes, so
+            // only `statfs` distinguishes them. That is correct to allow —
+            // walking `/` into the user's own data is what analyzing `/` means
+            // — but it is why measuring `/` is slow, not a broken boundary.
+            if metadata.dev() != device {
+                report_entry(Entry {
+                    path,
+                    size: 0,
+                    is_dir: true,
+                    partial: true,
+                });
+                continue;
+            }
             let (size, partial) = measure_tree(&path, device, cancel);
             report_entry(Entry {
                 path,
