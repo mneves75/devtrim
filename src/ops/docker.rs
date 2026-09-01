@@ -241,34 +241,33 @@ impl Op for Docker {
         // and still occupying the host, so making this disclosure depend on a
         // live daemon would hide the cost in the one state that matters most.
         let mut findings = vm_disk_findings(&ctx.home)?;
-        // A refused endpoint or a malformed response stays a hard error: those
-        // are the fail-closed boundaries that must never degrade to a warning.
-        // Only a daemon that is simply not running is treated as normal, and
-        // that is exactly the state in which the host image matters most.
+        // Only an absent `docker` binary becomes an empty success, via
+        // `docker_host`'s `ErrorKind::NotFound` handling. Every other failure —
+        // a refused endpoint, an unreachable daemon, a malformed response —
+        // propagates, because a silently shorter plan is indistinguishable from
+        // a machine with nothing to reclaim (`CODING_STANDARDS.md` S8).
+        //
+        // The cost of that strictness is real and worth stating: when `docker`
+        // is installed but its daemon is down, this op errors and the host
+        // image disclosure above is lost with it. The error names the daemon,
+        // which is itself the actionable next step.
         let Some(host) = docker_host()? else {
             return Ok(findings);
         };
-        match docker(&host, &["version"]) {
-            Ok(version) if version.trim().is_empty() => {
-                anyhow::bail!("`docker version` returned empty output")
-            }
-            Ok(_) => {
-                let output = docker(
-                    &host,
-                    &[
-                        "system",
-                        "df",
-                        "--format",
-                        "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}",
-                    ],
-                )?;
-                findings.extend(parse_system_df(&output, &host)?);
-            }
-            Err(error) => ctx.diagnostic(
-                "warn",
-                format!("Docker daemon unreachable, no image or build-cache actions: {error:#}"),
-            ),
+        let version = docker(&host, &["version"])?;
+        if version.trim().is_empty() {
+            anyhow::bail!("`docker version` returned empty output");
         }
+        let output = docker(
+            &host,
+            &[
+                "system",
+                "df",
+                "--format",
+                "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}",
+            ],
+        )?;
+        findings.extend(parse_system_df(&output, &host)?);
         Ok(findings)
     }
 

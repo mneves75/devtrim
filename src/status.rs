@@ -18,8 +18,61 @@ use colored::Colorize;
 use crate::report;
 use crate::safety::Ctx;
 
-/// Runs a fixed program with fixed arguments. No shell, ever.
-fn capture(program: &str, args: &[&str]) -> Result<String> {
+/// Closed set of system tools this module may execute.
+///
+/// `CODING_STANDARDS.md` S12 makes `Command::new` reached through a variable a
+/// hard violation unless the value is a `&'static str` from a closed enum, and
+/// the `no-shell-invocation` rule cannot see that shape — it only inspects the
+/// literal at the call site. This mirrors `CommandAuthority::parts()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SystemTool {
+    BootTime,
+    LoadAverage,
+    LogicalCpuCount,
+    PhysicalMemory,
+    VmStat,
+    RootFilesystem,
+    Battery,
+    Thermal,
+    NetworkInterfaces,
+    Processes,
+}
+
+impl SystemTool {
+    fn parts(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            Self::BootTime => ("sysctl", &["-n", "kern.boottime"]),
+            Self::LoadAverage => ("sysctl", &["-n", "vm.loadavg"]),
+            Self::LogicalCpuCount => ("sysctl", &["-n", "hw.logicalcpu"]),
+            Self::PhysicalMemory => ("sysctl", &["-n", "hw.memsize"]),
+            Self::VmStat => ("vm_stat", &[]),
+            Self::RootFilesystem => ("df", &["-k", "/"]),
+            Self::Battery => ("pmset", &["-g", "batt"]),
+            Self::Thermal => ("pmset", &["-g", "therm"]),
+            Self::NetworkInterfaces => ("netstat", &["-ib"]),
+            Self::Processes => ("ps", &["-Aco", "pid,pcpu,rss,comm", "-r"]),
+        }
+    }
+
+    /// The metric name used when this tool's failure is reported.
+    fn metric(self) -> &'static str {
+        match self {
+            Self::BootTime => "uptime",
+            Self::LoadAverage => "load",
+            Self::LogicalCpuCount => "cpu",
+            Self::PhysicalMemory | Self::VmStat => "memory",
+            Self::RootFilesystem => "disk",
+            Self::Battery => "battery",
+            Self::Thermal => "thermal",
+            Self::NetworkInterfaces => "network",
+            Self::Processes => "processes",
+        }
+    }
+}
+
+/// Runs one of the closed set above. No shell, ever.
+fn capture(tool: SystemTool) -> Result<String> {
+    let (program, args) = tool.parts();
     let label = format!("`{program} {}`", args.join(" "));
     let output: Output = Command::new(program)
         .args(args)
@@ -350,7 +403,10 @@ pub(crate) fn parse_netstat(output: &str) -> Result<Network> {
         // depending on the interface. Indexing from the left reads `Ipkts` as
         // `Ibytes` on exactly half of them; the trailing seven columns are
         // always `Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll`.
-        if fields.len() < 9 {
+        // A link row is 10 fields without a hardware address and 11 with one.
+        // Anything narrower is not the documented shape, and reading it from
+        // the end would silently take `Address`/`Oerrs` as byte counters.
+        if fields.len() < 10 {
             continue;
         }
         let (Some(ibytes), Some(obytes)) = (
@@ -359,11 +415,22 @@ pub(crate) fn parse_netstat(output: &str) -> Result<Network> {
         ) else {
             continue;
         };
-        let (Ok(ibytes), Ok(obytes)) = (ibytes.parse::<u64>(), obytes.parse::<u64>()) else {
-            continue;
-        };
-        received = received.saturating_add(ibytes);
-        sent = sent.saturating_add(obytes);
+        // An aggregate is exact or it is refused. Skipping an unparseable link
+        // row would report a confidently wrong total, which is the failure this
+        // module exists to avoid; a top-N display list may skip a row, a sum
+        // may not (`CODING_STANDARDS.md` S8).
+        let ibytes = ibytes
+            .parse::<u64>()
+            .with_context(|| format!("invalid netstat Ibytes `{ibytes}`"))?;
+        let obytes = obytes
+            .parse::<u64>()
+            .with_context(|| format!("invalid netstat Obytes `{obytes}`"))?;
+        received = received
+            .checked_add(ibytes)
+            .ok_or_else(|| anyhow::anyhow!("netstat received bytes overflow"))?;
+        sent = sent
+            .checked_add(obytes)
+            .ok_or_else(|| anyhow::anyhow!("netstat sent bytes overflow"))?;
         rows = rows.saturating_add(1);
     }
     if rows == 0 {
@@ -376,6 +443,11 @@ pub(crate) fn parse_netstat(output: &str) -> Result<Network> {
 }
 
 /// `ps -Aco pid,pcpu,rss,comm -r`, already sorted by CPU.
+///
+/// Unlike the aggregate parsers, this one skips a row it cannot read: the
+/// result is a top-N display list, not a sum, so a dropped row shortens the
+/// list rather than corrupting a number. It still fails closed when nothing
+/// parses at all.
 pub(crate) fn parse_processes(output: &str, limit: usize) -> Result<Vec<Process>> {
     let mut processes = Vec::new();
     for line in output.lines().skip(1) {
@@ -482,101 +554,66 @@ fn now_unix() -> Result<u64> {
 
 fn collect() -> StatusReport {
     let mut unavailable = Vec::new();
-    let mut record = |metric: &str, error: &anyhow::Error| {
-        unavailable.push(format!("{metric}: {error:#}"));
-    };
 
-    let uptime_seconds = match capture("sysctl", &["-n", "kern.boottime"])
-        .and_then(|output| parse_boottime_seconds(&output, now_unix()?))
-    {
-        Ok(value) => Some(value),
-        Err(error) => {
-            record("uptime", &error);
-            None
-        }
-    };
-
-    let load_average =
-        match capture("sysctl", &["-n", "vm.loadavg"]).and_then(|output| parse_loadavg(&output)) {
+    /// Reads one metric, recording the reason under the tool's own metric name
+    /// on failure. Written once: ten hand-copied match arms are ten chances to
+    /// record a failure against the wrong metric.
+    fn read<T>(
+        unavailable: &mut Vec<String>,
+        tool: SystemTool,
+        parse: impl FnOnce(String) -> Result<T>,
+    ) -> Option<T> {
+        match capture(tool).and_then(parse) {
             Ok(value) => Some(value),
             Err(error) => {
-                record("load", &error);
+                unavailable.push(format!("{}: {error:#}", tool.metric()));
                 None
             }
-        };
+        }
+    }
 
-    let cpu_count = match capture("sysctl", &["-n", "hw.logicalcpu"]).and_then(|output| {
+    let uptime_seconds = read(&mut unavailable, SystemTool::BootTime, |output| {
+        parse_boottime_seconds(&output, now_unix()?)
+    });
+    let load_average = read(&mut unavailable, SystemTool::LoadAverage, |output| {
+        parse_loadavg(&output)
+    });
+    let cpu_count = read(&mut unavailable, SystemTool::LogicalCpuCount, |output| {
         let trimmed = output.trim().to_string();
         trimmed
             .parse::<u32>()
             .with_context(|| format!("invalid hw.logicalcpu `{trimmed}`"))
-    }) {
-        Ok(value) => Some(value),
-        Err(error) => {
-            record("cpu", &error);
-            None
-        }
-    };
-
-    let memory = match capture("sysctl", &["-n", "hw.memsize"])
-        .and_then(|output| {
-            let trimmed = output.trim().to_string();
-            trimmed
-                .parse::<u64>()
-                .with_context(|| format!("invalid hw.memsize `{trimmed}`"))
+    });
+    let total_memory = read(&mut unavailable, SystemTool::PhysicalMemory, |output| {
+        let trimmed = output.trim().to_string();
+        trimmed
+            .parse::<u64>()
+            .with_context(|| format!("invalid hw.memsize `{trimmed}`"))
+    });
+    let memory = total_memory.and_then(|total| {
+        read(&mut unavailable, SystemTool::VmStat, |output| {
+            parse_vm_stat(&output, total)
         })
-        .and_then(|total| parse_vm_stat(&capture("vm_stat", &[])?, total))
-    {
-        Ok(value) => Some(value),
-        Err(error) => {
-            record("memory", &error);
-            None
-        }
-    };
-
-    let disk = match capture("df", &["-k", "/"]).and_then(|output| parse_df(&output)) {
-        Ok(value) => Some(value),
-        Err(error) => {
-            record("disk", &error);
-            None
-        }
-    };
-
-    let battery = match capture("pmset", &["-g", "batt"]).and_then(|output| parse_battery(&output))
-    {
-        Ok(value) => value,
-        Err(error) => {
-            record("battery", &error);
-            None
-        }
-    };
-
-    let thermal = match capture("pmset", &["-g", "therm"]).and_then(|output| parse_thermal(&output))
-    {
-        Ok(value) => Some(value),
-        Err(error) => {
-            record("thermal", &error);
-            None
-        }
-    };
-
-    let network = match capture("netstat", &["-ib"]).and_then(|output| parse_netstat(&output)) {
-        Ok(value) => Some(value),
-        Err(error) => {
-            record("network", &error);
-            None
-        }
-    };
-
-    let top_processes = match capture("ps", &["-Aco", "pid,pcpu,rss,comm", "-r"])
-        .and_then(|output| parse_processes(&output, 8))
-    {
-        Ok(value) => value,
-        Err(error) => {
-            record("processes", &error);
-            Vec::new()
-        }
-    };
+    });
+    let disk = read(&mut unavailable, SystemTool::RootFilesystem, |output| {
+        parse_df(&output)
+    });
+    // The parser distinguishes "no battery" (a desktop) from "unreadable"; only
+    // the second is an unavailable metric.
+    let battery = read(&mut unavailable, SystemTool::Battery, |output| {
+        parse_battery(&output)
+    })
+    .flatten();
+    let thermal = read(&mut unavailable, SystemTool::Thermal, |output| {
+        parse_thermal(&output)
+    });
+    let network = read(&mut unavailable, SystemTool::NetworkInterfaces, |output| {
+        parse_netstat(&output)
+    });
+    let top_processes = read(&mut unavailable, SystemTool::Processes, |output| {
+        parse_processes(&output, 8)
+    })
+    .unwrap_or_default();
 
     let mut report = StatusReport {
         uptime_seconds,
@@ -596,6 +633,15 @@ fn collect() -> StatusReport {
     };
     report.health = health(&report);
     report
+}
+
+/// Names the band a score falls in, so severity survives with colour stripped.
+pub(crate) fn health_band(score: u8) -> &'static str {
+    match score {
+        90..=100 => "healthy",
+        70..=89 => "degraded",
+        _ => "critical",
+    }
 }
 
 fn format_uptime(seconds: u64) -> String {
@@ -707,7 +753,16 @@ fn print_human(report: &StatusReport) -> Result<()> {
     }
 
     let _ = writeln!(out);
-    let headline = format!("health {}/100", report.health.score);
+    // The band is named in the TEXT, not carried by the colour. `colored`
+    // suppresses every style under `NO_COLOR`, bold included, so a colour-only
+    // ladder would collapse all three bands into identical plain text — the
+    // exact failure the theme module exists to prevent, on the one surface
+    // that cannot use it.
+    let headline = format!(
+        "health {}/100 ({})",
+        report.health.score,
+        health_band(report.health.score)
+    );
     let headline = match report.health.score {
         90..=100 => headline.green(),
         70..=89 => headline.yellow(),
@@ -1010,6 +1065,23 @@ en0        1500  <Link#12>   a4:83:e7:11:22:33     50000     0    1000000    400
             health.score, 0,
             "every pressure signal firing floors the score"
         );
+    }
+
+    /// `colored` suppresses every style under `NO_COLOR`, so the band must be
+    /// legible from the text alone or all three collapse into the same line.
+    #[test]
+    fn health_bands_are_distinguishable_without_any_colour() {
+        let bands = [health_band(100), health_band(80), health_band(10)];
+        assert_eq!(bands, ["healthy", "degraded", "critical"]);
+        for (index, band) in bands.iter().enumerate() {
+            for other in bands.iter().skip(index + 1) {
+                assert_ne!(band, other, "bands must not share a name");
+            }
+        }
+        assert_eq!(health_band(90), "healthy");
+        assert_eq!(health_band(89), "degraded");
+        assert_eq!(health_band(70), "degraded");
+        assert_eq!(health_band(69), "critical");
     }
 
     #[test]

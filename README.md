@@ -141,6 +141,24 @@ health score that **names every input it could not read** rather than scoring
 over the gap. Memory used is stated as `active + wired + compressed`: counting
 macOS's reclaimable inactive pages as used reports a healthy machine at 96%.
 
+## What devtrim deliberately does not do
+
+Other Mac cleaners cover more surface. These omissions are choices, not gaps
+waiting to be filled, and each has a reason:
+
+- **No app uninstaller.** Removing an application bundle plus its launch agents,
+  preferences and support files is the highest-consequence action a cleaner can
+  take, and it cannot be corroborated the way a `target` beside `Cargo.toml`
+  can. `clean leftovers` reports candidate paths and never deletes them.
+- **No "optimize" or maintenance tasks.** Rebuilding indexes, flushing DNS and
+  restarting services are not disk hygiene, and bundling them with a deletion
+  tool means one confirmation covers two unrelated kinds of risk.
+- **No live dashboard.** `status` samples once and exits. A refreshing monitor
+  is a different product, and `devtrim status --json` composes with whatever
+  you already use for that.
+- **No deletion from `analyze`.** See above: navigation and deletion authority
+  stay separate.
+
 `clean docker` also reports the host-side VM disk image for OrbStack and Docker
 Desktop, as a report-only finding that is never actionable. `docker system df`
 measures space *inside* the guest, while the host pays for a sparse image that

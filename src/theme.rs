@@ -8,9 +8,13 @@
 //! everywhere at the cost of matching nowhere.
 //!
 //! Second, color is an enhancement and never the only carrier of meaning. With
-//! `NO_COLOR` set, every token degrades to a modifier that preserves the same
-//! distinction, so the interface stays usable with no color at all rather than
-//! collapsing into undifferentiated text.
+//! `NO_COLOR` set every token degrades to a modifier rather than a color. The
+//! guarantee is deliberately narrow and worth stating exactly: the danger
+//! ladder stays mutually distinct AND ordered, because severity is the one
+//! thing no surrounding word repeats. Semantic tokens may share a modifier —
+//! `Success` and `Info` both render plain — since the text beside them already
+//! names the state ("READ-ONLY", "No findings"). Claiming every token stays
+//! distinct would be false, and a false claim here is worse than a narrow one.
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -157,9 +161,25 @@ mod tests {
         }
     }
 
+    /// Visual weight of a monochrome fallback, low to high. The ladder must be
+    /// monotonic in this rank or "ordered" is a word the module doc has no
+    /// right to use.
+    fn weight(modifier: Modifier) -> u8 {
+        if modifier.contains(Modifier::REVERSED) {
+            3
+        } else if modifier.contains(Modifier::BOLD) {
+            2
+        } else if modifier.contains(Modifier::DIM) {
+            0
+        } else {
+            1
+        }
+    }
+
     /// Positive control for the fallback: if every token degraded to the same
     /// empty style the monochrome assertion above would still pass while the
-    /// interface became unreadable, so severity must stay distinguishable.
+    /// interface became unreadable, so severity must stay distinguishable —
+    /// and, since the doc claims it, strictly increasing in visual weight.
     #[test]
     fn monochrome_danger_ladder_stays_ordered_and_distinct() {
         let theme = Theme::new(ColorSupport::None);
@@ -172,6 +192,11 @@ mod tests {
                 assert_ne!(modifier, other, "danger levels must stay distinguishable");
             }
         }
+        let weights: Vec<u8> = ladder.iter().copied().map(weight).collect();
+        assert!(
+            weights.windows(2).all(|pair| pair[0] < pair[1]),
+            "danger must increase in visual weight, got {weights:?}"
+        );
     }
 
     #[test]

@@ -79,9 +79,14 @@ enum Progress {
 fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
     let mut total = 0u64;
     let mut partial = false;
+    // `same_file_system` stops the walk at the mount point instead of filtering
+    // afterwards. Filtering after the fact still descends: a stalled network
+    // mount blocks inside `WalkDir::next()`, where the cancellation flag is
+    // never read, and the thread cannot be released by quitting.
     for result in walkdir::WalkDir::new(path)
         .follow_links(false)
         .follow_root_links(false)
+        .same_file_system(true)
     {
         if cancel.load(Ordering::Relaxed) {
             return (total, true);
@@ -98,9 +103,23 @@ fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
             continue;
         };
         if metadata.dev() != device {
+            // Not reachable while `same_file_system` holds, but a subtree left
+            // unmeasured is a lower bound and must say so rather than vanish
+            // into a confident total.
+            partial = true;
             continue;
         }
-        total = total.saturating_add(metadata.len());
+        // Measured bytes never saturate silently: an overflowed total that
+        // still presents itself as a measurement is the shape S8 forbids. It
+        // cannot happen with real file sizes, so it becomes a lower bound
+        // rather than an error the explorer has no way to show.
+        match total.checked_add(metadata.len()) {
+            Some(sum) => total = sum,
+            None => {
+                partial = true;
+                break;
+            }
+        }
     }
     (total, partial)
 }

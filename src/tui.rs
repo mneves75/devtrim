@@ -1233,11 +1233,16 @@ mod tests {
     /// assertion would pass over an interface that never colors anything.
     #[test]
     fn colored_theme_still_paints_the_results_screen() {
+        use crate::theme::ColorSupport;
         use ratatui::style::Color;
 
         let app = App {
             screen: Screen::Results,
             errors: vec!["a scan error".into()],
+            // Pinned, not `from_env`: this is the control that proves the
+            // monochrome assertion is testing something, and it would pass
+            // vacuously — or fail — in a shell that exports NO_COLOR.
+            theme: Theme::new(ColorSupport::Named),
             ..App::default()
         };
         let backend = TestBackend::new(100, 30);
