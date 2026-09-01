@@ -20,6 +20,7 @@ default features disabled; do not enable its optional layout cache without a new
 - Every cleanup category = one file in `src/ops/`, implementing the `Op` trait.
 - Findings use typed actions. Confirmation flags may bypass a gate but MUST NOT add or widen actions.
 - Apply consumes only exact previewed findings; never rescan for deletion targets after confirmation.
+- `trash-empty` omits direct Trash children named as an ASCII-case variant of `.git`, warns, and leaves them in place so one protected item cannot block other exact previewed children.
 - Every human apply prints the data-loss notice; every interactive mutation confirms regardless of danger. `-y` skips y/N only; `--yolo` skips all interactive prompts. Operation-specific acknowledgments such as `trash-empty --confirm=<gb>` still apply; JSON remains machine-only.
 - Global flags are capability-scoped: commands reject mutation flags they cannot honor. `scan --shred` may change previewed actions; Docker and simulator cleanup reject `--shred` because they execute typed commands rather than filesystem deletion actions; `trash-empty` accepts apply/confirmation flags but rejects `--shred`; report-only commands accept no mutation flags.
 - Unknown activity, ownership, symlink resolution, owner-command status, configuration fields, or size measurement fails closed.
@@ -31,8 +32,9 @@ default features disabled; do not enable its optional layout cache without a new
 - Only `Finding::command` creates command authority from the closed `CommandAuthority` enum; apply verifies that capability, its validated arguments, and its serialized `Action` before execution. Docker authority binds an absolute local Unix-socket endpoint; simulator authority binds one exact UDID.
 - Docker volumes are never pruned. Xcode Archives are never pruned.
 - Xcode and Swift toolchain apply must reassert the scanner's exact direct-child target shape before calling the shared deletion sink.
-- Every directory deletion preflights device boundaries and nested Git repository/worktree markers before either Trash or permanent mutation.
-- `artifacts` matches only its closed corroborated-name list plus valid `CACHEDIR.TAG` signatures; ambiguous names (`build`, `dist`, `out`, `vendor`, `bin`, `obj`, `coverage`) are never added. Corroboration is re-verified at apply.
+- `node_modules` apply must reassert the scanner's exact category shape: a real `node_modules` directory leaf inside its owning repo, never a symlink or through a symlinked category ancestor, nor below an ASCII-case variant of `.git`, another `node_modules`, or a non-normal path component.
+- Every directory deletion preflights device boundaries and nested Git repository/worktree markers before either Trash or permanent mutation. Git metadata names are denied ASCII-case-insensitively by scanners, ownership and category checks, target validation, and open-handle preflight.
+- `artifacts` matches only its closed corroborated-name list plus valid `CACHEDIR.TAG` signatures; ambiguous names (`build`, `dist`, `out`, `vendor`, `bin`, `obj`, `coverage`) are never added. Its scanner never traverses an ASCII-case variant of `node_modules`, apply independently refuses those ancestors, and corroboration is re-verified at apply.
 - Every deletion and typed command writes a write-ahead journal record (attempt before, result after) via `src/journal.rs`, synced per record; an unwritable journal blocks apply. Rotation is shift-and-rename at journal-open time only, never truncation, never mid-apply. `history` is read-only, reads rotated files, and emits its own single JSON document.
 - Findings capture preview-time device/inode identity; the sink refuses actionable filesystem findings whose identity is missing or drifted and verifies it through a cap-std parent-directory handle. Permanent deletion continues through that handle. Trash remains path-based after the identity check (no fd-anchored macOS Trash API) — keep that disclosure accurate.
 - `largest` is report-only visibility: `Action::Info` findings, lenient traversal with disclosed skip counts, never deletion authority, no TUI entry.
@@ -43,6 +45,7 @@ default features disabled; do not enable its optional layout cache without a new
 - AGENTS.md and CLAUDE.md must stay byte-identical (release gate compares them).
 - Whole worktrees are never deleted; `leftovers` is report-only.
 - `--json` emits exactly one document; failed/partial operations return nonzero.
+- Gitleaks installation gates must pass the runtime synthetic-token positive control before the tool directory reaches `PATH` or any clean secret scan is trusted.
 - User-facing strings are English; size values are estimated logical bytes.
 - `src/tui.rs` is a presentation adapter over existing `Op` scan/apply owners. It must not duplicate scanners, deletion logic, or danger policy. TUI apply requires a matching typed approval; CLI bypass flags never pre-authorize it.
 - Scanner diagnostics go through `Ctx`: explicit CLI commands may render stderr, while the TUI captures, escapes, and retains them in its own state.

@@ -38,7 +38,7 @@ cp target/release/devtrim /usr/local/bin/
 ## Principles
 
 - **Preview by default.** Every mutation, including `trash-empty`, requires `--apply`.
-- **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets. Xcode and Swift toolchain apply also reassert that each target still has the exact direct-child shape its scanner authorized.
+- **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets. Xcode and Swift toolchain apply reassert exact direct-child authority; `node_modules` apply reasserts a real authorized directory leaf and rejects symlinks plus `.git`, nested dependency-tree, and non-normal ancestors.
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
 - **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation.
 - **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while `xcodebuild` runs. A probe that cannot complete blocks instead of passing.
@@ -108,10 +108,14 @@ remains mandatory.
 containing `pyvenv.cfg`, `Pods` next to `Podfile`, `.next` next to
 `package.json`, a valid `CACHEDIR.TAG` signature, and so on — inside a Git repo
 whose last commit is conclusively stale. Ambiguous names such as `build`,
-`dist`, `vendor`, `bin`, and `obj` are deliberately never matched.
+`dist`, `vendor`, `bin`, and `obj` are deliberately never matched, and the
+scanner/apply owner refuse artifacts below every ASCII-case variant of
+`node_modules`.
 
 `trash-empty` previews each current top-level Trash item as an exact target.
 Apply consumes only that set; anything moved to Trash after preview remains.
+A direct item named as an ASCII-case variant of `.git` is warned about and left
+in Trash instead of blocking the other exact items.
 
 The TUI offers the same scanners and apply owners behind a keyboard interface:
 arrow keys or `j`/`k` navigate, `Enter` previews, `a` starts confirmation, `s`
@@ -193,7 +197,7 @@ output.
 |---|---|
 | Preview | `--apply` is mandatory for every mutation |
 | Candidate set | apply uses exact previewed findings |
-| Category authority | Xcode and toolchain apply reassert the scanner's exact direct-child target shape |
+| Category authority | Xcode and toolchain apply reassert exact direct-child targets; `node_modules` apply reasserts its scanner's leaf and ancestor rules |
 | Trash | recoverable by default; permanent mode is explicit |
 | Danger gate | maximum finding score plus aggregate estimated logical bytes |
 | TUI consent | approval capability must match the current preview and danger requirement |
@@ -232,7 +236,8 @@ cargo build --release --locked --target aarch64-apple-darwin
 (cd video && npm ci --strict-allow-scripts && npm audit --package-lock-only --audit-level=low && npm run lint && npm run format:check && npm run build)
 bash scripts/tests/release-policy.sh
 bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
-shellcheck scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh && actionlint
+sh -n .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh
+scripts/tests/shellcheck-tracked.sh && actionlint
 gitleaks git --redact --no-banner .
 trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color
 ```

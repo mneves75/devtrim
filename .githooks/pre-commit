@@ -6,3 +6,4 @@ cd "$repo_root"
 
 ast-grep test --skip-snapshot-tests
 ast-grep scan --config sgconfig.yml
+scripts/tests/shellcheck-tracked.sh

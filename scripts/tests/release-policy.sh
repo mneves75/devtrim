@@ -73,6 +73,12 @@ homebrew_script="$repo_root/scripts/update-homebrew.sh"
 formula_updater="$repo_root/scripts/update-homebrew-formula.rb"
 release_workflow="$repo_root/.github/workflows/release.yml"
 ci_workflow="$repo_root/.github/workflows/ci.yml"
+precommit_hook="$repo_root/.githooks/pre-commit"
+shellcheck_script="$repo_root/scripts/tests/shellcheck-tracked.sh"
+gitleaks_control_script="$repo_root/scripts/tests/gitleaks-positive-control.sh"
+landing_page="$repo_root/index.html"
+manual_page="$repo_root/MANUAL.html"
+favicon="$repo_root/favicon.svg"
 dependabot="$repo_root/.github/dependabot.yml"
 npmrc="$repo_root/video/.npmrc"
 
@@ -85,6 +91,24 @@ require_fixed() {
   local file="$1"
   local text="$2"
   grep -Fq -- "$text" "$file" || fail "$file lacks required policy: $text"
+}
+
+require_line() {
+  local file="$1"
+  local text="$2"
+  grep -Fxq -- "$text" "$file" || fail "$file lacks required line: $text"
+}
+
+require_before() {
+  local file="$1"
+  local before="$2"
+  local after="$3"
+  local before_line
+  local after_line
+  before_line=$(grep -Fn -- "$before" "$file" | awk -F: 'NR == 1 { print $1 }')
+  after_line=$(grep -Fn -- "$after" "$file" | awk -F: 'END { print $1 }')
+  [[ -n "$before_line" && -n "$after_line" && "$before_line" -lt "$after_line" ]] ||
+    fail "$file must place '$before' before '$after'"
 }
 
 forbidden_local='^[[:space:]]*(cargo|npm|npx|rustup|ast-grep|gitleaks|trufflehog|shellcheck|actionlint)([[:space:]]|$)'
@@ -134,7 +158,8 @@ require_fixed "$release_workflow" 'cargo test --locked --all-targets --all-featu
 require_fixed "$release_workflow" 'rustup run 1.88.0 cargo test --locked --all-targets --all-features'
 require_fixed "$release_workflow" 'cargo audit --file fuzz/Cargo.lock'
 require_fixed "$release_workflow" 'bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh'
-require_fixed "$release_workflow" 'shellcheck scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh'
+require_fixed "$release_workflow" 'sh -n .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh'
+require_fixed "$release_workflow" 'scripts/tests/shellcheck-tracked.sh'
 require_fixed "$release_workflow" 'actionlint'
 require_fixed "$release_workflow" 'gitleaks git --redact --no-banner .'
 require_fixed "$release_workflow" 'trufflehog git "file://$(pwd)"'
@@ -153,6 +178,18 @@ require_fixed "$release_workflow" 'ERROR: fuzz gates changed the checkout'
 
 [[ "$(grep -c '^    runs-on: macos-15-intel$' "$release_workflow")" -eq 1 ]] ||
   fail "exactly the deterministic gate job must use the Intel runner required by pinned assets"
+[[ "$(grep -c '^    runs-on: macos-15$' "$release_workflow")" -eq 4 ]] ||
+  fail "all non-Intel release jobs must use the supported macos-15 arm64 runner"
+[[ "$(grep -c '^    runs-on: macos-15$' "$ci_workflow")" -eq 1 ]] ||
+  fail "CI must use exactly one supported macos-15 arm64 runner"
+[[ "$(grep -c '^          fetch-depth: 0$' "$ci_workflow")" -eq 1 ]] ||
+  fail "CI checkout must fetch full history exactly once for secret scans"
+if grep -Eq '^    runs-on: macos-15-intel$' "$ci_workflow"; then
+  fail "CI must not use the Intel runner required only by release-tool assets"
+fi
+if grep -Fq 'runs-on: macos-14' "$release_workflow" "$ci_workflow"; then
+  fail "deprecated macos-14 runners must not remain in CI or release workflows"
+fi
 
 require_fixed "$release_script" 'immutable-releases'
 if grep -Fq 'immutable-releases' "$release_workflow"; then
@@ -180,9 +217,65 @@ while IFS= read -r action_ref; do
 done < <(sed -n 's/^[[:space:]]*uses: [^@]*@\([0-9A-Za-z._-]*\).*/\1/p' "$release_workflow" "$ci_workflow")
 
 require_fixed "$ci_workflow" 'bash scripts/tests/release-policy.sh'
+require_fixed "$ci_workflow" 'fetch-depth: 0'
 require_fixed "$ci_workflow" 'cargo audit --file fuzz/Cargo.lock'
 require_fixed "$ci_workflow" 'npm ci --strict-allow-scripts'
+require_fixed "$ci_workflow" 'runs-on: macos-15'
+require_fixed "$ci_workflow" 'shellcheck-v0.11.0.darwin.aarch64.tar.gz'
+require_fixed "$ci_workflow" '339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f'
+require_fixed "$ci_workflow" 'pinned ShellCheck asset requires the macos-15 arm64 runner'
+require_fixed "$ci_workflow" 'sh -n .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh'
+require_fixed "$ci_workflow" 'scripts/tests/shellcheck-tracked.sh'
+require_fixed "$ci_workflow" 'name: Install checksum-verified secret scanners'
+require_fixed "$ci_workflow" 'pinned secret-scanner assets require the macos-15 arm64 runner'
+require_fixed "$ci_workflow" 'gh release download v8.30.1 -R gitleaks/gitleaks'
+require_fixed "$ci_workflow" 'gitleaks_8.30.1_darwin_arm64.tar.gz'
+require_fixed "$ci_workflow" 'b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5'
+require_fixed "$ci_workflow" 'gh release download v3.97.1 -R trufflesecurity/trufflehog'
+require_fixed "$ci_workflow" 'trufflehog_3.97.1_darwin_arm64.tar.gz'
+require_fixed "$ci_workflow" '1af86cf30c1cc5c1735ec6af9292b399ec9bed3ff1b30be13fcbfd4a30ab449a'
+require_fixed "$ci_workflow" '"$tool_bin/gitleaks" version | grep -Fqx '\''8.30.1'\'''
+require_fixed "$ci_workflow" '"$tool_bin/trufflehog" --version | grep -Fq '\''trufflehog 3.97.1'\'''
+require_fixed "$ci_workflow" 'scripts/tests/gitleaks-positive-control.sh "$tool_bin/gitleaks"'
+require_fixed "$ci_workflow" 'name: Full-history secret scans'
+require_fixed "$ci_workflow" 'gitleaks git --redact --no-banner .'
+require_fixed "$ci_workflow" 'trufflehog git "file://$(pwd)" --results=verified,unknown --fail'
+require_fixed "$ci_workflow" '--fail-on-scan-errors --no-update --no-color'
+require_fixed "$release_workflow" 'shellcheck-v0.11.0.darwin.x86_64.tar.gz'
+require_fixed "$release_workflow" 'c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51'
+require_fixed "$release_workflow" 'scripts/tests/gitleaks-positive-control.sh "$tool_bin/gitleaks"'
+require_before "$ci_workflow" \
+  'scripts/tests/gitleaks-positive-control.sh "$tool_bin/gitleaks"' \
+  'echo "$tool_bin" >> "$GITHUB_PATH"'
+require_before "$release_workflow" \
+  'scripts/tests/gitleaks-positive-control.sh "$tool_bin/gitleaks"' \
+  'echo "$tool_bin" >> "$GITHUB_PATH"'
+require_fixed "$release_workflow" 'cp MANUAL.html README.md LICENSE favicon.svg "dist/$out/"'
+require_fixed "$precommit_hook" 'scripts/tests/shellcheck-tracked.sh'
+[[ -x "$shellcheck_script" ]] || fail "shellcheck helper must be executable"
+require_fixed "$shellcheck_script" 'if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then'
+require_fixed "$shellcheck_script" 'if ! command -v shellcheck >/dev/null 2>&1; then'
+require_fixed "$shellcheck_script" 'shellcheck_paths=$(mktemp "${TMPDIR:-/tmp}/devtrim-shellcheck.XXXXXX")'
+require_fixed "$shellcheck_script" 'rm -f "$shellcheck_paths"'
+require_fixed "$shellcheck_script" 'trap cleanup_shellcheck_paths EXIT'
+require_fixed "$shellcheck_script" "if ! git ls-files -z -- '*.sh' > \"\$shellcheck_paths\"; then"
+require_fixed "$shellcheck_script" 'xargs -0 shellcheck -- .githooks/pre-commit < "$shellcheck_paths"'
+[[ -x "$gitleaks_control_script" ]] || fail "Gitleaks positive-control helper must be executable"
+require_fixed "$gitleaks_control_script" "'token = \"ghp_'"
+require_fixed "$gitleaks_control_script" "'dc831f20456cd20fa6'"
+require_fixed "$gitleaks_control_script" "'112d38ca4eb7fdb8f2'"
+require_fixed "$gitleaks_control_script" '"$gitleaks_bin" stdin --no-banner --redact --no-color'
+[[ -s "$favicon" ]] || fail "favicon.svg must exist and be non-empty"
+require_fixed "$landing_page" '<link rel="icon" href="favicon.svg" type="image/svg+xml">'
+require_fixed "$manual_page" '<link rel="icon" href="favicon.svg" type="image/svg+xml">'
 require_fixed "$dependabot" 'directory: /fuzz'
+require_line "$repo_root/.gitignore" '.env*'
+require_line "$repo_root/.gitignore" '!.env.example'
+require_line "$repo_root/.gitignore" '!.env.sample'
+require_line "$repo_root/.gitignore" '*.key'
+require_line "$repo_root/.gitignore" '*.pem'
+require_line "$repo_root/.gitignore" '*.p12'
+require_line "$repo_root/.gitignore" '*.pfx'
 [[ "$(tr -d '[:space:]' < "$npmrc")" == 'strict-allow-scripts=true' ]] ||
   fail "video/.npmrc must enable strict lifecycle-script allowlisting"
 
@@ -192,6 +285,144 @@ cleanup() {
   rm -r "$test_root"
 }
 trap cleanup EXIT
+
+gitleaks_mock="$test_root/gitleaks-positive"
+cat > "$gitleaks_mock" <<'EOF'
+#!/bin/sh
+set -eu
+input=$(cat)
+expected=$(printf '%s%s%s%s' 'token = "ghp_' 'dc831f20456cd20fa6' '112d38ca4eb7fdb8f2' '"')
+[ "$input" = "$expected" ] || exit 91
+[ "$*" = 'stdin --no-banner --redact --no-color' ] || exit 92
+exit 1
+EOF
+chmod +x "$gitleaks_mock"
+"$gitleaks_control_script" "$gitleaks_mock"
+
+gitleaks_noop="$test_root/gitleaks-noop"
+cat > "$gitleaks_noop" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+exit 0
+EOF
+chmod +x "$gitleaks_noop"
+set +e
+gitleaks_noop_output=$("$gitleaks_control_script" "$gitleaks_noop" 2>&1)
+gitleaks_noop_status=$?
+set -e
+[[ "$gitleaks_noop_status" -ne 0 ]] || fail "Gitleaks positive control accepted a no-op detector"
+grep -Fq 'expected leak exit 1, got 0' <<<"$gitleaks_noop_output" ||
+  fail "Gitleaks positive control did not explain a no-op detector"
+
+shellcheck_fixture="$test_root/shellcheck-fixture"
+shellcheck_bin="$test_root/shellcheck-bin"
+shellcheck_log="$test_root/shellcheck-args"
+mkdir -p "$shellcheck_fixture/.githooks" "$shellcheck_fixture/scripts/tests" "$shellcheck_bin"
+cp "$shellcheck_script" "$shellcheck_fixture/scripts/tests/shellcheck-tracked.sh"
+chmod +x "$shellcheck_fixture/scripts/tests/shellcheck-tracked.sh"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$shellcheck_fixture/.githooks/pre-commit"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$shellcheck_fixture/space name.sh"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$shellcheck_fixture/-leading.sh"
+cat > "$shellcheck_bin/shellcheck" <<'EOF'
+#!/bin/sh
+set -eu
+: "${DEVTRIM_SHELLCHECK_LOG:?}"
+for argument in "$@"; do
+  printf '%s\n' "$argument"
+done > "$DEVTRIM_SHELLCHECK_LOG"
+EOF
+chmod +x "$shellcheck_bin/shellcheck"
+git -C "$shellcheck_fixture" init -b main >/dev/null
+git -C "$shellcheck_fixture" add -- \
+  .githooks/pre-commit scripts/tests/shellcheck-tracked.sh 'space name.sh' '-leading.sh'
+(
+  cd "$shellcheck_fixture"
+  DEVTRIM_SHELLCHECK_LOG="$shellcheck_log" PATH="$shellcheck_bin:$PATH" \
+    scripts/tests/shellcheck-tracked.sh
+)
+for expected_argument in -- .githooks/pre-commit scripts/tests/shellcheck-tracked.sh 'space name.sh' '-leading.sh'; do
+  [[ "$(grep -Fxc -- "$expected_argument" "$shellcheck_log")" -eq 1 ]] ||
+    fail "ShellCheck helper did not preserve argument: $expected_argument"
+done
+
+shellcheck_git_fail_bin="$test_root/shellcheck-git-fail-bin"
+mkdir -p "$shellcheck_git_fail_bin"
+cat > "$shellcheck_git_fail_bin/git" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  rev-parse)
+    pwd
+    ;;
+  ls-files)
+    exit 93
+    ;;
+  *)
+    exit 94
+    ;;
+esac
+EOF
+chmod +x "$shellcheck_git_fail_bin/git"
+rm -f "$shellcheck_log"
+set +e
+enumeration_output=$(
+  cd "$shellcheck_fixture"
+  DEVTRIM_SHELLCHECK_LOG="$shellcheck_log" \
+    PATH="$shellcheck_git_fail_bin:$shellcheck_bin:$PATH" \
+    scripts/tests/shellcheck-tracked.sh 2>&1
+)
+enumeration_status=$?
+set -e
+[[ "$enumeration_status" -ne 0 ]] || fail "ShellCheck helper ignored Git enumeration failure"
+[[ ! -e "$shellcheck_log" ]] || fail "ShellCheck ran after Git enumeration failed"
+grep -Fq 'cannot enumerate tracked shell scripts' <<<"$enumeration_output" ||
+  fail "ShellCheck helper did not explain Git enumeration failure"
+
+shellcheck_missing_bin="$test_root/shellcheck-missing-bin"
+mkdir -p "$shellcheck_missing_bin"
+cat > "$shellcheck_missing_bin/git" <<EOF
+#!/bin/sh
+case "\${1:-}" in
+  rev-parse)
+    printf '%s\n' '$shellcheck_fixture'
+    ;;
+  *)
+    exit 94
+    ;;
+esac
+EOF
+chmod +x "$shellcheck_missing_bin/git"
+rm -f "$shellcheck_log"
+set +e
+missing_shellcheck_output=$(
+  cd "$shellcheck_fixture"
+  DEVTRIM_SHELLCHECK_LOG="$shellcheck_log" PATH="$shellcheck_missing_bin" \
+    scripts/tests/shellcheck-tracked.sh 2>&1
+)
+missing_shellcheck_status=$?
+set -e
+[[ "$missing_shellcheck_status" -ne 0 ]] || fail "ShellCheck helper passed without shellcheck on PATH"
+[[ ! -e "$shellcheck_log" ]] || fail "ShellCheck ran after shellcheck availability check failed"
+grep -Fq 'shellcheck is required but was not found in PATH' <<<"$missing_shellcheck_output" ||
+  fail "ShellCheck helper did not explain missing shellcheck"
+
+shellcheck_outside="$test_root/shellcheck-outside"
+mkdir -p "$shellcheck_outside"
+cp "$shellcheck_script" "$shellcheck_outside/shellcheck-tracked.sh"
+chmod +x "$shellcheck_outside/shellcheck-tracked.sh"
+rm -f "$shellcheck_log"
+set +e
+outside_output=$(
+  cd "$shellcheck_outside"
+  DEVTRIM_SHELLCHECK_LOG="$shellcheck_log" PATH="$shellcheck_bin:$PATH" \
+    ./shellcheck-tracked.sh 2>&1
+)
+outside_status=$?
+set -e
+[[ "$outside_status" -ne 0 ]] || fail "ShellCheck helper passed outside a Git worktree"
+[[ ! -e "$shellcheck_log" ]] || fail "ShellCheck ran after Git worktree discovery failed"
+grep -Fq 'cannot locate the Git worktree for shell lint' <<<"$outside_output" ||
+  fail "ShellCheck helper did not explain Git worktree discovery failure"
+
 origin="$test_root/origin.git"
 seed="$test_root/seed"
 subject="$test_root/subject"

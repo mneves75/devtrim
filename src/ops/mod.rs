@@ -12,13 +12,26 @@ pub mod toolchains;
 pub mod xcode;
 
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::report::{Action, Finding, Summary};
-use crate::safety::{Ctx, FileIdentity, VerifiedTarget};
+use crate::safety::{Ctx, FileIdentity, VerifiedTarget, is_git_metadata_name};
 
 static QUARANTINE_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn is_node_modules_name(name: &OsStr) -> bool {
+    name.as_bytes().eq_ignore_ascii_case(b"node_modules")
+}
+
+pub(crate) fn has_node_modules_ancestor(path: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .filter_map(|ancestor| ancestor.file_name())
+        .any(is_node_modules_name)
+}
 
 pub use icloud::icloud_status;
 
@@ -273,14 +286,8 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                 )
             })?;
             ensure_same_device(root_identity, deletion_device, &quarantine_path)?;
-            refuse_git_repository_root_handle(&target_dir, &quarantine_path)?;
             let names = directory_entry_names(&target_dir, &quarantine_path)?;
-            if names.iter().any(|name| name == ".git") {
-                anyhow::bail!(
-                    "refusing Git repository/worktree root: {}",
-                    quarantine_path.display()
-                );
-            }
+            refuse_git_repository_root_names(&names, &quarantine_path)?;
             let mut frames = vec![RemovalFrame {
                 dir: target_dir,
                 path: quarantine_path.clone(),
@@ -323,8 +330,8 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                                     child_path.display()
                                 );
                             }
-                            refuse_git_repository_root_handle(&child, &child_path)?;
                             let names = directory_entry_names(&child, &child_path)?;
+                            refuse_git_repository_root_names(&names, &child_path)?;
                             RemovalStep::Descend(RemovalFrame {
                                 dir: child,
                                 path: child_path,
@@ -435,12 +442,15 @@ fn ensure_same_device(identity: FileIdentity, expected_device: u64, path: &Path)
 }
 
 fn refuse_git_repository_root_handle(dir: &cap_std::fs::Dir, path: &Path) -> Result<()> {
-    match dir.symlink_metadata(Path::new(".git")) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Ok(_) => anyhow::bail!("refusing Git repository/worktree root: {}", path.display()),
-        Err(error) => Err(error)
-            .with_context(|| format!("cannot inspect Git marker under {}", path.display())),
+    let names = directory_entry_names(dir, path)?;
+    refuse_git_repository_root_names(&names, path)
+}
+
+fn refuse_git_repository_root_names(names: &[std::ffi::OsString], path: &Path) -> Result<()> {
+    if names.iter().any(|name| is_git_metadata_name(name)) {
+        anyhow::bail!("refusing Git repository/worktree root: {}", path.display());
     }
+    Ok(())
 }
 
 fn directory_entry_names(dir: &cap_std::fs::Dir, path: &Path) -> Result<Vec<std::ffi::OsString>> {
@@ -462,12 +472,10 @@ fn preflight_same_device_tree(
     let root_identity = file_identity_for_dir(dir)
         .with_context(|| format!("cannot inspect open directory: {}", path.display()))?;
     ensure_same_device(root_identity, expected_device, path)?;
-    refuse_git_repository_root_handle(dir, path)?;
+    let names = directory_entry_names(dir, path)?;
+    refuse_git_repository_root_names(&names, path)?;
 
-    for name in directory_entry_names(dir, path)? {
-        if name == ".git" {
-            anyhow::bail!("refusing Git repository/worktree root: {}", path.display());
-        }
+    for name in names {
         let child_path = path.join(&name);
         let metadata = dir
             .symlink_metadata(&name)
@@ -617,21 +625,30 @@ pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
     let directory = crate::safety::validate_trash_root(&ctx.home)?;
     let mut entries = std::fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
-    entries
-        .into_iter()
-        .map(|entry| {
-            let path = entry.path();
-            let size = dir_size(&path)?;
-            Ok(Finding::new(
-                format!("Trash item: {}", entry.file_name().to_string_lossy()),
-                Some(path),
-                size,
-                "permanent purge; Finder recovery is no longer available afterward",
-                9,
-                Action::Shred,
-            ))
-        })
-        .collect()
+    let mut findings = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if is_git_metadata_name(&entry.file_name()) {
+            ctx.diagnostic(
+                "warn",
+                format!(
+                    "skipping Git metadata Trash item: {}",
+                    entry.path().display()
+                ),
+            );
+            continue;
+        }
+        let path = entry.path();
+        let size = dir_size(&path)?;
+        findings.push(Finding::new(
+            format!("Trash item: {}", entry.file_name().to_string_lossy()),
+            Some(path),
+            size,
+            "permanent purge; Finder recovery is no longer available afterward",
+            9,
+            Action::Shred,
+        ));
+    }
+    Ok(findings)
 }
 
 pub fn purge_trash(findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
@@ -755,13 +772,13 @@ mod tests {
         let finding = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
         let expected = finding.identity().unwrap();
         let verified = crate::safety::validate_path_for_deletion(&target, &home, &[]).unwrap();
-        std::fs::write(target.join(".git"), "gitdir: elsewhere\n").unwrap();
+        std::fs::write(target.join(".GIT"), "gitdir: elsewhere\n").unwrap();
 
         let error = remove_path(verified, true, expected).unwrap_err();
 
         assert!(error.to_string().contains("Git repository/worktree root"));
         assert_eq!(
-            std::fs::read_to_string(target.join(".git")).unwrap(),
+            std::fs::read_to_string(target.join(".GIT")).unwrap(),
             "gitdir: elsewhere\n"
         );
         assert!(std::fs::read_dir(home.join("dev")).unwrap().all(|entry| {
@@ -785,7 +802,7 @@ mod tests {
         let nested = target.join("nested");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(
-            nested.join(".git"),
+            nested.join(".GIT"),
             "gitdir: ../repository/.git/worktrees/nested\n",
         )
         .unwrap();
@@ -802,7 +819,7 @@ mod tests {
         assert!(format!("{error:#}").contains("Git repository/worktree root"));
         assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
         assert_eq!(
-            std::fs::read_to_string(target.join("nested/.git")).unwrap(),
+            std::fs::read_to_string(target.join("nested/.GIT")).unwrap(),
             "gitdir: ../repository/.git/worktrees/nested\n"
         );
         assert!(target.is_dir());
@@ -820,7 +837,7 @@ mod tests {
         let nested = target.join("nested");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(
-            nested.join(".git"),
+            nested.join(".GIT"),
             "gitdir: ../repository/.git/worktrees/nested\n",
         )
         .unwrap();
@@ -837,7 +854,7 @@ mod tests {
         assert!(error.to_string().contains("Git repository/worktree root"));
         assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
         assert_eq!(
-            std::fs::read_to_string(target.join("nested/.git")).unwrap(),
+            std::fs::read_to_string(target.join("nested/.GIT")).unwrap(),
             "gitdir: ../repository/.git/worktrees/nested\n"
         );
         assert!(target.is_dir());
@@ -1204,6 +1221,49 @@ mod tests {
         assert!(!previewed.exists());
         assert_eq!(std::fs::read_to_string(&added_later).unwrap(), "keep");
         std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn trash_preview_skips_git_metadata_item_without_blocking_other_items() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-trash-git-item-{}", std::process::id()));
+        remove_test_path(&root);
+        std::fs::create_dir_all(root.join(".Trash/.GIT")).unwrap();
+        std::fs::write(root.join(".Trash/.GIT/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(root.join(".Trash/git"), "ordinary").unwrap();
+        std::fs::write(root.join(".Trash/z-later"), "delete").unwrap();
+        let home = root.canonicalize().unwrap();
+        let ctx = context(home.clone());
+
+        let findings = trash_findings(&ctx).unwrap();
+
+        assert_eq!(findings.len(), 2);
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.target() != Some(home.join(".Trash/.GIT").as_path()))
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.target() == Some(home.join(".Trash/git").as_path()))
+        );
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|message| message.contains("skipping Git metadata Trash item"))
+        );
+
+        let outcome = purge_trash(&findings, &ctx).unwrap();
+
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        assert_eq!(outcome.summary.items_touched, 2);
+        assert!(home.join(".Trash/.GIT/HEAD").exists());
+        assert!(!home.join(".Trash/git").exists());
+        assert!(!home.join(".Trash/z-later").exists());
+        remove_test_path(root);
     }
 
     #[test]

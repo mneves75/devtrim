@@ -17,14 +17,23 @@ violates one cannot merge, so reporting it wastes the review.
 | --- | --- |
 | `cargo fmt --all -- --check` | all formatting |
 | `cargo clippy --all-targets --all-features -- -D warnings` | every default clippy lint, plus `unsafe_code = "forbid"`, `unwrap_used`, `expect_used`, `panic`, `unreachable`, `todo`, `unimplemented`, `dbg_macro`, and `allow_attributes_without_reason` |
-| `ast-grep scan --config sgconfig.yml` | `no-direct-filesystem-delete` and `no-unowned-filesystem-delete-in-owner-module` (which pin the sink signature `fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity)` and sanction `crate::ops::remove_test_path` as the only test escape hatch); `no-shell-invocation`; `no-abbreviated-bindings` |
+| `ast-grep scan --config sgconfig.yml` | `no-direct-filesystem-delete` and `no-unowned-filesystem-delete-in-owner-module` (which pin the sink signature `fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity)` and sanction `crate::ops::remove_test_path` and the file's `#[cfg(test)] mod tests` as the test escape hatches); `no-shell-invocation`; `no-abbreviated-bindings` |
 | `cargo test --all-targets --all-features` | unit and CLI integration coverage |
 | `rustup run 1.88.0 cargo test` | MSRV |
 | `cargo audit` (root and `fuzz/`) | advisories |
-| `cmp -s AGENTS.md CLAUDE.md` | the two agent docs are byte-identical |
+| `scripts/tests/shellcheck-tracked.sh` | every tracked `*.sh` plus the pre-commit hook; the helper uses a temporary NUL-delimited Git-index manifest, preserves whitespace, protects leading dashes, and fails before linting if ShellCheck is unavailable or worktree discovery/enumeration fails |
+| `bash -n` on the four Bash scripts, `sh -n` on the hook, ShellCheck helper, and Gitleaks positive-control helper, then `scripts/tests/release-policy.sh` | shell syntax, positive controls for difficult filenames, missing ShellCheck, and worktree failure, and that the hook, `ci.yml`, and `release.yml` still carry each pinned safety clause |
+| `npm run lint` in `video/` (`eslint src && tsc`) | Remotion lint rules and TypeScript types |
+| `npm run format:check` in `video/` (prettier) | all `video/src` formatting |
+| `npm ci --strict-allow-scripts` + `npm audit --package-lock-only --audit-level=low` | video advisories, and lifecycle scripts restricted to the `allowScripts` allowlist |
+| `npm run build` in `video/` (`remotion bundle`) | the video bundle still builds |
+| `gitleaks git --redact --no-banner .` and `trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color` | full-history secret scans in ordinary PR/main CI and release gates; the Gitleaks installer first proves detection with a non-allowlisted synthetic PAT assembled at runtime |
 
-The five bounded fuzz targets are release gates, not merge gates. Review may
-still report missing fuzz coverage for a changed parser or safety boundary.
+Some gates run only in `release.yml`, so a pull request can merge without them
+and review still owns what they cover: the five bounded fuzz targets
+(report missing fuzz coverage for a changed parser or safety boundary),
+`cmp -s AGENTS.md CLAUDE.md` (check the two agent docs changed together — S11),
+and `actionlint`.
 
 Both new rules have a stated blind spot, and the blind spot is where review
 still has work to do. `no-abbreviated-bindings` checks binding positions —
@@ -61,7 +70,7 @@ positive control. Precedent, by searchable phrase: a surviving sentinel in
 `src/ops/mod.rs` (`"keep"`), proof the stub actually ran in `tests/cli.rs`
 (`the fake npm owner command was not exercised`), and a real existing parent so
 the fuzz oracle is not vacuously false in `fuzz/fuzz_targets/validate_path.rs`
-(`prevents the filesystem-dependent validator`).
+(`A real existing-parent control`).
 
 ### S2 — Change-detector tests
 
@@ -109,8 +118,9 @@ Fix: the reason must say *why* control cannot arrive here, as the
 
 ### S6 — Names are spelled out
 
-**Judgement.** An abbreviation outside the gated denylist: `op`, `f`, `n`, `s`,
-`cfg`, `buf`, `ctx` in a new position.
+**Judgement.** An abbreviation outside the gated denylist — which is
+`e err md dst tmp val idx res ret cnt num arr obj str` — so `op`, `f`, `n`,
+`s`, `cfg`, `buf`, `ctx` in a new position are review's to catch.
 
 Fix: `operation`, `file`, `count`, `source`, `configuration`, `buffer`. Only
 serialized JSON keys keep short forms (`Summary.op`), and `ctx` is established
@@ -180,8 +190,11 @@ Fix: name the program as a literal at the call site, or take it from
 `src/ops/docker.rs`, `src/ops/simulators.rs`, and `src/ops/caches.rs` are
 approved because their program comes from a closed enum or an owner namespace.
 Docker's absolute local Unix-socket endpoint and the simulator UDID must be
-validated and carried by the closed authority. `repo_last_commit_with` takes
-`"git"` from its only production caller.
+validated and carried by the closed authority. `repo_last_commit_with` in
+`src/ops/project.rs` takes `"git"` from its only production caller. That is the
+whole approved list for production: the only other variable program in the tree
+is `std::env::current_exe()` re-invoking the test binary inside
+`#[cfg(test)] mod tests` in `src/journal.rs`. A sixth site is a finding.
 
 ## Adding a rule
 

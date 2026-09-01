@@ -102,7 +102,7 @@ h1 {
 
 .hero-fig { position: relative; margin: 0; border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--line); }
 .hero-fig img { width: 100%; }
-.hero-fig figcaption { position: absolute; inset-inline-start: 0; inset-block-start: 0; padding: 0.55rem 0.9rem; color: var(--subtle); font-size: 0.82rem; background: rgba(10, 10, 10, 0.72); border-end-end-radius: 0.6rem; }
+.hero-fig figcaption { position: absolute; inset-inline-start: 0; inset-block-start: 0; padding: 0.55rem 0.9rem; color: var(--text); font-size: 0.82rem; background: rgba(10, 10, 10, 0.72); border-end-end-radius: 0.6rem; }
 
 /* ---------- sections ---------- */
 section { padding-block: clamp(3rem, 9vh, 6rem); }

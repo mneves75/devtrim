@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::safety::is_git_metadata_name;
+
 pub(crate) fn owning_repo(path: &Path) -> Result<Option<PathBuf>> {
     let mut current = path.to_path_buf();
     while current.parent().is_some() {
@@ -16,13 +18,20 @@ pub(crate) fn owning_repo(path: &Path) -> Result<Option<PathBuf>> {
 }
 
 pub(crate) fn has_git_marker(path: &Path) -> Result<bool> {
-    let marker = path.join(".git");
-    match std::fs::symlink_metadata(&marker) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => {
-            Err(error).with_context(|| format!("cannot inspect Git marker {}", marker.display()))
+    match std::fs::read_dir(path) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry
+                    .with_context(|| format!("cannot read Git marker under {}", path.display()))?;
+                if is_git_metadata_name(&entry.file_name()) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("cannot inspect Git marker under {}", path.display())),
     }
 }
 
@@ -176,12 +185,26 @@ mod tests {
         let base = temp("git-marker");
         let file_target = base.join("file-target");
         let directory_target = base.join("directory-target");
+        let case_targets = [
+            ("upper-target", ".GIT"),
+            ("title-target", ".Git"),
+            ("mixed-target", ".gIt"),
+        ];
+        let normal_target = base.join("normal-target");
         std::fs::create_dir_all(&file_target).unwrap();
         std::fs::create_dir_all(directory_target.join(".git")).unwrap();
+        for (directory, marker) in case_targets {
+            std::fs::create_dir_all(base.join(directory).join(marker)).unwrap();
+        }
+        std::fs::create_dir_all(normal_target.join("git")).unwrap();
         std::fs::write(file_target.join(".git"), "gitdir: elsewhere").unwrap();
 
         assert!(has_git_marker(&file_target).unwrap());
         assert!(has_git_marker(&directory_target).unwrap());
+        for (directory, _) in case_targets {
+            assert!(has_git_marker(&base.join(directory)).unwrap());
+        }
+        assert!(!has_git_marker(&normal_target).unwrap());
         assert!(!has_git_marker(&base.join("missing")).unwrap());
         crate::ops::remove_test_path(base);
     }

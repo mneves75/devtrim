@@ -2,20 +2,25 @@
 
 ## Current state
 
-devtrim 0.6.2 is the immutable production release. Production reused the exact
+devtrim 0.6.3 is the immutable production release. Production reused the exact
 verified beta artifact, and the Homebrew tap plus the sole visible local
-installation report 0.6.2. That release binds Docker cleanup to one validated
-local Unix-socket endpoint, replaces aggregate simulator deletion with exact
-rechecked UDIDs, extends same-device/nested-Git preflight to Trash directories,
-and makes metadata and liveness uncertainty fail closed.
+installation report 0.6.3. That release closed eight evidence-backed gaps:
+terminal-safe complete command actions, TUI protected-Trash filtering before
+approval, fail-closed present Swift aliases, capability-scoped global flags
+(including command-only `--shred` rejection), implicit-TUI JSON rejection, exact
+release-version declarations, and category-specific apply authorization for
+Xcode/toolchain direct children.
 
-The 0.6.3 candidate completed local release verification and is ready for beta
-staging; production remains 0.6.2. Its source/security review
-closed eight evidence-backed gaps: terminal-safe complete command actions, TUI
-protected-Trash filtering before approval, fail-closed present Swift aliases,
-capability-scoped global flags (including command-only `--shred` rejection),
-implicit-TUI JSON rejection, exact release-version declarations, and
-category-specific apply authorization for Xcode/toolchain direct children.
+The current Unreleased tree extends category authorization to `node_modules`,
+denies Git metadata names ASCII-case-insensitively from scan through
+open-handle preflight, and aligns artifact scan/apply around the same
+case-insensitive dependency-namespace boundary. Direct `.git` case variants in
+Trash are warned about and left without blocking other exact items. Ordinary CI
+now runs full-history Gitleaks and TruffleHog gates; Gitleaks must trip a
+non-allowlisted runtime positive control before its directory reaches `PATH` or
+either CI path trusts a clean result. The source landing page now targets the
+immutable v0.6.3 release, but the public GitHub Pages deployment still serves
+v0.6.2; no push or deployment was authorized for this worktree.
 
 On a controlled `node_modules` corpus, devtrim and Mole 1.52.0 both found the
 same 20 stale trees and excluded all 5 recent controls. Under high machine load,
@@ -26,6 +31,17 @@ is a narrow scanner-path comparison, not a whole-product performance claim.
 
 - Physical removal accepts only a private `VerifiedTarget`; serialized paths
   are presentation-only.
+- Git metadata matching is ASCII-case-insensitive at scanner, ownership,
+  category, target-validation, and open-handle boundaries; an ordinary
+  directory named `git` remains eligible.
+- `node_modules` apply independently reasserts a real leaf inside its physical
+  owner and rejects raw non-normal spellings, symlinked category ancestors,
+  ASCII-case-insensitive Git metadata and outer dependency namespaces before
+  the shared sink.
+- Artifact scan and apply independently reject ASCII-case variants of the
+  `node_modules` namespace; the scanner alone is never deletion authority.
+- Direct Git-metadata-named Trash children remain in place with a warning and
+  do not block other exact previewed items.
 - Owner-reported npm and Homebrew caches are authorized only inside exact
   program namespaces and revalidated at apply.
 - The structural deletion rule has positive-control tests and runs in

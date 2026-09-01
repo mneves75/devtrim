@@ -9,8 +9,11 @@ use super::project::{
     has_git_marker, is_directory_if_present, iso_days_ago, normalized_roots, owning_repo,
     repo_has_active_build, repo_last_commit,
 };
-use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size};
-use crate::safety::{Ctx, build_process_cwds, escalate};
+use super::{
+    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size,
+    has_node_modules_ancestor, is_node_modules_name,
+};
+use crate::safety::{Ctx, build_process_cwds, escalate, is_git_metadata_name};
 
 const CACHEDIR_SIGNATURE: &[u8; 43] = b"Signature: 8a477f597d28d172789f06886806bc55";
 const EXCLUDED_NAMES: &[&str] = &[
@@ -162,6 +165,12 @@ impl Artifacts {
                         path.display()
                     );
                 }
+                if has_node_modules_ancestor(path) {
+                    anyhow::bail!(
+                        "refusing artifact target under an excluded node_modules ancestor: {}",
+                        path.display()
+                    );
+                }
                 let owner = owning_repo(path)?.ok_or_else(|| {
                     anyhow::anyhow!("cannot prove Git owner for {}", path.display())
                 })?;
@@ -227,7 +236,7 @@ fn find_artifacts(root: &Path) -> Result<Vec<ArtifactCandidate>> {
         if !entry.file_type().is_dir() {
             continue;
         }
-        if entry.file_name() == ".git" || entry.file_name() == "node_modules" {
+        if is_git_metadata_name(entry.file_name()) || is_node_modules_name(entry.file_name()) {
             entries.skip_current_dir();
             continue;
         }
@@ -386,6 +395,42 @@ mod tests {
         }
     }
 
+    fn init_old_git_repo(repo: &Path) {
+        std::fs::create_dir_all(repo).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=devtrim-test",
+                    "-c",
+                    "user.email=devtrim@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "--allow-empty",
+                    "-q",
+                    "-m",
+                    "old fixture",
+                ])
+                .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+                .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+                .current_dir(repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
     #[test]
     fn corroboration_matrix_is_fail_closed() {
         let root = temp("corroboration");
@@ -450,18 +495,86 @@ mod tests {
     #[test]
     fn walker_prunes_git_node_modules_and_matched_artifacts() {
         let root = temp("walker");
-        std::fs::create_dir_all(root.join(".git/hidden/target")).unwrap();
-        std::fs::write(root.join(".git/hidden/Cargo.toml"), "[package]").unwrap();
+        std::fs::create_dir_all(root.join(".GIT/hidden/target")).unwrap();
+        std::fs::write(root.join(".GIT/hidden/Cargo.toml"), "[package]").unwrap();
         std::fs::create_dir_all(root.join("node_modules/pkg/target")).unwrap();
         std::fs::write(root.join("node_modules/pkg/Cargo.toml"), "[package]").unwrap();
+        let case_variant = root.join("case-app/NODE_MODULES/pkg/target");
+        std::fs::create_dir_all(&case_variant).unwrap();
+        std::fs::write(
+            root.join("case-app/NODE_MODULES/pkg/Cargo.toml"),
+            "[package]",
+        )
+        .unwrap();
+        let ordinary = root.join("node-modules/pkg/target");
+        std::fs::create_dir_all(&ordinary).unwrap();
+        std::fs::write(root.join("node-modules/pkg/Cargo.toml"), "[package]").unwrap();
         std::fs::create_dir_all(root.join(".next/nested/target")).unwrap();
         std::fs::write(root.join(".next/nested/Cargo.toml"), "[package]").unwrap();
+        std::fs::create_dir_all(root.join("git/nested/target")).unwrap();
+        std::fs::write(root.join("git/nested/Cargo.toml"), "[package]").unwrap();
         std::fs::write(root.join("package.json"), "{}").unwrap();
 
         let found = find_artifacts(&root).unwrap();
 
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].path, root.join(".next"));
+        let paths = found
+            .iter()
+            .map(|candidate| candidate.path.as_path())
+            .collect::<Vec<_>>();
+        assert_eq!(paths.len(), 3);
+        assert!(paths.contains(&root.join(".next").as_path()));
+        assert!(paths.contains(&root.join("git/nested/target").as_path()));
+        assert!(paths.contains(&ordinary.as_path()));
+        assert!(!paths.contains(&case_variant.as_path()));
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn apply_rejects_artifact_under_case_variant_node_modules_ancestor() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "devtrim-artifact-case-ancestor-{}",
+                std::process::id()
+            ));
+        crate::ops::remove_test_path(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let home = root.canonicalize().unwrap();
+        let repo = home.join("repo");
+        init_old_git_repo(&repo);
+        let target = repo.join("packages/NODE_MODULES/pkg/target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(
+            target.parent().unwrap().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n",
+        )
+        .unwrap();
+        let sentinel = target.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let finding = Finding::new(
+            "forged target artifacts under dependency namespace",
+            Some(target.clone()),
+            4,
+            "test",
+            9,
+            Action::Shred,
+        );
+        let ctx = context(home.clone());
+
+        let outcome = Artifacts
+            .apply_with_process_cwds(&[finding], &ctx, Ok(Vec::new()))
+            .unwrap();
+
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("excluded node_modules ancestor")),
+            "unexpected outcome: {outcome:?}"
+        );
+        assert!(sentinel.exists());
         crate::ops::remove_test_path(root);
     }
 

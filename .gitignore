@@ -2,3 +2,12 @@
 /dist
 /video/node_modules
 /video/out
+
+# Local credentials and signing material must never enter the repository.
+.env*
+!.env.example
+!.env.sample
+*.key
+*.pem
+*.p12
+*.pfx

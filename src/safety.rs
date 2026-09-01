@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use std::cell::RefCell;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,10 @@ const PROTECTED: &[&str] = &[
 ];
 
 const PROTECTED_USER: &[&str] = &["Library", ".ssh", ".gnupg"];
+
+pub(crate) fn is_git_metadata_name(name: &OsStr) -> bool {
+    name.as_encoded_bytes().eq_ignore_ascii_case(b".git")
+}
 
 // `Ctx::protect` predates apply-time alias revalidation and is also built
 // directly by tests in other modules. Keep its `Vec<PathBuf>` shape while
@@ -297,6 +301,9 @@ pub(crate) fn validate_path_for_deletion(
 ) -> Result<VerifiedTarget> {
     revalidate_configured_protect_aliases(protect)?;
     let literal = abs(path);
+    if path_contains_git_metadata_component(&literal) {
+        bail!("refusing path inside Git metadata: {}", literal.display());
+    }
     if is_protected(&literal, home) {
         bail!("refusing protected path: {}", literal.display());
     }
@@ -380,6 +387,12 @@ fn configured_protect_values(protect: &[PathBuf]) -> &[PathBuf] {
     }
 }
 
+fn path_contains_git_metadata_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(component, std::path::Component::Normal(name) if is_git_metadata_name(name))
+    })
+}
+
 fn refuse_git_repository_root(path: &Path) -> Result<()> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -392,14 +405,26 @@ fn refuse_git_repository_root(path: &Path) -> Result<()> {
     if !metadata.is_dir() {
         return Ok(());
     }
-    let marker = path.join(".git");
-    match std::fs::symlink_metadata(&marker) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Ok(_) => bail!("refusing Git repository/worktree root: {}", path.display()),
-        Err(error) => {
-            Err(error).with_context(|| format!("cannot inspect Git marker: {}", marker.display()))
+    if directory_contains_git_metadata_entry(path)? {
+        bail!("refusing Git repository/worktree root: {}", path.display());
+    }
+    Ok(())
+}
+
+fn directory_contains_git_metadata_entry(path: &Path) -> Result<bool> {
+    for entry in std::fs::read_dir(path).with_context(|| {
+        format!(
+            "cannot read directory for Git marker check: {}",
+            path.display()
+        )
+    })? {
+        let entry = entry
+            .with_context(|| format!("cannot read directory entry under {}", path.display()))?;
+        if is_git_metadata_name(&entry.file_name()) {
+            return Ok(true);
         }
     }
+    Ok(false)
 }
 
 pub(crate) fn is_config_protected(path: &Path, protect: &[PathBuf]) -> bool {
@@ -987,6 +1012,38 @@ mod tests {
             assert!(error.to_string().contains("Git repository/worktree root"));
             assert!(target.exists());
         }
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn deletion_validation_refuses_git_metadata_case_variants() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-git-case-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        let repository = home.join("dev/repository");
+        let metadata_target = home.join("dev/repository/.GIT/objects/target");
+        let normal_target = home.join("dev/repository/git/objects/target");
+        std::fs::create_dir_all(&metadata_target).unwrap();
+        std::fs::create_dir_all(&normal_target).unwrap();
+        let home = home.canonicalize().unwrap();
+
+        for variant in [".GIT", ".Git", ".gIt"] {
+            let target = home
+                .join("dev/repository")
+                .join(variant)
+                .join("objects/target");
+            let error = validate_path_for_deletion(&target, &home, &[]).unwrap_err();
+            assert!(error.to_string().contains("inside Git metadata"));
+        }
+        assert!(validate_path_for_deletion(&normal_target, &home, &[]).is_ok());
+        let repository_error = validate_path_for_deletion(&repository, &home, &[]).unwrap_err();
+        assert!(
+            repository_error
+                .to_string()
+                .contains("Git repository/worktree root")
+        );
         crate::ops::remove_test_path(home);
     }
 

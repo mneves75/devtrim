@@ -8,6 +8,7 @@
 <meta name="referrer" content="no-referrer">
 <meta name="description" content="devtrim manual — measure, classify, trim. Safe disk hygiene for macOS developer machines.">
 <title>devtrim — Manual</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <script>
 /* Pre-paint theme restore (FOUC guard). */
 { const s = localStorage.getItem("devtrim-theme");
@@ -516,7 +517,7 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">node-modules</span><span class="cmd-desc">exact paths in conclusively stale repos</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Maps each <code>node_modules</code> to its owning Git repo, skips recent commits, and applies only the exact paths shown. Unknown Git activity is refused. Dependency and <code>.git</code> trees are not traversed.</p></div>
+    <div class="card-body"><p>Maps each <code>node_modules</code> to its owning Git repo, skips recent commits, and applies only the exact paths shown. Apply reasserts a real <code>node_modules</code> directory leaf and refuses symlinks plus <code>.git</code>, nested dependency-tree, or non-normal ancestors. Unknown Git activity is refused.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">artifacts</span><span class="cmd-desc">corroborated build artifacts in stale repos</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
@@ -546,7 +547,7 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">trash-empty</span><span class="cmd-desc">purge ~/.Trash permanently</span><span class="pill r"><span class="sq"><i class="on"></i><i class="on"></i><i class="on"></i></span>NUKE</span></summary>
-    <div class="card-body"><p>Preview with <code>--confirm=&lt;gb&gt;</code>; every current top-level Trash item is shown as an exact target. Permanent purge additionally requires <code>--apply</code>, and the approximate size must match within ±2 GB. Items moved to Trash after preview are not added to the plan.</p></div>
+    <div class="card-body"><p>Preview with <code>--confirm=&lt;gb&gt;</code>; every eligible current top-level Trash item is shown as an exact target. Permanent purge additionally requires <code>--apply</code>, and the approximate size must match within ±2 GB. Items moved to Trash after preview are not added to the plan. A direct item named as an ASCII-case variant of <code>.git</code> is warned about and left in Trash instead of blocking the other exact items.</p></div>
   </details>
 </section>
 
@@ -561,7 +562,7 @@ devtrim clean caches</code></pre>
       <tr><td data-th="Layer">Preview default</td><td data-th="Rule">without <code>--apply</code>, nothing mutates — ever</td><td data-th="Bypass">none needed (default)</td></tr>
       <tr><td data-th="Layer">Trash-first</td><td data-th="Rule">filesystem deletes go to <code>~/.Trash</code></td><td data-th="Bypass"><code>--shred</code></td></tr>
       <tr><td data-th="Layer">Typed target</td><td data-th="Rule">only an exact validated path can reach removal; display text has no authority</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
-      <tr><td data-th="Layer">Category authority</td><td data-th="Rule">Xcode and toolchain apply reassert the scanner's exact direct-child target shape</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
+      <tr><td data-th="Layer">Category authority</td><td data-th="Rule">Xcode and toolchain apply reassert direct-child targets; <code>node_modules</code> apply reasserts its scanner's leaf and ancestor rules</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Single sink</td><td data-th="Rule">all filesystem removal passes one structurally enforced boundary</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Identity verification</td><td data-th="Rule">preview-time device/inode is re-verified through an open parent-directory handle; drift refuses</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Directory preflight</td><td data-th="Rule">foreign devices and nested Git repository/worktree markers are refused before Trash or permanent mutation</td><td data-th="Bypass"><strong>nothing</strong></td></tr>

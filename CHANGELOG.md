@@ -2,6 +2,32 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [Unreleased]
+
+### Changed
+- Every tracked `*.sh` plus the pre-commit hook now pass `shellcheck` before local commits and in CI through one fail-closed, NUL-safe helper; CI installs the official ShellCheck 0.11.0 arm64 asset only after checksum verification
+- CI and non-Intel release jobs move from the deprecated `macos-14` image to the supported `macos-15` arm64 image with exact runner-policy checks; the deterministic x86 release gate remains on `macos-15-intel`
+- Ordinary PR/main CI now installs checksum-verified arm64 Gitleaks 8.30.1 and TruffleHog 3.97.1, proves Gitleaks detects a non-allowlisted synthetic PAT, then runs the same full-history secret scans that release gates already run
+
+### Fixed
+- Artifact scanning and apply now both refuse targets below every ASCII-case variant of `node_modules`, closing the sibling dependency-namespace deletion path with an end-to-end surviving-sentinel regression
+- `trash-empty` now warns and leaves a direct `.git` case variant in place without letting that protected item block other exact previewed Trash children
+- Permanent and Trash preflight reuse each directory listing for Git-marker checks instead of enumerating every directory twice, while retaining the final mutation-time recheck
+- Git-backed unit fixtures now disable ambient commit signing and hooks, so maintainer Git configuration cannot make the Rust suite fail
+- Release policy now proves the Gitleaks positive control runs before the scanner directory reaches `PATH`, and both workflows syntax-check that control script explicitly
+- `node-modules` apply now reasserts the scanner's exact target shape before deletion, refusing non-directory and symlink targets, symlinked category ancestors, forged non-`node_modules` leaves, plus ASCII-case-insensitive `.git` and outer `node_modules` ancestors and non-normal paths
+- The landing page and packaged manual now declare a compact project favicon instead of generating a browser-level `/favicon.ico` 404 on every fresh visit
+- The landing-page hero caption now keeps readable contrast over every part of its image instead of combining muted text with a translucent overlay
+- The ShellCheck helper now fails before linting with an actionable error when `shellcheck` is unavailable, and release policy proves that path does not invoke ShellCheck
+- `CODING_STANDARDS.md` no longer tells review to skip gates that run only at release (`cmp -s AGENTS.md CLAUDE.md`, the fuzz targets, `actionlint`), and now lists the `video/`, shell, and secret-scanning merge gates it had omitted, so a reviewer no longer spends the budget on checks that already block
+- `CODING_STANDARDS.md` corrects an S1 precedent that no search could find, S12's incomplete list of approved dynamic call sites, S6's unstated denylist, and the ast-grep escape hatches sanctioned by the deletion-sink rule
+- The binary entry point now carries the `//!` module contract that S4 requires of every file under `src/`
+
+### Security
+- Git metadata is now denied ASCII-case-insensitively by project scanners, ownership and category checks, target validation, and open-handle Trash/permanent preflight, closing actionable `.GIT` findings on case-insensitive macOS filesystems
+- Common local environment, private-key, and signing-material files are ignored, while checksum-pinned full-history Gitleaks and TruffleHog scans now block ordinary PR/main CI as well as releases
+- CI and release refuse a Gitleaks binary that cannot trip a runtime positive control, so a version string and clean scan cannot mask a no-op detector
+
 ## [0.6.3] - 2026-08-28
 
 ### Changed
@@ -13,7 +39,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - The TUI now filters configured protected Trash items before it calculates danger or asks for approval
 - Bare `devtrim --json` now rejects the implicit TUI before terminal launch, matching explicit `devtrim tui --json` and preserving automation-only JSON behavior
 - A present but missing, broken, escaping, or otherwise invalid `swift-latest.xctoolchain` reference now blocks toolchain cleanup instead of producing an empty successful scan
-- The production landing page now points to the actual stable v0.6.2 archive and release while the v0.6.3 candidate is in beta staging
+- The production landing page stayed on the actual stable v0.6.2 archive and release while the v0.6.3 candidate was in beta staging
 
 ### Security
 - Human command previews escape the complete action string, closing terminal control-character injection through dynamic but validated command arguments without altering JSON data

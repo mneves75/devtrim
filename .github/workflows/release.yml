@@ -14,7 +14,7 @@ concurrency:
 jobs:
   validate:
     name: Validate tag provenance
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 10
     permissions:
       actions: read
@@ -195,13 +195,15 @@ jobs:
           "$tool_bin/gitleaks" version
           "$tool_bin/trufflehog" --version
           "$tool_bin/shellcheck" --version
+          scripts/tests/gitleaks-positive-control.sh "$tool_bin/gitleaks"
           echo "$tool_bin" >> "$GITHUB_PATH"
 
       - name: Release policy, shell, and workflow gates
         run: |
           bash scripts/tests/release-policy.sh
           bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
-          shellcheck scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
+          sh -n .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh
+          scripts/tests/shellcheck-tracked.sh
           actionlint
           cmp -s AGENTS.md CLAUDE.md || {
             echo "ERROR: AGENTS.md and CLAUDE.md differ"
@@ -272,7 +274,7 @@ jobs:
   fuzz:
     name: Read-only bounded fuzz gates
     needs: validate
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 35
     permissions:
       contents: read
@@ -311,7 +313,7 @@ jobs:
   prepare:
     name: Prepare reviewed release inputs
     needs: [validate, gate, fuzz]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     permissions:
       contents: read
@@ -372,7 +374,7 @@ jobs:
           out="${{ needs.validate.outputs.out }}"
           mkdir -p "dist/$out"
           cp target/aarch64-apple-darwin/release/devtrim "dist/$out/devtrim"
-          cp MANUAL.html README.md LICENSE "dist/$out/"
+          cp MANUAL.html README.md LICENSE favicon.svg "dist/$out/"
           ( cd dist && zip -qr "$out.zip" "$out" )
           ( cd dist && shasum -a 256 "$out.zip" > SHA256SUMS.txt )
           unzip -l "dist/$out.zip"
@@ -391,7 +393,7 @@ jobs:
   publish:
     name: Publish without source checkout
     needs: [validate, prepare]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     permissions:
       contents: write

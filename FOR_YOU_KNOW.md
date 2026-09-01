@@ -76,7 +76,9 @@ boundary, not an interactive disclaimer surface.
 its children only after confirmation. That broke the immutable-plan promise:
 a newly trashed file could join the purge without appearing in the preview.
 The scanner now records each exact top-level child, and apply consumes only
-those findings. Presentation also escapes terminal controls and bidi controls;
+those findings. A direct `.git` case variant is warned about and left behind,
+so the global Git-metadata guard does not block the other eligible Trash items.
+Presentation also escapes terminal controls and bidi controls;
 the exact internal `PathBuf` remains untouched and is never reconstructed from
 the safe display string.
 
@@ -189,10 +191,14 @@ Homebrew helper; neither the production tag nor release is moved.
 
 0.6.3 audits the handoff between a scanner's decision and the final action.
 Think of a finding as a boarding pass: the shared deletion sink already checked
-the passenger's identity, but the Xcode and toolchain desks also need to prove
-that the pass is for their flight. Apply now reasserts the exact direct-child
-shape each scanner can issue, so a forged nested finding cannot borrow a valid
-path's general deletion authority.
+the passenger's identity, but each category desk still needs to prove that the
+pass is for its flight. Xcode and toolchains reassert exact direct children;
+`node_modules` reasserts a real directory and its leaf name, then refuses
+symlinks plus `.git`, nested dependency, or non-normal ancestors. Git metadata
+and dependency-namespace boundaries in both `node_modules` and `artifacts` are
+treated ASCII-case-insensitively during preview and apply, because `.GIT` and
+`NODE_MODULES` can alias their lowercase names on macOS. A forged finding
+cannot borrow a valid path's general deletion authority.
 
 The same review tightened what users can trust before apply. The TUI removes
 configured protected Trash items before calculating danger or asking for

@@ -14,12 +14,13 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Install pinned Rust
@@ -40,10 +41,82 @@ jobs:
           npm install --global npm@11.17.0 --ignore-scripts
           npm --version | grep -Fqx '11.17.0'
 
+      - name: Install checksum-verified ShellCheck
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "arm64" ]] || {
+            echo "ERROR: the pinned ShellCheck asset requires the macos-15 arm64 runner"
+            exit 1
+          }
+          tool_root="${RUNNER_TEMP}/shellcheck"
+          tool_bin="$tool_root/bin"
+          mkdir -p "$tool_bin"
+          gh release download v0.11.0 -R koalaman/shellcheck \
+            --pattern shellcheck-v0.11.0.darwin.aarch64.tar.gz --dir "$tool_root"
+          (
+            cd "$tool_root"
+            printf '%s  %s\n' 339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f \
+              shellcheck-v0.11.0.darwin.aarch64.tar.gz | shasum -a 256 -c -
+          )
+          tar -xzf "$tool_root/shellcheck-v0.11.0.darwin.aarch64.tar.gz" -C "$tool_root"
+          cp "$tool_root/shellcheck-v0.11.0/shellcheck" "$tool_bin/shellcheck"
+          chmod +x "$tool_bin/shellcheck"
+          "$tool_bin/shellcheck" --version | grep -Fq 'version: 0.11.0'
+          echo "$tool_bin" >> "$GITHUB_PATH"
+
+      - name: Install checksum-verified secret scanners
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "arm64" ]] || {
+            echo "ERROR: the pinned secret-scanner assets require the macos-15 arm64 runner"
+            exit 1
+          }
+          tool_root="${RUNNER_TEMP}/secret-scanners"
+          tool_bin="$tool_root/bin"
+          mkdir -p "$tool_bin"
+
+          gh release download v8.30.1 -R gitleaks/gitleaks \
+            --pattern gitleaks_8.30.1_darwin_arm64.tar.gz --dir "$tool_root"
+          gh release download v3.97.1 -R trufflesecurity/trufflehog \
+            --pattern trufflehog_3.97.1_darwin_arm64.tar.gz --dir "$tool_root"
+          (
+            cd "$tool_root"
+            printf '%s  %s\n' b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5 \
+              gitleaks_8.30.1_darwin_arm64.tar.gz | shasum -a 256 -c -
+            printf '%s  %s\n' 1af86cf30c1cc5c1735ec6af9292b399ec9bed3ff1b30be13fcbfd4a30ab449a \
+              trufflehog_3.97.1_darwin_arm64.tar.gz | shasum -a 256 -c -
+          )
+
+          tar -xzf "$tool_root/gitleaks_8.30.1_darwin_arm64.tar.gz" -C "$tool_bin" gitleaks
+          tar -xzf "$tool_root/trufflehog_3.97.1_darwin_arm64.tar.gz" -C "$tool_bin" trufflehog
+          chmod +x "$tool_bin/gitleaks" "$tool_bin/trufflehog"
+          "$tool_bin/gitleaks" version | grep -Fqx '8.30.1'
+          "$tool_bin/trufflehog" --version | grep -Fq 'trufflehog 3.97.1'
+          scripts/tests/gitleaks-positive-control.sh "$tool_bin/gitleaks"
+          echo "$tool_bin" >> "$GITHUB_PATH"
+
       - name: Release policy tests
         run: |
           bash scripts/tests/release-policy.sh
           bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
+          sh -n .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh
+
+      - name: Shell lint
+        run: |
+          shellcheck --version
+          scripts/tests/shellcheck-tracked.sh
+
+      - name: Full-history secret scans
+        run: |
+          gitleaks git --redact --no-banner .
+          trufflehog git "file://$(pwd)" --results=verified,unknown --fail \
+            --fail-on-scan-errors --no-update --no-color
 
       - name: Format
         run: cargo fmt --all -- --check

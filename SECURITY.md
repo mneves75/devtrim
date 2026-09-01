@@ -33,15 +33,19 @@ Non-negotiable boundaries:
 - Every mutation requires `--apply`.
 - Apply uses only exact previewed findings and preserves their exact non-lossy path identity.
 - Xcode and Swift toolchain apply reassert that every target still has the exact direct-child category shape its scanner authorized before the shared deletion sink can consume it.
+- `node_modules` apply reasserts that each target is a real `node_modules` directory leaf inside its owning repository and rejects symlinks, ASCII-case-insensitive `.git` and outer `node_modules` ancestors, and non-normal paths before the shared deletion sink can consume it.
+- Artifact discovery never traverses an ASCII-case variant of `node_modules`, and artifact apply independently refuses any target below such an ancestor before corroboration or deletion.
 - Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
-- Literal and physically resolved parents must agree; symlinked ancestors fail closed.
+- Literal and physically resolved parents must agree; symlinked ancestors fail closed. Any ASCII-case variant of a `.git` path component is refused.
+- `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children.
 - System roots and descendants (including ASCII case variants), the user home
   root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
   Only named managed Library subpaths are eligible.
 - Unknown Git activity or toolchain ownership is not deletion authority.
 - Every directory deletion preflights foreign filesystem devices and Git
   repository/worktree markers at any depth before either Trash or permanent
-  mutation. Permanent recursion repeats those checks through open handles.
+  mutation. Git metadata matching is ASCII-case-insensitive, and permanent
+  recursion repeats those checks through open handles.
 - A repo owning the working directory of a running build/package process, and
   DerivedData while `xcodebuild` runs, are refused. Liveness probes use fixed
   argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
@@ -88,9 +92,9 @@ Non-negotiable boundaries:
 2. **Typed actions and command authority** — argv is stored separately from display text; no shell command strings are evaluated, and a private closed capability must match each executable action and its validated arguments before dispatch.
 3. **Immutable candidates and category authority** — existing scan roots are
    canonicalized before preview, apply does not rediscover filesystem targets,
-   and Xcode/toolchain owners reassert each target's exact scanner shape.
+   and Xcode, toolchain, and `node_modules` owners reassert each target's exact scanner shape.
 4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.
-5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission.
+5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission; any ASCII-case variant of a `.git` component is refused.
 5b. **Anchored identity verification** — the sink re-reads the target's
    preview-time `(device, inode, generation)` on macOS through an open
    parent-directory handle; identity drift refuses the deletion.
@@ -116,10 +120,11 @@ Non-negotiable boundaries:
 14. **Regression gates** — macOS CI runs format, strict Clippy (which forbids
    `unsafe`, `unwrap`/`expect`, and unreasoned lint suppression in the crate),
    tests, MSRV tests, root and fuzz-lock dependency audits, positive-control
-   structural lints for the deletion sink, shell invocation, and naming, and an
-   explicit arm64 release build. Read-only hosted
+   structural lints for the deletion sink, shell invocation, and naming,
+   full-history Gitleaks and TruffleHog secret scans, and an explicit arm64
+   release build. Read-only hosted
    release jobs additionally run all five bounded fuzz targets, PTY/UI, video,
-   workflow-policy, and secret-scanning gates before publication authority is
+   workflow-policy, and repeat the secret scans before publication authority is
    available.
 
 ## Supply chain
@@ -129,6 +134,10 @@ Non-negotiable boundaries:
 - GitHub Actions are pinned to immutable commit SHAs.
 - Dependabot checks the root and fuzz Cargo graphs, the demo video's npm graph,
   and Actions weekly.
+- Common local environment, private-key, and signing-material files are ignored;
+  checksum-pinned full-history Gitleaks and TruffleHog scans run in PR/main CI
+  and again during release validation. Both installation paths first prove
+  Gitleaks detects a non-allowlisted synthetic PAT assembled at runtime.
 - Ratatui 0.30.2 and Crossterm 0.29 require Rust 1.88. Default Ratatui features stay disabled, including the optional layout cache; the graph resolves patched `lru 0.18.2` instead of the `0.12.5` affected by RUSTSEC-2026-0002 and RUSTSEC-2026-0253.
 - Hosted release builds produce SHA-256 checksums, the full Apache-2.0 license, and signed artifact provenance.
 - Hosted repository and dependency code runs only in read-only validation,
