@@ -1,6 +1,27 @@
 # Project Memory
 
-## Current state
+## Current state (0.7.0 candidate)
+
+0.7.0 adds three surfaces and closes one measurement defect. `analyze` is an
+interactive read-only disk explorer that measures on a worker thread and streams
+results, so a directory taking minutes never freezes the interface. `status`
+reports machine vitals with a health score that names the inputs it could not
+read. `clean installers` reclaims stale `dmg`/`pkg`/`mpkg`/`iso`/`xip` archives
+from `Downloads` and `Desktop`. Terminal styling moved to semantic tokens with a
+`NO_COLOR` baseline and a `?` key reference.
+
+Four independent reviews ran before release — security, standards, spec, and a
+P3 autoreview — and every one found something no gate did. The three that
+mattered most: `clean docker --apply` was fully broken because the new
+report-only VM-image finding was pushed first and the apply loop refused
+anything without a command authority; `status` measured the SEALED root volume,
+reporting a 94%-full machine as 17% used; and the monochrome danger ladder was
+defeated at the render site by `theme.bold()` while the theme's own test kept
+passing because it exercises `style()`. Two of my own tests were passing
+vacuously (a help-overlay assertion satisfied by the footer, a colour positive
+control reading the environment).
+
+## Previous state
 
 devtrim 0.6.3 is the immutable production release. Production reused the exact
 verified beta artifact, and the Homebrew tap plus the sole visible local
@@ -29,6 +50,25 @@ is a narrow scanner-path comparison, not a whole-product performance claim.
 
 ## Decisions
 
+- `analyze` never creates deletion authority. Deletion here is always bound to a
+  closed, corroborated category; an explorer that deleted the highlighted path
+  would swap structural evidence for the operator's aim. Mole's analyze deletes;
+  this one does not, and the README says so.
+- `uninstall`, `optimize` and a live `--watch` dashboard are deliberately out of
+  scope, and the README states each omission with its reason. An undisclosed gap
+  is worse than a declared one.
+- `status` measures `/System/Volumes/Data`, not `/`. Only `statfs` separates the
+  two: `st_dev` is identical across `/`, `/System/Volumes/Data` and `/Users`
+  because of the APFS firmlink, so no metadata comparison can find that
+  boundary. Memory used is `active + wired + compressed`; counting reclaimable
+  inactive pages reports a healthy machine at 96%.
+- A device comparison stops foreign mounts (proved on `/Volumes/Recovery`) but
+  cannot stop the system/data firmlink — and should not, since that is the
+  user's own data.
+- Command output whose column count varies must be indexed from the END
+  (`netstat -ib` link rows are 10 or 11 fields wide), and fields must be matched
+  by exact key, never substring (`usec = ` ends with `sec = `).
+- An aggregate is exact or refused; a top-N display list may skip a row.
 - Physical removal accepts only a private `VerifiedTarget`; serialized paths
   are presentation-only.
 - Git metadata matching is ASCII-case-insensitive at scanner, ownership,

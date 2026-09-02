@@ -2,7 +2,7 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.7.0] - 2026-09-01
 
 ### Added
 - `devtrim status` reports read-only machine vitals — uptime, load, memory, disk, battery, thermals, cumulative network, busiest processes — and a health score that names every input it could not read instead of scoring over the gap. Each value comes from a fixed-argv system tool through a parser that fails closed on malformed input. Disk is measured on the writable Data volume rather than the sealed root, because `df /` reports a nearly full machine as 17% used; memory used is stated as `active + wired + compressed`, because counting reclaimable inactive pages reports a healthy machine at 96%
