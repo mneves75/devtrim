@@ -369,16 +369,21 @@ pub(crate) fn parse_thermal(output: &str) -> Result<Thermal> {
         // truncated, or reshaped output would otherwise be reported as "no
         // limit recorded", and `health` would then count thermal as read and
         // score the machine higher than the evidence supports.
+        // The note has to be the CPU-specific one. `pmset` prints three
+        // independent lines — thermal warning, performance warning, CPU power
+        // status — and only the last speaks for `CPU_Speed_Limit`. Accepting
+        // the generic phrase would let truncated output carrying just the
+        // thermal line stand in for a CPU reading that was never made.
         if output
             .lines()
-            .any(|line| line.contains("has been recorded"))
+            .any(|line| line.contains("No CPU power status has been recorded"))
         {
             return Ok(Thermal {
                 cpu_speed_limit_percent: None,
             });
         }
         anyhow::bail!(
-            "unrecognized `pmset -g therm` output: no CPU_Speed_Limit and no recorded-status note"
+            "unrecognized `pmset -g therm` output: no CPU_Speed_Limit and no CPU power-status note"
         );
     };
     let value = line.rsplit('=').next().unwrap_or_default().trim();
@@ -975,8 +980,18 @@ en0        1500  <Link#12>   a4:83:e7:11:22:33     50000     0    1000000    400
 
     #[test]
     fn thermal_reports_no_recorded_limit_as_nominal() {
-        let output = "Note: No thermal warning level has been recorded\n";
+        let output = "Note: No thermal warning level has been recorded\n\
+Note: No performance warning level has been recorded\n\
+Note: No CPU power status has been recorded\n";
         assert_eq!(parse_thermal(output).unwrap().cpu_speed_limit_percent, None);
+
+        // Only the CPU power-status note speaks for `CPU_Speed_Limit`. Output
+        // truncated to the thermal-warning line alone establishes nothing about
+        // the CPU and must not be scored as a nominal reading.
+        assert!(
+            parse_thermal("Note: No thermal warning level has been recorded\n").is_err(),
+            "the generic note must not stand in for the CPU one"
+        );
 
         let limited = "CPU_Speed_Limit \t= 70\n";
         assert_eq!(
