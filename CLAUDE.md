@@ -61,7 +61,7 @@ default features disabled; do not enable its optional layout cache without a new
 - Code review reads `CODING_STANDARDS.md`. Every bullet in this section is a hard standard, citable as `CLAUDE.md § Conventions`.
 
 ## Release
-1. Bump `Cargo.toml` and every version reference packaged with the artifact.
+1. Bump `Cargo.toml` and every version reference packaged with the artifact. This includes regenerating `fuzz/Cargo.lock` (`cd fuzz && cargo update -p devtrim --precise <version>`): the fuzz crate depends on `devtrim` by path, so its tracked lockfile still pins the old version and the hosted "fuzz gates leave the checkout clean" step fails on a dirty `fuzz/Cargo.lock` after every bump.
 2. Add the dated `CHANGELOG.md` section; update README, manual, security, and agent docs. Keep the production landing page on the live stable version during beta staging.
 3. Run every command above; MSRV must execute and may never be skipped. Also run a real PTY TUI cancel flow against a disposable home, shell syntax and ShellCheck for every script under the release policy, `actionlint`, Gitleaks, and TruffleHog.
 4. Run the local autoreview helper in local mode and inspect the final diff.
