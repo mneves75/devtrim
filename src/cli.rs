@@ -68,6 +68,12 @@ pub enum Command {
         #[arg(long)]
         top: Option<usize>,
     },
+    /// Run macOS maintenance tasks: caches the system rebuilds on demand
+    Optimize {
+        /// Task to run; repeatable. Default: every task
+        #[arg(long = "task")]
+        tasks: Vec<String>,
+    },
     /// Clean one category
     Clean {
         /// caches | node-modules | artifacts | simulators | xcode | docker | toolchains | installers | leftovers

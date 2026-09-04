@@ -82,6 +82,7 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
             (target.as_str(), true, true, true, false)
         }
         Some(cli::Command::Clean { target }) => (target.as_str(), true, true, true, true),
+        Some(cli::Command::Optimize { .. }) => ("optimize", true, true, true, false),
         Some(cli::Command::TrashEmpty { .. }) => ("trash-empty", true, true, true, false),
         Some(cli::Command::Status { .. }) => ("status", false, false, false, false),
         Some(cli::Command::Uninstall { .. }) => ("uninstall", false, false, false, false),
@@ -151,6 +152,7 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
             Some("scan") => "scan",
             Some("analyze") => "analyze",
             Some("status") => "status",
+            Some("optimize") => "optimize",
             Some("uninstall") => "uninstall",
             Some("largest") => "largest",
             Some("history") => "history",
@@ -357,6 +359,10 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                 Ok(ExitCode::from(1))
             }
         }
+        cli::Command::Optimize { ref tasks } => {
+            let operation = ops::optimize::Optimize::new(tasks)?;
+            run_op(&operation, &cli, &ctx)
+        }
         cli::Command::Clean { target } => clean(target, &cli, &ctx),
         #[allow(
             clippy::unreachable,
@@ -421,6 +427,12 @@ fn clean(target: cli::Target, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitC
             ops::names().join(", ")
         )
     })?;
+    run_op(operation.as_ref(), cli, ctx)
+}
+
+/// Shared preview/confirm/apply flow for every `Op`, whether it is reached
+/// through `clean <target>` or through a command of its own.
+fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitCode> {
     if !ctx.json {
         eprintln!("{} scanning '{}'…", "devtrim".bold(), operation.name());
     }

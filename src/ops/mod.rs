@@ -7,6 +7,7 @@ pub mod icloud;
 pub mod installers;
 pub mod leftovers;
 pub mod node_modules;
+pub mod optimize;
 pub(crate) mod project;
 pub mod simulators;
 pub mod toolchains;

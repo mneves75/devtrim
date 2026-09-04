@@ -21,6 +21,75 @@ pub(crate) enum CommandAuthority {
     DockerImagePrune { host: String },
     DockerBuilderPrune { host: String },
     DeleteSimulator { udid: String },
+    Maintenance(MaintenanceTask),
+}
+
+/// Closed set of maintenance tasks. Every one is a fixed program with fixed
+/// arguments and no caller-supplied data at all, which is why none of them can
+/// carry an unvalidated value into a process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaintenanceTask {
+    QuickLookCache,
+    FontCaches,
+    LaunchServices,
+    DnsCache,
+}
+
+impl MaintenanceTask {
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::QuickLookCache,
+        Self::FontCaches,
+        Self::LaunchServices,
+        Self::DnsCache,
+    ];
+
+    /// Stable CLI name, so a task can be selected without depending on its
+    /// human label.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::QuickLookCache => "quicklook",
+            Self::FontCaches => "fonts",
+            Self::LaunchServices => "launch-services",
+            Self::DnsCache => "dns",
+        }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|task| task.name() == name)
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::QuickLookCache => "QuickLook thumbnail cache",
+            Self::FontCaches => "user font caches",
+            Self::LaunchServices => "Launch Services database",
+            Self::DnsCache => "DNS resolver cache",
+        }
+    }
+
+    pub(crate) fn note(self) -> &'static str {
+        match self {
+            Self::QuickLookCache => {
+                "regenerates on demand; frees thumbnail storage of an unknown size"
+            }
+            Self::FontCaches => {
+                "regenerates on demand; running apps may need a restart to pick up fonts"
+            }
+            Self::LaunchServices => {
+                "rebuilds the Open With database; takes a while and resets custom app associations"
+            }
+            Self::DnsCache => "clears resolver entries; frees no disk space",
+        }
+    }
+
+    pub(crate) fn danger(self) -> u8 {
+        match self {
+            Self::DnsCache => 1,
+            Self::QuickLookCache => 2,
+            Self::FontCaches => 3,
+            Self::LaunchServices => 4,
+        }
+    }
 }
 
 impl CommandAuthority {
@@ -47,6 +116,18 @@ impl CommandAuthority {
                     .map(String::from)
                     .collect(),
             ),
+            Self::Maintenance(task) => {
+                let (program, args): (&'static str, &[&str]) = match task {
+                    MaintenanceTask::QuickLookCache => ("qlmanage", &["-r", "cache"]),
+                    MaintenanceTask::FontCaches => ("atsutil", &["databases", "-removeUser"]),
+                    MaintenanceTask::LaunchServices => (
+                        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+                        &["-kill", "-r", "-domain", "local", "-domain", "user"],
+                    ),
+                    MaintenanceTask::DnsCache => ("dscacheutil", &["-flushcache"]),
+                };
+                (program, args.iter().map(|arg| (*arg).to_string()).collect())
+            }
         }
     }
 
@@ -61,14 +142,25 @@ impl CommandAuthority {
     pub(crate) fn docker_host(&self) -> Option<&str> {
         match self {
             Self::DockerImagePrune { host } | Self::DockerBuilderPrune { host } => Some(host),
-            Self::DeleteSimulator { .. } => None,
+            Self::DeleteSimulator { .. } | Self::Maintenance(_) => None,
         }
     }
 
     pub(crate) fn simulator_udid(&self) -> Option<&str> {
         match self {
             Self::DeleteSimulator { udid } => Some(udid),
-            Self::DockerImagePrune { .. } | Self::DockerBuilderPrune { .. } => None,
+            Self::DockerImagePrune { .. }
+            | Self::DockerBuilderPrune { .. }
+            | Self::Maintenance(_) => None,
+        }
+    }
+
+    pub(crate) fn maintenance_task(&self) -> Option<MaintenanceTask> {
+        match self {
+            Self::Maintenance(task) => Some(*task),
+            Self::DockerImagePrune { .. }
+            | Self::DockerBuilderPrune { .. }
+            | Self::DeleteSimulator { .. } => None,
         }
     }
 }

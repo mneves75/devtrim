@@ -94,6 +94,10 @@ devtrim history                           # recent journaled applies; --json for
 devtrim analyze                           # interactive read-only disk explorer (never deletes)
 devtrim analyze ~/Library --json          # one-shot breakdown of a directory
 devtrim status                            # read-only machine vitals and a health score
+devtrim status --watch                    # live dashboard; q quits
+devtrim uninstall AltTab                  # every file belonging to an app (report-only)
+devtrim optimize                          # preview macOS maintenance tasks
+devtrim optimize --task dns --apply -y    # run one selected task
 devtrim largest --top 20                  # read-only: biggest directories under scan roots
 devtrim completions zsh                   # shell completion script (bash | zsh | fish)
 devtrim manpage                           # man page in roff format
@@ -141,23 +145,24 @@ health score that **names every input it could not read** rather than scoring
 over the gap. Memory used is stated as `active + wired + compressed`: counting
 macOS's reclaimable inactive pages as used reports a healthy machine at 96%.
 
-## What devtrim deliberately does not do
+## Where devtrim stops, and why
 
-Other Mac cleaners cover more surface. These omissions are choices, not gaps
-waiting to be filled, and each has a reason:
+Other Mac cleaners delete more. These boundaries are choices with reasons:
 
-- **No app uninstaller.** Removing an application bundle plus its launch agents,
-  preferences and support files is the highest-consequence action a cleaner can
-  take, and it cannot be corroborated the way a `target` beside `Cargo.toml`
-  can. `clean leftovers` reports candidate paths and never deletes them.
-- **No "optimize" or maintenance tasks.** Rebuilding indexes, flushing DNS and
-  restarting services are not disk hygiene, and bundling them with a deletion
-  tool means one confirmation covers two unrelated kinds of risk.
-- **No live dashboard.** `status` samples once and exits. A refreshing monitor
-  is a different product, and `devtrim status --json` composes with whatever
-  you already use for that.
-- **No deletion from `analyze`.** See above: navigation and deletion authority
-  stay separate.
+- **`uninstall` reports; it does not remove.** It finds every file belonging to
+  an app by its exact bundle identifier — the hard part — but `is_protected`
+  refuses `/Applications` and everything under `~/Library` outside a four-entry
+  allowlist. Widening that boundary would weaken it for every command, not just
+  this one, so the list is yours to act on.
+- **`optimize` is four tasks, not twenty-two.** Rebuilding a Spotlight index,
+  running the periodic scripts and purging memory all need root and cost more
+  than they return. Tasks are selectable with `--task`, because one confirmation
+  should not cover both a resolver flush and a Launch Services rebuild.
+- **`analyze` never deletes.** Navigation and deletion authority stay separate:
+  every cleanup category binds deletion to structural corroboration, and an
+  explorer that removed the highlighted path would replace that with your aim.
+- **No Dock or login-item surgery, and no "speed up your Mac" claims.** devtrim
+  measures and trims; it does not tune.
 
 `clean docker` also reports the host-side VM disk image for OrbStack and Docker
 Desktop, as a report-only finding that is never actionable. `docker system df`
