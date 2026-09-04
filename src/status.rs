@@ -1057,8 +1057,16 @@ fn watch_rows(report: &StatusReport) -> Vec<(&'static str, String)> {
                 if battery.on_ac_power { ", on AC" } else { "" }
             ),
         ));
+    } else if report
+        .unavailable
+        .iter()
+        .any(|entry| entry.starts_with("battery:"))
+    {
+        // A failed probe and a machine without a battery both leave the field
+        // empty. Only the first is a gap, and calling it "none" would assert a
+        // hardware fact the probe never established.
+        rows.push(("battery", UNAVAILABLE.to_string()));
     } else {
-        // A desktop has no battery; that is a fact, not a failed read.
         rows.push(("battery", "none".to_string()));
     }
     if let Some(thermal) = &report.thermal {
@@ -1461,6 +1469,27 @@ Note: No CPU power status has been recorded\n";
             "memory appearing must not push disk down a row"
         );
         assert_eq!(rows[3].0, "disk");
+    }
+
+    /// A desktop with no battery and a battery probe that failed both leave the
+    /// field empty, and only one of them is a gap. Calling a failed read "none"
+    /// asserts a hardware fact nothing established.
+    #[test]
+    fn a_failed_battery_probe_is_not_reported_as_having_no_battery() {
+        let mut report = empty_report();
+        let battery_row = |report: &StatusReport| {
+            watch_rows(report)
+                .into_iter()
+                .find(|(label, _)| *label == "battery")
+                .map(|(_, value)| value)
+                .unwrap()
+        };
+        assert_eq!(battery_row(&report), "none");
+
+        report
+            .unavailable
+            .push("battery: `pmset -g batt` failed".to_string());
+        assert_eq!(battery_row(&report), "unavailable");
     }
 
     #[test]

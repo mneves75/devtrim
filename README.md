@@ -97,7 +97,7 @@ devtrim status                            # read-only machine vitals and a healt
 devtrim status --watch                    # live dashboard; q quits
 devtrim uninstall AltTab                  # paths named for an app's bundle id (report-only)
 devtrim optimize                          # preview macOS maintenance tasks
-devtrim optimize --task dns --apply -y    # run one selected task
+devtrim optimize --task quicklook --apply # run one selected task
 devtrim largest --top 20                  # read-only: biggest directories under scan roots
 devtrim completions zsh                   # shell completion script (bash | zsh | fish)
 devtrim manpage                           # man page in roff format
