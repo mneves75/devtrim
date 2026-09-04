@@ -27,21 +27,23 @@ pub(crate) enum CommandAuthority {
 /// Closed set of maintenance tasks. Every one is a fixed program with fixed
 /// arguments and no caller-supplied data at all, which is why none of them can
 /// carry an unvalidated value into a process.
+///
+/// A DNS entry is deliberately absent. On modern macOS the resolver cache lives
+/// in `mDNSResponder`, and `dscacheutil -flushcache` only clears the
+/// directory-service cache — it would report success while leaving the cache it
+/// advertised intact. Doing it properly needs to signal a privileged service,
+/// which this non-root catalog cannot do, so the task is omitted rather than
+/// offered as something it is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MaintenanceTask {
     QuickLookCache,
     FontCaches,
     LaunchServices,
-    DnsCache,
 }
 
 impl MaintenanceTask {
-    pub(crate) const ALL: &'static [Self] = &[
-        Self::QuickLookCache,
-        Self::FontCaches,
-        Self::LaunchServices,
-        Self::DnsCache,
-    ];
+    pub(crate) const ALL: &'static [Self] =
+        &[Self::QuickLookCache, Self::FontCaches, Self::LaunchServices];
 
     /// Stable CLI name, so a task can be selected without depending on its
     /// human label.
@@ -50,7 +52,6 @@ impl MaintenanceTask {
             Self::QuickLookCache => "quicklook",
             Self::FontCaches => "fonts",
             Self::LaunchServices => "launch-services",
-            Self::DnsCache => "dns",
         }
     }
 
@@ -63,7 +64,6 @@ impl MaintenanceTask {
             Self::QuickLookCache => "QuickLook thumbnail cache",
             Self::FontCaches => "user font caches",
             Self::LaunchServices => "Launch Services database",
-            Self::DnsCache => "DNS resolver cache",
         }
     }
 
@@ -78,13 +78,11 @@ impl MaintenanceTask {
             Self::LaunchServices => {
                 "rebuilds the Open With database; takes a while and resets custom app associations"
             }
-            Self::DnsCache => "clears resolver entries; frees no disk space",
         }
     }
 
     pub(crate) fn danger(self) -> u8 {
         match self {
-            Self::DnsCache => 1,
             Self::QuickLookCache => 2,
             Self::FontCaches => 3,
             Self::LaunchServices => 4,
@@ -124,7 +122,6 @@ impl CommandAuthority {
                         "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
                         &["-kill", "-r", "-domain", "local", "-domain", "user"],
                     ),
-                    MaintenanceTask::DnsCache => ("dscacheutil", &["-flushcache"]),
                 };
                 (program, args.iter().map(|arg| (*arg).to_string()).collect())
             }

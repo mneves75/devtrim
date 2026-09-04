@@ -52,7 +52,7 @@ pub enum Command {
         #[arg(long)]
         watch: bool,
     },
-    /// Locate every file belonging to an app by its exact bundle identifier
+    /// List files named for an app's exact bundle identifier (report-only)
     Uninstall {
         /// Application name or bundle path (e.g. AltTab, "Visual Studio Code")
         app: String,

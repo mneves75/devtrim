@@ -360,7 +360,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             }
         }
         cli::Command::Optimize { ref tasks } => {
-            let operation = ops::optimize::Optimize::new(tasks)?;
+            let operation = ops::optimize::Optimize::new(tasks, cli.apply)?;
             run_op(&operation, &cli, &ctx)
         }
         cli::Command::Clean { target } => clean(target, &cli, &ctx),

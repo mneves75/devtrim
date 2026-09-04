@@ -1,4 +1,12 @@
-//! Application leftovers, located by exact bundle identifier.
+//! Application files whose name IS the app's bundle identifier.
+//!
+//! The contract is narrow on purpose, and stating it exactly matters more than
+//! sounding complete: this finds paths macOS keys by the identifier, and only
+//! those. An app that stores data under a product name is invisible to it —
+//! Visual Studio Code keeps `~/Library/Application Support/Code` and `~/.vscode`,
+//! neither of which contains `com.microsoft.VSCode`. System-wide helpers under
+//! `/Library` are outside the catalog too. This is a conservative report, not an
+//! inventory, and the output says so.
 //!
 //! This command reports; it never deletes, and that is a structural fact rather
 //! than a policy choice. `safety::is_protected` refuses `/Applications` and
@@ -7,13 +15,21 @@
 //! (`is_protected(home/"Library/Application Support")`). Deleting an app bundle
 //! and its support files would require widening that list for every code path,
 //! not just this one, so the useful half devtrim can honestly do is the half a
-//! person cannot do by hand: find every file that actually belongs to an app.
+//! person cannot do by hand: resolve the identifier and find what is keyed to it.
 //!
 //! Matching is by EXACT bundle identifier, never by name. `com.example.thing`
 //! must not select `com.example.thingy`, and a display name like "Notes" must
 //! not select every path containing the word. The identifier is read from the
 //! bundle's own `Info.plist`, which is the only structural evidence macOS
 //! actually keys its support directories on.
+//!
+//! Group containers are deliberately NOT reported. Their names come from the
+//! `com.apple.security.application-groups` entitlement and are arbitrary: on a
+//! real machine `2BUA8C4S2C.com.1password` belongs to an app whose identifier is
+//! `com.1password.1password`, and 49 of 171 containers here begin with `group.`
+//! and contain no app identifier at all. A filename-suffix rule would both miss
+//! real containers and attribute another app's data to this one, and a wrong
+//! entry in a list someone acts on is worse than an absent one.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output};
@@ -40,11 +56,6 @@ const ID_FILES: &[(&str, &str)] = &[
     ("Library/Saved Application State", "savedState"),
     ("Library/LaunchAgents", "plist"),
 ];
-
-/// Group containers are named `<team id>.<bundle identifier>` and are shared by
-/// every app from that team, so a match here is evidence of association, never
-/// of ownership.
-const SHARED_DIRECTORIES: &[&str] = &["Library/Group Containers"];
 
 /// Where an app may be found. `/Applications` is system-wide; the per-user one
 /// is where Homebrew casks and hand-installed apps land.
@@ -211,10 +222,15 @@ fn describe_roots(home: &Path) -> String {
 
 /// Whether any running process executes from inside this bundle.
 ///
-/// `ps -Axo comm=` prints each process's full executable path, so the check
-/// needs no dynamic argument at all — the comparison happens here rather than
-/// in the command line. A probe that cannot complete blocks rather than
-/// reporting "not running".
+/// `ps -Axww -o comm=` prints each process's command path, so the check needs no
+/// dynamic argument at all — the comparison happens here rather than in the
+/// command line, and `ww` keeps a long path from being width-truncated into a
+/// false negative. A probe that cannot complete blocks rather than reporting
+/// "not running".
+///
+/// What this does NOT guarantee: `comm` is the command value, not an
+/// authenticated executable path, so this is a courtesy check against reviewing
+/// a live app's files, not a security boundary. Nothing here deletes anything.
 pub(crate) fn parse_running_bundle(output: &str, app: &Path) -> bool {
     let prefix = format!("{}/", app.display());
     output.lines().any(|line| line.starts_with(&prefix))
@@ -222,11 +238,11 @@ pub(crate) fn parse_running_bundle(output: &str, app: &Path) -> bool {
 
 fn app_is_running(app: &Path) -> Result<bool> {
     let output = Command::new("ps")
-        .args(["-Axo", "comm="])
+        .args(["-Axww", "-o", "comm="])
         .output()
-        .context("cannot run `ps -Axo comm=`")?;
+        .context("cannot run `ps -Axww -o comm=`")?;
     if !output.status.success() {
-        bail!("`ps -Axo comm=` failed with {}", output.status);
+        bail!("`ps -Axww -o comm=` failed with {}", output.status);
     }
     let listing = String::from_utf8(output.stdout).context("`ps` returned non-UTF-8 output")?;
     Ok(parse_running_bundle(&listing, app))
@@ -242,13 +258,6 @@ pub(crate) fn matches_identifier_file(name: &str, identifier: &str, extension: &
     name.strip_suffix(extension)
         .and_then(|rest| rest.strip_suffix('.'))
         .is_some_and(|stem| stem == identifier)
-}
-
-/// True when `name` is `<team>.<identifier>` — association, not ownership.
-pub(crate) fn matches_group_container(name: &str, identifier: &str) -> bool {
-    name.strip_suffix(identifier)
-        .and_then(|prefix| prefix.strip_suffix('.'))
-        .is_some_and(|team| !team.is_empty() && !team.contains('/'))
 }
 
 fn measure(path: &Path) -> Result<u64> {
@@ -324,31 +333,6 @@ pub(crate) fn locate(app: &Path, identifier: &str, home: &Path) -> Result<Vec<Fi
         }
     }
 
-    for directory in SHARED_DIRECTORIES {
-        let root = home.join(directory);
-        let entries = match std::fs::read_dir(&root) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).with_context(|| format!("cannot read {}", root.display()));
-            }
-        };
-        for entry in entries {
-            let entry = entry.with_context(|| format!("cannot enumerate {}", root.display()))?;
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if matches_group_container(name, identifier) {
-                findings.push(info_finding(
-                    format!("{directory} entry"),
-                    entry.path(),
-                    "SHARED: a group container serves every app from this team; association, not ownership",
-                )?);
-            }
-        }
-    }
-
     Ok(findings)
 }
 
@@ -372,11 +356,12 @@ pub fn run(ctx: &Ctx, app: &str) -> Result<ExitCode> {
 
     report::print_human(&findings)?;
     report::print_line(&format!(
-        "\nbundle identifier: {}\n\n{} devtrim reports these and does not remove them. \
-Deleting an application bundle or its support files would require widening the \
-protected-path boundary that refuses /Applications and all of ~/Library outside \
-a four-entry allowlist, for every command rather than only this one. Review the \
-list, then remove what you recognize.",
+        "\nbundle identifier: {}\n\n{} these are the paths macOS keys by that identifier, \
+and only those. An app that stores data under a product name is not listed — Visual \
+Studio Code keeps ~/Library/Application Support/Code, which contains no identifier — \
+so treat this as a conservative report, not an inventory. devtrim does not remove \
+them: /Applications and all of ~/Library outside a four-entry allowlist are refused \
+by the protected-path boundary, for every command rather than only this one.",
         report::terminal_safe(&identifier),
         "report-only:".yellow().bold(),
     ))?;
@@ -433,23 +418,6 @@ mod tests {
             "com.example.thing.savedState",
             "com.example.thing",
             "plist"
-        ));
-    }
-
-    #[test]
-    fn group_containers_need_a_team_prefix_and_an_exact_suffix() {
-        assert!(matches_group_container(
-            "ABCDE12345.com.example.thing",
-            "com.example.thing"
-        ));
-        // No team prefix: not a group container name.
-        assert!(!matches_group_container(
-            "com.example.thing",
-            "com.example.thing"
-        ));
-        assert!(!matches_group_container(
-            "ABCDE12345.com.example.thingy",
-            "com.example.thing"
         ));
     }
 

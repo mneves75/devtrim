@@ -898,9 +898,13 @@ fn run_watch(ctx: &Ctx) -> Result<std::process::ExitCode> {
     })();
     let restore = ratatui::try_restore().context("cannot restore terminal after status exit");
     stop.store(true, Ordering::Relaxed);
-    // The worker only sleeps and samples, so joining cannot block for longer
-    // than one poll interval once the flag is set.
-    let _ = worker.join();
+    // Deliberately NOT joined. The flag is only observed between samples, so a
+    // worker inside `collect()` would make `q` wait out the whole sample — and
+    // a system command that hangs would keep the process alive forever. The
+    // worker holds nothing but a channel whose receiver is about to drop, so
+    // letting it finish and exit on its own is the only shutdown that cannot
+    // block the interface it exists to keep responsive.
+    drop(worker);
     for entry in latest.iter().flat_map(|report| report.unavailable.iter()) {
         ctx.diagnostic("warn", entry.clone());
     }
@@ -990,19 +994,28 @@ fn render_watch(frame: &mut Frame, report: Option<&StatusReport>, theme: Theme) 
 /// Label/value rows shared by the live dashboard, in a fixed order so panels do
 /// not move between refreshes.
 fn watch_rows(report: &StatusReport) -> Vec<(&'static str, String)> {
-    let mut rows = Vec::new();
-    if let Some(uptime) = report.uptime_seconds {
-        rows.push(("uptime", format_uptime(uptime)));
-    }
-    if let (Some(load), Some(cpus)) = (report.load_average, report.cpu_count) {
-        rows.push((
+    /// Shown in place of a metric that could not be read. The slot is kept so
+    /// every other row stays where the operator last saw it.
+    const UNAVAILABLE: &str = "unavailable";
+
+    let mut rows = vec![
+        (
+            "uptime",
+            report
+                .uptime_seconds
+                .map_or_else(|| UNAVAILABLE.to_string(), format_uptime),
+        ),
+        (
             "load",
-            format!(
-                "{:.2} {:.2} {:.2}  over {cpus} CPUs",
-                load[0], load[1], load[2]
-            ),
-        ));
-    }
+            match (report.load_average, report.cpu_count) {
+                (Some(load), Some(cpus)) => format!(
+                    "{:.2} {:.2} {:.2}  over {cpus} CPUs",
+                    load[0], load[1], load[2]
+                ),
+                _ => UNAVAILABLE.to_string(),
+            },
+        ),
+    ];
     if let Some(memory) = report.memory {
         let percent = if memory.total_bytes == 0 {
             0.0
@@ -1017,6 +1030,8 @@ fn watch_rows(report: &StatusReport) -> Vec<(&'static str, String)> {
                 report::gb(memory.total_bytes)
             ),
         ));
+    } else {
+        rows.push(("memory", UNAVAILABLE.to_string()));
     }
     if let Some(disk) = report.disk {
         rows.push((
@@ -1029,6 +1044,8 @@ fn watch_rows(report: &StatusReport) -> Vec<(&'static str, String)> {
                 report::gb(disk.available_bytes)
             ),
         ));
+    } else {
+        rows.push(("disk", UNAVAILABLE.to_string()));
     }
     if let Some(battery) = &report.battery {
         rows.push((
@@ -1040,6 +1057,9 @@ fn watch_rows(report: &StatusReport) -> Vec<(&'static str, String)> {
                 if battery.on_ac_power { ", on AC" } else { "" }
             ),
         ));
+    } else {
+        // A desktop has no battery; that is a fact, not a failed read.
+        rows.push(("battery", "none".to_string()));
     }
     if let Some(thermal) = &report.thermal {
         rows.push((
@@ -1049,6 +1069,8 @@ fn watch_rows(report: &StatusReport) -> Vec<(&'static str, String)> {
                 |limit| format!("CPU limited to {limit}%"),
             ),
         ));
+    } else {
+        rows.push(("thermal", UNAVAILABLE.to_string()));
     }
     if let Some(network) = report.network {
         rows.push((
@@ -1059,6 +1081,8 @@ fn watch_rows(report: &StatusReport) -> Vec<(&'static str, String)> {
                 report::gb(network.sent_bytes)
             ),
         ));
+    } else {
+        rows.push(("network", UNAVAILABLE.to_string()));
     }
     rows
 }
@@ -1383,38 +1407,43 @@ Note: No CPU power status has been recorded\n";
     }
 
     /// Panels must not move between refreshes: an operator builds a mental map
-    /// of where a number lives, and a row that changes position because a
-    /// probe failed once destroys it. Rows are emitted in a fixed order and a
-    /// missing metric is omitted, never reordered around.
+    /// of where a number lives, and a row that changes position because a probe
+    /// failed once destroys it. Every metric therefore keeps a slot and an
+    /// unreadable one renders as `unavailable` rather than being omitted.
     #[test]
-    fn watch_rows_keep_a_fixed_order_and_omit_what_is_missing() {
+    fn watch_rows_hold_fixed_positions_whatever_is_readable() {
+        const EXPECTED: [&str; 7] = [
+            "uptime", "load", "memory", "disk", "battery", "thermal", "network",
+        ];
+
         let mut report = empty_report();
+        let labels: Vec<&str> = watch_rows(&report).iter().map(|(l, _)| *l).collect();
+        assert_eq!(
+            labels, EXPECTED,
+            "a report with nothing read still holds every slot"
+        );
         assert!(
-            watch_rows(&report).is_empty(),
-            "a report with nothing read shows no rows rather than placeholders"
+            watch_rows(&report)
+                .iter()
+                .filter(|(label, _)| *label != "battery")
+                .all(|(_, value)| value == "unavailable"),
+            "an unread metric says so instead of vanishing"
         );
 
         report.uptime_seconds = Some(3_600);
-        report.load_average = Some([1.0, 1.0, 1.0]);
-        report.cpu_count = Some(8);
         report.disk = Some(Disk {
             total_bytes: 100,
             used_bytes: 50,
             available_bytes: 50,
         });
-        report.network = Some(Network {
-            received_bytes: 1,
-            sent_bytes: 2,
-        });
-        let labels: Vec<&str> = watch_rows(&report)
-            .iter()
-            .map(|(label, _)| *label)
-            .collect();
+        let rows = watch_rows(&report);
+        let labels: Vec<&str> = rows.iter().map(|(l, _)| *l).collect();
         assert_eq!(
-            labels,
-            vec!["uptime", "load", "disk", "network"],
-            "present rows keep their relative order with memory, battery and thermal absent"
+            labels, EXPECTED,
+            "positions do not shift when a metric arrives"
         );
+        assert_eq!(rows[3].0, "disk", "disk stays the fourth row either way");
+        assert_ne!(rows[3].1, "unavailable");
 
         report.memory = Some(Memory {
             total_bytes: 100,
@@ -1425,18 +1454,13 @@ Note: No CPU power status has been recorded\n";
             compressed_bytes: 10,
             used_bytes: 70,
         });
-        report.thermal = Some(Thermal {
-            cpu_speed_limit_percent: None,
-        });
-        let labels: Vec<&str> = watch_rows(&report)
-            .iter()
-            .map(|(label, _)| *label)
-            .collect();
+        let rows = watch_rows(&report);
         assert_eq!(
-            labels,
-            vec!["uptime", "load", "memory", "disk", "thermal", "network"],
-            "a metric appearing later slots into its fixed position"
+            rows.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+            EXPECTED,
+            "memory appearing must not push disk down a row"
         );
+        assert_eq!(rows[3].0, "disk");
     }
 
     #[test]

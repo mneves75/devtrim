@@ -4,8 +4,8 @@
 //! the periodic scripts, or purging memory all need root and cost far more than
 //! they return, so they are refused by omission rather than offered with a
 //! warning. What remains is the part that is genuinely disk hygiene: caches the
-//! system rebuilds on demand, plus the resolver cache, which frees nothing but
-//! is instant and is what people actually come here for.
+//! system rebuilds on demand. A DNS flush is absent for the same reason — see
+//! `MaintenanceTask` for why `dscacheutil` does not do what it appears to.
 //!
 //! Every task is a fixed program with fixed arguments and no caller-supplied
 //! data at all, so there is no dynamic argument to validate — the authority
@@ -29,8 +29,22 @@ impl Optimize {
     /// kinds of risk: a resolver flush and a Launch Services rebuild differ by
     /// orders of magnitude in cost, and `plan_danger` takes the maximum, so
     /// without this the cheap task rides in on the expensive one's prompt.
-    pub fn new(names: &[String]) -> Result<Self> {
+    pub fn new(names: &[String], apply: bool) -> Result<Self> {
         if names.is_empty() {
+            // Previewing everything is useful; applying everything behind one
+            // prompt is the thing `--task` exists to prevent, so the shortcut
+            // stops at the preview.
+            if apply {
+                anyhow::bail!(
+                    "optimize --apply needs an explicit --task; one confirmation must not cover \
+                     unrelated tasks. valid: {}",
+                    MaintenanceTask::ALL
+                        .iter()
+                        .map(|task| task.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
             return Ok(Self {
                 tasks: MaintenanceTask::ALL.to_vec(),
             });
@@ -160,29 +174,43 @@ mod tests {
 
     #[test]
     fn selecting_tasks_narrows_the_plan_and_rejects_unknown_names() {
-        let all = Optimize::new(&[]).unwrap().scan(&test_ctx()).unwrap();
+        let all = Optimize::new(&[], false)
+            .unwrap()
+            .scan(&test_ctx())
+            .unwrap();
         assert_eq!(all.len(), MaintenanceTask::ALL.len());
 
-        let one = Optimize::new(&["dns".to_string()])
+        let one = Optimize::new(&["quicklook".to_string()], true)
             .unwrap()
             .scan(&test_ctx())
             .unwrap();
         assert_eq!(one.len(), 1);
-        assert_eq!(one[0].danger, MaintenanceTask::DnsCache.danger());
+        assert_eq!(one[0].danger, MaintenanceTask::QuickLookCache.danger());
 
         // A duplicate selection must not run the task twice.
-        let duplicated = Optimize::new(&["dns".to_string(), "dns".to_string()])
+        let duplicated = Optimize::new(&["quicklook".to_string(), "quicklook".to_string()], true)
             .unwrap()
             .scan(&test_ctx())
             .unwrap();
         assert_eq!(duplicated.len(), 1);
 
-        assert!(Optimize::new(&["nonsense".to_string()]).is_err());
+        assert!(Optimize::new(&["nonsense".to_string()], false).is_err());
+    }
+
+    /// Applying everything behind one prompt is exactly what selection exists
+    /// to prevent, so the unselected shortcut must stop at the preview.
+    #[test]
+    fn applying_without_a_task_selection_is_refused() {
+        assert!(Optimize::new(&[], true).is_err());
+        assert!(Optimize::new(&[], false).is_ok());
     }
 
     #[test]
     fn every_task_is_previewed_as_a_typed_command() {
-        let findings = Optimize::new(&[]).unwrap().scan(&test_ctx()).unwrap();
+        let findings = Optimize::new(&[], false)
+            .unwrap()
+            .scan(&test_ctx())
+            .unwrap();
         assert_eq!(findings.len(), MaintenanceTask::ALL.len());
         for finding in &findings {
             assert!(
@@ -220,7 +248,7 @@ mod tests {
             .iter()
             .map(|task| CommandAuthority::Maintenance(*task).parts().0)
             .collect();
-        for refused in ["mdutil", "periodic", "purge", "sudo"] {
+        for refused in ["mdutil", "periodic", "purge", "sudo", "dscacheutil"] {
             assert!(
                 !programs.iter().any(|program| program.contains(refused)),
                 "{refused} needs root or costs hours and must not be offered"
@@ -235,11 +263,11 @@ mod tests {
             0,
             "forged",
             2,
-            CommandAuthority::Maintenance(MaintenanceTask::DnsCache),
+            CommandAuthority::Maintenance(MaintenanceTask::QuickLookCache),
         );
         // The displayed action no longer matches the authority that issued it.
         forged.action = Action::command("echo", &["altered"]);
-        let outcome = Optimize::new(&[])
+        let outcome = Optimize::new(&[], false)
             .unwrap()
             .apply(&[forged], &test_ctx())
             .unwrap();

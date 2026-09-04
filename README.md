@@ -95,7 +95,7 @@ devtrim analyze                           # interactive read-only disk explorer 
 devtrim analyze ~/Library --json          # one-shot breakdown of a directory
 devtrim status                            # read-only machine vitals and a health score
 devtrim status --watch                    # live dashboard; q quits
-devtrim uninstall AltTab                  # every file belonging to an app (report-only)
+devtrim uninstall AltTab                  # paths named for an app's bundle id (report-only)
 devtrim optimize                          # preview macOS maintenance tasks
 devtrim optimize --task dns --apply -y    # run one selected task
 devtrim largest --top 20                  # read-only: biggest directories under scan roots
@@ -149,15 +149,19 @@ macOS's reclaimable inactive pages as used reports a healthy machine at 96%.
 
 Other Mac cleaners delete more. These boundaries are choices with reasons:
 
-- **`uninstall` reports; it does not remove.** It finds every file belonging to
-  an app by its exact bundle identifier — the hard part — but `is_protected`
-  refuses `/Applications` and everything under `~/Library` outside a four-entry
-  allowlist. Widening that boundary would weaken it for every command, not just
-  this one, so the list is yours to act on.
-- **`optimize` is four tasks, not twenty-two.** Rebuilding a Spotlight index,
+- **`uninstall` reports; it does not remove.** It resolves an app's bundle
+  identifier and lists the paths macOS keys by it — the hard part — but it is a
+  conservative report, not an inventory: an app storing data under a product
+  name is invisible to it, as Visual Studio Code's `~/Library/Application
+  Support/Code` is. It does not delete because `is_protected` refuses
+  `/Applications` and everything under `~/Library` outside a four-entry
+  allowlist, and widening that would weaken every command, not just this one.
+- **`optimize` is three tasks, not twenty-two.** Rebuilding a Spotlight index,
   running the periodic scripts and purging memory all need root and cost more
-  than they return. Tasks are selectable with `--task`, because one confirmation
-  should not cover both a resolver flush and a Launch Services rebuild.
+  than they return. A DNS flush is absent too: on modern macOS the resolver
+  cache lives in `mDNSResponder`, so `dscacheutil -flushcache` would report
+  success without clearing what it names. `--apply` requires an explicit
+  `--task`, because one confirmation must not cover unrelated work.
 - **`analyze` never deletes.** Navigation and deletion authority stay separate:
   every cleanup category binds deletion to structural corroboration, and an
   explorer that removed the highlighted path would replace that with your aim.
