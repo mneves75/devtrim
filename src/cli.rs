@@ -47,7 +47,11 @@ pub enum Command {
     /// Read-only report of every reclaimable category with sizes and risk
     Scan,
     /// Read-only machine vitals: load, memory, disk, battery, thermals, processes
-    Status,
+    Status {
+        /// Refresh continuously in a live dashboard until you press q
+        #[arg(long)]
+        watch: bool,
+    },
     /// Locate every file belonging to an app by its exact bundle identifier
     Uninstall {
         /// Application name or bundle path (e.g. AltTab, "Visual Studio Code")

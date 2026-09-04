@@ -83,7 +83,7 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
         }
         Some(cli::Command::Clean { target }) => (target.as_str(), true, true, true, true),
         Some(cli::Command::TrashEmpty { .. }) => ("trash-empty", true, true, true, false),
-        Some(cli::Command::Status) => ("status", false, false, false, false),
+        Some(cli::Command::Status { .. }) => ("status", false, false, false, false),
         Some(cli::Command::Uninstall { .. }) => ("uninstall", false, false, false, false),
         Some(cli::Command::Analyze { .. }) => ("analyze", false, false, false, false),
         Some(cli::Command::Largest { .. }) => ("largest", false, false, false, false),
@@ -336,7 +336,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                 Ok(ExitCode::from(1))
             }
         }
-        cli::Command::Status => status::run(&ctx),
+        cli::Command::Status { watch } => status::run(&ctx, watch),
         cli::Command::Uninstall { ref app } => uninstall::run(&ctx, app),
         cli::Command::Analyze { ref path } => analyze::run(&ctx, path.as_deref()),
         cli::Command::Largest { top } => {

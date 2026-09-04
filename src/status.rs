@@ -10,13 +10,24 @@
 //! score computed over half the signals must not present itself as a verdict
 //! over all of them.
 
+use std::io::IsTerminal;
 use std::process::{Command, Output};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::channel;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 
 use crate::report;
 use crate::safety::Ctx;
+use crate::theme::{Theme, Token};
 
 /// Closed set of system tools this module may execute.
 ///
@@ -815,7 +826,247 @@ fn print_human(report: &StatusReport) -> Result<()> {
     Ok(())
 }
 
-pub fn run(ctx: &Ctx) -> Result<std::process::ExitCode> {
+/// How often the live dashboard re-reads the machine. Collection spawns ten
+/// short-lived processes, so a faster cadence would spend more time measuring
+/// than displaying.
+const WATCH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Input poll cadence for the live dashboard, independent of the refresh above
+/// so a keypress is never waiting on a sample.
+const WATCH_POLL: Duration = Duration::from_millis(80);
+
+/// Live dashboard. Sampling runs on a worker thread and the interface redraws
+/// when a report arrives, so a slow probe delays the numbers rather than the
+/// keyboard.
+fn run_watch(ctx: &Ctx) -> Result<std::process::ExitCode> {
+    // A live dashboard has no single-document form, and silently ignoring
+    // `--json` would make it the no-op the capability contract forbids.
+    if ctx.json {
+        anyhow::bail!("status --watch has no JSON form; use `status --json` for one document");
+    }
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        anyhow::bail!("status --watch requires an interactive terminal; use --json for automation");
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let (sender, receiver) = channel();
+    let worker_stop = Arc::clone(&stop);
+    let worker = std::thread::spawn(move || {
+        while !worker_stop.load(Ordering::Relaxed) {
+            if sender.send(collect()).is_err() {
+                return;
+            }
+            // Wake often enough that quitting is immediate rather than waiting
+            // out a full refresh interval.
+            let deadline = std::time::Instant::now() + WATCH_INTERVAL;
+            while std::time::Instant::now() < deadline {
+                if worker_stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(WATCH_POLL);
+            }
+        }
+    });
+
+    let mut terminal = ratatui::try_init().context("cannot initialize status terminal")?;
+    let theme = Theme::from_env();
+    let mut latest: Option<StatusReport> = None;
+    let outcome = (|| -> Result<std::process::ExitCode> {
+        loop {
+            while let Ok(report) = receiver.try_recv() {
+                latest = Some(report);
+            }
+            terminal.draw(|frame| render_watch(frame, latest.as_ref(), theme))?;
+            if event::poll(WATCH_POLL).context("cannot poll terminal input")?
+                && let Event::Key(key) = event::read().context("cannot read terminal input")?
+                && key.kind == KeyEventKind::Press
+            {
+                let quit = matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                    || (key.modifiers.contains(event::KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c'));
+                if quit {
+                    let failed = latest
+                        .as_ref()
+                        .is_some_and(|report| !report.unavailable.is_empty());
+                    return Ok(if failed {
+                        std::process::ExitCode::from(1)
+                    } else {
+                        std::process::ExitCode::SUCCESS
+                    });
+                }
+            }
+        }
+    })();
+    let restore = ratatui::try_restore().context("cannot restore terminal after status exit");
+    stop.store(true, Ordering::Relaxed);
+    // The worker only sleeps and samples, so joining cannot block for longer
+    // than one poll interval once the flag is set.
+    let _ = worker.join();
+    for entry in latest.iter().flat_map(|report| report.unavailable.iter()) {
+        ctx.diagnostic("warn", entry.clone());
+    }
+    match (outcome, restore) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(code), Ok(())) => Ok(code),
+    }
+}
+
+fn render_watch(frame: &mut Frame, report: Option<&StatusReport>, theme: Theme) {
+    let area = frame.area();
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(3),
+        Constraint::Length(3),
+    ])
+    .areas(area);
+
+    let score = report.map(|report| report.health.score);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" status ", theme.bold(Token::Accent)),
+            Span::raw(score.map_or_else(
+                || "sampling…".to_string(),
+                |score| format!("health {score}/100 ({})", health_band(score)),
+            )),
+        ]))
+        .block(Block::bordered().title(" measure · classify · trim ")),
+        header,
+    );
+
+    let mut lines = Vec::new();
+    if let Some(report) = report {
+        for (label, value) in watch_rows(report) {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {label:<12}"), theme.style(Token::Muted)),
+                Span::raw(report::terminal_safe(&value)),
+            ]));
+        }
+        if !report.top_processes.is_empty() {
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "  busiest processes",
+                theme.style(Token::AccentSecondary),
+            ));
+            for process in &report.top_processes {
+                lines.push(Line::raw(format!(
+                    "  {:>7}  {:>6.1}%  {:>9}  {}",
+                    process.pid,
+                    process.cpu_percent,
+                    report::gb(process.resident_bytes),
+                    report::terminal_safe(&process.command)
+                )));
+            }
+        }
+        for entry in &report.unavailable {
+            lines.push(Line::styled(
+                format!("  unavailable: {}", report::terminal_safe(entry)),
+                theme.style(Token::Critical),
+            ));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(" Machine ")),
+        body,
+    );
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                format!("refreshing every {}s · q quit", WATCH_INTERVAL.as_secs()),
+                theme.style(Token::AccentSecondary),
+            ),
+            Line::styled(
+                "read-only; this screen never changes anything",
+                theme.style(Token::Muted),
+            ),
+        ])
+        .block(Block::bordered()),
+        footer,
+    );
+}
+
+/// Label/value rows shared by the live dashboard, in a fixed order so panels do
+/// not move between refreshes.
+fn watch_rows(report: &StatusReport) -> Vec<(&'static str, String)> {
+    let mut rows = Vec::new();
+    if let Some(uptime) = report.uptime_seconds {
+        rows.push(("uptime", format_uptime(uptime)));
+    }
+    if let (Some(load), Some(cpus)) = (report.load_average, report.cpu_count) {
+        rows.push((
+            "load",
+            format!(
+                "{:.2} {:.2} {:.2}  over {cpus} CPUs",
+                load[0], load[1], load[2]
+            ),
+        ));
+    }
+    if let Some(memory) = report.memory {
+        let percent = if memory.total_bytes == 0 {
+            0.0
+        } else {
+            (memory.used_bytes as f64) * 100.0 / (memory.total_bytes as f64)
+        };
+        rows.push((
+            "memory",
+            format!(
+                "{} of {} ({percent:.0}%)",
+                report::gb(memory.used_bytes),
+                report::gb(memory.total_bytes)
+            ),
+        ));
+    }
+    if let Some(disk) = report.disk {
+        rows.push((
+            "disk",
+            format!(
+                "{} of {} ({:.0}%), {} free",
+                report::gb(disk.used_bytes),
+                report::gb(disk.total_bytes),
+                disk.used_percent(),
+                report::gb(disk.available_bytes)
+            ),
+        ));
+    }
+    if let Some(battery) = &report.battery {
+        rows.push((
+            "battery",
+            format!(
+                "{}%, {}{}",
+                battery.percent,
+                battery.state,
+                if battery.on_ac_power { ", on AC" } else { "" }
+            ),
+        ));
+    }
+    if let Some(thermal) = &report.thermal {
+        rows.push((
+            "thermal",
+            thermal.cpu_speed_limit_percent.map_or_else(
+                || "no limit recorded".to_string(),
+                |limit| format!("CPU limited to {limit}%"),
+            ),
+        ));
+    }
+    if let Some(network) = report.network {
+        rows.push((
+            "network",
+            format!(
+                "{} in, {} out since boot",
+                report::gb(network.received_bytes),
+                report::gb(network.sent_bytes)
+            ),
+        ));
+    }
+    rows
+}
+
+pub fn run(ctx: &Ctx, watch: bool) -> Result<std::process::ExitCode> {
+    if watch {
+        return run_watch(ctx);
+    }
     let report = collect();
     if ctx.json {
         let document =
@@ -1129,6 +1380,63 @@ Note: No CPU power status has been recorded\n";
         assert_eq!(health_band(89), "degraded");
         assert_eq!(health_band(70), "degraded");
         assert_eq!(health_band(69), "critical");
+    }
+
+    /// Panels must not move between refreshes: an operator builds a mental map
+    /// of where a number lives, and a row that changes position because a
+    /// probe failed once destroys it. Rows are emitted in a fixed order and a
+    /// missing metric is omitted, never reordered around.
+    #[test]
+    fn watch_rows_keep_a_fixed_order_and_omit_what_is_missing() {
+        let mut report = empty_report();
+        assert!(
+            watch_rows(&report).is_empty(),
+            "a report with nothing read shows no rows rather than placeholders"
+        );
+
+        report.uptime_seconds = Some(3_600);
+        report.load_average = Some([1.0, 1.0, 1.0]);
+        report.cpu_count = Some(8);
+        report.disk = Some(Disk {
+            total_bytes: 100,
+            used_bytes: 50,
+            available_bytes: 50,
+        });
+        report.network = Some(Network {
+            received_bytes: 1,
+            sent_bytes: 2,
+        });
+        let labels: Vec<&str> = watch_rows(&report)
+            .iter()
+            .map(|(label, _)| *label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["uptime", "load", "disk", "network"],
+            "present rows keep their relative order with memory, battery and thermal absent"
+        );
+
+        report.memory = Some(Memory {
+            total_bytes: 100,
+            free_bytes: 10,
+            active_bytes: 40,
+            inactive_bytes: 10,
+            wired_bytes: 20,
+            compressed_bytes: 10,
+            used_bytes: 70,
+        });
+        report.thermal = Some(Thermal {
+            cpu_speed_limit_percent: None,
+        });
+        let labels: Vec<&str> = watch_rows(&report)
+            .iter()
+            .map(|(label, _)| *label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["uptime", "load", "memory", "disk", "thermal", "network"],
+            "a metric appearing later slots into its fixed position"
+        );
     }
 
     #[test]
