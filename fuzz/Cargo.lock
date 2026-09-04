@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "devtrim"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "cap-std",

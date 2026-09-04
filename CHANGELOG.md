@@ -2,7 +2,7 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.8.0] - 2026-09-04
 
 ### Security
 - The demo-video dependency graph moves `fast-uri` from 3.1.5 to 3.1.6, clearing four high-severity advisories (host confusion via skipped IDN canonicalization and via percent-encoded scheme normalization, plus SSRF via malformed IPv6 normalization and via repeated hostname percent-decoding). It reaches the tree four levels down, through `@remotion/cli` to `webpack` to `schema-utils` to `ajv`, and does not enter the shipped binary — but the video graph is a release gate, so the advisory blocked the release until fixed

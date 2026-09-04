@@ -1,6 +1,22 @@
 # Project Memory
 
-## Current state (0.7.0 candidate)
+## Current state (0.8.0 candidate)
+
+0.8.0 adds the three parity commands deferred from 0.7.0, two of them narrower
+than asked. `uninstall` resolves an app's bundle identifier and lists what macOS
+keys to it, but cannot delete: `is_protected` refuses `/Applications` and all of
+`~/Library` outside a four-entry allowlist, and widening that would weaken every
+command. `optimize` is three fixed-argv tasks with `--apply` requiring an
+explicit `--task`. `status --watch` samples on a worker thread.
+
+Ten review findings, all real, mostly the same failure: a claim outrunning the
+implementation. `uninstall` promised "every file belonging to an app" while
+matching only identifier-named paths; group-container matching was unsound in
+both directions and was removed; `optimize --apply` still bundled every task
+behind one prompt; `status --watch` joined a worker that could not be
+interrupted; the battery row called a failed probe "none".
+
+## Previous state (0.7.0)
 
 0.7.0 adds three surfaces and closes one measurement defect. `analyze` is an
 interactive read-only disk explorer that measures on a worker thread and streams
@@ -50,13 +66,27 @@ is a narrow scanner-path comparison, not a whole-product performance claim.
 
 ## Decisions
 
+- `uninstall` is a CONSERVATIVE REPORT, not an inventory, and must keep saying
+  so. Identifier matching cannot see an app that stores data under a product
+  name (VS Code's `~/Library/Application Support/Code`), and group containers
+  are omitted entirely because their names come from an arbitrary entitlement —
+  a suffix rule both misses real ones and misattributes others.
+- A maintenance task that cannot do what its name says is omitted, not shipped
+  with a warning. DNS is out because `dscacheutil -flushcache` does not clear
+  the `mDNSResponder` resolver cache it would advertise.
+- `optimize --apply` requires an explicit `--task`: `plan_danger` takes the
+  maximum, so an unselected default lets a trivial task ride in on an expensive
+  one's prompt.
+- A version bump must regenerate `fuzz/Cargo.lock`, or the hosted fuzz job fails
+  its clean-checkout step after running all five targets.
 - `analyze` never creates deletion authority. Deletion here is always bound to a
   closed, corroborated category; an explorer that deleted the highlighted path
   would swap structural evidence for the operator's aim. Mole's analyze deletes;
   this one does not, and the README says so.
-- `uninstall`, `optimize` and a live `--watch` dashboard are deliberately out of
-  scope, and the README states each omission with its reason. An undisclosed gap
-  is worse than a declared one.
+- Every remaining gap is stated in the README with its reason. An undisclosed
+  gap is worse than a declared one, and that section is now what keeps
+  `uninstall`'s narrowness and `optimize`'s three-task catalog honest rather
+  than looking like oversights.
 - `status` measures `/System/Volumes/Data`, not `/`. Only `statfs` separates the
   two: `st_dev` is identical across `/`, `/System/Volumes/Data` and `/Users`
   because of the APFS firmlink, so no metadata comparison can find that
