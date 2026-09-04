@@ -4,6 +4,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+### Added
+- `devtrim uninstall <app>` locates every file belonging to an application by its exact bundle identifier, read from the bundle's own `Info.plist` — support directories, caches, containers, preferences, saved state, HTTP storages, WebKit data, and launch agents — plus group containers, flagged as shared with every app from the same developer team. Matching is exact: `com.example.thing` never selects `com.example.thingy`, and a display name never selects by word. The command is report-only, because `safety::is_protected` refuses `/Applications` and everything under `~/Library` outside a four-entry allowlist, and widening that boundary would weaken it for every command rather than only this one
+
 ## [0.7.0] - 2026-09-01
 
 ### Added

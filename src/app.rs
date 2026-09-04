@@ -1,6 +1,6 @@
 //! CLI application flow.
 
-use crate::{analyze, cli, journal, largest, ops, report, safety, status, tui};
+use crate::{analyze, cli, journal, largest, ops, report, safety, status, tui, uninstall};
 use anyhow::Result;
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use colored::Colorize;
@@ -84,6 +84,7 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
         Some(cli::Command::Clean { target }) => (target.as_str(), true, true, true, true),
         Some(cli::Command::TrashEmpty { .. }) => ("trash-empty", true, true, true, false),
         Some(cli::Command::Status) => ("status", false, false, false, false),
+        Some(cli::Command::Uninstall { .. }) => ("uninstall", false, false, false, false),
         Some(cli::Command::Analyze { .. }) => ("analyze", false, false, false, false),
         Some(cli::Command::Largest { .. }) => ("largest", false, false, false, false),
         Some(cli::Command::History { .. }) => ("history", false, false, false, false),
@@ -150,6 +151,7 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
             Some("scan") => "scan",
             Some("analyze") => "analyze",
             Some("status") => "status",
+            Some("uninstall") => "uninstall",
             Some("largest") => "largest",
             Some("history") => "history",
             Some("completions") => "completions",
@@ -335,6 +337,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             }
         }
         cli::Command::Status => status::run(&ctx),
+        cli::Command::Uninstall { ref app } => uninstall::run(&ctx, app),
         cli::Command::Analyze { ref path } => analyze::run(&ctx, path.as_deref()),
         cli::Command::Largest { top } => {
             let result = largest::scan(&ctx, top);

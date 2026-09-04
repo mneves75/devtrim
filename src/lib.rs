@@ -23,6 +23,7 @@ mod safety;
 mod status;
 mod theme;
 mod tui;
+mod uninstall;
 
 #[cfg(fuzzing)]
 #[doc(hidden)]

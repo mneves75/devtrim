@@ -48,6 +48,11 @@ pub enum Command {
     Scan,
     /// Read-only machine vitals: load, memory, disk, battery, thermals, processes
     Status,
+    /// Locate every file belonging to an app by its exact bundle identifier
+    Uninstall {
+        /// Application name or bundle path (e.g. AltTab, "Visual Studio Code")
+        app: String,
+    },
     /// Explore disk usage interactively, largest first; never deletes anything
     Analyze {
         /// Directory to start from (default: your home directory)
