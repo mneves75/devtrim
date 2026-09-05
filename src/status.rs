@@ -1402,11 +1402,6 @@ Note: No CPU power status has been recorded\n";
     fn health_bands_are_distinguishable_without_any_colour() {
         let bands = [health_band(100), health_band(80), health_band(10)];
         assert_eq!(bands, ["healthy", "degraded", "critical"]);
-        for (index, band) in bands.iter().enumerate() {
-            for other in bands.iter().skip(index + 1) {
-                assert_ne!(band, other, "bands must not share a name");
-            }
-        }
         assert_eq!(health_band(90), "healthy");
         assert_eq!(health_band(89), "degraded");
         assert_eq!(health_band(70), "degraded");

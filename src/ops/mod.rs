@@ -83,16 +83,9 @@ pub(crate) fn blocks_bytes(metadata: &std::fs::Metadata, path: &Path) -> Result<
         .ok_or_else(|| anyhow::anyhow!("allocated size overflow for {}", path.display()))
 }
 
-pub trait Op {
+pub trait Op: Sync {
     fn name(&self) -> &'static str;
-    fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>>;
-    fn scan_with_observations(
-        &self,
-        ctx: &Ctx,
-        _observations: &mut project::ScanObservations,
-    ) -> Result<Vec<Finding>> {
-        self.scan(ctx)
-    }
+    fn scan(&self, ctx: &Ctx, observations: &project::ScanObservations) -> Result<Vec<Finding>>;
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome>;
 }
 
@@ -162,18 +155,31 @@ pub fn for_target(target: crate::cli::Target) -> Box<dyn Op> {
 }
 
 pub fn scan_all(ctx: &Ctx) -> ScanResult {
-    let mut observations = project::ScanObservations::default();
+    let operations = all();
+    let observations = project::ScanObservations::default();
     let mut findings = Vec::new();
     let mut errors = Vec::new();
-    for operation in all() {
-        match operation.scan_with_observations(ctx, &mut observations) {
-            Ok(mut operation_findings) => {
-                filter_protected_findings(&mut operation_findings, ctx);
-                findings.append(&mut operation_findings);
-            }
-            Err(error) => errors.push(format!("{}: {error:#}", operation.name())),
+    // Scans may overlap, but apply remains serial so journal attempt/result pairs cannot interleave.
+    std::thread::scope(|scope| {
+        let mut scans = Vec::with_capacity(operations.len());
+        for operation in &operations {
+            let operation = operation.as_ref();
+            let name = operation.name();
+            let observations = &observations;
+            scans.push((name, scope.spawn(move || operation.scan(ctx, observations))));
         }
-    }
+        // ponytail: diagnostics use arrival order; use per-op buffers merged here if ordered diagnostics become part of the contract.
+        for (name, scan_thread) in scans {
+            match scan_thread.join() {
+                Ok(Ok(mut operation_findings)) => {
+                    filter_protected_findings(&mut operation_findings, ctx);
+                    findings.append(&mut operation_findings);
+                }
+                Ok(Err(error)) => errors.push(format!("{name}: {error:#}")),
+                Err(_) => errors.push(format!("{name}: scan thread terminated abnormally")),
+            }
+        }
+    });
     ScanResult { findings, errors }
 }
 
@@ -754,6 +760,7 @@ mod tests {
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
     use std::path::PathBuf;
     use std::process::Command;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn context(home: PathBuf) -> Ctx {
         Ctx {
@@ -1176,6 +1183,115 @@ mod tests {
             std::fs::read_to_string(protected).unwrap(),
             "keep protected"
         );
+        remove_test_path(home);
+    }
+
+    #[test]
+    fn concurrent_namespace_mutation_never_destroys_a_bystander() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "devtrim-concurrent-namespace-{}",
+                std::process::id()
+            ));
+        remove_test_path(&home);
+        let target = home.join("dev/cache");
+        let bystander = home.join("dev/bystander");
+        std::fs::create_dir_all(&target).unwrap();
+        let sentinel = b"bystander must remain byte-for-byte intact";
+        std::fs::write(&bystander, sentinel).unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("dev/cache");
+        let target_parent = target.parent().unwrap().to_path_buf();
+        let bystander = home.join("dev/bystander");
+        let mutator_backup = home.join("dev/cache-mutator-backup");
+        let ctx = context(home.clone());
+        let stop_mutator = AtomicBool::new(false);
+        let mutator_started = AtomicBool::new(false);
+        let mut attempts = 0usize;
+        let mut successful_deletions = 0usize;
+        let mut refusals = 0usize;
+        let mut identity_refusals = 0usize;
+
+        let control_finding =
+            Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
+        assert!(apply_filesystem_finding("test", &control_finding, &ctx).is_ok());
+        assert!(!target.exists());
+        assert!(std::fs::read_dir(&target_parent).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".devtrim-quarantine-")
+        }));
+        std::fs::create_dir_all(&target).unwrap();
+
+        std::thread::scope(|scope| {
+            let mutator = scope.spawn(|| {
+                mutator_started.store(true, Ordering::Release);
+                for _ in 0..200 {
+                    if stop_mutator.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if std::fs::rename(&target, &mutator_backup).is_ok() {
+                        if symlink(&bystander, &target).is_ok() {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                            let _ = std::fs::remove_file(&target);
+                        }
+                        let _ = std::fs::rename(&mutator_backup, &target);
+                    }
+                    std::thread::yield_now();
+                }
+            });
+            while !mutator_started.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+
+            for _ in 0..50 {
+                let finding =
+                    Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
+                // Every call is classified as Ok or Err; a sink panic fails by unwinding.
+                match apply_filesystem_finding("test", &finding, &ctx) {
+                    Ok(()) => {
+                        successful_deletions += 1;
+                        std::fs::create_dir_all(&target).ok();
+                    }
+                    Err(error) => {
+                        refusals += 1;
+                        if format!("{error:#}").contains("identity") {
+                            identity_refusals += 1;
+                        }
+                    }
+                }
+                attempts += 1;
+            }
+            stop_mutator.store(true, Ordering::Relaxed);
+            mutator.join().unwrap();
+        });
+
+        println!(
+            "concurrent namespace mutation outcomes: attempts={attempts}, successful deletions={successful_deletions}, refusals={refusals}, identity refusals={identity_refusals}"
+        );
+        // The only invariant that holds under every interleaving is that no data is
+        // destroyed. A quarantine leftover is expected and safe here:
+        // `restore_quarantined_target` refuses an occupied original name, which the
+        // mutator holds, so the sink keeps both entries and reports that nothing was
+        // deleted. The leftover may be the directory OR the mutator's symlink,
+        // depending on where the swap landed, so its type is not asserted — only that
+        // it never consumed the bystander.
+        assert!(bystander.exists());
+        assert_eq!(std::fs::read(&bystander).unwrap(), sentinel);
+        for entry in std::fs::read_dir(target_parent).unwrap() {
+            let entry = entry.unwrap();
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".devtrim-quarantine-")
+            {
+                assert_ne!(entry.path(), bystander);
+            }
+        }
         remove_test_path(home);
     }
 

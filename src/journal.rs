@@ -1215,7 +1215,7 @@ mod tests {
 
         started_rx.recv().unwrap();
         assert!(matches!(
-            locked_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            locked_rx.recv_timeout(std::time::Duration::from_millis(300)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
 

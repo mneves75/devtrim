@@ -1,18 +1,20 @@
 //! Shared Git-project activity and ownership checks for project cleanup ops.
 
 use anyhow::{Context, Result};
-use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::safety::is_git_metadata_name;
+
+type CommitObservation = Arc<OnceLock<std::result::Result<String, String>>>;
 
 /// Observations belong to one preview only; apply always probes again.
 #[derive(Default)]
 pub(crate) struct ScanObservations {
-    process_cwds: OnceCell<std::result::Result<Vec<PathBuf>, String>>,
-    commits: BTreeMap<PathBuf, std::result::Result<String, String>>,
+    process_cwds: OnceLock<std::result::Result<Vec<PathBuf>, String>>,
+    commits: Mutex<BTreeMap<PathBuf, CommitObservation>>,
 }
 
 impl ScanObservations {
@@ -28,20 +30,29 @@ impl ScanObservations {
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
-    pub(crate) fn last_commit(&mut self, root: &Path) -> Result<&str> {
-        self.commits
-            .entry(root.to_path_buf())
-            .or_insert_with(|| repo_last_commit(root).map_err(|error| format!("{error:#}")))
-            .as_ref()
-            .map(String::as_str)
-            .map_err(|error| anyhow::anyhow!("{error}"))
+    pub(crate) fn last_commit(&self, root: &Path) -> Result<String> {
+        let commit = {
+            let mut commits = self
+                .commits
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(
+                commits
+                    .entry(root.to_path_buf())
+                    .or_insert_with(|| Arc::new(OnceLock::new())),
+            )
+        };
+        match commit.get_or_init(|| repo_last_commit(root).map_err(|error| format!("{error:#}"))) {
+            Ok(last_commit) => Ok(last_commit.clone()),
+            Err(error) => Err(anyhow::anyhow!("{error}")),
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn with_process_cwds(process_cwds: Vec<PathBuf>) -> Self {
         Self {
-            process_cwds: OnceCell::from(Ok(process_cwds)),
-            commits: BTreeMap::new(),
+            process_cwds: OnceLock::from(Ok(process_cwds)),
+            commits: Mutex::new(BTreeMap::new()),
         }
     }
 }
@@ -103,6 +114,45 @@ pub(crate) fn is_directory_if_present(path: &Path) -> Result<bool> {
 
 pub(crate) fn repo_last_commit(root: &Path) -> Result<String> {
     repo_last_commit_with(root, "git")
+}
+
+#[cfg(test)]
+pub(crate) fn init_old_git_repo(repo: &Path) -> Result<()> {
+    std::fs::create_dir_all(repo)
+        .with_context(|| format!("cannot create old Git fixture {}", repo.display()))?;
+    let initialized = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo)
+        .status()
+        .with_context(|| format!("cannot initialize old Git fixture {}", repo.display()))?;
+    if !initialized.success() {
+        anyhow::bail!("git init failed for old fixture {}", repo.display());
+    }
+    let committed = Command::new("git")
+        .args([
+            "-c",
+            "user.name=devtrim-test",
+            "-c",
+            "user.email=devtrim@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "old fixture",
+        ])
+        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+        .current_dir(repo)
+        .status()
+        .with_context(|| format!("cannot commit old Git fixture {}", repo.display()))?;
+    if !committed.success() {
+        anyhow::bail!("git commit failed for old fixture {}", repo.display());
+    }
+    Ok(())
 }
 
 pub(crate) fn repo_last_commit_with(root: &Path, git: &str) -> Result<String> {

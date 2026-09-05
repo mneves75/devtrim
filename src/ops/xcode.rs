@@ -31,7 +31,11 @@ impl Op for Xcode {
         "xcode"
     }
 
-    fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
+    fn scan(
+        &self,
+        ctx: &Ctx,
+        _observations: &super::project::ScanObservations,
+    ) -> Result<Vec<Finding>> {
         self.scan_with_xcodebuild_state(ctx, xcodebuild_running())
     }
 

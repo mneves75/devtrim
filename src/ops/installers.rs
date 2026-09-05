@@ -115,7 +115,11 @@ impl Op for Installers {
         "installers"
     }
 
-    fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
+    fn scan(
+        &self,
+        ctx: &Ctx,
+        _observations: &super::project::ScanObservations,
+    ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         for directory in INSTALLER_DIRECTORIES {
             scan_directory(&ctx.home.join(directory), ctx, &mut findings)?;
@@ -200,7 +204,9 @@ mod tests {
         std::fs::write(downloads.join("Fresh.dmg"), vec![b'x'; 2048]).unwrap();
 
         let ctx = test_ctx(home.path().to_path_buf());
-        let findings = Installers.scan(&ctx).unwrap();
+        let findings = Installers
+            .scan(&ctx, &crate::ops::project::ScanObservations::default())
+            .unwrap();
 
         let mut labels: Vec<_> = findings
             .iter()
@@ -289,7 +295,12 @@ mod tests {
 
         assert!(installer_details(&link, home.path(), 30).unwrap().is_none());
         let ctx = test_ctx(home.path().to_path_buf());
-        assert!(Installers.scan(&ctx).unwrap().is_empty());
+        assert!(
+            Installers
+                .scan(&ctx, &crate::ops::project::ScanObservations::default(),)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -303,6 +314,11 @@ mod tests {
         stale_file(&nested.join("Bundled.pkg"), 2048);
 
         let ctx = test_ctx(home.path().to_path_buf());
-        assert!(Installers.scan(&ctx).unwrap().is_empty());
+        assert!(
+            Installers
+                .scan(&ctx, &crate::ops::project::ScanObservations::default(),)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

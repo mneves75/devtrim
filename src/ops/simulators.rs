@@ -95,7 +95,11 @@ impl Op for Simulators {
         "simulators"
     }
 
-    fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
+    fn scan(
+        &self,
+        ctx: &Ctx,
+        _observations: &super::project::ScanObservations,
+    ) -> Result<Vec<Finding>> {
         let Some(version) = optional_command_stdout(
             Command::new("xcrun").arg("--version").output(),
             "`xcrun --version`",
@@ -197,19 +201,47 @@ mod tests {
     }
 
     #[test]
-    fn rejects_forged_erase_all_action() {
-        let finding = Finding::new(
-            "forged",
-            None,
-            0,
-            "test",
-            1,
-            Action::command("xcrun", &["simctl", "erase", "all"]),
-        );
-        let ctx = test_ctx();
-        let outcome = Simulators.apply(&[finding], &ctx).unwrap();
-        assert_eq!(outcome.summary.items_touched, 0);
-        assert_eq!(outcome.errors.len(), 1);
+    fn rejects_forged_actions_without_authority() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-simulators-forged")
+            .tempdir()
+            .unwrap();
+        let sentinel = home.path().join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let mut ctx = test_ctx();
+        ctx.home = home.path().to_path_buf();
+        ctx.journal_path = home.path().join("journal.jsonl");
+        let pathless_command = Action::command("xcrun", &["simctl", "delete", "unavailable"]);
+        for finding in [
+            // Simulator erase all is never authorized: keep the forged payload explicit.
+            Finding::new(
+                "forged simulator action",
+                Some(sentinel.clone()),
+                1,
+                "forged",
+                6,
+                Action::command("xcrun", &["simctl", "erase", "all"]),
+            ),
+            Finding::new(
+                "forged simulator action",
+                Some(sentinel.clone()),
+                1,
+                "forged",
+                6,
+                Action::command("xcrun", &["simctl", "delete", "unavailable"]),
+            ),
+            Finding::new("pathless forgery", None, 1, "forged", 6, pathless_command),
+        ] {
+            let outcome = Simulators.apply(&[finding], &ctx).unwrap();
+            assert_eq!(outcome.summary.items_touched, 0);
+            assert_eq!(outcome.errors.len(), 1);
+            assert!(
+                outcome.errors[0].contains("refusing unexpected simulator action"),
+                "{:?}",
+                outcome.errors
+            );
+            assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
+        }
     }
 
     #[test]
@@ -263,7 +295,7 @@ mod tests {
 
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].size_bytes, measured);
-        assert_eq!(findings[0].danger, crate::safety::escalate(4, measured));
+        assert_eq!(findings[0].danger, 5);
         assert_eq!(
             findings[0].action,
             Action::command("xcrun", &["simctl", "delete", "DEVICE-1"])
@@ -302,21 +334,5 @@ mod tests {
             findings[1].action,
             Action::command("xcrun", &["simctl", "delete", "DEVICE-B"])
         );
-    }
-
-    #[test]
-    fn rejects_forged_valid_looking_command_without_authority() {
-        let finding = Finding::new(
-            "forged",
-            None,
-            0,
-            "test",
-            1,
-            Action::command("xcrun", &["simctl", "delete", "unavailable"]),
-        );
-        let ctx = test_ctx();
-        let outcome = Simulators.apply(&[finding], &ctx).unwrap();
-        assert_eq!(outcome.summary.items_touched, 0);
-        assert_eq!(outcome.errors.len(), 1);
     }
 }

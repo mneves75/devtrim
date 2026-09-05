@@ -47,15 +47,7 @@ impl Op for Artifacts {
         "artifacts"
     }
 
-    fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
-        self.scan_with_observations(ctx, &mut ScanObservations::default())
-    }
-
-    fn scan_with_observations(
-        &self,
-        ctx: &Ctx,
-        observations: &mut ScanObservations,
-    ) -> Result<Vec<Finding>> {
+    fn scan(&self, ctx: &Ctx, observations: &ScanObservations) -> Result<Vec<Finding>> {
         observations.process_cwds()?;
         let cutoff = iso_days_ago(ctx.active_days);
         let mut groups: BTreeMap<PathBuf, Vec<ArtifactCandidate>> = BTreeMap::new();
@@ -79,7 +71,7 @@ impl Op for Artifacts {
                 continue;
             }
             let last_commit = observations.last_commit(&owner)?;
-            if last_commit > cutoff.as_str() {
+            if last_commit.as_str() > cutoff.as_str() {
                 active = active.saturating_add(candidates.len());
                 continue;
             }
@@ -123,9 +115,9 @@ impl Op for Artifacts {
 impl Artifacts {
     #[cfg(test)]
     fn scan_with_process_cwds(&self, ctx: &Ctx, process_cwds: &[PathBuf]) -> Result<Vec<Finding>> {
-        self.scan_with_observations(
+        self.scan(
             ctx,
-            &mut ScanObservations::with_process_cwds(process_cwds.to_vec()),
+            &ScanObservations::with_process_cwds(process_cwds.to_vec()),
         )
     }
 
@@ -369,6 +361,7 @@ fn cachedir_tag_matches(path: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::project::init_old_git_repo;
     use std::os::unix::fs::symlink;
 
     fn temp(name: &str) -> PathBuf {
@@ -394,42 +387,6 @@ mod tests {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
         }
-    }
-
-    fn init_old_git_repo(repo: &Path) {
-        std::fs::create_dir_all(repo).unwrap();
-        assert!(
-            std::process::Command::new("git")
-                .args(["init", "-q"])
-                .current_dir(repo)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(
-            std::process::Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=devtrim-test",
-                    "-c",
-                    "user.email=devtrim@example.invalid",
-                    "-c",
-                    "commit.gpgsign=false",
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                    "commit",
-                    "--allow-empty",
-                    "-q",
-                    "-m",
-                    "old fixture",
-                ])
-                .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
-                .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
-                .current_dir(repo)
-                .status()
-                .unwrap()
-                .success()
-        );
     }
 
     #[test]
@@ -543,7 +500,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let home = root.canonicalize().unwrap();
         let repo = home.join("repo");
-        init_old_git_repo(&repo);
+        init_old_git_repo(&repo).unwrap();
         let target = repo.join("packages/NODE_MODULES/pkg/target");
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(

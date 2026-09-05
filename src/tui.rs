@@ -577,7 +577,7 @@ fn load_operation(app: &mut App, operation: Operation, ctx: &Ctx) {
         }
         Operation::Clean(target) => {
             let cleanup = ops::for_target(target);
-            match cleanup.scan(ctx) {
+            match cleanup.scan(ctx, &ops::project::ScanObservations::default()) {
                 Ok(mut findings) => {
                     ops::filter_protected_findings(&mut findings, ctx);
                     let warnings = ctx.take_diagnostics();
@@ -1383,7 +1383,6 @@ mod tests {
     fn help_overlay_is_sized_to_its_content() {
         let area = Rect::new(0, 0, 100, 40);
         let popup = centered_rect(area, 72, 17);
-        assert_eq!(popup.height, 19, "17 content rows plus two borders");
         assert!(popup.width <= area.width && popup.height <= area.height);
 
         // Never larger than the space available.

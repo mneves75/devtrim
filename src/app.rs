@@ -414,7 +414,7 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
     if !ctx.json {
         eprintln!("{} scanning '{}'…", "devtrim".bold(), operation.name());
     }
-    let mut findings = match operation.scan(ctx) {
+    let mut findings = match operation.scan(ctx, &ops::project::ScanObservations::default()) {
         Ok(findings) => findings,
         Err(error) => return command_error(operation.name(), false, &[], ctx, error),
     };

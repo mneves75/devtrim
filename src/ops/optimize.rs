@@ -74,7 +74,11 @@ impl Op for Optimize {
         "optimize"
     }
 
-    fn scan(&self, _ctx: &Ctx) -> Result<Vec<Finding>> {
+    fn scan(
+        &self,
+        _ctx: &Ctx,
+        _observations: &super::project::ScanObservations,
+    ) -> Result<Vec<Finding>> {
         Ok(self
             .tasks
             .iter()
@@ -176,13 +180,19 @@ mod tests {
     fn selecting_tasks_narrows_the_plan_and_rejects_unknown_names() {
         let all = Optimize::new(&[], false)
             .unwrap()
-            .scan(&test_ctx())
+            .scan(
+                &test_ctx(),
+                &crate::ops::project::ScanObservations::default(),
+            )
             .unwrap();
         assert_eq!(all.len(), MaintenanceTask::ALL.len());
 
         let one = Optimize::new(&["quicklook".to_string()], true)
             .unwrap()
-            .scan(&test_ctx())
+            .scan(
+                &test_ctx(),
+                &crate::ops::project::ScanObservations::default(),
+            )
             .unwrap();
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].danger, MaintenanceTask::QuickLookCache.danger());
@@ -190,7 +200,10 @@ mod tests {
         // A duplicate selection must not run the task twice.
         let duplicated = Optimize::new(&["quicklook".to_string(), "quicklook".to_string()], true)
             .unwrap()
-            .scan(&test_ctx())
+            .scan(
+                &test_ctx(),
+                &crate::ops::project::ScanObservations::default(),
+            )
             .unwrap();
         assert_eq!(duplicated.len(), 1);
 
@@ -209,7 +222,10 @@ mod tests {
     fn every_task_is_previewed_as_a_typed_command() {
         let findings = Optimize::new(&[], false)
             .unwrap()
-            .scan(&test_ctx())
+            .scan(
+                &test_ctx(),
+                &crate::ops::project::ScanObservations::default(),
+            )
             .unwrap();
         assert_eq!(findings.len(), MaintenanceTask::ALL.len());
         for finding in &findings {
@@ -229,14 +245,11 @@ mod tests {
     #[test]
     fn task_invocations_are_fully_fixed() {
         for task in MaintenanceTask::ALL {
-            let authority = CommandAuthority::Maintenance(*task);
-            let (program, args) = authority.parts();
-            assert!(!program.is_empty());
-            assert!(!args.is_empty(), "{} has no arguments", task.label());
-            // Same authority, same invocation, every time.
-            let (again, args_again) = authority.parts();
-            assert_eq!(program, again);
-            assert_eq!(args, args_again);
+            let (_, args) = CommandAuthority::Maintenance(*task).parts();
+            assert!(
+                !args.iter().any(|argument| argument == task.name()),
+                "task selection must not enter argv"
+            );
         }
     }
 

@@ -26,7 +26,11 @@ impl Op for Leftovers {
         "leftovers"
     }
 
-    fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
+    fn scan(
+        &self,
+        ctx: &Ctx,
+        _observations: &super::project::ScanObservations,
+    ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         for root in &ctx.roots {
             if !is_directory_if_present(root)? {

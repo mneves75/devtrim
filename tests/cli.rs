@@ -17,9 +17,12 @@ struct Sandbox(PathBuf);
 
 impl Sandbox {
     fn new(name: &str) -> Self {
+        Self::new_in(std::env::temp_dir(), name)
+    }
+
+    fn new_in(base: PathBuf, name: &str) -> Self {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("devtrim-cli-{name}-{}-{id}", std::process::id()));
+        let path = base.join(format!("devtrim-cli-{name}-{}-{id}", std::process::id()));
         std::fs::remove_dir_all(&path).ok();
         std::fs::create_dir_all(&path).unwrap();
         let sandbox = Self(path);
@@ -27,17 +30,9 @@ impl Sandbox {
         sandbox
     }
 
+    // Permanent-deletion fixtures live here so same-device preflight matches the checkout.
     fn in_target(name: &str) -> Self {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-cli-{name}-{}-{id}", std::process::id()));
-        std::fs::remove_dir_all(&path).ok();
-        std::fs::create_dir_all(&path).unwrap();
-        let sandbox = Self(path);
-        sandbox.script("pgrep", "exit 1");
-        sandbox
+        Self::new_in(std::env::current_dir().unwrap().join("target"), name)
     }
 
     fn path(&self) -> &Path {
@@ -74,6 +69,15 @@ fn run(sandbox: &Sandbox, args: &[&str]) -> Output {
         .env_remove("XDG_STATE_HOME")
         .output()
         .unwrap()
+}
+
+fn docker_script(sandbox: &Sandbox, image_prune_exit: i32) {
+    let body = format!(
+        "{}{image_prune_exit}{}",
+        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') exit ",
+        " ;;\n  *) exit 1 ;;\nesac"
+    );
+    sandbox.script("docker", &body);
 }
 
 fn json(output: &Output) -> Value {
@@ -1117,10 +1121,7 @@ fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
     let sandbox = Sandbox::new("docker-failure");
     // The format argument contains a real tab, so match on a prefix: an exact pattern
     // would silently fall through to the catch-all and make this a scan-failure test.
-    sandbox.script(
-        "docker",
-        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') exit 9 ;;\n  *) exit 1 ;;\nesac",
-    );
+    docker_script(&sandbox, 9);
     let output = run(
         &sandbox,
         &["clean", "docker", "--apply", "--yolo", "--json"],
@@ -1161,10 +1162,7 @@ fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
 #[test]
 fn failed_human_apply_does_not_print_a_success_summary() {
     let sandbox = Sandbox::new("docker-human-failure");
-    sandbox.script(
-        "docker",
-        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') exit 9 ;;\n  *) exit 1 ;;\nesac",
-    );
+    docker_script(&sandbox, 9);
 
     let output = run(&sandbox, &["clean", "docker", "--apply", "-y"]);
 
@@ -1178,10 +1176,7 @@ fn failed_human_apply_does_not_print_a_success_summary() {
 #[test]
 fn human_apply_prints_data_loss_warning_before_action() {
     let sandbox = Sandbox::new("risk-warning");
-    sandbox.script(
-        "docker",
-        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') exit 0 ;;\n  *) exit 1 ;;\nesac",
-    );
+    docker_script(&sandbox, 0);
 
     let output = run(&sandbox, &["clean", "docker", "--apply", "-y"]);
 

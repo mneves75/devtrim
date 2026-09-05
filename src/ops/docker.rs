@@ -213,7 +213,11 @@ impl Op for Docker {
         "docker"
     }
 
-    fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
+    fn scan(
+        &self,
+        ctx: &Ctx,
+        _observations: &super::project::ScanObservations,
+    ) -> Result<Vec<Finding>> {
         // The host image is disclosed even when the daemon is unreachable. A
         // stopped VM is precisely when its disk image is invisible to `docker`
         // and still occupying the host, so making this disclosure depend on a
@@ -486,13 +490,55 @@ mod tests {
     /// The skip above must not become a hole: an actionable finding that
     /// carries no command authority is a forgery and stays refused.
     #[test]
-    fn apply_still_refuses_an_actionable_finding_without_authority() {
-        let forged = Finding::new("forged docker action", None, 1, "forged", 6, Action::Trash);
-        let outcome = Docker.apply(&[forged], &test_ctx()).unwrap();
-        assert!(
-            !outcome.errors.is_empty(),
-            "an actionable finding with no authority must be refused"
-        );
+    fn rejects_forged_actions_without_authority() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-docker-forged")
+            .tempdir()
+            .unwrap();
+        let sentinel = home.path().join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let mut ctx = test_ctx();
+        ctx.home = home.path().to_path_buf();
+        ctx.journal_path = home.path().join("journal.jsonl");
+        let pathless_command = Action::command("docker", &["image", "prune", "-a", "-f"]);
+        for finding in [
+            Finding::new(
+                "forged docker action",
+                Some(sentinel.clone()),
+                1,
+                "forged",
+                6,
+                Action::Trash,
+            ),
+            // Docker volumes are never pruned: keep the forged volume-prune payload explicit.
+            Finding::new(
+                "forged docker action",
+                Some(sentinel.clone()),
+                1,
+                "forged",
+                6,
+                Action::command("docker", &["volume", "prune", "-f"]),
+            ),
+            Finding::new(
+                "forged docker action",
+                Some(sentinel.clone()),
+                1,
+                "forged",
+                6,
+                Action::command("docker", &["image", "prune", "-a", "-f"]),
+            ),
+            Finding::new("pathless forgery", None, 1, "forged", 6, pathless_command),
+        ] {
+            let outcome = Docker.apply(&[finding], &ctx).unwrap();
+            assert_eq!(outcome.summary.items_touched, 0);
+            assert_eq!(outcome.errors.len(), 1);
+            assert!(
+                outcome.errors[0].contains("refusing unexpected Docker action"),
+                "{:?}",
+                outcome.errors
+            );
+            assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
+        }
     }
 
     #[test]
@@ -586,37 +632,5 @@ mod tests {
             let document = format!(r#"[{{"Endpoints":{{"docker":{{"Host":"{host}"}}}}}}]"#);
             assert!(parse_docker_host(&document).is_err(), "accepted {host}");
         }
-    }
-
-    #[test]
-    fn rejects_forged_volume_prune_action() {
-        let finding = Finding::new(
-            "forged",
-            None,
-            0,
-            "test",
-            1,
-            Action::command("docker", &["volume", "prune", "-f"]),
-        );
-        let ctx = test_ctx();
-        let outcome = Docker.apply(&[finding], &ctx).unwrap();
-        assert_eq!(outcome.summary.items_touched, 0);
-        assert_eq!(outcome.errors.len(), 1);
-    }
-
-    #[test]
-    fn rejects_forged_valid_looking_command_without_authority() {
-        let finding = Finding::new(
-            "forged",
-            None,
-            0,
-            "test",
-            1,
-            Action::command("docker", &["image", "prune", "-a", "-f"]),
-        );
-        let ctx = test_ctx();
-        let outcome = Docker.apply(&[finding], &ctx).unwrap();
-        assert_eq!(outcome.summary.items_touched, 0);
-        assert_eq!(outcome.errors.len(), 1);
     }
 }

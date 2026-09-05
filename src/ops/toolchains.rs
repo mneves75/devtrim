@@ -16,7 +16,11 @@ impl Op for Toolchains {
         "toolchains"
     }
 
-    fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
+    fn scan(
+        &self,
+        ctx: &Ctx,
+        _observations: &super::project::ScanObservations,
+    ) -> Result<Vec<Finding>> {
         let directory = ctx.home.join("Library/Developer/Toolchains");
         if !is_directory_if_present(&directory)? {
             return Ok(Vec::new());

@@ -20,7 +20,11 @@ impl Op for Caches {
         "caches"
     }
 
-    fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
+    fn scan(
+        &self,
+        ctx: &Ctx,
+        _observations: &super::project::ScanObservations,
+    ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         for (label, relative) in CACHES {
             let path = ctx.home.join(relative);

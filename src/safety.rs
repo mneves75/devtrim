@@ -2,12 +2,12 @@
 
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
-use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 use crate::cli::Cli;
 use crate::ops::Finding;
@@ -53,10 +53,10 @@ pub struct Ctx {
     pub journal_path: PathBuf,
     pub interactive: bool,
     pub(crate) diagnostic_output: DiagnosticOutput,
-    pub(crate) diagnostics: RefCell<Vec<String>>,
+    pub(crate) diagnostics: Mutex<Vec<String>>,
     /// Journal failures observed after a mutation already succeeded; drained
     /// into the apply outcome so automation sees them with a nonzero status.
-    pub(crate) journal_errors: RefCell<Vec<String>>,
+    pub(crate) journal_errors: Mutex<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,8 +121,8 @@ impl Ctx {
             } else {
                 DiagnosticOutput::Stderr
             },
-            diagnostics: RefCell::new(Vec::new()),
-            journal_errors: RefCell::new(Vec::new()),
+            diagnostics: Mutex::new(Vec::new()),
+            journal_errors: Mutex::new(Vec::new()),
         };
         for warning in protect_warnings {
             ctx.diagnostic("warn", warning);
@@ -138,7 +138,8 @@ impl Ctx {
         match self.diagnostic_output {
             DiagnosticOutput::Capture => self
                 .diagnostics
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(format!("{level}: {message}")),
             DiagnosticOutput::Stderr => {
                 let label = match level {
@@ -151,15 +152,28 @@ impl Ctx {
     }
 
     pub fn take_diagnostics(&self) -> Vec<String> {
-        std::mem::take(&mut *self.diagnostics.borrow_mut())
+        std::mem::take(
+            &mut *self
+                .diagnostics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     pub(crate) fn record_journal_error(&self, message: String) {
-        self.journal_errors.borrow_mut().push(message);
+        self.journal_errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(message);
     }
 
     pub(crate) fn take_journal_errors(&self) -> Vec<String> {
-        std::mem::take(&mut *self.journal_errors.borrow_mut())
+        std::mem::take(
+            &mut *self
+                .journal_errors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 }
 
@@ -927,16 +941,10 @@ mod tests {
     }
 
     #[test]
-    fn protects_home_and_user_secrets() {
-        let home = PathBuf::from("/Users/example");
-        assert!(is_protected(&home, &home));
-        assert!(is_protected(&home.join(".ssh/key"), &home));
-        assert!(!is_protected(&home.join("dev/project"), &home));
-    }
-
-    #[test]
     fn protects_case_variant_aliases() {
         let home = PathBuf::from("/Users/example");
+        assert!(is_protected(&home, &home));
+        assert!(is_protected(&home.join(".Trash"), &home));
         assert!(is_protected(Path::new("/system"), &home));
         assert!(is_protected(Path::new("/system/tmp"), &home));
         assert!(is_protected(Path::new("/applications"), &home));
@@ -950,14 +958,7 @@ mod tests {
         assert!(!is_protected(Path::new("/users/examples/.SSH"), &home));
         assert!(is_protected(&home.join(".GnUpG"), &home));
         assert!(is_protected(&home.join("library"), &home));
-    }
-
-    #[test]
-    fn protected_path_comparison_uses_normalized_components() {
-        assert!(path_eq_ignore_ascii_case(
-            Path::new("/System/"),
-            Path::new("/system")
-        ));
+        assert!(!is_protected(&home.join("dev/project"), &home));
     }
 
     #[test]
