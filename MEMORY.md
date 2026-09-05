@@ -1,5 +1,18 @@
 # Project Memory
 
+## 0.8.1 production release
+
+The user authorized production deployment after source delivery. Immutable
+`v0.8.1-beta1` and `v0.8.1` both point to
+`6fa2c8d04b55b374d286ba40db4eba7cdea08826`; hosted runs `33939147875` and
+`33940354222` passed every release gate. Production reused the beta archive
+without rebuilding. Both release and artifact attestations verified; the ZIP
+SHA-256 is `5cc59b980bd034aa9e3bc602e558078a7f94a7887a6265c92a45fef952a5cc2d`.
+The downloaded binary passed isolated TUI and read-only-view checks. Homebrew
+tap commit `70a8b1a` publishes 0.8.1; audit, upgrade, formula tests, and the sole
+visible `/opt/homebrew/bin/devtrim` version check passed. The landing page now
+targets 0.8.1 and the changelog opens 0.8.2 Unreleased.
+
 ## 0.8.1 audit completed
 
 The requested audit plan, decisions, sources and evidence are in
