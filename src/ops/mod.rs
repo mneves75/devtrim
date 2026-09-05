@@ -15,11 +15,14 @@ pub mod xcode;
 
 use anyhow::{Context, Result};
 use std::ffi::OsStr;
+use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::process::Output;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::report::{Action, Finding, Summary};
+pub use crate::safety::dir_size;
 use crate::safety::{Ctx, FileIdentity, VerifiedTarget, is_git_metadata_name};
 
 static QUARANTINE_ATTEMPT: AtomicU64 = AtomicU64::new(0);
@@ -37,9 +40,59 @@ pub(crate) fn has_node_modules_ancestor(path: &Path) -> bool {
 
 pub use icloud::icloud_status;
 
+pub(crate) fn command_stdout(output: io::Result<Output>, command: &str) -> Result<String> {
+    let output = output.with_context(|| format!("cannot run {command}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        if detail.is_empty() {
+            anyhow::bail!("{command} failed with {}", output.status);
+        }
+        anyhow::bail!("{command} failed with {}: {detail}", output.status);
+    }
+    String::from_utf8(output.stdout).with_context(|| format!("{command} returned non-UTF-8 output"))
+}
+
+pub(crate) fn optional_command_stdout(
+    output: io::Result<Output>,
+    command: &str,
+) -> Result<Option<String>> {
+    match output {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        output => command_stdout(output, command).map(Some),
+    }
+}
+
+pub(crate) fn removal_note(finding: &Finding, subject: impl std::fmt::Display) -> String {
+    format!(
+        "{} {subject}",
+        if finding.action == Action::Shred {
+            "permanently deleted"
+        } else {
+            "trashed"
+        }
+    )
+}
+
+pub(crate) fn blocks_bytes(metadata: &std::fs::Metadata, path: &Path) -> Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+
+    metadata
+        .blocks()
+        .checked_mul(512)
+        .ok_or_else(|| anyhow::anyhow!("allocated size overflow for {}", path.display()))
+}
+
 pub trait Op {
     fn name(&self) -> &'static str;
     fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>>;
+    fn scan_with_observations(
+        &self,
+        ctx: &Ctx,
+        _observations: &mut project::ScanObservations,
+    ) -> Result<Vec<Finding>> {
+        self.scan(ctx)
+    }
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome>;
 }
 
@@ -94,19 +147,26 @@ pub fn all() -> Vec<Box<dyn Op>> {
     ]
 }
 
-pub fn names() -> Vec<&'static str> {
-    all().iter().map(|operation| operation.name()).collect()
-}
-
-pub fn by_name(name: &str) -> Option<Box<dyn Op>> {
-    all().into_iter().find(|operation| operation.name() == name)
+pub fn for_target(target: crate::cli::Target) -> Box<dyn Op> {
+    match target {
+        crate::cli::Target::Caches => Box::new(caches::Caches),
+        crate::cli::Target::NodeModules => Box::new(node_modules::NodeModules),
+        crate::cli::Target::Artifacts => Box::new(artifacts::Artifacts),
+        crate::cli::Target::Simulators => Box::new(simulators::Simulators),
+        crate::cli::Target::Xcode => Box::new(xcode::Xcode),
+        crate::cli::Target::Docker => Box::new(docker::Docker),
+        crate::cli::Target::Toolchains => Box::new(toolchains::Toolchains),
+        crate::cli::Target::Installers => Box::new(installers::Installers),
+        crate::cli::Target::Leftovers => Box::new(leftovers::Leftovers),
+    }
 }
 
 pub fn scan_all(ctx: &Ctx) -> ScanResult {
+    let mut observations = project::ScanObservations::default();
     let mut findings = Vec::new();
     let mut errors = Vec::new();
     for operation in all() {
-        match operation.scan(ctx) {
+        match operation.scan_with_observations(ctx, &mut observations) {
             Ok(mut operation_findings) => {
                 filter_protected_findings(&mut operation_findings, ctx);
                 findings.append(&mut operation_findings);
@@ -115,10 +175,6 @@ pub fn scan_all(ctx: &Ctx) -> ScanResult {
         }
     }
     ScanResult { findings, errors }
-}
-
-pub fn dir_size(path: &Path) -> Result<u64> {
-    crate::safety::dir_size(path)
 }
 
 pub fn filter_protected_findings(findings: &mut Vec<Finding>, ctx: &Ctx) {

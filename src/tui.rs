@@ -576,13 +576,7 @@ fn load_operation(app: &mut App, operation: Operation, ctx: &Ctx) {
             app.finish_results(operation, result.findings, result.errors, warnings);
         }
         Operation::Clean(target) => {
-            let Some(cleanup) = ops::by_name(target.as_str()) else {
-                app.fail(anyhow::anyhow!(
-                    "unknown cleanup target {}",
-                    target.as_str()
-                ));
-                return;
-            };
+            let cleanup = ops::for_target(target);
             match cleanup.scan(ctx) {
                 Ok(mut findings) => {
                     ops::filter_protected_findings(&mut findings, ctx);
@@ -673,9 +667,7 @@ fn apply_operation(app: &mut App, ctx: &Ctx, plan: ApprovedPlan) {
     } = plan;
 
     let result = match operation {
-        Operation::Clean(target) => ops::by_name(target.as_str())
-            .ok_or_else(|| anyhow::anyhow!("unknown cleanup target {}", target.as_str()))
-            .and_then(|cleanup| cleanup.apply(&findings, ctx)),
+        Operation::Clean(target) => ops::for_target(target).apply(&findings, ctx),
         Operation::TrashEmpty => apply_trash(ctx, &findings, approval),
         Operation::ScanAll | Operation::Icloud => {
             Err(anyhow::anyhow!("refusing to apply a read-only operation"))
@@ -797,7 +789,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Centers a popup wide enough for `max_width` and tall enough for `content`
 /// lines plus its border, never exceeding the area it sits in.
-fn centered_rect(area: Rect, max_width: u16, content: usize) -> Rect {
+pub(crate) fn centered_rect(area: Rect, max_width: u16, content: usize) -> Rect {
     let width = area.width.saturating_sub(4).min(max_width);
     let wanted = u16::try_from(content).unwrap_or(u16::MAX).saturating_add(2);
     let height = wanted.min(area.height.saturating_sub(2));
@@ -1087,7 +1079,7 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App) {
     let Some(confirmation) = app.confirmation else {
         return;
     };
-    let popup = confirmation_rect(area);
+    let popup = centered_rect(area, 100, 14);
     frame.render_widget(Clear, popup);
     let prompt = match confirmation {
         ConfirmationKind::YesNo { danger } => {
@@ -1131,17 +1123,6 @@ fn action_label(action: &Action) -> &'static str {
         Action::Info => "INFO",
         Action::None => "EXCLUDED",
     }
-}
-
-fn confirmation_rect(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(4).min(100);
-    let height = area.height.saturating_sub(2).min(16);
-    Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    )
 }
 
 fn terminal_too_small(area: Rect) -> bool {

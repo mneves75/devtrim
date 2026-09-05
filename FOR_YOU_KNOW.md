@@ -218,3 +218,31 @@ devtrim moved to Ratatui 0.30.2/Crossterm 0.29, resolves patched `lru 0.18.2`,
 disabled default features, and raised the proven compiler floor only to Rust
 1.88. The safer graph won over compatibility; vendoring unsafe cache code
 would have been the wrong trade.
+
+Verification also has to prove the instrument works. The old terminal smoke
+test launched devtrim, slept, pressed Escape, and accepted a successful exit.
+It never checked that a menu appeared. The shared Python PTY driver now sets
+the terminal size, checks the menu and help overlay, closes the overlay, quits,
+and verifies terminal restoration. A program that immediately exits with
+success is rejected. Both CI and release validation use that same driver.
+
+The local `scripts/verify.sh` helper distinguishes Rust-focused checks from
+broader offline checks. It selects the compiler pinned by the repository,
+reports each exit status, and states what it did not run. Offline success
+cannot establish that online advisory data is current or replace fuzzing,
+video checks, and independent review. Keeping those limits visible is more
+useful than a generic green "all checks passed" message.
+
+A cache directory can contain more than cache data. Hugging Face's default
+state directory also holds authentication tokens. Cleanup now names only its
+`hub` child, and the regression uses a disposable home to prove both sides:
+the model disappears and the tokens survive. A test that only checked the
+model disappeared would have endorsed the original data-loss bug.
+
+Repeated work is another useful audit target. One scan now shares build-process
+and Git observations across the two project categories, including failed probes.
+Apply starts over because activity may change while a person reads the preview.
+The read-only dashboards redraw on new data or input, and analyze formats only
+the visible rows. The benchmark harness first proves both binaries did the same
+successful work; overloaded-host timing is refused rather than presented as a
+performance improvement.

@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding};
+use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, removal_note};
 use crate::safety::{Ctx, escalate};
 
 pub struct Installers;
@@ -34,54 +34,43 @@ fn has_installer_extension(path: &Path) -> bool {
         })
 }
 
-/// Age in whole days since last modification. A clock that reports a modification
-/// in the future yields `None`, which keeps the file out of the plan rather than
-/// letting an unreadable timestamp authorize deletion.
-fn age_in_days(path: &Path) -> Result<Option<u64>> {
-    let metadata = std::fs::symlink_metadata(path)
-        .with_context(|| format!("cannot inspect {}", path.display()))?;
-    let modified = metadata
-        .modified()
-        .with_context(|| format!("cannot read modification time of {}", path.display()))?;
-    Ok(SystemTime::now()
-        .duration_since(modified)
-        .ok()
-        .map(|elapsed| elapsed.as_secs() / Duration::from_secs(60 * 60 * 24).as_secs()))
-}
-
-/// Exact shape the scanner is allowed to produce, re-checked at apply time.
+/// Age in days and logical size for an eligible installer, re-read at apply time.
 ///
 /// The scanner is never deletion authority: this predicate is the one the sink
 /// trusts, so it repeats every structural condition instead of assuming the
 /// finding was built correctly.
-fn is_eligible_installer(path: &Path, home: &Path, active_days: u32) -> Result<bool> {
+fn installer_details(path: &Path, home: &Path, active_days: u32) -> Result<Option<(u64, u64)>> {
     let Some(parent) = path.parent() else {
-        return Ok(false);
+        return Ok(None);
     };
     if !INSTALLER_DIRECTORIES
         .iter()
         .any(|directory| parent == home.join(directory))
     {
-        return Ok(false);
+        return Ok(None);
     }
     if !has_installer_extension(path) {
-        return Ok(false);
+        return Ok(None);
     }
     let metadata = std::fs::symlink_metadata(path)
         .with_context(|| format!("cannot inspect {}", path.display()))?;
     // A symlink is refused outright: following one would delete a file outside
     // the authorized directory while every path check above still passed.
     if !metadata.file_type().is_file() {
-        return Ok(false);
+        return Ok(None);
     }
     // Age is part of the shape the scanner promised, so apply has to reassert
     // it too. An archive modified in place after preview keeps its inode and
     // generation, so the sink's identity check cannot see it; without this the
     // plan would delete a file that is no longer stale.
-    let Some(age) = age_in_days(path)? else {
-        return Ok(false);
+    let modified = metadata
+        .modified()
+        .with_context(|| format!("cannot read modification time of {}", path.display()))?;
+    let Ok(elapsed) = SystemTime::now().duration_since(modified) else {
+        return Ok(None);
     };
-    Ok(age >= u64::from(active_days))
+    let age = elapsed.as_secs() / Duration::from_secs(60 * 60 * 24).as_secs();
+    Ok((age >= u64::from(active_days)).then_some((age, metadata.len())))
 }
 
 fn scan_directory(directory: &Path, ctx: &Ctx, findings: &mut Vec<Finding>) -> Result<()> {
@@ -95,17 +84,9 @@ fn scan_directory(directory: &Path, ctx: &Ctx, findings: &mut Vec<Finding>) -> R
     for entry in entries {
         let entry = entry.with_context(|| format!("cannot enumerate {}", directory.display()))?;
         let path = entry.path();
-        if !is_eligible_installer(&path, &ctx.home, ctx.active_days)? {
-            continue;
-        }
-        // Re-read only for the note; eligibility, including age, is decided by
-        // the predicate above so scanner and apply cannot drift apart.
-        let Some(age) = age_in_days(&path)? else {
+        let Some((age, size)) = installer_details(&path, &ctx.home, ctx.active_days)? else {
             continue;
         };
-        let size = std::fs::symlink_metadata(&path)
-            .with_context(|| format!("cannot measure {}", path.display()))?
-            .len();
         if size == 0 {
             continue;
         }
@@ -152,7 +133,7 @@ impl Op for Installers {
                 let target = finding
                     .target()
                     .ok_or_else(|| anyhow::anyhow!("installer finding missing internal target"))?;
-                if !is_eligible_installer(target, &ctx.home, ctx.active_days)? {
+                if installer_details(target, &ctx.home, ctx.active_days)?.is_none() {
                     anyhow::bail!(
                         "installer target is outside its authorized namespace: {}",
                         target.display()
@@ -165,18 +146,7 @@ impl Op for Installers {
                 outcome.fail(error);
                 break;
             }
-            outcome.record(
-                finding,
-                format!(
-                    "{} {}",
-                    if finding.action == Action::Shred {
-                        "permanently deleted"
-                    } else {
-                        "trashed"
-                    },
-                    finding.label
-                ),
-            );
+            outcome.record(finding, removal_note(finding, &finding.label));
         }
         Ok(outcome)
     }
@@ -264,13 +234,17 @@ mod tests {
         let forged = elsewhere.join("Tool.dmg");
         stale_file(&forged, 2048);
 
-        assert!(!is_eligible_installer(&forged, home.path(), 30).unwrap());
+        assert!(
+            installer_details(&forged, home.path(), 30)
+                .unwrap()
+                .is_none()
+        );
 
         let authorized = home.path().join("Downloads");
         std::fs::create_dir_all(&authorized).unwrap();
         let real = authorized.join("Tool.dmg");
         stale_file(&real, 2048);
-        assert!(is_eligible_installer(&real, home.path(), 30).unwrap());
+        assert!(installer_details(&real, home.path(), 30).unwrap().is_some());
     }
 
     /// Apply reasserts age, not just shape. An archive touched in place after
@@ -286,7 +260,7 @@ mod tests {
         std::fs::create_dir_all(&downloads).unwrap();
         let path = downloads.join("Tool.dmg");
         stale_file(&path, 2048);
-        assert!(is_eligible_installer(&path, home.path(), 30).unwrap());
+        assert!(installer_details(&path, home.path(), 30).unwrap().is_some());
 
         std::fs::File::options()
             .write(true)
@@ -295,7 +269,7 @@ mod tests {
             .set_modified(SystemTime::now())
             .unwrap();
         assert!(
-            !is_eligible_installer(&path, home.path(), 30).unwrap(),
+            installer_details(&path, home.path(), 30).unwrap().is_none(),
             "a freshly touched archive must fall out of the plan"
         );
     }
@@ -313,7 +287,7 @@ mod tests {
         let link = downloads.join("Link.dmg");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        assert!(!is_eligible_installer(&link, home.path(), 30).unwrap());
+        assert!(installer_details(&link, home.path(), 30).unwrap().is_none());
         let ctx = test_ctx(home.path().to_path_buf());
         assert!(Installers.scan(&ctx).unwrap().is_empty());
     }

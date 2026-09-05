@@ -42,13 +42,14 @@ impl Op for Leftovers {
                     format!("cannot inspect leftover candidate {}", path.display())
                 })?;
                 if file_type.is_dir() && is_agent_scratch(&entry.file_name().to_string_lossy()) {
+                    let size = dir_size(&path)?;
                     findings.push(Finding::new(
                         format!(
                             "possible agent scratch `{}`",
                             entry.file_name().to_string_lossy()
                         ),
-                        Some(path.clone()),
-                        dir_size(&path)?,
+                        Some(path),
+                        size,
                         "review manually; worktree staleness cannot be proven",
                         1,
                         Action::Info,
@@ -68,10 +69,11 @@ impl Op for Leftovers {
                 for child in ["evidence", "perf"] {
                     let path = entry.path().join(child);
                     if is_directory_if_present(&path)? {
+                        let size = dir_size(&path)?;
                         findings.push(Finding::new(
                             format!("supergoal {child} artifacts"),
-                            Some(path.clone()),
-                            dir_size(&path)?,
+                            Some(path),
+                            size,
                             "review manually; completion cannot be inferred from a path",
                             1,
                             Action::Info,

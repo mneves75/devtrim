@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size};
+use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, escalate, xcodebuild_running};
 
 pub struct Xcode;
@@ -152,15 +152,7 @@ impl Xcode {
                     }
                 }
                 apply_filesystem_finding(self.name(), finding, ctx)?;
-                Ok(format!(
-                    "{} {}",
-                    if finding.action == Action::Shred {
-                        "permanently deleted"
-                    } else {
-                        "trashed"
-                    },
-                    path.display()
-                ))
+                Ok(removal_note(finding, path.display()))
             })();
             match result {
                 Ok(note) => outcome.record(finding, note),

@@ -25,8 +25,8 @@ jobs:
 
       - name: Install pinned Rust
         run: |
-          rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
-          rustup default 1.98.0
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.1
           rustup target add aarch64-apple-darwin
 
       - name: Install pinned Node.js
@@ -104,8 +104,12 @@ jobs:
       - name: Release policy tests
         run: |
           bash scripts/tests/release-policy.sh
-          bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
-          sh -n .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh
+          for script in scripts/verify.sh scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh scripts/perf/ab.sh scripts/perf/corpus.sh; do
+            bash -n "$script"
+          done
+          for script in .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh; do
+            sh -n "$script"
+          done
 
       - name: Shell lint
         run: |
@@ -132,6 +136,12 @@ jobs:
 
       - name: Tests
         run: cargo test --locked --all-targets --all-features
+
+      - name: Real PTY TUI cancel flow
+        run: |
+          cargo build --locked
+          python3 scripts/tests/tui.py target/debug/devtrim
+          python3 scripts/tests/read-only-views.py target/debug/devtrim
 
       - name: MSRV tests
         run: |

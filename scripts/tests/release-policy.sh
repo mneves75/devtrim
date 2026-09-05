@@ -157,13 +157,21 @@ require_fixed "$release_workflow" 'cargo clippy --locked --all-targets --all-fea
 require_fixed "$release_workflow" 'cargo test --locked --all-targets --all-features'
 require_fixed "$release_workflow" 'rustup run 1.88.0 cargo test --locked --all-targets --all-features'
 require_fixed "$release_workflow" 'cargo audit --file fuzz/Cargo.lock'
-require_fixed "$release_workflow" 'bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh'
-require_fixed "$release_workflow" 'sh -n .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh'
 require_fixed "$release_workflow" 'scripts/tests/shellcheck-tracked.sh'
 require_fixed "$release_workflow" 'actionlint'
 require_fixed "$release_workflow" 'gitleaks git --redact --no-banner .'
 require_fixed "$release_workflow" 'trufflehog git "file://$(pwd)"'
-require_fixed "$release_workflow" 'spawn env HOME=$env(TUI_TEST_HOME)'
+for workflow in "$release_workflow" "$ci_workflow"; do
+  require_fixed "$workflow" 'for script in scripts/verify.sh scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh scripts/perf/ab.sh scripts/perf/corpus.sh; do'
+  require_fixed "$workflow" 'bash -n "$script"'
+  require_fixed "$workflow" 'for script in .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh; do'
+  require_fixed "$workflow" 'sh -n "$script"'
+  require_fixed "$workflow" 'python3 scripts/tests/tui.py target/debug/devtrim'
+  require_fixed "$workflow" 'python3 scripts/tests/read-only-views.py target/debug/devtrim'
+  require_fixed "$workflow" 'rustup toolchain install 1.98.1 --profile minimal'
+  require_fixed "$workflow" 'rustup default 1.98.1'
+done
+require_fixed "$repo_root/rust-toolchain.toml" 'channel = "1.98.1"'
 require_fixed "$release_workflow" 'npm ci --strict-allow-scripts'
 require_fixed "$release_workflow" 'npm audit --package-lock-only --audit-level=low'
 require_fixed "$release_workflow" 'npm run lint'
@@ -224,7 +232,6 @@ require_fixed "$ci_workflow" 'runs-on: macos-15'
 require_fixed "$ci_workflow" 'shellcheck-v0.11.0.darwin.aarch64.tar.gz'
 require_fixed "$ci_workflow" '339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f'
 require_fixed "$ci_workflow" 'pinned ShellCheck asset requires the macos-15 arm64 runner'
-require_fixed "$ci_workflow" 'sh -n .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh'
 require_fixed "$ci_workflow" 'scripts/tests/shellcheck-tracked.sh'
 require_fixed "$ci_workflow" 'name: Install checksum-verified secret scanners'
 require_fixed "$ci_workflow" 'pinned secret-scanner assets require the macos-15 arm64 runner'
@@ -422,6 +429,17 @@ set -e
 [[ ! -e "$shellcheck_log" ]] || fail "ShellCheck ran after Git worktree discovery failed"
 grep -Fq 'cannot locate the Git worktree for shell lint' <<<"$outside_output" ||
   fail "ShellCheck helper did not explain Git worktree discovery failure"
+
+tui_noop="$test_root/tui-noop"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$tui_noop"
+chmod +x "$tui_noop"
+set +e
+tui_noop_output=$(python3 "$script_dir/tui.py" "$tui_noop" 2>&1)
+tui_noop_status=$?
+set -e
+[[ "$tui_noop_status" -ne 0 ]] || fail "PTY harness accepted a binary that never rendered"
+grep -Fq 'TUI exited before rendering' <<<"$tui_noop_output" ||
+  fail "PTY harness did not explain missing menu rendering"
 
 origin="$test_root/origin.git"
 seed="$test_root/seed"

@@ -20,9 +20,10 @@ violates one cannot merge, so reporting it wastes the review.
 | `ast-grep scan --config sgconfig.yml` | `no-direct-filesystem-delete` and `no-unowned-filesystem-delete-in-owner-module` (which pin the sink signature `fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity)` and sanction `crate::ops::remove_test_path` and the file's `#[cfg(test)] mod tests` as the test escape hatches); `no-shell-invocation`; `no-abbreviated-bindings` |
 | `cargo test --all-targets --all-features` | unit and CLI integration coverage |
 | `rustup run 1.88.0 cargo test` | MSRV |
+| `python3 scripts/tests/tui.py target/debug/devtrim` | real PTY menu/help/cancel/quit with isolated HOME/PATH, explicit dimensions, visible-content assertions, and restored terminal state; release-policy tests reject a non-rendering executable |
 | `cargo audit` (root and `fuzz/`) | advisories |
 | `scripts/tests/shellcheck-tracked.sh` | every tracked `*.sh` plus the pre-commit hook; the helper uses a temporary NUL-delimited Git-index manifest, preserves whitespace, protects leading dashes, and fails before linting if ShellCheck is unavailable or worktree discovery/enumeration fails |
-| `bash -n` on the four Bash scripts, `sh -n` on the hook, ShellCheck helper, and Gitleaks positive-control helper, then `scripts/tests/release-policy.sh` | shell syntax, positive controls for difficult filenames, missing ShellCheck, and worktree failure, and that the hook, `ci.yml`, and `release.yml` still carry each pinned safety clause |
+| `bash -n` separately for each Bash script, `sh -n` separately for the hook and POSIX helpers, then `scripts/tests/release-policy.sh` | shell syntax (additional filename arguments to `-n` are not parsed), positive controls for difficult filenames, missing ShellCheck, and worktree failure, and that the hook, `ci.yml`, and `release.yml` still carry each pinned safety clause |
 | `npm run lint` in `video/` (`eslint src && tsc`) | Remotion lint rules and TypeScript types |
 | `npm run format:check` in `video/` (prettier) | all `video/src` formatting |
 | `npm ci --strict-allow-scripts` + `npm audit --package-lock-only --audit-level=low` | video advisories, and lifecycle scripts restricted to the `allowScripts` allowlist |
@@ -101,7 +102,7 @@ case-preserving`), Darwin's transient `ENOENT` under a create race
 
 ### S4 — Every module opens with a `//!` contract line
 
-**Hard.** A new file under `src/` without one. All 20 existing modules have one,
+**Hard.** A new file under `src/` without one. Existing modules have one,
 and several state a prohibition — `src/ops/xcode.rs`: "Archives are deliberately
 exempt release artifacts."
 

@@ -270,7 +270,7 @@ fn measure(path: &Path) -> Result<u64> {
     }
 }
 
-fn info_finding(label: String, path: PathBuf, note: &str) -> Result<Finding> {
+fn info_finding(label: impl Into<String>, path: PathBuf, note: &str) -> Result<Finding> {
     let size = measure(&path)?;
     Ok(Finding::new(label, Some(path), size, note, 1, Action::Info))
 }
@@ -278,7 +278,7 @@ fn info_finding(label: String, path: PathBuf, note: &str) -> Result<Finding> {
 /// Every path that belongs to `identifier`, plus the bundle itself.
 pub(crate) fn locate(app: &Path, identifier: &str, home: &Path) -> Result<Vec<Finding>> {
     let mut findings = vec![info_finding(
-        "application bundle".to_string(),
+        "application bundle",
         app.to_path_buf(),
         "report-only; devtrim refuses every path under /Applications",
     )?];

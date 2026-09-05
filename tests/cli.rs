@@ -1352,3 +1352,143 @@ fn generated_docs_reject_json_with_one_error_document() {
         assert_eq!(value["errors"].as_array().unwrap().len(), 1);
     }
 }
+
+#[test]
+fn huggingface_cleanup_preserves_authentication_and_other_state() {
+    let sandbox = Sandbox::in_target("huggingface-state");
+    let state = sandbox.path().join(".cache/huggingface");
+    let hub = state.join("hub");
+    std::fs::create_dir_all(&hub).unwrap();
+    std::fs::write(hub.join("model"), "downloaded model").unwrap();
+    for name in ["token", "stored_tokens", "settings"] {
+        std::fs::write(state.join(name), "keep this state").unwrap();
+    }
+
+    let output = run(
+        &sandbox,
+        &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+    );
+    let value = json(&output);
+    assert!(output.status.success(), "{value}");
+    assert_eq!(value["summary"]["items_touched"], 1);
+    assert!(!hub.exists(), "eligible model data was not removed");
+    for name in ["token", "stored_tokens", "settings"] {
+        assert_eq!(
+            std::fs::read_to_string(state.join(name)).unwrap(),
+            "keep this state",
+            "{name} must survive cache cleanup"
+        );
+    }
+}
+
+#[test]
+fn installers_parse_errors_retain_the_category_in_json() {
+    let sandbox = Sandbox::new("installers-parse-error");
+    let output = run(
+        &sandbox,
+        &["clean", "installers", "--unsupported", "--json"],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let value = json(&output);
+    assert_eq!(value["operation"], "installers");
+    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
+    let sandbox = Sandbox::new("scan-spawn-count");
+    let project = sandbox.path().join("dev/project");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
+    std::fs::write(project.join("node_modules/pkg/index.js"), "x").unwrap();
+    std::fs::create_dir_all(project.join("target")).unwrap();
+    std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+    std::fs::write(project.join("target/output"), "x").unwrap();
+    let log = sandbox.path().join("spawns.log");
+    let record = format!("printf '%s\\n' \"${{0##*/}} $*\" >> '{}'", log.display());
+    sandbox.script(
+        "pgrep",
+        &format!("{record}\ncase \"$*\" in \"-x xcodebuild\") exit 1 ;; esac\nprintf '4242\\n'"),
+    );
+    sandbox.script(
+        "lsof",
+        &format!("{record}\nprintf 'p4242\\nn/elsewhere\\n'"),
+    );
+    sandbox.script("git", &format!("{record}\nprintf '2020-01-01\\n'"));
+
+    let output = run(&sandbox, &["scan", "--json"]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json(&output);
+    let labels = value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|finding| finding["label"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        labels.iter().any(|label| label == "stale node_modules"),
+        "{labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == "stale target artifacts"),
+        "{labels:?}"
+    );
+    let spawns = std::fs::read_to_string(&log).unwrap();
+    let count = |needle: &str| spawns.lines().filter(|line| line.contains(needle)).count();
+    // node_modules and artifacts both need the build-process probe and the
+    // owning repo's last commit; one scan pays for each exactly once.
+    assert_eq!(count("pgrep -x node|"), 1, "{spawns}");
+    assert_eq!(count("lsof "), 1, "{spawns}");
+    assert_eq!(count("log -1"), 1, "{spawns}");
+
+    for failed_probe in ["liveness", "git"] {
+        std::fs::write(&log, "").unwrap();
+        sandbox.script(
+            "pgrep",
+            &format!(
+                "{record}\ncase \"$*\" in \"-x xcodebuild\") exit 1 ;; esac\n{}",
+                if failed_probe == "liveness" {
+                    "exit 2"
+                } else {
+                    "printf '4242\\n'"
+                }
+            ),
+        );
+        sandbox.script("git", &format!("{record}\nexit 2"));
+        let output = run(&sandbox, &["scan", "--json"]);
+        assert!(!output.status.success());
+        let value = json(&output);
+        let errors = value["errors"].as_array().unwrap();
+        for operation in ["node-modules", "artifacts"] {
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.as_str().unwrap().contains(operation)),
+                "{failed_probe}: {errors:?}"
+            );
+        }
+        assert!(value["findings"].as_array().unwrap().is_empty());
+        let spawns = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            spawns
+                .lines()
+                .filter(|line| line.contains("pgrep -x node|"))
+                .count(),
+            1,
+            "{spawns}"
+        );
+        assert_eq!(
+            spawns
+                .lines()
+                .filter(|line| line.contains("log -1"))
+                .count(),
+            usize::from(failed_probe == "git"),
+            "{spawns}"
+        );
+    }
+}

@@ -3,9 +3,9 @@
 use anyhow::{Context, Result};
 use std::io;
 use std::path::{Component, Path};
-use std::process::{Command, Output};
+use std::process::Command;
 
-use super::{Action, ApplyOutcome, Finding, Op};
+use super::{Action, ApplyOutcome, Finding, Op, command_stdout, optional_command_stdout};
 use crate::report::CommandAuthority;
 use crate::safety::{Ctx, escalate};
 
@@ -64,26 +64,6 @@ fn docker(host: &str, args: &[&str]) -> Result<String> {
     )
 }
 
-fn command_stdout(output: io::Result<Output>, command: &str) -> Result<String> {
-    let output = output.with_context(|| format!("cannot run {command}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.trim();
-        if detail.is_empty() {
-            anyhow::bail!("{command} failed with {}", output.status);
-        }
-        anyhow::bail!("{command} failed with {}: {detail}", output.status);
-    }
-    String::from_utf8(output.stdout).with_context(|| format!("{command} returned non-UTF-8 output"))
-}
-
-fn optional_command_stdout(output: io::Result<Output>, command: &str) -> Result<Option<String>> {
-    match output {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        output => command_stdout(output, command).map(Some),
-    }
-}
-
 fn docker_host() -> Result<Option<String>> {
     let Some(output) = optional_command_stdout(
         Command::new("docker").args(["context", "inspect"]).output(),
@@ -129,8 +109,6 @@ fn is_local_docker_host(host: &str) -> bool {
 /// and deliberate. Returns `None` when the path is absent or is not a regular
 /// file; a stat failure for a path that does exist fails closed.
 fn allocated_bytes(path: &Path) -> Result<Option<u64>> {
-    use std::os::unix::fs::MetadataExt;
-
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -141,7 +119,7 @@ fn allocated_bytes(path: &Path) -> Result<Option<u64>> {
     if !metadata.file_type().is_file() {
         return Ok(None);
     }
-    Ok(Some(metadata.blocks().saturating_mul(512)))
+    super::blocks_bytes(&metadata, path).map(Some)
 }
 
 /// Report-only disclosure of the host cost of each present runtime disk image.

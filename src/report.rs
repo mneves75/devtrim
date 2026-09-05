@@ -301,24 +301,24 @@ struct Response<'a> {
 }
 
 pub fn gb(bytes: u64) -> String {
-    let b = bytes as f64;
-    if b >= 1024.0 * 1024.0 * 1024.0 {
-        format!("{:.1} GB", b / 1024.0 / 1024.0 / 1024.0)
-    } else if b >= 1024.0 * 1024.0 {
-        format!("{:.0} MB", b / 1024.0 / 1024.0)
-    } else if b >= 1024.0 {
-        format!("{:.0} KB", b / 1024.0)
+    let size = bytes as f64;
+    if size >= 1024.0 * 1024.0 * 1024.0 {
+        format!("{:.1} GB", size / 1024.0 / 1024.0 / 1024.0)
+    } else if size >= 1024.0 * 1024.0 {
+        format!("{:.0} MB", size / 1024.0 / 1024.0)
+    } else if size >= 1024.0 {
+        format!("{:.0} KB", size / 1024.0)
     } else {
         format!("{bytes} B")
     }
 }
 
-fn danger_tag(d: u8) -> colored::ColoredString {
-    match d {
-        0..=2 => format!("danger:{d}").green(),
-        3..=5 => format!("danger:{d}").yellow(),
-        6..=8 => format!("danger:{d}").truecolor(255, 140, 0),
-        _ => format!("danger:{d}").red().bold(),
+fn danger_tag(danger: u8) -> colored::ColoredString {
+    match danger {
+        0..=2 => format!("danger:{danger}").green(),
+        3..=5 => format!("danger:{danger}").yellow(),
+        6..=8 => format!("danger:{danger}").truecolor(255, 140, 0),
+        _ => format!("danger:{danger}").red().bold(),
     }
 }
 
@@ -448,9 +448,6 @@ mod tests {
             Action::Info,
         );
 
-        assert_eq!(finding.label, "cache\u{1b}[2Jé");
-        assert_eq!(finding.path.as_deref(), Some("/tmp/line\nnext\u{202e}"));
-        assert_eq!(finding.note, "note\rhidden");
         let serialized = serde_json::to_value(&finding).unwrap();
         assert_eq!(serialized["label"], "cache\u{1b}[2Jé");
         assert_eq!(serialized["path"], "/tmp/line\nnext\u{202e}");

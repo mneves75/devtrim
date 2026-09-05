@@ -3,14 +3,14 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size};
+use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::report::TargetAuthority;
 use crate::safety::{Ctx, escalate};
 
 pub struct Caches;
 
 const CACHES: &[(&str, &str)] = &[
-    ("huggingface model cache", ".cache/huggingface"),
+    ("huggingface model cache", ".cache/huggingface/hub"),
     ("uv package cache", ".cache/uv"),
     ("node core cache", ".cache/node"),
 ];
@@ -65,18 +65,7 @@ impl Op for Caches {
                 outcome.fail(error);
                 break;
             }
-            outcome.record(
-                finding,
-                format!(
-                    "{} {}",
-                    if finding.action == Action::Shred {
-                        "permanently deleted"
-                    } else {
-                        "trashed"
-                    },
-                    finding.label
-                ),
-            );
+            outcome.record(finding, removal_note(finding, &finding.label));
         }
         Ok(outcome)
     }
@@ -122,8 +111,8 @@ fn is_eligible_owner_cache(program: &str, path: &Path, home: &Path) -> bool {
         return false;
     };
     match program {
-        "npm" => is_within(&path, &home.join(".npm")) || is_within(&path, &home.join(".cache/npm")),
-        "brew" => is_within(&path, &home.join("Library/Caches/Homebrew")),
+        "npm" => path.starts_with(home.join(".npm")) || path.starts_with(home.join(".cache/npm")),
+        "brew" => path.starts_with(home.join("Library/Caches/Homebrew")),
         _ => false,
     }
 }
@@ -141,10 +130,6 @@ fn normalized_absolute(path: &Path) -> Option<PathBuf> {
         }
     }
     Some(normalized)
-}
-
-fn is_within(path: &Path, root: &Path) -> bool {
-    path == root || path.starts_with(root)
 }
 
 fn owner_cache_path(program: &str, args: &[&str], ctx: &Ctx) -> Result<Option<PathBuf>> {
@@ -267,6 +252,20 @@ mod tests {
         assert_eq!(outcome.errors.len(), 1);
         assert!(sentinel.exists());
         crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn huggingface_authority_accepts_only_model_cache() {
+        let home = Path::new("/Users/cache-test");
+        for (relative, accepted) in [
+            (".cache/huggingface/hub", true),
+            (".cache/huggingface", false),
+            (".cache/huggingface/token", false),
+            (".cache/huggingface/stored_tokens", false),
+        ] {
+            let finding = cache_finding("huggingface", home.join(relative), 1, 3);
+            assert_eq!(authorize_cache_finding(&finding, home).is_ok(), accepted);
+        }
     }
 
     #[test]

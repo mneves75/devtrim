@@ -124,49 +124,7 @@ fn exact_json_flag(args: &[OsString]) -> bool {
         .any(|arg| arg.as_os_str() == OsStr::new("--json"))
 }
 
-fn operation_from_args(args: &[OsString]) -> &'static str {
-    let mut index = 1;
-    while index < args.len() {
-        let argument = args[index].as_os_str();
-        if argument == OsStr::new("--") {
-            break;
-        }
-        if argument == OsStr::new("--root") {
-            index = index.saturating_add(2);
-            continue;
-        }
-        if argument
-            .to_str()
-            .is_some_and(|value| value.starts_with("--root="))
-        {
-            index = index.saturating_add(1);
-            continue;
-        }
-        if argument.to_string_lossy().starts_with('-') {
-            index = index.saturating_add(1);
-            continue;
-        }
-        return match argument.to_str() {
-            Some("clean") => clean_operation_from_args(&args[index + 1..]),
-            Some("tui") => "tui",
-            Some("scan") => "scan",
-            Some("analyze") => "analyze",
-            Some("status") => "status",
-            Some("optimize") => "optimize",
-            Some("uninstall") => "uninstall",
-            Some("largest") => "largest",
-            Some("history") => "history",
-            Some("completions") => "completions",
-            Some("manpage") => "manpage",
-            Some("icloud") => "icloud",
-            Some("trash-empty") => "trash-empty",
-            _ => "unknown",
-        };
-    }
-    "unknown"
-}
-
-fn clean_operation_from_args(args: &[OsString]) -> &'static str {
+fn first_positional(args: &[OsString]) -> Option<(&OsStr, &[OsString])> {
     let mut index = 0;
     while index < args.len() {
         let argument = args[index].as_os_str();
@@ -188,19 +146,46 @@ fn clean_operation_from_args(args: &[OsString]) -> &'static str {
             index = index.saturating_add(1);
             continue;
         }
-        return match argument.to_str() {
-            Some("caches") => "caches",
-            Some("node-modules") => "node-modules",
-            Some("artifacts") => "artifacts",
-            Some("simulators") => "simulators",
-            Some("xcode") => "xcode",
-            Some("docker") => "docker",
-            Some("toolchains") => "toolchains",
-            Some("leftovers") => "leftovers",
-            _ => "clean",
-        };
+        return Some((argument, &args[index + 1..]));
     }
-    "clean"
+    None
+}
+
+fn operation_from_args(args: &[OsString]) -> &'static str {
+    let Some((argument, remaining)) = first_positional(args.get(1..).unwrap_or_default()) else {
+        return "unknown";
+    };
+    match argument.to_str() {
+        Some("clean") => clean_operation_from_args(remaining),
+        Some("tui") => "tui",
+        Some("scan") => "scan",
+        Some("analyze") => "analyze",
+        Some("status") => "status",
+        Some("optimize") => "optimize",
+        Some("uninstall") => "uninstall",
+        Some("largest") => "largest",
+        Some("history") => "history",
+        Some("completions") => "completions",
+        Some("manpage") => "manpage",
+        Some("icloud") => "icloud",
+        Some("trash-empty") => "trash-empty",
+        _ => "unknown",
+    }
+}
+
+fn clean_operation_from_args(args: &[OsString]) -> &'static str {
+    match first_positional(args).and_then(|(argument, _)| argument.to_str()) {
+        Some("caches") => "caches",
+        Some("node-modules") => "node-modules",
+        Some("artifacts") => "artifacts",
+        Some("installers") => "installers",
+        Some("simulators") => "simulators",
+        Some("xcode") => "xcode",
+        Some("docker") => "docker",
+        Some("toolchains") => "toolchains",
+        Some("leftovers") => "leftovers",
+        _ => "clean",
+    }
 }
 
 fn clap_error(error: clap::Error, json: bool, operation: &str) -> ExitCode {
@@ -420,14 +405,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
 }
 
 fn clean(target: cli::Target, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitCode> {
-    let operation = ops::by_name(target.as_str()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "unknown target '{}'. valid: {}",
-            target.as_str(),
-            ops::names().join(", ")
-        )
-    })?;
-    run_op(operation.as_ref(), cli, ctx)
+    run_op(ops::for_target(target).as_ref(), cli, ctx)
 }
 
 /// Shared preview/confirm/apply flow for every `Op`, whether it is reached

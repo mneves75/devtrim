@@ -129,8 +129,8 @@ jobs:
 
       - name: Install pinned Rust toolchains
         run: |
-          rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
-          rustup default 1.98.0
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.1
           rustup toolchain install 1.88.0 --profile minimal
 
       - name: Install pinned Node.js
@@ -201,8 +201,12 @@ jobs:
       - name: Release policy, shell, and workflow gates
         run: |
           bash scripts/tests/release-policy.sh
-          bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
-          sh -n .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh
+          for script in scripts/verify.sh scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh scripts/perf/ab.sh scripts/perf/corpus.sh; do
+            bash -n "$script"
+          done
+          for script in .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh; do
+            sh -n "$script"
+          done
           scripts/tests/shellcheck-tracked.sh
           actionlint
           cmp -s AGENTS.md CLAUDE.md || {
@@ -234,18 +238,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked
-          tui_home="${RUNNER_TEMP}/devtrim-tui-home"
-          mkdir -p "$tui_home"
-          TUI_TEST_HOME="$tui_home" expect <<'EXPECT'
-          set timeout 15
-          log_user 0
-          spawn env HOME=$env(TUI_TEST_HOME) TERM=xterm-256color target/debug/devtrim
-          after 500
-          send "\033"
-          expect eof
-          set result [wait]
-          exit [lindex $result 3]
-          EXPECT
+          python3 scripts/tests/tui.py target/debug/devtrim
+          python3 scripts/tests/read-only-views.py target/debug/devtrim
 
       - name: Video install, audit, lint, format, and build
         working-directory: video
@@ -286,8 +280,8 @@ jobs:
 
       - name: Install pinned fuzz toolchains
         run: |
-          rustup toolchain install 1.98.0 --profile minimal
-          rustup default 1.98.0
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup default 1.98.1
           rustup toolchain install nightly-2026-08-25 --profile minimal --component rust-src
           cargo install cargo-fuzz --locked --version 0.13.2
 
@@ -349,8 +343,8 @@ jobs:
       - name: Install pinned Rust
         if: needs.validate.outputs.is_beta == 'true' && needs.validate.outputs.release_exists == 'false'
         run: |
-          rustup toolchain install 1.98.0 --profile minimal
-          rustup default 1.98.0
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup default 1.98.1
           rustup target add aarch64-apple-darwin
 
       - name: Build beta artifact

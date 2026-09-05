@@ -83,6 +83,7 @@ Non-negotiable boundaries:
 - Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
 - The TUI accepts no CLI confirmation bypass. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
 - Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
+- Hugging Face cleanup is limited to `~/.cache/huggingface/hub`. Its parent contains authentication and other state and is never an authorized built-in cache target. A real-binary regression requires model data to be removed while synthetic tokens and settings survive.
 - Complete human-facing actions, findings, errors, and outcome notes escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values and JSON retains its original data.
 - Failed or partial work returns nonzero; successful earlier actions remain visible in the summary.
 
@@ -122,15 +123,17 @@ Non-negotiable boundaries:
    tests, MSRV tests, root and fuzz-lock dependency audits, positive-control
    structural lints for the deletion sink, shell invocation, and naming,
    full-history Gitleaks and TruffleHog secret scans, and an explicit arm64
-   release build. Read-only hosted
-   release jobs additionally run all five bounded fuzz targets, PTY/UI, video,
+   release build and a real PTY menu/help/cancel/quit flow with isolated
+   HOME/PATH, explicit dimensions, visible-content checks, and terminal
+   restoration checks. A non-rendering executable is a negative control.
+   Read-only hosted release jobs additionally run all five bounded fuzz targets, video,
    workflow-policy, and repeat the secret scans before publication authority is
    available.
 
 ## Supply chain
 
 - `Cargo.lock` is committed and release builds use `--locked`.
-- Rust is pinned in `rust-toolchain.toml`; `rust-version` records the MSRV.
+- Rust 1.98.1 is pinned in `rust-toolchain.toml` and hosted workflows; `rust-version` records the separate MSRV. This avoids the vtable-generation miscompilation documented in the [Rust 1.98.1 advisory](https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/).
 - GitHub Actions are pinned to immutable commit SHAs.
 - Dependabot checks the root and fuzz Cargo graphs, the demo video's npm graph,
   and Actions weekly.

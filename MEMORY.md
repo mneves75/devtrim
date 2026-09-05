@@ -1,6 +1,44 @@
 # Project Memory
 
-## Current state (0.8.0 candidate)
+## 0.8.1 audit completed
+
+The requested audit plan, decisions, sources and evidence are in
+`agent_planning/archive/devtrim-audit.md`. The user approved integrating the existing
+Rust/video edits and sending the diff/context to OpenAI for GPT-6 Astra
+autoreview. Source version and both Cargo locks are 0.8.1; no release or tag
+is part of this source-delivery task.
+
+Hugging Face cleanup now targets only `hub`, preserving authentication state.
+One preview shares process/Git observations, including failures; apply probes
+again. Installer eligibility uses one metadata read, and read-only dashboards
+avoid idle redraws and offscreen formatting. Redundant wrappers, duplicate
+parsing/geometry and unused video scaffolding were removed or consolidated.
+
+Rust 1.98.1 and MSRV 1.88.0 each pass 212 unit tests and 56 CLI tests; the one
+ignored unit is a helper process covered by its parent test. The full offline
+helper, arm64 release build, all five 60-second fuzz targets, fresh dependency
+audits, secret scanners, independent Standards/Spec review, desktop/mobile
+manual QA and video gates pass. The new terminal driver exposed and fixed a
+partial-frame synchronization race without relaxing the quit deadline.
+
+Baseline/candidate JSON is identical on the 32,180-entry scan corpus and
+5,000-installer corpus. Host load above 260 on 18 CPUs made latency comparisons
+unreliable; no speedup percentage is claimed. The benchmark harness refuses
+such timing. P3 autoreview identified one missed post-run load guard; its
+red/green regression passes and the confirming full source review is clean.
+The generated video is independently verified because autoreview cannot
+inspect binary diffs. All accepted findings and source-delivery gates are closed.
+
+## Project Environment
+
+Rust synchronous CLI; no React Native, mobile build, Metro, or async runtime.
+Ratatui/Crossterm terminal UI; static HTML manual/landing page; a separate npm
+Remotion video project. `scripts/verify.sh` selects the installed pinned compiler.
+QA uses disposable HOME/PATH PTYs and CLI fixtures; performance uses isolated
+corpora and preserved release binaries. Authorized worktrees need separate
+Cargo targets and evidence paths. Commands and boundaries live in AGENTS.md.
+
+## 0.8.0 feature baseline
 
 0.8.0 adds the three parity commands deferred from 0.7.0, two of them narrower
 than asked. `uninstall` resolves an app's bundle identifier and lists what macOS

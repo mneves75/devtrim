@@ -21,8 +21,7 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
 
     // Overlapping roots (e.g. ~/work and ~/work/project) would count the same
     // files twice; keep only roots not contained in another configured root.
-    let roots = normalized_roots(roots);
-    for root in &roots {
+    for root in crate::ops::project::normalized_roots(roots) {
         for result in walkdir::WalkDir::new(root)
             .follow_links(false)
             .follow_root_links(false)
@@ -81,24 +80,6 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
         .collect();
 
     LargestResult { findings, errors }
-}
-
-fn normalized_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
-    let mut unique: Vec<&PathBuf> = Vec::new();
-    for root in roots {
-        if !unique.contains(&root) {
-            unique.push(root);
-        }
-    }
-    unique
-        .iter()
-        .filter(|root| {
-            !unique
-                .iter()
-                .any(|other| *other != **root && root.starts_with(other))
-        })
-        .map(|root| (*root).clone())
-        .collect()
 }
 
 fn add_to_shallow_ancestors(

@@ -84,6 +84,7 @@ const MENU = [
   ["6", "Xcode", "PREVIEW"],
   ["7", "Docker", "PREVIEW"],
   ["8", "Swift toolchains", "PREVIEW"],
+  ["d", "Installers", "PREVIEW"],
   ["9", "Agent leftovers", "READ-ONLY"],
   ["i", "iCloud status", "READ-ONLY"],
   ["0", "Empty Trash", "PERMANENT"],
@@ -107,27 +108,27 @@ const DETAIL: Record<number, string[]> = {
 
 const FINDINGS = [
   [
-    "3",
+    "7",
     "huggingface model cache",
     "21.0 GB",
-    "~/.cache/huggingface",
+    "~/.cache/huggingface/hub",
     "Re-downloads on demand.",
   ],
   [
-    "2",
+    "5",
     "npm cache",
     "3.4 GB",
     "~/.npm/_cacache",
     "Rebuilt by the next install.",
   ],
   [
-    "2",
+    "5",
     "Homebrew downloads",
     "1.9 GB",
     "~/Library/Caches/Homebrew",
     "Re-fetched on demand.",
   ],
-  ["2", "uv cache", "1.2 GB", "~/.cache/uv", "Re-downloads on demand."],
+  ["5", "uv cache", "1.2 GB", "~/.cache/uv", "Re-downloads on demand."],
 ];
 
 const dangerColor = (d: string) =>
@@ -143,7 +144,7 @@ const header = (operation: string): Row[] =>
   boxed(" measure · classify · trim ", COLS, 3, [
     [
       { t: " devtrim ", c: GREEN, b: true },
-      { t: "v0.6.3  ", c: DIM },
+      { t: "v0.8.1  ", c: DIM },
       { t: operation },
     ],
   ]);
@@ -196,7 +197,7 @@ const resultsBody = (): Row[] => {
     lines.push([]);
   });
   return boxed(
-    " Preview · 4 finding(s) · 27.5 GB actionable · danger-3 · TRASH-FIRST ",
+    " Preview · 4 finding(s) · 27.5 GB actionable · danger-7 · TRASH-FIRST ",
     COLS,
     17,
     lines,
@@ -237,7 +238,7 @@ const Popup: React.FC<{ caret: boolean }> = ({ caret }) => {
     [],
     [
       {
-        t: "Danger-3. Press y to apply this exact plan, or n/Esc to cancel.",
+        t: "Danger-7. Press y to apply this exact plan, or n/Esc to cancel.",
         c: AMBER,
       },
     ],
@@ -438,7 +439,7 @@ export const DevtrimDemo: React.FC = () => {
           dev<span style={{ color: GREEN }}>trim</span>
         </div>
         <div style={{ fontSize: 30, color: MUTED }}>
-          v0.6.3 · interactive Ratatui interface
+          v0.8.1 · interactive Ratatui interface
         </div>
         <div style={{ fontSize: 26, color: DIM }}>
           github.com/mneves75/devtrim

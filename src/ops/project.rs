@@ -1,10 +1,50 @@
 //! Shared Git-project activity and ownership checks for project cleanup ops.
 
 use anyhow::{Context, Result};
+use std::cell::OnceCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::safety::is_git_metadata_name;
+
+/// Observations belong to one preview only; apply always probes again.
+#[derive(Default)]
+pub(crate) struct ScanObservations {
+    process_cwds: OnceCell<std::result::Result<Vec<PathBuf>, String>>,
+    commits: BTreeMap<PathBuf, std::result::Result<String, String>>,
+}
+
+impl ScanObservations {
+    pub(crate) fn process_cwds(&self) -> Result<&[PathBuf]> {
+        self.process_cwds
+            .get_or_init(|| {
+                crate::safety::build_process_cwds()
+                    .context("cannot verify build-process liveness")
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .as_ref()
+            .map(Vec::as_slice)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    pub(crate) fn last_commit(&mut self, root: &Path) -> Result<&str> {
+        self.commits
+            .entry(root.to_path_buf())
+            .or_insert_with(|| repo_last_commit(root).map_err(|error| format!("{error:#}")))
+            .as_ref()
+            .map(String::as_str)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_process_cwds(process_cwds: Vec<PathBuf>) -> Self {
+        Self {
+            process_cwds: OnceCell::from(Ok(process_cwds)),
+            commits: BTreeMap::new(),
+        }
+    }
+}
 
 pub(crate) fn owning_repo(path: &Path) -> Result<Option<PathBuf>> {
     let mut current = path.to_path_buf();
@@ -115,11 +155,14 @@ pub(crate) fn repo_last_commit_with(root: &Path, git: &str) -> Result<String> {
 }
 
 pub(crate) fn iso_days_ago(days: u32) -> String {
-    let seconds = std::time::SystemTime::now()
+    iso_from_epoch_days(unix_secs().saturating_sub(u64::from(days) * 86_400) / 86_400)
+}
+
+pub(crate) fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    iso_from_epoch_days(seconds.saturating_sub(u64::from(days) * 86_400) / 86_400)
+        .unwrap_or(0)
 }
 
 pub(crate) fn iso_from_epoch_days(days: u64) -> String {
@@ -142,9 +185,7 @@ pub(crate) fn iso_from_epoch_days(days: u64) -> String {
 }
 
 pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf]) -> bool {
-    process_cwds
-        .iter()
-        .any(|cwd| cwd == repo || cwd.starts_with(repo))
+    process_cwds.iter().any(|cwd| cwd.starts_with(repo))
 }
 
 #[cfg(test)]

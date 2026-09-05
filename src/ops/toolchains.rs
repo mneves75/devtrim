@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::project::is_directory_if_present;
-use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size};
+use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, escalate};
 
 pub struct Toolchains;
@@ -70,15 +70,7 @@ impl Op for Toolchains {
                     .ok_or_else(|| anyhow::anyhow!("toolchain finding missing internal target"))?;
                 authorize_toolchain_target(path, &directory, &preserved)?;
                 apply_filesystem_finding(self.name(), finding, ctx)?;
-                Ok(format!(
-                    "{} {}",
-                    if finding.action == Action::Shred {
-                        "permanently deleted"
-                    } else {
-                        "trashed"
-                    },
-                    path.display()
-                ))
+                Ok(removal_note(finding, path.display()))
             })();
             match result {
                 Ok(note) => outcome.record(finding, note),

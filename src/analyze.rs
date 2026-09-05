@@ -36,8 +36,7 @@ use crate::theme::{Theme, Token};
 /// thousands of children would otherwise let the producer starve key handling.
 const DRAIN_BUDGET: usize = 512;
 
-/// Idle redraw cadence. Roughly 12 frames per second is enough for a progress
-/// readout and leaves the CPU alone; a keystroke redraws immediately anyway.
+/// Poll for worker progress without delaying keyboard events.
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
 
 /// Sub-cell bar resolution. A terminal cell is the smallest unit devtrim can
@@ -207,6 +206,7 @@ pub(crate) fn measure_children(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Intent {
     None,
+    Redraw,
     Quit,
 }
 
@@ -275,7 +275,7 @@ impl Explorer {
     }
 
     /// Absorbs a bounded batch of worker messages without blocking.
-    fn drain_progress(&mut self) {
+    fn drain_progress(&mut self) -> bool {
         let mut changed = false;
         for _ in 0..DRAIN_BUDGET {
             let Some(receiver) = self.progress.as_ref() else {
@@ -299,6 +299,7 @@ impl Explorer {
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
+                    changed = true;
                     self.scanning = false;
                     self.progress = None;
                     break;
@@ -308,6 +309,7 @@ impl Explorer {
         if changed {
             self.sort_entries();
         }
+        changed
     }
 
     /// Largest first. The cursor follows its entry rather than its index, so a
@@ -383,6 +385,7 @@ impl Explorer {
                 KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q')
             ) {
                 self.help = false;
+                return Intent::Redraw;
             }
             return Intent::None;
         }
@@ -399,9 +402,9 @@ impl Explorer {
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.descend(),
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('b') => self.ascend(),
             KeyCode::Char('r') => self.begin_scan(),
-            _ => {}
+            _ => return Intent::None,
         }
-        Intent::None
+        Intent::Redraw
     }
 }
 
@@ -454,30 +457,39 @@ fn render(frame: &mut Frame, explorer: &Explorer) {
 
     let largest = explorer.entries.first().map_or(0, |entry| entry.size);
     let bar_width = usize::from(body.width).saturating_sub(40).clamp(0, 24);
-    let items = explorer.entries.iter().map(|entry| {
-        ListItem::new(Line::from(vec![
-            Span::styled(
-                format!("{:>9} ", report::gb(entry.size)),
-                explorer.theme.style(Token::AccentSecondary),
-            ),
-            Span::styled(
-                format!(
-                    "{:<width$} ",
-                    bar(entry.size, largest, bar_width),
-                    width = bar_width
+    let visible_rows = usize::from(body.height.saturating_sub(2));
+    let offset = explorer
+        .selected
+        .saturating_sub(visible_rows.saturating_sub(1));
+    let items = explorer
+        .entries
+        .iter()
+        .skip(offset)
+        .take(visible_rows)
+        .map(|entry| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{:>9} ", report::gb(entry.size)),
+                    explorer.theme.style(Token::AccentSecondary),
                 ),
-                explorer.theme.style(Token::Muted),
-            ),
-            Span::raw(if entry.is_dir { "/" } else { " " }),
-            Span::raw(report::terminal_safe(&entry.name())),
-            Span::styled(
-                if entry.partial { "  (partial)" } else { "" },
-                explorer.theme.style(Token::Warning),
-            ),
-        ]))
-    });
+                Span::styled(
+                    format!(
+                        "{:<width$} ",
+                        bar(entry.size, largest, bar_width),
+                        width = bar_width
+                    ),
+                    explorer.theme.style(Token::Muted),
+                ),
+                Span::raw(if entry.is_dir { "/" } else { " " }),
+                Span::raw(report::terminal_safe(&entry.name())),
+                Span::styled(
+                    if entry.partial { "  (partial)" } else { "" },
+                    explorer.theme.style(Token::Warning),
+                ),
+            ]))
+        });
     let mut state = ListState::default();
-    state.select((!explorer.entries.is_empty()).then_some(explorer.selected));
+    state.select((!explorer.entries.is_empty()).then_some(explorer.selected - offset));
     frame.render_stateful_widget(
         List::new(items)
             .block(Block::bordered().title(if explorer.scanning {
@@ -526,14 +538,7 @@ fn render(frame: &mut Frame, explorer: &Explorer) {
 }
 
 fn render_help(frame: &mut Frame, area: Rect, explorer: &Explorer) {
-    let width = area.width.saturating_sub(4).min(72);
-    let height = area.height.saturating_sub(2).min(16);
-    let popup = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let popup = crate::tui::centered_rect(area, 72, 14);
     frame.render_widget(Clear, popup);
     let mut lines = vec![
         Line::styled("Keys", explorer.theme.bold(Token::Accent)),
@@ -598,11 +603,11 @@ fn run_json(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
             .then_with(|| left.path.cmp(&right.path))
     });
     let findings = entries
-        .iter()
+        .into_iter()
         .map(|entry| {
             Finding::new(
                 if entry.is_dir { "directory" } else { "file" },
-                Some(entry.path.clone()),
+                Some(entry.path),
                 entry.size,
                 if entry.partial {
                     "report-only; lower bound, some entries below this path were unreadable"
@@ -643,18 +648,29 @@ pub fn run(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
 fn run_loop(terminal: &mut DefaultTerminal, root: PathBuf, ctx: &Ctx) -> Result<ExitCode> {
     let mut explorer = Explorer::new(root, Theme::from_env());
     explorer.begin_scan();
+    let mut redraw = true;
     let outcome = loop {
-        explorer.drain_progress();
-        terminal.draw(|frame| render(frame, &explorer))?;
-        if event::poll(POLL_INTERVAL).context("cannot poll terminal input")?
-            && let Event::Key(key) = event::read().context("cannot read terminal input")?
-            && explorer.handle_key(key) == Intent::Quit
-        {
-            break if explorer.errors.is_empty() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(1)
-            };
+        redraw |= explorer.drain_progress();
+        if redraw {
+            terminal.draw(|frame| render(frame, &explorer))?;
+            redraw = false;
+        }
+        if event::poll(POLL_INTERVAL).context("cannot poll terminal input")? {
+            match event::read().context("cannot read terminal input")? {
+                Event::Key(key) => match explorer.handle_key(key) {
+                    Intent::Quit => {
+                        break if explorer.errors.is_empty() {
+                            ExitCode::SUCCESS
+                        } else {
+                            ExitCode::from(1)
+                        };
+                    }
+                    Intent::Redraw => redraw = true,
+                    Intent::None => {}
+                },
+                Event::Resize(_, _) => redraw = true,
+                _ => {}
+            }
         }
     };
     // Leave no worker walking a tree after the interface is gone.
@@ -678,6 +694,42 @@ mod tests {
 
     fn theme() -> Theme {
         Theme::new(crate::theme::ColorSupport::Named)
+    }
+
+    #[test]
+    fn selected_entry_stays_visible_in_a_long_list_after_resize() {
+        let mut explorer = Explorer::new(PathBuf::from("/tmp"), theme());
+        explorer.entries = (0..100)
+            .map(|index| Entry {
+                path: PathBuf::from(format!("/tmp/entry-{index:03}")),
+                size: 100 - index,
+                is_dir: false,
+                partial: false,
+            })
+            .collect();
+        explorer.selected = 80;
+        for height in [40, 12] {
+            let backend = ratatui::backend::TestBackend::new(100, height);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|frame| render(frame, &explorer)).unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                screen.contains("entry-080"),
+                "selected entry vanished at height {height}"
+            );
+            assert!(
+                screen.contains("▶"),
+                "selection marker vanished at height {height}"
+            );
+            assert!(!screen.contains("entry-000"));
+            assert!(!screen.contains("entry-099"));
+        }
     }
 
     #[test]

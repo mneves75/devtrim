@@ -11,7 +11,7 @@
 //! over all of them.
 
 use std::io::IsTerminal;
-use std::process::{Command, Output};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
@@ -87,19 +87,7 @@ impl SystemTool {
 fn capture(tool: SystemTool) -> Result<String> {
     let (program, args) = tool.parts();
     let label = format!("`{program} {}`", args.join(" "));
-    let output: Output = Command::new(program)
-        .args(args)
-        .output()
-        .with_context(|| format!("cannot run {label}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.trim();
-        if detail.is_empty() {
-            anyhow::bail!("{label} failed with {}", output.status);
-        }
-        anyhow::bail!("{label} failed with {}: {detail}", output.status);
-    }
-    String::from_utf8(output.stdout).with_context(|| format!("{label} returned non-UTF-8 output"))
+    crate::ops::command_stdout(Command::new(program).args(args).output(), &label)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -119,6 +107,15 @@ pub struct Memory {
     /// unreclaimable. The basis is stated because every other definition of
     /// "used memory" on macOS produces a materially different number.
     pub used_bytes: u64,
+}
+
+impl Memory {
+    fn used_percent(self) -> f64 {
+        if self.total_bytes == 0 {
+            return 0.0;
+        }
+        (self.used_bytes as f64) * 100.0 / (self.total_bytes as f64)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -535,7 +532,7 @@ pub(crate) fn health(report: &StatusReport) -> Health {
 
     match report.memory {
         Some(memory) if memory.total_bytes > 0 => {
-            let used = (memory.used_bytes as f64) * 100.0 / (memory.total_bytes as f64);
+            let used = memory.used_percent();
             if used >= 95.0 {
                 score -= 20;
             } else if used >= 85.0 {
@@ -575,6 +572,7 @@ pub(crate) fn health(report: &StatusReport) -> Health {
 }
 
 fn now_unix() -> Result<u64> {
+    // Health inputs must fail closed on clock errors, so the shared clamping helper is unsuitable.
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
@@ -703,38 +701,34 @@ fn format_uptime(seconds: u64) -> String {
 fn print_human(report: &StatusReport) -> Result<()> {
     use std::fmt::Write as _;
 
-    let mut out = String::new();
+    let mut output = String::new();
     // `colored` disables itself when NO_COLOR is set, which is the same
     // baseline the TUI theme enforces through its own tokens.
-    let heading = |out: &mut String, text: &str| {
-        let _ = writeln!(out, "{}", text.bold());
+    let heading = |output: &mut String, text: &str| {
+        let _ = writeln!(output, "{}", text.bold());
     };
 
-    heading(&mut out, "machine");
+    heading(&mut output, "machine");
     if let Some(uptime) = report.uptime_seconds {
-        let _ = writeln!(out, "  uptime          {}", format_uptime(uptime));
+        let _ = writeln!(output, "  uptime          {}", format_uptime(uptime));
     }
     if let (Some(load), Some(cpus)) = (report.load_average, report.cpu_count) {
         let _ = writeln!(
-            out,
+            output,
             "  load            {:.2} {:.2} {:.2}  over {cpus} logical CPUs",
             load[0], load[1], load[2]
         );
     }
     if let Some(memory) = report.memory {
-        let percent = if memory.total_bytes == 0 {
-            0.0
-        } else {
-            (memory.used_bytes as f64) * 100.0 / (memory.total_bytes as f64)
-        };
+        let percent = memory.used_percent();
         let _ = writeln!(
-            out,
+            output,
             "  memory          {} of {} used ({percent:.0}%) = active + wired + compressed",
             report::gb(memory.used_bytes),
             report::gb(memory.total_bytes)
         );
         let _ = writeln!(
-            out,
+            output,
             "                  {} wired, {} compressed, {} inactive (reclaimable), {} free",
             report::gb(memory.wired_bytes),
             report::gb(memory.compressed_bytes),
@@ -744,7 +738,7 @@ fn print_human(report: &StatusReport) -> Result<()> {
     }
     if let Some(disk) = report.disk {
         let _ = writeln!(
-            out,
+            output,
             "  disk            {} of {} used ({:.0}%), {} available",
             report::gb(disk.used_bytes),
             report::gb(disk.total_bytes),
@@ -754,7 +748,7 @@ fn print_human(report: &StatusReport) -> Result<()> {
     }
     if let Some(battery) = &report.battery {
         let _ = writeln!(
-            out,
+            output,
             "  battery         {}%, {}{}",
             battery.percent,
             report::terminal_safe(&battery.state),
@@ -763,7 +757,7 @@ fn print_human(report: &StatusReport) -> Result<()> {
     }
     if let Some(thermal) = &report.thermal {
         let _ = writeln!(
-            out,
+            output,
             "  thermal         {}",
             thermal.cpu_speed_limit_percent.map_or_else(
                 || "no limit recorded".to_string(),
@@ -773,7 +767,7 @@ fn print_human(report: &StatusReport) -> Result<()> {
     }
     if let Some(network) = report.network {
         let _ = writeln!(
-            out,
+            output,
             "  network         {} in, {} out (cumulative since boot)",
             report::gb(network.received_bytes),
             report::gb(network.sent_bytes)
@@ -781,11 +775,11 @@ fn print_human(report: &StatusReport) -> Result<()> {
     }
 
     if !report.top_processes.is_empty() {
-        let _ = writeln!(out);
-        heading(&mut out, "busiest processes");
+        let _ = writeln!(output);
+        heading(&mut output, "busiest processes");
         for process in &report.top_processes {
             let _ = writeln!(
-                out,
+                output,
                 "  {:>7}  {:>6.1}%  {:>9}  {}",
                 process.pid,
                 process.cpu_percent,
@@ -795,7 +789,7 @@ fn print_human(report: &StatusReport) -> Result<()> {
         }
     }
 
-    let _ = writeln!(out);
+    let _ = writeln!(output);
     // The band is named in the TEXT, not carried by the colour. `colored`
     // suppresses every style under `NO_COLOR`, bold included, so a colour-only
     // ladder would collapse all three bands into identical plain text — the
@@ -811,18 +805,18 @@ fn print_human(report: &StatusReport) -> Result<()> {
         70..=89 => headline.yellow(),
         _ => headline.red(),
     };
-    let _ = writeln!(out, "{}", headline.bold());
+    let _ = writeln!(output, "{}", headline.bold());
     if !report.health.missing_inputs.is_empty() {
         let _ = writeln!(
-            out,
+            output,
             "  scored without: {}",
             report.health.missing_inputs.join(", ")
         );
     }
     for entry in &report.unavailable {
-        let _ = writeln!(out, "  unavailable: {}", report::terminal_safe(entry));
+        let _ = writeln!(output, "  unavailable: {}", report::terminal_safe(entry));
     }
-    report::write_stdout(out.as_bytes())?;
+    report::write_stdout(output.as_bytes())?;
     Ok(())
 }
 
@@ -871,28 +865,37 @@ fn run_watch(ctx: &Ctx) -> Result<std::process::ExitCode> {
     let theme = Theme::from_env();
     let mut latest: Option<StatusReport> = None;
     let outcome = (|| -> Result<std::process::ExitCode> {
+        let mut redraw = true;
         loop {
             while let Ok(report) = receiver.try_recv() {
                 latest = Some(report);
+                redraw = true;
             }
-            terminal.draw(|frame| render_watch(frame, latest.as_ref(), theme))?;
-            if event::poll(WATCH_POLL).context("cannot poll terminal input")?
-                && let Event::Key(key) = event::read().context("cannot read terminal input")?
-                && key.kind == KeyEventKind::Press
-            {
-                let quit = matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                    || (key.modifiers.contains(event::KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('c'));
-                if quit {
-                    let failed = latest
-                        .as_ref()
-                        .is_some_and(|report| !report.unavailable.is_empty());
-                    return Ok(if failed {
-                        std::process::ExitCode::from(1)
-                    } else {
-                        std::process::ExitCode::SUCCESS
-                    });
+            if redraw {
+                terminal.draw(|frame| render_watch(frame, latest.as_ref(), theme))?;
+                redraw = false;
+            }
+            if !event::poll(WATCH_POLL).context("cannot poll terminal input")? {
+                continue;
+            }
+            match event::read().context("cannot read terminal input")? {
+                Event::Resize(_, _) => redraw = true,
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    let quit = matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                        || (key.modifiers.contains(event::KeyModifiers::CONTROL)
+                            && key.code == KeyCode::Char('c'));
+                    if quit {
+                        let failed = latest
+                            .as_ref()
+                            .is_some_and(|report| !report.unavailable.is_empty());
+                        return Ok(if failed {
+                            std::process::ExitCode::from(1)
+                        } else {
+                            std::process::ExitCode::SUCCESS
+                        });
+                    }
                 }
+                _ => {}
             }
         }
     })();
@@ -1017,11 +1020,7 @@ fn watch_rows(report: &StatusReport) -> Vec<(&'static str, String)> {
         ),
     ];
     if let Some(memory) = report.memory {
-        let percent = if memory.total_bytes == 0 {
-            0.0
-        } else {
-            (memory.used_bytes as f64) * 100.0 / (memory.total_bytes as f64)
-        };
+        let percent = memory.used_percent();
         rows.push((
             "memory",
             format!(

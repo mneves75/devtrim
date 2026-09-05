@@ -3,11 +3,10 @@
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
-use std::io;
 use std::path::{Component, Path};
-use std::process::{Command, Output};
+use std::process::Command;
 
-use super::{ApplyOutcome, Finding, Op, dir_size};
+use super::{ApplyOutcome, Finding, Op, command_stdout, dir_size, optional_command_stdout};
 use crate::report::CommandAuthority;
 use crate::safety::{Ctx, escalate};
 
@@ -31,26 +30,6 @@ fn simctl(args: &[&str]) -> Result<String> {
         Command::new("xcrun").arg("simctl").args(args).output(),
         &command,
     )
-}
-
-fn command_stdout(output: io::Result<Output>, command: &str) -> Result<String> {
-    let output = output.with_context(|| format!("cannot run {command}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.trim();
-        if detail.is_empty() {
-            anyhow::bail!("{command} failed with {}", output.status);
-        }
-        anyhow::bail!("{command} failed with {}: {detail}", output.status);
-    }
-    String::from_utf8(output.stdout).with_context(|| format!("{command} returned non-UTF-8 output"))
-}
-
-fn optional_command_stdout(output: io::Result<Output>, command: &str) -> Result<Option<String>> {
-    match output {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        output => command_stdout(output, command).map(Some),
-    }
 }
 
 fn simulator_device_path(root: &Path, udid: &str) -> Result<std::path::PathBuf> {

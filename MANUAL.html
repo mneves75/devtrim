@@ -414,7 +414,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.8.0</span>
+    <span class="chip g">v0.8.1</span>
     <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
@@ -513,7 +513,7 @@ devtrim clean caches</code></pre>
   <p class="group-label" id="g-reclaim">Reclaim safely — regenerable state only</p>
   <details class="card">
     <summary><span class="cmd-name">caches</span><span class="cmd-desc">HF models, npm/brew/uv caches</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Moves regenerable caches to Trash. Re-downloads automatically on next use — mind the bandwidth for large model caches.</p></div>
+    <div class="card-body"><p>Moves regenerable caches to Trash. Hugging Face cleanup targets only <code>~/.cache/huggingface/hub</code>; authentication tokens and other state in its parent remain untouched. Re-downloads automatically on next use — mind the bandwidth for large model caches.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">node-modules</span><span class="cmd-desc">exact paths in conclusively stale repos</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
@@ -737,7 +737,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
 </section>
 
 <footer>
-  <span>devtrim <b>v0.8.0</b></span>
+  <span>devtrim <b>v0.8.1</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

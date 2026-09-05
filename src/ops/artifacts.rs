@@ -6,12 +6,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::project::{
-    has_git_marker, is_directory_if_present, iso_days_ago, normalized_roots, owning_repo,
-    repo_has_active_build, repo_last_commit,
+    ScanObservations, has_git_marker, is_directory_if_present, iso_days_ago, normalized_roots,
+    owning_repo, repo_has_active_build, repo_last_commit,
 };
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size,
-    has_node_modules_ancestor, is_node_modules_name,
+    has_node_modules_ancestor, is_node_modules_name, removal_note,
 };
 use crate::safety::{Ctx, build_process_cwds, escalate, is_git_metadata_name};
 
@@ -48,17 +48,15 @@ impl Op for Artifacts {
     }
 
     fn scan(&self, ctx: &Ctx) -> Result<Vec<Finding>> {
-        let process_cwds = build_process_cwds().context("cannot verify build-process liveness")?;
-        self.scan_with_process_cwds(ctx, &process_cwds)
+        self.scan_with_observations(ctx, &mut ScanObservations::default())
     }
 
-    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
-        self.apply_with_process_cwds(findings, ctx, build_process_cwds())
-    }
-}
-
-impl Artifacts {
-    fn scan_with_process_cwds(&self, ctx: &Ctx, process_cwds: &[PathBuf]) -> Result<Vec<Finding>> {
+    fn scan_with_observations(
+        &self,
+        ctx: &Ctx,
+        observations: &mut ScanObservations,
+    ) -> Result<Vec<Finding>> {
+        observations.process_cwds()?;
         let cutoff = iso_days_ago(ctx.active_days);
         let mut groups: BTreeMap<PathBuf, Vec<ArtifactCandidate>> = BTreeMap::new();
         for root in normalized_roots(&ctx.roots) {
@@ -76,12 +74,12 @@ impl Artifacts {
         let mut active = 0usize;
         let mut build_active = 0usize;
         for (owner, candidates) in groups {
-            if repo_has_active_build(&owner, process_cwds) {
+            if repo_has_active_build(&owner, observations.process_cwds()?) {
                 build_active = build_active.saturating_add(candidates.len());
                 continue;
             }
-            let last_commit = repo_last_commit(&owner)?;
-            if last_commit > cutoff {
+            let last_commit = observations.last_commit(&owner)?;
+            if last_commit > cutoff.as_str() {
                 active = active.saturating_add(candidates.len());
                 continue;
             }
@@ -115,6 +113,20 @@ impl Artifacts {
             );
         }
         Ok(findings)
+    }
+
+    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
+        self.apply_with_process_cwds(findings, ctx, build_process_cwds())
+    }
+}
+
+impl Artifacts {
+    #[cfg(test)]
+    fn scan_with_process_cwds(&self, ctx: &Ctx, process_cwds: &[PathBuf]) -> Result<Vec<Finding>> {
+        self.scan_with_observations(
+            ctx,
+            &mut ScanObservations::with_process_cwds(process_cwds.to_vec()),
+        )
     }
 
     fn apply_with_process_cwds(
@@ -205,18 +217,7 @@ impl Artifacts {
 
         for (finding, path) in ready {
             match apply_filesystem_finding(self.name(), finding, ctx) {
-                Ok(()) => outcome.record(
-                    finding,
-                    format!(
-                        "{} {}",
-                        if finding.action == Action::Shred {
-                            "permanently deleted"
-                        } else {
-                            "trashed"
-                        },
-                        path.display()
-                    ),
-                ),
+                Ok(()) => outcome.record(finding, removal_note(finding, path.display())),
                 Err(error) => {
                     outcome.fail(error);
                     break;

@@ -2,6 +2,23 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.8.1] - 2026-09-04
+
+### Security
+- Limit Hugging Face cleanup to `~/.cache/huggingface/hub`, preserving authentication tokens and other parent state; scanner and apply reject the parent as cleanup authority
+- Pin Rust 1.98.1 to avoid the 1.98.0 vtable-generation miscompilation; MSRV remains 1.88.0
+
+### Changed
+- Share successful and failed build-process and Git observations across one scan, keeping fresh checks at apply; reuse installer eligibility metadata within a scan
+- Redraw analyze and status dashboards only when visible state changes, and format only the visible analyze rows
+- Consolidate subprocess parsing, category dispatch, removal notes, root normalization, and popup geometry; remove redundant forwarding code and unused video scaffolding/dependencies
+- Add isolated PTY verification, an explicit local verification helper, and a controlled A/B benchmark harness that rejects failed or unequal scans and overloaded-host timing
+- Refresh shared agent instructions, verification and worktree guidance, and compiler/shell/terminal checks in CI and release workflows
+
+### Fixed
+- Preserve the `installers` operation name in JSON command-line parsing errors
+- Refresh the demo version, installer menu entry, Hugging Face target, and size-escalated danger scores
+
 ## [0.8.0] - 2026-09-04
 
 ### Security

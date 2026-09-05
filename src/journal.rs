@@ -10,7 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::ops::project::iso_from_epoch_days;
+use crate::ops::project::{iso_from_epoch_days, unix_secs};
 use crate::safety::Ctx;
 
 const MAX_JOURNAL_BYTES: u64 = 10 * 1024 * 1024;
@@ -444,10 +444,6 @@ fn open_journal_lock(location: &JournalLocation, create: bool) -> io::Result<Fil
     )
 }
 
-fn open_history_generation(location: &JournalLocation, leaf: &OsStr) -> io::Result<File> {
-    open_regular_at(&location.parent, leaf, OFlags::RDONLY, Mode::empty())
-}
-
 fn open_regular_at(parent: &File, leaf: &OsStr, flags: OFlags, mode: Mode) -> io::Result<File> {
     let open_file = || {
         openat(
@@ -591,7 +587,7 @@ fn open_history_snapshot(location: &JournalLocation) -> Result<Vec<HistoryFile>>
             location.rotated_leaf(index)
         };
         let history_path = location.path.with_file_name(&leaf);
-        match open_history_generation(location, &leaf) {
+        match open_regular_at(&location.parent, &leaf, OFlags::RDONLY, Mode::empty()) {
             Ok(file) => {
                 flock(&file, FlockOperation::LockShared)
                     .map_err(io::Error::from)
@@ -800,7 +796,13 @@ fn valid_record(record: &JournalRecord) -> bool {
     }
     let action_valid = match record.action.as_str() {
         "trash" | "shred" => record.target.is_some() && record.argv.is_none(),
-        "command" => record.target.is_none() && record.argv.as_ref().is_some_and(|v| !v.is_empty()),
+        "command" => {
+            record.target.is_none()
+                && record
+                    .argv
+                    .as_ref()
+                    .is_some_and(|arguments| !arguments.is_empty())
+        }
         _ => false,
     };
     if !action_valid {
@@ -926,13 +928,6 @@ fn next_record_id() -> String {
         "{nanos:032x}-{:08x}-{random:016x}-{sequence:016x}",
         std::process::id()
     )
-}
-
-fn unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

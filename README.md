@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.8.0.
+This source tree and its packaged documentation describe devtrim v0.8.1.
 
 ## Install
 
@@ -248,7 +248,7 @@ the standard error envelope when `--json` is passed.
 ### For agents
 
 devtrim is built to be operated by automation and AI agents without ambiguity:
-every invocation emits exactly one JSON document, actions are typed rather than
+every `--json` invocation emits exactly one JSON document, actions are typed rather than
 parsed from display strings, partial failure exits nonzero with earlier work
 reported, mutation always requires explicit `--apply` plus explicit consent
 flags, and every apply leaves a write-ahead journal an agent can audit with
@@ -287,24 +287,82 @@ or metadata is incomplete.
 
 ## Build and verify
 
+Use the pinned Rust 1.98.1 toolchain for builds; a standalone Cargo installed
+before rustup on PATH can otherwise bypass `rust-toolchain.toml`. MSRV remains
+1.88.0. Install the toolchains and gate tools once, then use the local helper:
+
 ```bash
-cargo fmt --all -- --check
+bash scripts/verify.sh focused
+bash scripts/verify.sh offline
+```
+
+`focused` runs Rust checks and the real terminal smoke test. `offline` adds
+the local workflow, shell, MSRV, cached dependency, and Gitleaks checks. Both
+report failed prerequisites and exit nonzero on failure. Neither installs
+tools nor substitutes for fresh advisory scans, TruffleHog, fuzzing, video
+checks, and review before delivery. Cached audit success does not prove that
+the advisory database is current.
+
+The PTY smoke test can also run against an already built binary:
+
+```bash
+python3 scripts/tests/tui.py target/debug/devtrim
+python3 scripts/tests/read-only-views.py target/debug/devtrim
+```
+
+It uses an isolated HOME and PATH, explicit terminal dimensions, visible
+content assertions, and bounded waits. Use `tests/cli.rs` fixtures for JSON,
+probe failures, and deletion sentinels. Debug a failing scenario in its
+disposable fixture; do not grant broader permissions or run cleanup in your
+real home merely to make a test pass.
+
+For authorized parallel worktrees, set a distinct `CARGO_TARGET_DIR`, evidence
+directory, benchmark corpus, and local-server port for each checkout. Record
+the starting commit and assign one writer to each changed file. A benchmark
+compares the same successful workload and compiler on both binaries; keep
+intentional security/output changes separate from optimization baselines.
+
+Build a disposable scan corpus with `bash scripts/perf/corpus.sh <new-home>`.
+Then run `bash scripts/perf/ab.sh <baseline> <candidate> <corpus-home>` with
+Hyperfine installed. The harness refuses unsuccessful or unequal scan output,
+keeps both execution orders, and records binary hashes and machine load.
+Set `PERF_BASELINE_BUILD_INFO` and `PERF_CANDIDATE_BUILD_INFO` to the compiler,
+target, and build profile used for each binary. `python3 scripts/perf/test.py`
+checks that the harness accepts equivalent work and rejects invalid evidence.
+
+The individual delivery gates remain available below:
+
+```bash
+rustup run 1.98.1 cargo fmt --all -- --check
 ast-grep test --skip-snapshot-tests
 ast-grep scan --config sgconfig.yml
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-targets --all-features
+rustup run 1.98.1 cargo clippy --locked --all-targets --all-features -- -D warnings
+rustup run 1.98.1 cargo test --locked --all-targets --all-features
 rustup run 1.88.0 cargo test --locked --all-targets --all-features
 cargo audit
 cargo audit --file fuzz/Cargo.lock
-cargo build --release --locked --target aarch64-apple-darwin
+rustup run 1.98.1 cargo build --release --locked --target aarch64-apple-darwin
 (cd video && npm ci --strict-allow-scripts && npm audit --package-lock-only --audit-level=low && npm run lint && npm run format:check && npm run build)
 bash scripts/tests/release-policy.sh
-bash -n scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh
-sh -n .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh
-scripts/tests/shellcheck-tracked.sh && actionlint
+(for script in scripts/verify.sh scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh scripts/perf/ab.sh scripts/perf/corpus.sh; do
+  bash -n "$script" || exit "$?"
+done)
+(for script in .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh; do
+  sh -n "$script" || exit "$?"
+done)
+scripts/tests/shellcheck-tracked.sh
+actionlint
+cmp AGENTS.md CLAUDE.md
+scripts/tests/gitleaks-positive-control.sh "$(command -v gitleaks)"
 gitleaks git --redact --no-banner .
 trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color
 ```
+
+Run each target under `fuzz/fuzz_targets/` for 60 seconds with the configured
+nightly compiler before release; the exact PATH setup is in `AGENTS.md`.
+Keep output and exit status for each gate. A push request authorizes source
+delivery; publishing a release and promoting it to production are separate
+actions.
 
 See [`SECURITY.md`](SECURITY.md) for the threat model and reporting process.
 Release notes live in [`CHANGELOG.md`](CHANGELOG.md). After committing and

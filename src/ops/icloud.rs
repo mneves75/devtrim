@@ -24,7 +24,7 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
         }
     }
 
-    let mut out = Vec::new();
+    let mut findings = Vec::new();
     for result in WalkDir::new(&cloud_docs)
         .follow_links(false)
         .follow_root_links(false)
@@ -48,7 +48,7 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
         }
         let allocated = blocks_bytes(path)?;
         let relative = path.strip_prefix(&cloud_docs).unwrap_or(path);
-        out.push(Finding::new(
+        findings.push(Finding::new(
             format!("large iCloud Drive file: {}", relative.display()),
             Some(path.to_path_buf()),
             logical,
@@ -59,19 +59,15 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
             Action::Info,
         ));
     }
-    out.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(out)
+    findings.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(findings)
 }
 
 /// Real bytes on disk via st_blocks (detects sparse/dataless files).
-fn blocks_bytes(p: &std::path::Path) -> Result<u64> {
-    use std::os::unix::fs::MetadataExt;
-    let blocks = std::fs::metadata(p)
-        .with_context(|| format!("cannot inspect iCloud file {}", p.display()))?
-        .blocks();
-    blocks
-        .checked_mul(512)
-        .ok_or_else(|| anyhow::anyhow!("allocated size overflow for {}", p.display()))
+fn blocks_bytes(path: &std::path::Path) -> Result<u64> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("cannot inspect iCloud file {}", path.display()))?;
+    super::blocks_bytes(&metadata, path)
 }
 
 #[cfg(test)]
