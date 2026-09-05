@@ -162,6 +162,12 @@ Non-negotiable boundaries:
 
 ## Known limitations
 
+- Directory sizes are measured with one `stat` per file. macOS `getattrlistbulk`
+  would collapse that into roughly one syscall per hundred entries, but it has no
+  safe wrapper in this dependency set and would require `unsafe` FFI. `unsafe_code
+  = "forbid"` is a load-bearing guarantee for a tool that deletes files, so the
+  slower measurement is a deliberate trade, not an oversight.
+
 - Sizes are estimated logical bytes, not guaranteed immediately reclaimable
   APFS blocks. Clones, sparse files, Trash, and container VM compaction differ.
   The estimate is nevertheless complete for the traversed logical tree: an

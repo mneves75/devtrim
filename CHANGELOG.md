@@ -2,7 +2,20 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.8.2] - Unreleased
+## [0.8.2] - 2026-09-05
+
+### Changed
+- `devtrim scan` now runs its nine category scanners concurrently instead of one after another, so the independent external programs each category waits on (`npm`, `brew`, `xcrun`, `docker`, `pgrep`, `lsof`, `git`) overlap rather than queue. Results are joined in registry order, so the JSON document is byte-identical to the serial version: over a 25-repository corpus the parallel binary and the previous serial binary produce the same SHA-256, and twelve consecutive parallel runs produce that one digest. Cross-category diagnostic lines now appear in arrival order rather than registry order; findings, errors, and the single-document guarantee are unaffected
+- `Op` now has exactly one scan entry point, taking the per-scan observations explicitly. The previous optional second method could be left unimplemented by a new category, which would silently reprobe instead of sharing the scan's observations
+
+### Fixed
+- Removed duplicated and vacuous test code: two `node_modules` apply tests whose shapes the authority table already covers, a Git fixture duplicated byte-for-byte across two modules, five forged-authority tests collapsed into two table-driven ones, a docker stub pasted three times, and four assertions that restated their own setup or re-derived the value under test. The unit suite runs in roughly half the wall time it did
+- The `node_modules` authority table now asserts the refusal *reason* for non-normal path spellings rather than only that some refusal occurred
+
+### Security
+- Added an adversarial concurrency regression test: a mutator thread races the deletion sink, repeatedly swapping the target with a symbolic link to a bystander file while the sink runs. Across sixty loaded runs the sink never destroyed the bystander. The test carries a deterministic control deletion first, so an all-refusals outcome cannot be mistaken for success
+- Restored explicit assertions that the home directory root and the Trash root are protected. Both share one branch of the protected-path check that no remaining test covered after the test cleanup; a deliberately broken branch now fails the suite
+- Restored coverage for a forged actionable finding carrying no path at all, in both the Docker and simulator authority tables
 
 ## [0.8.1] - 2026-09-04
 

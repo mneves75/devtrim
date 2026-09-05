@@ -1,5 +1,29 @@
 # Project Memory
 
+## Current state (0.8.2)
+
+Scanning is concurrent: nine categories on scoped threads joined in registry
+order, proven equivalent rather than assumed. Over a fixed 25-repository corpus
+the parallel binary and the released 0.8.1 serial binary produce the same
+SHA-256, and twelve consecutive parallel runs produce that one digest.
+Exactly-once probing survives — still one `git log` per repository per scan —
+because each repository's observation is an `Arc<OnceLock<..>>` cloned out from
+under the mutex, so no lock is ever held across a subprocess.
+
+The suite lost roughly 250 lines of duplicated and vacuous tests and now runs in
+about half the wall time. Two independent review axes then found what no gate
+could: the home root had lost its only protection assertion when a test was
+deleted, and the pathless forged-command payload disappeared when tests were
+collapsed into loops. Both are restored with positive controls that fail when
+the production branch is deliberately broken.
+
+The deletion sink now has an adversarial test. A mutator thread swaps the target
+with a symbolic link to a bystander while the sink runs; the bystander survives
+every interleaving across sixty loaded runs. Its assertions took three attempts:
+both "no quarantine leftover" and "the leftover is a directory" are false under
+a hostile mutator, because declining to move an entry back over an occupied name
+is the safe outcome, and the leftover may be the mutator's own symlink.
+
 ## 0.8.1 production release
 
 The user authorized production deployment after source delivery. Immutable
