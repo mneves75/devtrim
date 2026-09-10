@@ -68,8 +68,8 @@ same commit removed from `Caches::apply`, so one resumed session abandoned every
 later finding, contradicting the "falls out of the plan" promise in three
 documents. And `Caches/deno` is `DENO_DIR`, and `location_data/<hash>/kv.sqlite3` holds
 every default-path `Deno.openKv()` database with `local_storage` beside it.
-Dropped. The pattern across all three — JetBrains, deno, and the project
-directories — is that a directory named like a cache is not thereby a cache, and
+Dropped. The pattern across all of them — JetBrains, deno, the project
+directories, and the job supervisor state — is that a directory named like a cache is not thereby a cache, and
 only reading what a tool actually stores inside it settles the question.
 
 That session reclaimed 36 GiB on the development machine (11 GiB free to 47),

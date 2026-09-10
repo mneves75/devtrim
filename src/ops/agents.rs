@@ -83,8 +83,16 @@ const HISTORY: &[HistoryRoot] = &[
     },
     // A shell snapshot is written once per session and sourced by every later
     // shell call in that session; nothing rewrites it if it disappears. It is
-    // therefore history, not cache, and the age gate is what proves no live
-    // session still depends on the file.
+    // therefore history, not cache.
+    //
+    // The age gate is the right signal here, and not for the reason it was
+    // wrong for `jobs`: Claude Code sweeps both this directory and `projects`
+    // itself once an entry passes its own `cleanupPeriodDays` retention. Age is
+    // the vendor's own criterion for these two stores, so devtrim applying it is
+    // not a new hazard — it only reaches the same conclusion sooner when the
+    // configured window is shorter, and every finding states the age it used.
+    // `jobs` had no such sweep and did have a liveness file, which is exactly
+    // what made age the wrong signal there.
     HistoryRoot {
         label: "Claude Code shell snapshots",
         relative: ".claude/shell-snapshots",
@@ -221,7 +229,7 @@ fn authorize(target: &Path, ctx: &Ctx) -> Result<()> {
         return Ok(());
     }
     anyhow::bail!(
-        "agent history became active or lost its session shape after preview; refusing {}",
+        "agent history no longer meets its preview shape — it became active, lost its session shape, or is now a symlink; refusing {}",
         target.display()
     )
 }
@@ -674,7 +682,7 @@ mod tests {
             "the refusal must still be reported"
         );
         assert!(
-            outcome.errors[0].contains("became active"),
+            outcome.errors[0].contains("no longer meets its preview shape"),
             "an age refusal must not read as a forged target: {}",
             outcome.errors[0]
         );
