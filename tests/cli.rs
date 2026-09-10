@@ -1376,6 +1376,73 @@ fn huggingface_cleanup_preserves_authentication_and_other_state() {
     }
 }
 
+/// End-to-end proof that `clean agents` removes exactly the two tiers it
+/// advertises and nothing beside them. The surviving assertions are the point:
+/// an agent's credentials, configuration and a still-active session must come
+/// through an `--apply --yolo` run untouched.
+#[test]
+fn agent_cleanup_removes_only_stale_history_and_regenerable_caches() {
+    let sandbox = Sandbox::in_target("agents-tiers");
+    let home = sandbox.path();
+    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60 * 24 * 400);
+    let age = |path: &Path| {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(stale)
+            .unwrap();
+    };
+
+    let cache = home.join(".claude/cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("changelog.md"), "# 1.0.0\n").unwrap();
+
+    let old_session = home.join(".claude/projects/-old-repo");
+    let live_session = home.join(".claude/projects/-live-repo");
+    std::fs::create_dir_all(&old_session).unwrap();
+    std::fs::create_dir_all(&live_session).unwrap();
+    std::fs::write(
+        old_session.join("24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
+        "old",
+    )
+    .unwrap();
+    std::fs::write(
+        live_session.join("24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
+        "live",
+    )
+    .unwrap();
+    age(&old_session.join("24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"));
+
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    let credentials = home.join(".codex/auth.json");
+    let configuration = home.join(".claude/settings.json");
+    std::fs::write(&credentials, "OAUTH TOKEN").unwrap();
+    std::fs::write(&configuration, "{\"theme\":\"dark\"}").unwrap();
+    age(&credentials);
+    age(&configuration);
+
+    let output = run(
+        &sandbox,
+        &["clean", "agents", "--apply", "--shred", "--yolo", "--json"],
+    );
+    let value = json(&output);
+    assert!(output.status.success(), "{value}");
+    assert_eq!(value["operation"], "agents");
+    assert_eq!(value["summary"]["items_touched"], 2, "{value}");
+    assert!(!cache.exists(), "a regenerable cache must be removed");
+    assert!(!old_session.exists(), "a stale session must be removed");
+    assert!(live_session.exists(), "an active session must survive");
+    assert_eq!(
+        std::fs::read_to_string(&credentials).unwrap(),
+        "OAUTH TOKEN"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&configuration).unwrap(),
+        "{\"theme\":\"dark\"}"
+    );
+}
+
 #[test]
 fn installers_parse_errors_retain_the_category_in_json() {
     let sandbox = Sandbox::new("installers-parse-error");

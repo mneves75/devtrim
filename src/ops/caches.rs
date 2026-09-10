@@ -9,11 +9,30 @@ use crate::safety::{Ctx, escalate};
 
 pub struct Caches;
 
+/// Exact paths relative to `$HOME`, each owned by one tool that re-creates it.
+///
+/// These are the tools that keep their cache outside `~/Library/Caches` on
+/// macOS. A tool that uses the platform location is listed once, in
+/// [`crate::safety::MANAGED_LIBRARY_CACHES`], rather than twice under two
+/// spellings — two findings sharing one label would read as a duplicate rather
+/// than as two places.
 const CACHES: &[(&str, &str)] = &[
     ("huggingface model cache", ".cache/huggingface/hub"),
     ("uv package cache", ".cache/uv"),
     ("node core cache", ".cache/node"),
+    ("bun package cache", ".bun/install/cache"),
+    ("cargo registry download cache", ".cargo/registry/cache"),
+    ("cargo registry sources", ".cargo/registry/src"),
 ];
+
+/// The `~/Library/Caches` half of the same list, derived from the closed
+/// carve-out in the protection boundary so a cache can never be previewed
+/// without also being deletable, or protected without also being unlisted.
+fn library_caches(home: &Path) -> impl Iterator<Item = (&'static str, PathBuf)> {
+    crate::safety::MANAGED_LIBRARY_CACHES
+        .iter()
+        .map(|(label, name)| (*label, home.join("Library/Caches").join(name)))
+}
 
 impl Op for Caches {
     fn name(&self) -> &'static str {
@@ -28,6 +47,12 @@ impl Op for Caches {
         let mut findings = Vec::new();
         for (label, relative) in CACHES {
             let path = ctx.home.join(relative);
+            let size = dir_size(&path)?;
+            if size > 0 {
+                findings.push(cache_finding(label, path, size, 3));
+            }
+        }
+        for (label, path) in library_caches(&ctx.home) {
             let size = dir_size(&path)?;
             if size > 0 {
                 findings.push(cache_finding(label, path, size, 3));
@@ -65,9 +90,15 @@ impl Op for Caches {
                 apply_filesystem_finding(self.name(), finding, ctx)
             })()
             .with_context(|| format!("failed to remove {}", finding.label));
+            // One refused cache must not abandon the rest of the previewed plan.
+            // The list spans unrelated tools, and a single entry can be
+            // permanently unremovable — a `uv` source distribution checked out
+            // with its own `.git` trips the repository-root refusal on every
+            // run — which would otherwise block every cache listed after it.
+            // Each failure is still recorded, so the run reports nonzero.
             if let Err(error) = result {
                 outcome.fail(error);
-                break;
+                continue;
             }
             outcome.record(finding, removal_note(finding, &finding.label));
         }
@@ -80,7 +111,10 @@ fn cache_finding(label: &str, path: PathBuf, size: u64, danger: u8) -> Finding {
         label,
         Some(path),
         size,
-        "re-downloads automatically on next use",
+        // Not every entry is a download: an editor index or a compiler cache is
+        // rebuilt locally, and saying "re-downloads" would misdescribe the cost
+        // of removing one.
+        "regenerated automatically on next use; a large cache costs bandwidth or rebuild time",
         escalate(danger, size),
         Action::Trash,
     )
@@ -108,6 +142,7 @@ fn is_builtin_cache_root(path: &Path, home: &Path) -> bool {
     CACHES
         .iter()
         .any(|(_, relative)| path == home.join(relative))
+        || library_caches(home).any(|(_, candidate)| path == candidate)
 }
 /// Owner-reported paths are trusted only inside the owner's exact cache namespace.
 fn is_eligible_owner_cache(program: &str, path: &Path, home: &Path) -> bool {
@@ -255,6 +290,82 @@ mod tests {
         assert_eq!(outcome.summary.items_touched, 0);
         assert_eq!(outcome.errors.len(), 1);
         assert!(sentinel.exists());
+        crate::ops::remove_test_path(home);
+    }
+
+    /// The managed `~/Library/Caches` list is authority for exactly its own
+    /// entries. Paired assertions: every listed root is accepted (so the list is
+    /// live, not dead code) and a neighbour sharing a prefix is not.
+    #[test]
+    fn library_cache_authority_matches_the_protection_carve_out() {
+        let home = Path::new("/Users/example");
+        for (_, path) in library_caches(home) {
+            assert!(is_builtin_cache_root(&path, home), "{}", path.display());
+            assert!(!crate::safety::is_protected(&path, home));
+        }
+        for rejected in [
+            home.join("Library/Caches"),
+            home.join("Library/Caches/ms-playwright-extra"),
+            home.join("Library/Caches/ms-playwright/browsers"),
+            home.join("Library/Application Support"),
+        ] {
+            assert!(
+                !is_builtin_cache_root(&rejected, home),
+                "{}",
+                rejected.display()
+            );
+        }
+    }
+
+    /// One unremovable cache must not abandon the rest of the previewed plan.
+    /// Observed for real: a `uv` source distribution checked out with its own
+    /// `.git` trips the repository-root refusal on every run, and while apply
+    /// stopped at the first failure it blocked every cache listed after it.
+    #[test]
+    fn a_refused_cache_does_not_block_the_rest_of_the_plan() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-cache-continue-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        std::fs::create_dir_all(home.join(".cache/uv")).unwrap();
+        std::fs::create_dir_all(home.join(".cache/node")).unwrap();
+        let home = home.canonicalize().unwrap();
+        // A Git worktree marker makes this cache permanently unremovable.
+        std::fs::write(home.join(".cache/uv/.git"), "gitdir: elsewhere\n").unwrap();
+        std::fs::write(home.join(".cache/node/entry"), "regenerable").unwrap();
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
+            home: home.clone(),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
+        let findings = vec![
+            cache_finding("uv package cache", home.join(".cache/uv"), 4, 3),
+            cache_finding("node core cache", home.join(".cache/node"), 4, 3),
+        ];
+
+        let outcome = Caches.apply(&findings, &ctx).unwrap();
+
+        assert_eq!(
+            outcome.errors.len(),
+            1,
+            "the refusal must still be reported"
+        );
+        assert_eq!(
+            outcome.summary.items_touched, 1,
+            "the cache listed after the refused one must still be removed"
+        );
+        assert!(home.join(".cache/uv/.git").exists());
+        assert!(!home.join(".cache/node").exists());
         crate::ops::remove_test_path(home);
     }
 

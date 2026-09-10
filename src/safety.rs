@@ -583,6 +583,50 @@ fn path_relative_to_ignore_ascii_case(path: &Path, base: &Path) -> Option<PathBu
     )
 }
 
+/// Exact `~/Library/Caches` subdirectories devtrim manages, as
+/// `(human label, directory name)`.
+///
+/// `~/Library` is protected wholesale; this is the closed carve-out, and it is
+/// the single source of truth for both the protection boundary below and the
+/// cache category that acts on it, so the two cannot drift into a state where a
+/// path is previewed but refused (or worse, the reverse). Every entry is one
+/// directory owned by exactly one developer tool that rebuilds it on demand. A
+/// name shared by several producers, or one whose contents a tool cannot
+/// re-fetch, does not belong here.
+///
+/// The pnpm entry is the metadata cache under a cache root, never the
+/// content-addressable store (`~/Library/pnpm/store`): every installed
+/// `node_modules` hard-links into that store, so removing it would break
+/// projects rather than free regenerable bytes.
+pub(crate) const MANAGED_LIBRARY_CACHES: &[(&str, &str)] = &[
+    ("Playwright browser cache", "ms-playwright"),
+    (
+        "VS Code update staging cache",
+        "com.microsoft.VSCode.ShipIt",
+    ),
+    ("VS Code cache", "com.microsoft.VSCode"),
+    ("SwiftPM cache", "org.swift.swiftpm"),
+    // `Caches/JetBrains` is deliberately absent. On macOS that is the IDE
+    // *system directory*, not a cache: each `<Product><Version>` subdirectory
+    // holds `LocalHistory`, the per-file change history the IDE keeps for files
+    // Git never saw. Nothing regenerates it, and JetBrains stopped clearing it
+    // on "Invalidate Caches" for that reason. Carving out only the `caches` and
+    // `index` subdirectories would need a per-product depth rule, which this
+    // exact-name list cannot express.
+    ("Claude Code CLI cache", "claude-cli-nodejs"),
+    ("pip package cache", "pip"),
+    ("pnpm metadata cache", "pnpm"),
+    ("GitHub CLI cache", "gh"),
+    // `Caches/deno` is deliberately absent. On macOS it is `DENO_DIR`, not a
+    // module cache alone: `location_data/<hash>/kv.sqlite3` is where every
+    // `Deno.openKv()` opened without an explicit path stores its database, and
+    // the sibling `local_storage` file backs `localStorage`. Both are documented
+    // as persistent across runs and nothing rebuilds them. An exact-name list
+    // cannot express a `location_data` exclusion.
+    ("Go build cache", "go-build"),
+    ("TypeScript server cache", "typescript"),
+];
+
 fn is_managed_library_subpath(relative: &Path) -> bool {
     const MANAGED: &[&str] = &[
         "Developer/Toolchains",
@@ -600,9 +644,11 @@ fn is_managed_library_subpath(relative: &Path) -> bool {
     }
     let owned = components.collect::<PathBuf>();
     let owned = owned.to_string_lossy();
-    MANAGED
-        .iter()
-        .any(|managed| owned == *managed || owned.starts_with(&format!("{managed}/")))
+    let covered = |managed: &str| owned == managed || owned.starts_with(&format!("{managed}/"));
+    MANAGED.iter().copied().any(covered)
+        || MANAGED_LIBRARY_CACHES
+            .iter()
+            .any(|(_, name)| covered(&format!("Caches/{name}")))
 }
 
 fn abs(path: &Path) -> PathBuf {
@@ -732,10 +778,27 @@ pub fn trash_gate(home: &Path, confirm_gb: Option<u64>) -> Result<()> {
 }
 
 pub fn dir_size(path: &Path) -> Result<u64> {
+    Ok(dir_stats(path)?.0)
+}
+
+/// Logical size and the newest regular-file modification time under `path`.
+///
+/// One traversal serves both, so a size and the staleness judged from it always
+/// describe the same tree. Only regular files contribute to either: a
+/// directory's own mtime moves when the tree is created and whenever an entry is
+/// removed, so a store restored from backup would otherwise look permanently
+/// active. An addition is still seen, because the added file carries its own
+/// fresh timestamp.
+///
+/// A subtree with no regular files reports `UNIX_EPOCH`, which reads as
+/// maximally stale — harmless, because it also measures zero bytes, and every
+/// caller skips a zero-byte target.
+pub(crate) fn dir_stats(path: &Path) -> Result<(u64, std::time::SystemTime)> {
     let mut bytes = 0u64;
+    let mut newest = std::time::SystemTime::UNIX_EPOCH;
     match std::fs::symlink_metadata(path) {
         Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, newest)),
         Err(error) => {
             return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
         }
@@ -746,16 +809,25 @@ pub fn dir_size(path: &Path) -> Result<u64> {
     {
         let entry = entry.with_context(|| format!("cannot measure {}", path.display()))?;
         if entry.file_type().is_file() {
-            let len = entry
+            let metadata = entry
                 .metadata()
-                .with_context(|| format!("cannot measure {}", entry.path().display()))?
-                .len();
+                .with_context(|| format!("cannot measure {}", entry.path().display()))?;
+            // An unreadable timestamp must refuse, not abstain: a file that did
+            // not vote would let the subtree read older than it is, and an
+            // active session would become deletable.
+            let modified = metadata.modified().with_context(|| {
+                format!(
+                    "cannot read modification time of {}",
+                    entry.path().display()
+                )
+            })?;
+            newest = newest.max(modified);
             bytes = bytes
-                .checked_add(len)
+                .checked_add(metadata.len())
                 .ok_or_else(|| anyhow::anyhow!("logical size overflow under {}", path.display()))?;
         }
     }
-    Ok(bytes)
+    Ok((bytes, newest))
 }
 
 const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake";
@@ -1210,6 +1282,44 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("protected resolved path"));
         crate::ops::remove_test_path(home);
+    }
+
+    /// The `~/Library/Caches` carve-out is exactly the closed list and nothing
+    /// else. The unprotected assertions are the positive control: if the
+    /// carve-out silently stopped applying, the cache category would preview
+    /// paths the sink then refuses, and this test would fail rather than pass
+    /// vacuously alongside the protected ones.
+    #[test]
+    fn managed_library_caches_are_exact_exceptions() {
+        let home = Path::new("/Users/example");
+        assert!(!MANAGED_LIBRARY_CACHES.is_empty());
+        for (_, name) in MANAGED_LIBRARY_CACHES {
+            let root = home.join("Library/Caches").join(name);
+            assert!(!is_protected(&root, home), "{name}");
+            assert!(!is_protected(&root.join("nested/file"), home), "{name}");
+        }
+        for still_protected in [
+            "Library",
+            "Library/Caches",
+            "Library/Caches/com.apple.Safari",
+            "Library/Caches/CloudKit",
+            "Library/Application Support",
+            "Library/Mail",
+            // The JetBrains system directory holds non-regenerable Local History.
+            "Library/Caches/JetBrains",
+            "Library/Caches/JetBrains/IntelliJIdea2026.2/LocalHistory",
+            // DENO_DIR holds default-path Deno KV databases and localStorage.
+            "Library/Caches/deno",
+            "Library/Caches/deno/location_data",
+            // A listed name is not a prefix licence for its neighbours.
+            "Library/Caches/ms-playwright-extra",
+            "Library/Caches/pip-secrets",
+        ] {
+            assert!(
+                is_protected(&home.join(still_protected), home),
+                "{still_protected}"
+            );
+        }
     }
 
     #[test]

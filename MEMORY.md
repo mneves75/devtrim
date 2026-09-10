@@ -1,8 +1,77 @@
 # Project Memory
 
-## Current state (0.8.2)
+## Current state (0.9.0)
 
-Scanning is concurrent: nine categories on scoped threads joined in registry
+A tenth category, `agents`, covers coding-agent storage in two tiers. The split
+is the whole design: a regenerable cache costs a re-fetch, a session transcript
+costs the transcript, and one danger score cannot honestly describe both. The
+history tier is age-gated on the newest *regular file* in the subtree, because a
+directory's own mtime moves on creation and on removal — a store restored from
+backup would otherwise read as permanently active. Codex nests sessions as
+`<year>/<month>/<day>`, so `HistoryRoot::depth` makes the day directory the
+unit; waiting for a year to go stale would never offer the current one.
+
+Two stores were measured and left out rather than shipped. `.codex/lanes`
+produced 558 findings for 0.25 GB against the development machine — a preview
+nobody can read is not a preview, and the natural unit is a lane, which the
+on-disk naming does not express. The paste cache has the same shape and is worth
+2 MB. Dropping both took the category from 592 findings to 34 for 2.51 GB.
+
+`~/Library` is still protected wholesale. `safety::MANAGED_LIBRARY_CACHES` is the
+closed carve-out for its `Caches` subtree and is read by both the protection
+boundary and the cache category, so the two cannot drift into previewing a path
+the sink refuses. The XDG spellings of tools that use the platform location on
+macOS were removed rather than listed twice: two findings sharing one label read
+as a duplicate, not as two places.
+
+Three independent review axes each found something no gate could. The standards
+axis: `metadata.modified()` failing silently would have let a subtree read older
+than it is, so an unreadable timestamp now refuses instead of abstaining; `clean
+agents` had no CLI-level test; a negative assertion about `include_files` had no
+positive control. The spec axis: the docs claimed VS Code and JetBrains *logs*,
+which live under `Application Support` and `Logs` — the claim was narrowed
+rather than the boundary widened.
+
+The independent model review found the one that mattered. Claude Code stores its
+auto memory at `~/.claude/projects/<project>/memory/`, and keys memory by
+repository root while keying transcripts by working directory — so a project
+directory can hold memory and no live transcript, go stale, and be deleted. The
+directories exist on this machine; the category would have destroyed them. The
+fix is positive corroboration, not a `memory` exception: a project directory is
+a candidate only when every entry is a `.jsonl` transcript or a session-id
+directory, which also covers whatever an agent stores there next. The same
+review showed a shell snapshot is not a cache — it is written once per session,
+sourced by every later shell call, and never rewritten — so both snapshot
+directories moved to the age-gated tier; and that `Caches/JetBrains` is the IDE
+*system directory* holding the non-regenerable `LocalHistory` store, so it left
+the carve-out entirely.
+
+The lesson is the one this repo keeps relearning: the enforcement was sound in
+all three cases. What was wrong was what the closed lists contained.
+
+Running it for real against a full disk then found what no test had. `caches`
+apply stopped at the first refused finding, and the `uv` cache — permanently
+unremovable because a source distribution inside it carries its own `.git` —
+sorts first, so it blocked all eight remaining caches and reported zero while
+4.56 GB sat there. Apply now continues and records every failure. The same run
+showed two more roots failing the ratio rule: `.codex/.tmp` gave 324 findings
+for 0.07 GB and `.claude/file-history` 123 for 0.10 GB, so both left the list
+alongside lanes and the paste cache.
+
+A confirming review pass then found the last one, the same defect class a third
+time: `Caches/deno` is `DENO_DIR`, and `location_data/<hash>/kv.sqlite3` holds
+every default-path `Deno.openKv()` database with `local_storage` beside it.
+Dropped. The pattern across all three — JetBrains, deno, and the project
+directories — is that a directory named like a cache is not thereby a cache, and
+only reading what a tool actually stores inside it settles the question.
+
+That session reclaimed 36 GiB on the development machine (11 GiB free to 47),
+with `active_days` lowered to 10. The largest remaining item is the OrbStack VM
+disk image at 45.1 GB, which devtrim reports and deliberately never touches.
+
+## Previous state (0.8.2)
+
+Scanning is concurrent: ten categories on scoped threads joined in registry
 order, proven equivalent rather than assumed. Over a fixed 25-repository corpus
 the parallel binary and the released 0.8.1 serial binary produce the same
 SHA-256, and twelve consecutive parallel runs produce that one digest.

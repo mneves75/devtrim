@@ -109,6 +109,12 @@ const MENU: &[MenuItem] = &[
         operation: Operation::Clean(Target::Installers),
     },
     MenuItem {
+        key: "a",
+        label: "Agent caches & history",
+        description: "Agent caches, plus session history past the active window.",
+        operation: Operation::Clean(Target::Agents),
+    },
+    MenuItem {
         key: "9",
         label: "Agent leftovers",
         description: "Read-only hints; whole worktrees are never deleted.",

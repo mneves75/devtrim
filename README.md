@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.8.2.
+This source tree and its packaged documentation describe devtrim v0.9.0.
 
 ## Install
 
@@ -78,7 +78,7 @@ devtrim                                   # interactive TUI when stdin/stdout ar
 devtrim tui                               # explicit TUI launch
 devtrim scan                              # full read-only report
 devtrim scan --json                       # one machine-readable envelope
-devtrim clean caches --apply -y           # HF/uv/npm/brew/node download caches
+devtrim clean caches --apply -y           # HF/uv/npm/brew/cargo/bun/Playwright download caches
 devtrim clean node-modules --apply -y     # exact paths in conclusively stale Git repos
 devtrim clean artifacts --apply -y        # corroborated build artifacts in stale Git repos
 devtrim clean simulators --apply -y       # delete exact previewed unavailable devices
@@ -86,6 +86,7 @@ devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData chil
 devtrim clean docker --apply -y           # local daemon images + build cache; never volumes
 devtrim clean toolchains --apply -y       # only unreferenced swift.org toolchains
 devtrim clean installers --apply -y       # stale installer archives in Downloads/Desktop
+devtrim clean agents --apply -y           # agent caches + session history past the active window
 devtrim clean leftovers                   # report-only hints; never deletes worktrees
 devtrim icloud                            # large iCloud Drive files and local allocation
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
@@ -129,6 +130,58 @@ extracted project trees whose bundled installers are not loose clutter. Formats
 that can carry source or user data, such as `zip` and `tar`, are never matched.
 Apply re-checks the whole shape and refuses symlinks and any target outside
 those two directories.
+
+`clean agents` covers coding-agent storage in two tiers, because it is not one
+kind of data. *Regenerable caches* — Claude Code downloads and metadata cache,
+the Codex catalog cache, the Pi web-search cache, the OpenCode cache — are exact
+paths their owner rebuilds on demand, so they are offered unconditionally at a
+low danger score. *Session history* — Claude Code transcripts, background job
+output and shell snapshots; Codex shell snapshots, session and archived-session
+trees — is **not regenerable**, so a
+child is offered only once the newest
+regular file anywhere in its subtree is older than the configured active window,
+its note says the content does not come back, and its danger score reflects
+that. Codex nests sessions as `<year>/<month>/<day>`, so the day directory is
+the unit; waiting for a whole year to go stale would never offer the current
+one. Authentication material (`auth.json`, `.credentials.json`), configuration,
+memories, skills, agent definitions, installed plugins and the `.claude.json`
+backup copies are on neither list and are never candidates. Apply reasserts the
+full shape — tier membership, exact depth below the configured root, no
+symlink, and the age gate re-read from disk — so a session resumed after preview
+falls out of the plan.
+
+Two of those rules exist because the obvious design was wrong. A shell snapshot
+is *not* a cache: Claude Code writes one per session and sources that exact file
+on every later shell call, and nothing rewrites it if it disappears — so it sits
+in the age-gated tier, where an untouched file proves no live session still
+needs it. And a `~/.claude/projects/<project>` directory is offered only when
+every entry in it is session data: a `.jsonl` transcript or a directory named
+for a session id. Claude Code stores auto memory at
+`~/.claude/projects/<project>/memory/` and keys it by repository root while
+keying transcripts by working directory, so a project directory can hold memory
+and no live transcript at all. Refusing anything that is not session data
+protects that case, and the next thing an agent decides to store beside its
+transcripts.
+
+`clean caches` also reaches a closed list of exact `~/Library/Caches`
+subdirectories — Playwright browsers, the VS Code HTTP cache and its Squirrel
+update staging, SwiftPM, the Claude Code CLI cache, pip, pnpm, GitHub CLI, Go
+and TypeScript. `~/Library` stays protected
+wholesale; that list is the carve-out, it is the same constant the protection
+boundary reads, and a name is only on it when one developer tool owns the
+directory and rebuilds it on demand.
+
+Two boundaries inside that are worth stating, because a shorter list would
+over-claim. The pnpm entry is the metadata cache, never the content-addressable
+store at `~/Library/pnpm/store` that installed `node_modules` trees hard-link
+into. And editor *logs* and application data are not covered at all: VS Code
+keeps its logs, `CachedData` and webview caches under `~/Library/Application
+Support/Code`, and JetBrains keeps logs under `~/Library/Logs` — both outside
+`~/Library/Caches`, both mixed in with real user state, and neither reachable
+without a second carve-out this release does not make. `~/Library/Caches/JetBrains`
+is excluded for a stronger reason: on macOS that is the IDE *system directory*,
+and each product subdirectory holds `LocalHistory`, the per-file change history
+the IDE keeps for files Git never saw. Nothing regenerates it.
 
 `analyze` is navigation, never deletion, and that boundary is deliberate. Every
 cleanup category binds deletion to structural corroboration — a `target` beside

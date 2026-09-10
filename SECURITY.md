@@ -40,7 +40,26 @@ Non-negotiable boundaries:
 - `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children.
 - System roots and descendants (including ASCII case variants), the user home
   root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
-  Only named managed Library subpaths are eligible.
+  Only named managed Library subpaths are eligible. The `~/Library/Caches`
+  half of that carve-out is `safety::MANAGED_LIBRARY_CACHES`, a closed list of
+  exact directory names that is also the sole source the `caches` category
+  reads, so a path can never be previewed but refused, or protected but
+  unlisted. Matching is exact or `<entry>/`-prefixed, so a neighbour sharing a
+  name prefix stays protected.
+- `agents` never treats agent credentials, configuration, memories, skills,
+  agent definitions, installed plugins, or `.claude.json` backups as
+  candidates. Its regenerable tier is a closed list of exact `$HOME`-relative
+  cache paths; its history tier offers only children at exactly the configured
+  depth below a configured root, and only once the newest regular file in the
+  subtree is older than the active window. Apply re-reads that age from disk,
+  so a session resumed after preview is refused rather than deleted.
+- A `~/.claude/projects` child is additionally required to contain nothing but
+  session data — a `.jsonl` transcript or a directory named for a canonical
+  session id. Claude Code keys auto memory (`<project>/memory/`) by repository
+  root while keying transcripts by working directory, so a project directory
+  can hold memory and no live transcript. The requirement is positive
+  corroboration rather than a named `memory` exception, so it also covers state
+  an agent adds beside its transcripts later.
 - Unknown Git activity or toolchain ownership is not deletion authority.
 - Every directory deletion preflights foreign filesystem devices and Git
   repository/worktree markers at any depth before either Trash or permanent

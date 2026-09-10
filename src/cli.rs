@@ -76,7 +76,7 @@ pub enum Command {
     },
     /// Clean one category
     Clean {
-        /// caches | node-modules | artifacts | simulators | xcode | docker | toolchains | installers | leftovers
+        /// caches | node-modules | artifacts | simulators | xcode | docker | toolchains | installers | agents | leftovers
         #[arg(value_enum)]
         target: Target,
     },
@@ -114,6 +114,7 @@ impl Target {
             Self::Docker => "docker",
             Self::Toolchains => "toolchains",
             Self::Installers => "installers",
+            Self::Agents => "agents",
             Self::Leftovers => "leftovers",
         }
     }
@@ -129,6 +130,7 @@ pub enum Target {
     Docker,
     Toolchains,
     Installers,
+    Agents,
     Leftovers,
 }
 

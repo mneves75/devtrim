@@ -1,5 +1,6 @@
 //! Op registry: every category is scan-then-apply with a danger score.
 
+pub mod agents;
 pub mod artifacts;
 pub mod caches;
 pub mod docker;
@@ -136,6 +137,7 @@ pub fn all() -> Vec<Box<dyn Op>> {
         Box::new(docker::Docker),
         Box::new(toolchains::Toolchains),
         Box::new(installers::Installers),
+        Box::new(agents::Agents),
         Box::new(leftovers::Leftovers),
     ]
 }
@@ -150,6 +152,7 @@ pub fn for_target(target: crate::cli::Target) -> Box<dyn Op> {
         crate::cli::Target::Docker => Box::new(docker::Docker),
         crate::cli::Target::Toolchains => Box::new(toolchains::Toolchains),
         crate::cli::Target::Installers => Box::new(installers::Installers),
+        crate::cli::Target::Agents => Box::new(agents::Agents),
         crate::cli::Target::Leftovers => Box::new(leftovers::Leftovers),
     }
 }
