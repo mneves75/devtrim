@@ -85,6 +85,7 @@ const MENU = [
   ["7", "Docker", "PREVIEW"],
   ["8", "Swift toolchains", "PREVIEW"],
   ["d", "Installers", "PREVIEW"],
+  ["a", "Agent caches & history", "PREVIEW"],
   ["9", "Agent leftovers", "READ-ONLY"],
   ["i", "iCloud status", "READ-ONLY"],
   ["0", "Empty Trash", "PERMANENT"],
@@ -144,7 +145,7 @@ const header = (operation: string): Row[] =>
   boxed(" measure · classify · trim ", COLS, 3, [
     [
       { t: " devtrim ", c: GREEN, b: true },
-      { t: "v0.8.1  ", c: DIM },
+      { t: "v0.9.0  ", c: DIM },
       { t: operation },
     ],
   ]);
@@ -439,7 +440,7 @@ export const DevtrimDemo: React.FC = () => {
           dev<span style={{ color: GREEN }}>trim</span>
         </div>
         <div style={{ fontSize: 30, color: MUTED }}>
-          v0.8.1 · interactive Ratatui interface
+          v0.9.0 · interactive Ratatui interface
         </div>
         <div style={{ fontSize: 26, color: DIM }}>
           github.com/mneves75/devtrim
