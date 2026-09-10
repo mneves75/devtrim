@@ -58,8 +58,15 @@ showed two more roots failing the ratio rule: `.codex/.tmp` gave 324 findings
 for 0.07 GB and `.claude/file-history` 123 for 0.10 GB, so both left the list
 alongside lanes and the paste cache.
 
-A confirming review pass then found the last one, the same defect class a third
-time: `Caches/deno` is `DENO_DIR`, and `location_data/<hash>/kv.sqlite3` holds
+Two confirming passes then found three more, the same defect class repeating.
+`~/.claude/jobs/<id>` is the background-session supervisor's state, not job
+output: a pinned session is kept alive while idle, so an idle stretch past the
+window would delete a directory a live process owns — and `pins.json` sits right
+there recording it, which is the tell that a closed category has gone one
+directory too far. Dropped. `Agents::apply` still carried the `break` that the
+same commit removed from `Caches::apply`, so one resumed session abandoned every
+later finding, contradicting the "falls out of the plan" promise in three
+documents. And `Caches/deno` is `DENO_DIR`, and `location_data/<hash>/kv.sqlite3` holds
 every default-path `Deno.openKv()` database with `local_storage` beside it.
 Dropped. The pattern across all three — JetBrains, deno, and the project
 directories — is that a directory named like a cache is not thereby a cache, and

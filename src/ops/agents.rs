@@ -5,8 +5,8 @@
 //! * A *regenerable* entry is a cache the agent rebuilds on demand. Removing one
 //!   under a live session costs a re-fetch, nothing else, so it is offered
 //!   unconditionally at a low danger score.
-//! * A *history* entry is a session transcript, an edit-undo store, or a job
-//!   output tree. Nothing regenerates it. It is therefore offered only after the
+//! * A *history* entry is a session transcript or a shell snapshot. Nothing
+//!   regenerates it. It is therefore offered only after the
 //!   configured active window has passed over the whole subtree, and its note
 //!   says plainly that the content does not come back.
 //!
@@ -14,13 +14,22 @@
 //! memories, skills, agent definitions, installed plugins, and the `.claude.json`
 //! backup copies are never in either list and are never traversed as candidates.
 //!
-//! Four stores were measured and deliberately left out, on one rule: a root
-//! earns its place only when the space it offers is worth the preview lines it
-//! costs, because a preview nobody can read is not a preview. Against the
-//! machine this was built on, Codex lane transcripts produced 558 findings for
-//! 0.25 GB and its `.tmp` tree 324 for 0.07 GB, the Claude Code file-edit
-//! history 123 for 0.10 GB, and the paste cache a comparable count for about
-//! 2 MB. What remains offers 5.14 GB in 45 findings.
+//! Stores are left out for two distinct reasons.
+//!
+//! Some hold live state despite a name that suggests otherwise, and no age gate
+//! can see it. `~/.claude/jobs/<id>` is the background-session supervisor's
+//! state — `state.json`, `timeline.jsonl`, `tmp` — not job output: a pinned
+//! session is kept alive while idle and a shed one is woken from that state, so
+//! an idle stretch past the active window would offer a directory a live
+//! process still owns. The `pins.json` beside it records exactly that, and a
+//! category that has to consult a liveness file to stay safe is one directory
+//! too far.
+//!
+//! Others simply cost more preview than they return, because a preview nobody
+//! can read is not a preview. Against the machine this was built on, Codex lane
+//! transcripts produced 558 findings for 0.25 GB, its `.tmp` tree 324 for
+//! 0.07 GB, the Claude Code file-edit history 123 for 0.10 GB, and the paste
+//! cache a comparable count for about 2 MB.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -71,13 +80,6 @@ const HISTORY: &[HistoryRoot] = &[
         depth: 1,
         include_files: false,
         require_session_shape: true,
-    },
-    HistoryRoot {
-        label: "Claude Code background job output",
-        relative: ".claude/jobs",
-        depth: 1,
-        include_files: false,
-        require_session_shape: false,
     },
     // A shell snapshot is written once per session and sourced by every later
     // shell call in that session; nothing rewrites it if it disappears. It is
@@ -181,9 +183,15 @@ impl Op for Agents {
                 apply_filesystem_finding(self.name(), finding, ctx)
             })()
             .with_context(|| format!("failed to remove {}", finding.label));
+            // One refused finding must not abandon the rest of the previewed
+            // plan. The age gate is re-read at apply, so a session resumed
+            // between preview and apply is an ordinary, expected refusal — and
+            // the documented promise is that such a session falls out of the
+            // plan, not that it takes every later finding with it. Each failure
+            // is still recorded, so the run reports nonzero.
             if let Err(error) = result {
                 outcome.fail(error);
-                break;
+                continue;
             }
             outcome.record(finding, removal_note(finding, &finding.label));
         }
@@ -194,15 +202,26 @@ impl Op for Agents {
 /// The scanner is never deletion authority: apply reasserts the full shape of
 /// whichever tier the target claims, including the age gate, before the sink
 /// sees it.
+///
+/// The two refusals are reported separately. A target outside both lists is a
+/// forged or stale plan; a target inside a history root that no longer passes
+/// the gate is the ordinary case of a session resumed between preview and
+/// apply, and saying "outside its authorized namespace" would misdescribe it.
 fn authorize(target: &Path, ctx: &Ctx) -> Result<()> {
     if is_regenerable_target(target, &ctx.home) {
         return Ok(());
+    }
+    if owning_history_root(target, &ctx.home).is_none() {
+        anyhow::bail!(
+            "agent target is outside its authorized namespace: {}",
+            target.display()
+        );
     }
     if history_details(target, &ctx.home, ctx.active_days)?.is_some() {
         return Ok(());
     }
     anyhow::bail!(
-        "agent target is outside its authorized namespace: {}",
+        "agent history became active or lost its session shape after preview; refusing {}",
         target.display()
     )
 }
@@ -612,6 +631,60 @@ mod tests {
             !targets.contains(&snapshots.as_path()),
             "the directory itself must never be offered wholesale"
         );
+    }
+
+    /// A session resumed between preview and apply is an expected refusal, and
+    /// the documented promise is that it falls out of the plan — not that it
+    /// takes every later finding with it.
+    #[test]
+    fn a_resumed_session_does_not_block_the_rest_of_the_plan() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-agents-partial-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let home = home.canonicalize().unwrap();
+        let session = "24bb0c93-fbb9-49b7-99b0-7a97be87baeb";
+        let resumed = home.join(".claude/projects/-resumed");
+        let stale = home.join(".claude/projects/-stale");
+        write_aged(&resumed.join(format!("{session}.jsonl")), "old", 400);
+        write_aged(&stale.join(format!("{session}.jsonl")), "old", 400);
+        let ctx = test_ctx(home.clone());
+        let findings = vec![
+            Finding::new(
+                "resumed",
+                Some(resumed.clone()),
+                4,
+                "test",
+                6,
+                Action::Shred,
+            ),
+            Finding::new("stale", Some(stale.clone()), 4, "test", 6, Action::Shred),
+        ];
+        // The resumed session is written after the plan was built, exactly as a
+        // live agent would; its inode is unchanged, so only the age re-read sees it.
+        std::fs::write(resumed.join(format!("{session}.jsonl")), "resumed").unwrap();
+
+        let outcome = Agents.apply(&findings, &ctx).unwrap();
+
+        assert_eq!(
+            outcome.errors.len(),
+            1,
+            "the refusal must still be reported"
+        );
+        assert!(
+            outcome.errors[0].contains("became active"),
+            "an age refusal must not read as a forged target: {}",
+            outcome.errors[0]
+        );
+        assert_eq!(
+            outcome.summary.items_touched, 1,
+            "the finding listed after the resumed one must still be removed"
+        );
+        assert!(resumed.exists(), "the resumed session must survive");
+        assert!(!stale.exists());
+        crate::ops::remove_test_path(home);
     }
 
     /// Positive control for the apply-time boundary. The forged targets are

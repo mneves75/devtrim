@@ -135,9 +135,8 @@ those two directories.
 kind of data. *Regenerable caches* — Claude Code downloads and metadata cache,
 the Codex catalog cache, the Pi web-search cache, the OpenCode cache — are exact
 paths their owner rebuilds on demand, so they are offered unconditionally at a
-low danger score. *Session history* — Claude Code transcripts, background job
-output and shell snapshots; Codex shell snapshots, session and archived-session
-trees — is **not regenerable**, so a
+low danger score. *Session history* — Claude Code transcripts and shell snapshots; Codex shell
+snapshots, session and archived-session trees — is **not regenerable**, so a
 child is offered only once the newest
 regular file anywhere in its subtree is older than the configured active window,
 its note says the content does not come back, and its danger score reflects
