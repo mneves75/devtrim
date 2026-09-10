@@ -16,7 +16,7 @@
     "@types/react": "19.2.7",
     "@types/web": "0.0.166",
     "eslint": "10.8.1",
-    "prettier": "3.8.1",
+    "prettier": "3.9.6",
     "typescript": "5.9.3"
   },
   "overrides": {
