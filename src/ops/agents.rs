@@ -573,22 +573,32 @@ mod tests {
             }
         }
 
-        // Scanning cannot delete, so survival has to be proven against apply.
+        // Scanning cannot delete, so survival has to be proven against apply —
+        // and the refusal has to name the retired tree. A memory file is a
+        // regular file with an ordinary Trash action, so neither the file-type
+        // gate nor the action check can stand in for the boundary; only the
+        // namespace check can refuse it.
         let memory = home.join(".claude/projects/-repo/memory/MEMORY.md");
         let outcome = Agents
             .apply(
                 &[Finding::new(
                     "forged",
-                    Some(home.join(".claude/projects/-repo")),
+                    Some(memory.clone()),
                     4,
                     "test",
                     6,
-                    Action::Shred,
+                    Action::Trash,
                 )],
                 &test_ctx(home.to_path_buf()),
             )
             .unwrap();
         assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(
+            outcome.errors[0].contains(".claude/projects"),
+            "the refusal must name the retired tree, not decline for some other reason: {}",
+            outcome.errors[0]
+        );
         assert_eq!(std::fs::read_to_string(&memory).unwrap(), "durable fact");
     }
 
