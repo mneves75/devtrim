@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.9.2] - Unreleased
+
 ## [0.9.1] - 2026-09-11
 
 Everything 0.9.0 claimed was checked against the vendors' own documentation

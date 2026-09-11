@@ -1,6 +1,39 @@
 # Project Memory
 
-## Current state (0.9.0)
+## Current state (0.9.1)
+
+0.9.0 justified every closed-list entry by what its directory was named. 0.9.1
+checked all fifteen load-bearing claims against the vendors' own documentation
+instead. Nothing was contradicted — no rule called a directory safe to delete
+when it is not — but two entries rested on no source at all and are gone:
+`~/.claude/downloads`, which Anthropic documents nowhere and which was empty
+everywhere it could be examined, and `~/Library/Caches/claude-cli-nodejs`, which
+holds per-project MCP diagnostic logs that nothing regenerates. `.codex/cache`
+stayed, with its comment walked back to say it rests on direct inspection rather
+than on a vendor source that does not exist — applying the standard to one
+directory and exempting the next is the inconsistency the release existed to
+remove.
+
+Three review axes then found what the gates could not, and all of it was in the
+tests rather than the binary. A symlink-refusal test had been silently disarmed:
+its fixture sat under a root retired during 0.9.0 review, so the scan never
+reached the symlink check and deleting that check would have left the suite
+green. SECURITY.md still documented the corroboration rule removed with that
+same root. And fixing those removed the only assertions guarding the
+"`projects` and `jobs` are never roots" boundary, so that sentence is now
+executable — asserted in both directions, because an *ancestor* entry like
+`.claude` would have passed a downward-only check while making both trees
+deletable. Each new assertion carries a planted-violation proof.
+
+0.9.0 had also made every category fail-closed on an unreadable timestamp when
+only the age gate reads one; `dir_stats` reports the gap now and lets the
+staleness caller be the one to refuse.
+
+The durable lesson, across eleven review rounds: the enforcement was never the
+problem. Every single defect was in what the closed lists contained, or in a
+test that asserted a count where it should have asserted a reason.
+
+## Previous state (0.9.0)
 
 A tenth category, `agents`, covers coding-agent storage in two tiers. The split
 is the whole design: a regenerable cache costs a re-fetch, a session transcript
