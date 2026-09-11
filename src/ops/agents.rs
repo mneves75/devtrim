@@ -59,10 +59,6 @@ struct HistoryRoot {
     /// nests sessions as `<year>/<month>/<day>`, so waiting for a whole year to
     /// go stale would never offer the current one.
     depth: usize,
-    /// Whether a regular file at that depth is also a candidate. Roots that hold
-    /// loose transcripts set it; roots that hold one directory per session do
-    /// not, which is what keeps `jobs/pins.json` out of the plan.
-    include_files: bool,
 }
 
 const HISTORY: &[HistoryRoot] = &[
@@ -81,25 +77,21 @@ const HISTORY: &[HistoryRoot] = &[
         label: "Claude Code shell snapshots",
         relative: ".claude/shell-snapshots",
         depth: 1,
-        include_files: true,
     },
     HistoryRoot {
         label: "Codex shell snapshots",
         relative: ".codex/shell_snapshots",
         depth: 1,
-        include_files: true,
     },
     HistoryRoot {
         label: "Codex session transcripts",
         relative: ".codex/sessions",
         depth: 3,
-        include_files: true,
     },
     HistoryRoot {
         label: "Codex archived sessions",
         relative: ".codex/archived_sessions",
         depth: 1,
-        include_files: true,
     },
 ];
 
@@ -133,7 +125,7 @@ impl Op for Agents {
         for root in HISTORY {
             let base = ctx.home.join(root.relative);
             let mut candidates = Vec::new();
-            collect_at_depth(&base, root.depth, root.include_files, &mut candidates)?;
+            collect_at_depth(&base, root.depth, &mut candidates)?;
             candidates.sort();
             for path in candidates {
                 let Some((age, size)) = history_details(&path, &ctx.home, ctx.active_days)? else {
@@ -224,9 +216,9 @@ fn is_regenerable_target(path: &Path, home: &Path) -> bool {
 /// the path is not a direct child of a configured root at its configured depth,
 /// is a symlink, has the wrong file type, or is still inside the active window.
 fn history_details(path: &Path, home: &Path, active_days: u32) -> Result<Option<(u64, u64)>> {
-    let Some(root) = owning_history_root(path, home) else {
+    if owning_history_root(path, home).is_none() {
         return Ok(None);
-    };
+    }
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -240,7 +232,9 @@ fn history_details(path: &Path, home: &Path, active_days: u32) -> Result<Option<
     if file_type.is_symlink() {
         return Ok(None);
     }
-    if !file_type.is_dir() && !(root.include_files && file_type.is_file()) {
+    // Every root holds either one directory or one loose file per session, so
+    // both are candidates; anything else — a socket, a device node — is not.
+    if !file_type.is_dir() && !file_type.is_file() {
         return Ok(None);
     }
     let (size, newest) = crate::safety::dir_stats(path)?;
@@ -280,12 +274,7 @@ fn relative_display(path: &Path, base: &Path) -> String {
 ///
 /// Traversal refuses to descend through a symlink, so a link planted inside an
 /// authorized root cannot widen the candidate set to a foreign tree.
-fn collect_at_depth(
-    base: &Path,
-    depth: usize,
-    include_files: bool,
-    found: &mut Vec<PathBuf>,
-) -> Result<()> {
+fn collect_at_depth(base: &Path, depth: usize, found: &mut Vec<PathBuf>) -> Result<()> {
     let entries = match std::fs::read_dir(base) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -303,11 +292,11 @@ fn collect_at_depth(
             continue;
         }
         if depth == 1 {
-            if file_type.is_dir() || (include_files && file_type.is_file()) {
+            if file_type.is_dir() || file_type.is_file() {
                 found.push(path);
             }
         } else if file_type.is_dir() {
-            collect_at_depth(&path, depth - 1, include_files, found)?;
+            collect_at_depth(&path, depth - 1, found)?;
         }
     }
     Ok(())
