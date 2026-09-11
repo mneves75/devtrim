@@ -20,6 +20,7 @@ out to rest on no source at all, and they are gone.
 - A stale test fixture and comment referred to `~/.claude/jobs` and the removed `include_files` field as if both still existed
 - The `SECURITY.md` boundary saying `~/.claude/projects` and `~/.claude/jobs` are never cleanup roots is now executable rather than prose. Both were roots during development and both were retired after review found live or unjudgeable data inside them, so a test asserts it structurally at the lists and behaviourally at the scan, with a `.codex` fixture as the control proving the scan could have returned something
 - The error-envelope map is now checked as a table over clap's own variant list. `agents` shipped with the wrong operation name precisely because nothing enumerated the subcommands against that map, so an eleventh category cannot regress the same way
+- The retired-root boundary is checked in both directions. A target *beneath* one of those trees deletes part of it, but a target that is an *ancestor* — a `.claude` entry, say — deletes the whole thing while never starting with the retired path, and the first version of the assertion would have passed that. Planting an ancestor entry now fails the test with the path it would have reached
 - The symlink fixture pointed at a directory, where the wrong-file-type check would have refused it even with the symlink check deleted. It points at a regular file now, so symlink-ness is the only thing that can refuse it, and the apply assertion checks the refusal names the symlink rather than counting errors
 
 ### Changed

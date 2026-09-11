@@ -504,8 +504,6 @@ mod tests {
         );
     }
 
-    /// A shell snapshot is sourced by every later shell call in the session that
-    /// wrote it, and nothing rewrites it, so it belongs to the age-gated tier.
     /// SECURITY.md states as a non-negotiable boundary that `~/.claude/projects`
     /// and `~/.claude/jobs` are not cleanup roots, so nothing beneath either can
     /// become a target. Both were roots at some point during development and
@@ -561,19 +559,41 @@ mod tests {
             targets.contains(&control.as_path()),
             "control: a stale transcript under a live root must still be offered"
         );
-        assert!(
-            targets
-                .iter()
-                .all(|target| !target.starts_with(home.join(".claude/projects"))
-                    && !target.starts_with(home.join(".claude/jobs"))),
-            "nothing under a retired tree may be offered: {targets:?}"
-        );
-        assert!(
-            home.join(".claude/projects/-repo/memory/MEMORY.md")
-                .exists()
-        );
+        // Both directions matter. A target *beneath* a retired tree deletes part
+        // of it; a target that is an *ancestor* of one — a `.claude` entry, say —
+        // deletes the whole thing while never starting with the retired path.
+        for retired in [home.join(".claude/projects"), home.join(".claude/jobs")] {
+            for target in &targets {
+                assert!(
+                    !target.starts_with(&retired) && !retired.starts_with(target),
+                    "{} must not be reachable through {}",
+                    retired.display(),
+                    target.display()
+                );
+            }
+        }
+
+        // Scanning cannot delete, so survival has to be proven against apply.
+        let memory = home.join(".claude/projects/-repo/memory/MEMORY.md");
+        let outcome = Agents
+            .apply(
+                &[Finding::new(
+                    "forged",
+                    Some(home.join(".claude/projects/-repo")),
+                    4,
+                    "test",
+                    6,
+                    Action::Shred,
+                )],
+                &test_ctx(home.to_path_buf()),
+            )
+            .unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(std::fs::read_to_string(&memory).unwrap(), "durable fact");
     }
 
+    /// A shell snapshot is sourced by every later shell call in the session that
+    /// wrote it, and nothing rewrites it, so it belongs to the age-gated tier.
     #[test]
     fn shell_snapshots_are_age_gated_rather_than_offered_outright() {
         let home = tempfile::Builder::new()
@@ -770,6 +790,29 @@ mod tests {
         write_aged(&genuine, "old", 400);
         let link = root.join("rollout-linked.jsonl");
         std::os::unix::fs::symlink(&payload, &link).unwrap();
+        // Age the link itself, not just its target: a fresh link inode would let
+        // the age gate refuse it, so deleting the symlink check could leave this
+        // test green while a stale symlink out of the root was followed.
+        let stale = rustix::fs::Timespec {
+            tv_sec: i64::try_from(
+                (SystemTime::now() - Duration::from_secs(DAY * 400))
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            )
+            .unwrap(),
+            tv_nsec: 0,
+        };
+        rustix::fs::utimensat(
+            rustix::fs::CWD,
+            &link,
+            &rustix::fs::Timestamps {
+                last_access: stale,
+                last_modification: stale,
+            },
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .unwrap();
 
         assert!(is_history_child(&link, home), "the fixture must be scanned");
         assert!(history_details(&link, home, 30).unwrap().is_none());

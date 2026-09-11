@@ -553,7 +553,18 @@ mod tests {
     #[test]
     fn every_clean_target_maps_to_its_own_operation_name() {
         for target in cli::Target::value_variants() {
-            let name = target.as_str();
+            // The user types clap's possible-value name. Keying the table on
+            // `as_str()` for both input and expectation would stay green if the
+            // two ever drifted, which is the regression this test exists to stop.
+            let possible = target
+                .to_possible_value()
+                .expect("every target is selectable");
+            let name = possible.get_name();
+            assert_eq!(
+                target.as_str(),
+                name,
+                "`Target::as_str` must match the name clap accepts"
+            );
             let args: Vec<OsString> = ["devtrim", "clean", name, "--unsupported", "--json"]
                 .iter()
                 .map(OsString::from)
