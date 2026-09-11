@@ -63,63 +63,43 @@ struct HistoryRoot {
     /// loose transcripts set it; roots that hold one directory per session do
     /// not, which is what keeps `jobs/pins.json` out of the plan.
     include_files: bool,
-    /// Whether a candidate directory must additionally contain nothing but
-    /// session data. Set for roots an agent also uses to store something it is
-    /// not safe to lose; see [`holds_only_session_entries`].
-    require_session_shape: bool,
 }
 
 const HISTORY: &[HistoryRoot] = &[
-    // Claude Code keys transcripts by working directory but auto memory by
-    // repository root, so a project directory can hold `memory/` and no live
-    // transcript at all. Requiring the session shape means such a directory is
-    // never a candidate, however old its files are.
-    HistoryRoot {
-        label: "Claude Code session transcripts",
-        relative: ".claude/projects",
-        depth: 1,
-        include_files: false,
-        require_session_shape: true,
-    },
     // A shell snapshot is written once per session and sourced by every later
     // shell call in that session; nothing rewrites it if it disappears. It is
     // therefore history, not cache.
     //
     // The age gate is the right signal here, and not for the reason it was
-    // wrong for `jobs`: Claude Code sweeps both this directory and `projects`
-    // itself once an entry passes its own `cleanupPeriodDays` retention. Age is
-    // the vendor's own criterion for these two stores, so devtrim applying it is
-    // not a new hazard — it only reaches the same conclusion sooner when the
-    // configured window is shorter, and every finding states the age it used.
-    // `jobs` had no such sweep and did have a liveness file, which is exactly
-    // what made age the wrong signal there.
+    // wrong for `jobs`: Claude Code sweeps this directory itself once an entry
+    // passes its own `cleanupPeriodDays` retention, so age is the vendor's own
+    // criterion here and devtrim only reaches the same conclusion sooner when
+    // the configured window is shorter, with every finding stating the age it
+    // used. `jobs` had no such sweep and did have a liveness file beside it,
+    // which is what made age the wrong signal there.
     HistoryRoot {
         label: "Claude Code shell snapshots",
         relative: ".claude/shell-snapshots",
         depth: 1,
         include_files: true,
-        require_session_shape: false,
     },
     HistoryRoot {
         label: "Codex shell snapshots",
         relative: ".codex/shell_snapshots",
         depth: 1,
         include_files: true,
-        require_session_shape: false,
     },
     HistoryRoot {
         label: "Codex session transcripts",
         relative: ".codex/sessions",
         depth: 3,
         include_files: true,
-        require_session_shape: false,
     },
     HistoryRoot {
         label: "Codex archived sessions",
         relative: ".codex/archived_sessions",
         depth: 1,
         include_files: true,
-        require_session_shape: false,
     },
 ];
 
@@ -263,9 +243,6 @@ fn history_details(path: &Path, home: &Path, active_days: u32) -> Result<Option<
     if !file_type.is_dir() && !(root.include_files && file_type.is_file()) {
         return Ok(None);
     }
-    if root.require_session_shape && !holds_only_session_entries(path)? {
-        return Ok(None);
-    }
     let (size, newest) = crate::safety::dir_stats(path)?;
     let Ok(elapsed) = SystemTime::now().duration_since(newest) else {
         return Ok(None);
@@ -290,58 +267,6 @@ fn owning_history_root(path: &Path, home: &Path) -> Option<&'static HistoryRoot>
                 .components()
                 .all(|component| matches!(component, std::path::Component::Normal(_)))
     })
-}
-
-/// Whether every direct entry is session data: a `.jsonl` transcript, or a
-/// directory named for a session id.
-///
-/// This is positive corroboration, not a denylist. Claude Code writes its auto
-/// memory to `~/.claude/projects/<project>/memory/`, and it keys that by
-/// repository root while it keys transcripts by working directory — so a
-/// project directory can hold memory and no live transcript, go stale, and
-/// carry away the one thing in the tree that cannot be reconstructed. Naming
-/// `memory` as an exception would protect only the case already known; refusing
-/// any directory that holds something other than session data also protects the
-/// next thing an agent decides to store beside its transcripts.
-fn holds_only_session_entries(path: &Path) -> Result<bool> {
-    for entry in std::fs::read_dir(path)
-        .with_context(|| format!("cannot read session directory {}", path.display()))?
-    {
-        let entry = entry.with_context(|| format!("cannot enumerate {}", path.display()))?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            return Ok(false);
-        };
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("cannot inspect {}", entry.path().display()))?;
-        let recognized = if file_type.is_dir() {
-            is_session_id(name)
-        } else if file_type.is_file() {
-            name.strip_suffix(".jsonl").is_some_and(is_session_id)
-        } else {
-            false
-        };
-        if !recognized {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// A canonical 8-4-4-4-12 lowercase-or-uppercase hexadecimal session id.
-fn is_session_id(name: &str) -> bool {
-    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
-    let mut parts = name.split('-');
-    for expected in GROUPS {
-        let Some(part) = parts.next() else {
-            return false;
-        };
-        if part.len() != expected || !part.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return false;
-        }
-    }
-    parts.next().is_none()
 }
 
 fn relative_display(path: &Path, base: &Path) -> String {
@@ -472,28 +397,6 @@ mod tests {
             .tempdir()
             .unwrap();
         let home = home.path();
-        write_aged(
-            &home.join(".claude/projects/-stale-repo/24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
-            "old",
-            400,
-        );
-        write_aged(
-            &home.join(".claude/projects/-fresh-repo/24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
-            "new",
-            0,
-        );
-        // A stale transcript inside a directory that also holds a fresh one keeps
-        // the whole session directory out: the newest write in the subtree decides.
-        write_aged(
-            &home.join(".claude/projects/-mixed-repo/24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
-            "old",
-            400,
-        );
-        write_aged(
-            &home.join(".claude/projects/-mixed-repo/7273c8c9-8e84-4de7-8d4b-ea643e518c15.jsonl"),
-            "new",
-            0,
-        );
         // Codex nests three levels; the day directory is the unit.
         write_aged(
             &home.join(".codex/sessions/2020/01/02/rollout.jsonl"),
@@ -513,15 +416,11 @@ mod tests {
             .unwrap();
 
         let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-        assert!(targets.contains(&home.join(".claude/projects/-stale-repo").as_path()));
         assert!(targets.contains(&home.join(".codex/sessions/2020/01/02").as_path()));
-        assert!(!targets.contains(&home.join(".claude/projects/-fresh-repo").as_path()));
-        assert!(!targets.contains(&home.join(".claude/projects/-mixed-repo").as_path()));
         assert!(!targets.contains(&home.join(".claude/jobs/pins.json").as_path()));
         assert!(targets.contains(&home.join(".codex/archived_sessions/old.jsonl").as_path()));
         assert!(!targets.contains(&home.join(".codex/archived_sessions/new.jsonl").as_path()));
         // The root itself is never a finding, only its children at the configured depth.
-        assert!(!targets.contains(&home.join(".claude/projects").as_path()));
         assert!(!targets.contains(&home.join(".codex/sessions").as_path()));
         assert!(!targets.contains(&home.join(".codex/sessions/2020").as_path()));
         assert!(
@@ -531,84 +430,65 @@ mod tests {
         );
     }
 
-    /// Claude Code writes its auto memory to `.claude/projects/<project>/memory/`
-    /// and keys it by repository root, while transcripts are keyed by working
-    /// directory — so a project directory can hold nothing but stale memory. The
-    /// pair of assertions is the point: the identical directory *without*
-    /// `memory/` is offered, so the refusal comes from the corroboration rule
-    /// rather than from something incidental to the fixture.
+    /// `~/.claude/projects` is not a cleanup root at all, and this is the
+    /// assertion that keeps it that way. It holds Claude Code auto memory in
+    /// `<project>/memory/`, and since the transcripts beside it can originate in
+    /// Claude Desktop — which the vendor retains at any age — file age is not
+    /// evidence that anything there is finished with. A `.codex` transcript of
+    /// identical shape and age is offered in the same run, so this proves an
+    /// exclusion rather than an inert fixture.
     #[test]
-    fn a_project_directory_holding_memory_is_never_a_candidate() {
+    fn the_claude_projects_tree_is_never_a_candidate() {
         let home = tempfile::Builder::new()
-            .prefix("devtrim-agents-memory")
+            .prefix("devtrim-agents-projects")
             .tempdir()
             .unwrap();
         let home = home.path();
         let session = "24bb0c93-fbb9-49b7-99b0-7a97be87baeb";
+        let project = home.join(".claude/projects/-repo");
+        write_aged(&project.join(format!("{session}.jsonl")), "old", 400);
+        write_aged(&project.join("memory/MEMORY.md"), "durable fact", 400);
+        let codex = home.join(".codex/archived_sessions");
+        write_aged(&codex.join(format!("rollout-{session}.jsonl")), "old", 400);
 
-        let with_memory = home.join(".claude/projects/-repo-with-memory");
-        write_aged(&with_memory.join(format!("{session}.jsonl")), "old", 400);
-        write_aged(&with_memory.join("memory/MEMORY.md"), "durable fact", 400);
-
-        let transcripts_only = home.join(".claude/projects/-repo-transcripts-only");
-        write_aged(
-            &transcripts_only.join(format!("{session}.jsonl")),
-            "old",
-            400,
-        );
-        write_aged(
-            &transcripts_only.join(session).join("chunk.jsonl"),
-            "old",
-            400,
-        );
-
-        let findings = Agents
-            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
-            .unwrap();
+        let ctx = test_ctx(home.to_path_buf());
+        let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
         let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
 
         assert!(
-            !targets.contains(&with_memory.as_path()),
-            "a project directory holding memory must never be offered"
+            targets.contains(&codex.join(format!("rollout-{session}.jsonl")).as_path()),
+            "a transcript of the same shape and age elsewhere must still be offered"
         );
-        assert!(
-            targets.contains(&transcripts_only.as_path()),
-            "a transcripts-only project directory must still be offered"
-        );
-        // Apply is the boundary that matters: even a forged finding is refused.
-        let outcome = Agents
-            .apply(
-                &[Finding::new(
-                    "forged",
-                    Some(with_memory.clone()),
-                    4,
-                    "test",
-                    6,
-                    Action::Trash,
-                )],
-                &test_ctx(home.to_path_buf()),
-            )
-            .unwrap();
-        assert_eq!(outcome.summary.items_touched, 0);
-        assert_eq!(outcome.errors.len(), 1);
-        assert!(with_memory.join("memory/MEMORY.md").exists());
-    }
-
-    #[test]
-    fn session_ids_are_recognized_only_in_their_canonical_shape() {
-        assert!(is_session_id("24bb0c93-fbb9-49b7-99b0-7a97be87baeb"));
-        assert!(is_session_id("24BB0C93-FBB9-49B7-99B0-7A97BE87BAEB"));
-        for rejected in [
-            "memory",
-            "",
-            "24bb0c93-fbb9-49b7-99b0-7a97be87bae",
-            "24bb0c93-fbb9-49b7-99b0-7a97be87baeb-",
-            "24bb0c93-fbb9-49b7-99b0-7a97be87baeb-extra",
-            "24bb0c93fbb949b799b07a97be87baeb",
-            "24bb0c9g-fbb9-49b7-99b0-7a97be87baeb",
+        for excluded in [
+            home.join(".claude/projects"),
+            project.clone(),
+            project.join("memory"),
         ] {
-            assert!(!is_session_id(rejected), "{rejected}");
+            assert!(
+                !targets.contains(&excluded.as_path()),
+                "{}",
+                excluded.display()
+            );
+            let outcome = Agents
+                .apply(
+                    &[Finding::new(
+                        "forged",
+                        Some(excluded.clone()),
+                        4,
+                        "test",
+                        6,
+                        Action::Trash,
+                    )],
+                    &ctx,
+                )
+                .unwrap();
+            assert_eq!(outcome.summary.items_touched, 0, "{}", excluded.display());
+            assert_eq!(outcome.errors.len(), 1, "{}", excluded.display());
         }
+        assert_eq!(
+            std::fs::read_to_string(project.join("memory/MEMORY.md")).unwrap(),
+            "durable fact"
+        );
     }
 
     /// A shell snapshot is sourced by every later shell call in the session that
@@ -654,10 +534,11 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let home = home.canonicalize().unwrap();
         let session = "24bb0c93-fbb9-49b7-99b0-7a97be87baeb";
-        let resumed = home.join(".claude/projects/-resumed");
-        let stale = home.join(".claude/projects/-stale");
-        write_aged(&resumed.join(format!("{session}.jsonl")), "old", 400);
-        write_aged(&stale.join(format!("{session}.jsonl")), "old", 400);
+        let archived = home.join(".codex/archived_sessions");
+        let resumed = archived.join(format!("rollout-resumed-{session}.jsonl"));
+        let stale = archived.join(format!("rollout-stale-{session}.jsonl"));
+        write_aged(&resumed, "old", 400);
+        write_aged(&stale, "old", 400);
         let ctx = test_ctx(home.clone());
         let findings = vec![
             Finding::new(
@@ -672,7 +553,7 @@ mod tests {
         ];
         // The resumed session is written after the plan was built, exactly as a
         // live agent would; its inode is unchanged, so only the age re-read sees it.
-        std::fs::write(resumed.join(format!("{session}.jsonl")), "resumed").unwrap();
+        std::fs::write(&resumed, "resumed").unwrap();
 
         let outcome = Agents.apply(&findings, &ctx).unwrap();
 
@@ -712,12 +593,14 @@ mod tests {
         let home = home.canonicalize().unwrap();
         write_aged(&home.join(".ssh/id_ed25519"), "PRIVATE KEY", 400);
         write_aged(
-            &home.join(".claude/projects/-repo/24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
+            &home.join(
+                ".codex/archived_sessions/rollout-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl",
+            ),
             "old",
             400,
         );
         write_aged(
-            &home.join(".claude/projects/-repo/24bb0c93-fbb9-49b7-99b0-7a97be87baeb/chunk.jsonl"),
+            &home.join(".codex/archived_sessions/nested/rollout-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
             "old",
             400,
         );
@@ -725,9 +608,9 @@ mod tests {
 
         for forged in [
             home.join(".ssh"),
-            home.join(".claude"),
-            home.join(".claude/projects"),
-            home.join(".claude/projects/-repo/24bb0c93-fbb9-49b7-99b0-7a97be87baeb"),
+            home.join(".codex"),
+            home.join(".codex/archived_sessions"),
+            home.join(".codex/archived_sessions/nested/rollout-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
         ] {
             let finding = Finding::new("forged", Some(forged.clone()), 4, "test", 9, Action::Shred);
             let outcome = Agents.apply(&[finding], &ctx).unwrap();
@@ -742,7 +625,8 @@ mod tests {
 
         // Positive control: the authorized shape at the same depth is accepted,
         // proving the refusals above are the boundary and not a vacuous pass.
-        let authorized = home.join(".claude/projects/-repo");
+        let authorized = home
+            .join(".codex/archived_sessions/rollout-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl");
         let finding = Finding::new(
             "authorized",
             Some(authorized.clone()),
@@ -768,19 +652,11 @@ mod tests {
             .tempdir()
             .unwrap();
         let home = home.path();
-        let session = home.join(".claude/projects/-repo");
-        write_aged(
-            &session.join("24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
-            "old",
-            400,
-        );
+        let session = home.join(".codex/sessions/2020/01/02");
+        write_aged(&session.join("rollout.jsonl"), "old", 400);
         assert!(history_details(&session, home, 30).unwrap().is_some());
 
-        std::fs::write(
-            session.join("24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
-            "resumed",
-        )
-        .unwrap();
+        std::fs::write(session.join("rollout.jsonl"), "resumed").unwrap();
 
         assert!(
             history_details(&session, home, 30).unwrap().is_none(),

@@ -68,7 +68,15 @@ same commit removed from `Caches::apply`, so one resumed session abandoned every
 later finding, contradicting the "falls out of the plan" promise in three
 documents. And `Caches/deno` is `DENO_DIR`, and `location_data/<hash>/kv.sqlite3` holds
 every default-path `Deno.openKv()` database with `local_storage` beside it.
-Dropped. The pattern across all of them — JetBrains, deno, the project
+Dropped. A fifth pass then retired `~/.claude/projects` outright: narrowing the
+unit to session-shaped entries protected `memory/`, but Claude Code retains a
+Desktop- or Cowork-originated transcript at any age and nothing in the filename
+says which — so age was never evidence there, and telling them apart would mean
+reading transcript contents, the same shape that disqualified `jobs`. It
+returned 0.00 GB here, so the trade was easy. Its `require_session_shape`
+machinery went with it.
+
+The pattern across all of them — JetBrains, deno, the project
 directories, and the job supervisor state — is that a directory named like a cache is not thereby a cache, and
 only reading what a tool actually stores inside it settles the question.
 

@@ -1398,23 +1398,15 @@ fn agent_cleanup_removes_only_stale_history_and_regenerable_caches() {
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("changelog.md"), "# 1.0.0\n").unwrap();
 
-    let old_session = home.join(".claude/projects/-old-repo");
-    let live_session = home.join(".claude/projects/-live-repo");
-    std::fs::create_dir_all(&old_session).unwrap();
-    std::fs::create_dir_all(&live_session).unwrap();
-    std::fs::write(
-        old_session.join("24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
-        "old",
-    )
-    .unwrap();
-    std::fs::write(
-        live_session.join("24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
-        "live",
-    )
-    .unwrap();
-    age(&old_session.join("24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"));
+    // `.codex/archived_sessions` holds one loose transcript per session.
+    let archived = home.join(".codex/archived_sessions");
+    std::fs::create_dir_all(&archived).unwrap();
+    let old_session = archived.join("rollout-old-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl");
+    let live_session = archived.join("rollout-live-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl");
+    std::fs::write(&old_session, "old").unwrap();
+    std::fs::write(&live_session, "live").unwrap();
+    age(&old_session);
 
-    std::fs::create_dir_all(home.join(".codex")).unwrap();
     let credentials = home.join(".codex/auth.json");
     let configuration = home.join(".claude/settings.json");
     std::fs::write(&credentials, "OAUTH TOKEN").unwrap();

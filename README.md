@@ -135,8 +135,8 @@ those two directories.
 kind of data. *Regenerable caches* — Claude Code downloads and metadata cache,
 the Codex catalog cache, the Pi web-search cache, the OpenCode cache — are exact
 paths their owner rebuilds on demand, so they are offered unconditionally at a
-low danger score. *Session history* — Claude Code transcripts and shell snapshots; Codex shell
-snapshots, session and archived-session trees — is **not regenerable**, so a
+low danger score. *Session history* — Claude Code shell snapshots; Codex shell snapshots,
+session and archived-session trees — is **not regenerable**, so a
 child is offered only once the newest
 regular file anywhere in its subtree is older than the configured active window,
 its note says the content does not come back, and its danger score reflects
@@ -152,15 +152,17 @@ falls out of the plan.
 Two of those rules exist because the obvious design was wrong. A shell snapshot
 is *not* a cache: Claude Code writes one per session and sources that exact file
 on every later shell call, and nothing rewrites it if it disappears — so it sits
-in the age-gated tier, where an untouched file proves no live session still
-needs it. And a `~/.claude/projects/<project>` directory is offered only when
-every entry in it is session data: a `.jsonl` transcript or a directory named
-for a session id. Claude Code stores auto memory at
-`~/.claude/projects/<project>/memory/` and keys it by repository root while
-keying transcripts by working directory, so a project directory can hold memory
-and no live transcript at all. Refusing anything that is not session data
-protects that case, and the next thing an agent decides to store beside its
-transcripts.
+in the age-gated tier. Age is the right signal there because Claude Code sweeps
+the same directory itself once an entry passes its own retention period.
+
+And `~/.claude/projects` is not a root at all. It holds Claude Code auto memory
+at `<project>/memory/`, keyed by repository root while the transcripts beside it
+are keyed by working directory — and since v2.1.248 Claude Code retains a
+transcript originating in Claude Desktop or Cowork at any age, with nothing in
+the filename to distinguish one. File age is therefore not evidence that
+anything under that root is finished with, and identifying the exception would
+mean reading transcript contents. It returned 0.00 GB on the machine this was
+built against, so the honest trade was to leave it alone.
 
 `clean caches` also reaches a closed list of exact `~/Library/Caches`
 subdirectories — Playwright browsers, the VS Code HTTP cache and its Squirrel
