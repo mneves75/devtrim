@@ -594,9 +594,13 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.summary.items_touched, 0);
         assert_eq!(outcome.errors.len(), 1);
+        // Keyed on the reason phrase, not on `.claude/projects`: that string is
+        // a substring of the forged target path, so any refusal echoing the path
+        // would satisfy it and the check would quietly decay to "declined
+        // somehow" — the vacuity this assertion exists to prevent.
         assert!(
-            outcome.errors[0].contains(".claude/projects"),
-            "the refusal must name the retired tree, not decline for some other reason: {}",
+            outcome.errors[0].contains("outside its authorized namespace"),
+            "the refusal must be the namespace boundary, not some other decline: {}",
             outcome.errors[0]
         );
         assert_eq!(std::fs::read_to_string(&memory).unwrap(), "durable fact");
