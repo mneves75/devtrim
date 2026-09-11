@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.9.1] - Unreleased
+
 ## [0.9.0] - 2026-09-10
 
 ### Added
@@ -13,7 +15,6 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - `devtrim clean caches` now also covers the bun package cache and the cargo registry, both its download cache and its extracted sources
 - `devtrim clean caches` reaches a closed list of exact `~/Library/Caches` subdirectories: Playwright browsers, the VS Code HTTP cache and its Squirrel update staging, SwiftPM, the Claude Code CLI cache, pip, the pnpm metadata cache, GitHub CLI, Go, and TypeScript. `~/Library/Caches/JetBrains` is deliberately absent: on macOS that is the IDE *system directory*, and each `<Product><Version>` subdirectory holds `LocalHistory`, the per-file change history the IDE keeps for files Git never saw — JetBrains stopped clearing it on "Invalidate Caches" for exactly that reason. Carving out only its `caches` and `index` subdirectories would need a per-product depth rule this exact-name list cannot express. `~/Library/Caches/deno` is absent for the same reason: on macOS it is `DENO_DIR`, and `location_data/<hash>/kv.sqlite3` is where every `Deno.openKv()` opened without an explicit path stores its database, with the sibling `local_storage` file backing `localStorage` — both documented as persistent across runs, and neither rebuilt by anything. The pnpm entry is deliberately the metadata cache and never the content-addressable store at `~/Library/pnpm/store`, which every installed `node_modules` tree hard-links into. Editor logs and application data stay out of scope: VS Code keeps its logs, `CachedData` and webview caches under `~/Library/Application Support/Code`, and JetBrains keeps logs under `~/Library/Logs` — both outside `~/Library/Caches`, both mixed in with real user state, and neither reachable without a second carve-out this release does not make
 - A finding's note now says a cache is "regenerated" rather than "re-downloads": an editor index or a compiler cache is rebuilt locally, and the old wording misdescribed the cost of removing one
-
 - `~/.claude/jobs` is deliberately not a history root. Despite the name it is the background-session supervisor's state — `state.json`, `timeline.jsonl`, `tmp` — rather than job output: a pinned session is kept alive while idle and a shed one is woken from that state, so an idle stretch past the active window would offer a directory a live process still owns. The `pins.json` beside it records exactly that, and a category that has to consult a liveness file to stay safe is one directory too far
 
 ### Fixed
