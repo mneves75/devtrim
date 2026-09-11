@@ -53,13 +53,15 @@ Non-negotiable boundaries:
   depth below a configured root, and only once the newest regular file in the
   subtree is older than the active window. Apply re-reads that age from disk,
   so a session resumed after preview is refused rather than deleted.
-- A `~/.claude/projects` child is additionally required to contain nothing but
-  session data — a `.jsonl` transcript or a directory named for a canonical
-  session id. Claude Code keys auto memory (`<project>/memory/`) by repository
-  root while keying transcripts by working directory, so a project directory
-  can hold memory and no live transcript. The requirement is positive
-  corroboration rather than a named `memory` exception, so it also covers state
-  an agent adds beside its transcripts later.
+- `~/.claude/projects` and `~/.claude/jobs` are not cleanup roots at all, so
+  nothing beneath either can become a target. The first holds Claude Code auto
+  memory (`<project>/memory/`) keyed by repository root, and transcripts that
+  the vendor retains at any age when the session originated in Claude Desktop
+  or Cowork — so file age is not evidence there, and telling the retained ones
+  apart would mean reading transcript contents. The second is the
+  background-session supervisor's live state, with a `pins.json` beside it
+  recording which sessions are kept alive while idle. A closed category that
+  must consult a liveness signal to stay safe has gone one directory too far.
 - Unknown Git activity or toolchain ownership is not deletion authority.
 - Every directory deletion preflights foreign filesystem devices and Git
   repository/worktree markers at any depth before either Trash or permanent

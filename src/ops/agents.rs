@@ -2,9 +2,11 @@
 //!
 //! Two tiers with different promises, because they are not the same kind of data:
 //!
-//! * A *regenerable* entry is a cache the agent rebuilds on demand. Removing one
-//!   under a live session costs a re-fetch, nothing else, so it is offered
-//!   unconditionally at a low danger score.
+//! * A *regenerable* entry is a cache the agent rebuilds on demand, so it is
+//!   offered unconditionally at a low danger score. Trash-first is what makes
+//!   that safe: no vendor documents these as removable *mid-session*, and this
+//!   tier claims only that the content comes back, not that a running agent
+//!   will not notice.
 //! * A *history* entry is a session transcript or a shell snapshot. Nothing
 //!   regenerates it. It is therefore offered only after the
 //!   configured active window has passed over the whole subtree, and its note
@@ -14,22 +16,20 @@
 //! memories, skills, agent definitions, installed plugins, and the `.claude.json`
 //! backup copies are never in either list and are never traversed as candidates.
 //!
-//! Stores are left out for two distinct reasons.
+//! Two whole trees under `~/.claude` are excluded, and they are the exclusions
+//! to know about. `projects` holds auto memory keyed by repository root, beside
+//! transcripts the vendor retains at any age when the session came from Claude
+//! Desktop — age is not evidence there, and telling the retained ones apart
+//! would mean reading transcript contents. `jobs` is the background-session
+//! supervisor's live state, with a `pins.json` beside it naming the sessions
+//! kept alive while idle. Both cases share one rule: a closed category that has
+//! to consult a liveness signal to stay safe has gone one directory too far.
 //!
-//! Some hold live state despite a name that suggests otherwise, and no age gate
-//! can see it. `~/.claude/jobs/<id>` is the background-session supervisor's
-//! state — `state.json`, `timeline.jsonl`, `tmp` — not job output: a pinned
-//! session is kept alive while idle and a shed one is woken from that state, so
-//! an idle stretch past the active window would offer a directory a live
-//! process still owns. The `pins.json` beside it records exactly that, and a
-//! category that has to consult a liveness file to stay safe is one directory
-//! too far.
-//!
-//! Others simply cost more preview than they return, because a preview nobody
-//! can read is not a preview. Against the machine this was built on, Codex lane
-//! transcripts produced 558 findings for 0.25 GB, its `.tmp` tree 324 for
-//! 0.07 GB, the Claude Code file-edit history 123 for 0.10 GB, and the paste
-//! cache a comparable count for about 2 MB.
+//! Other stores are absent only because they cost more preview than they
+//! return, a preview nobody can read being no preview at all. Against the
+//! machine this was built on, Codex lane transcripts produced 558 findings for
+//! 0.25 GB, its `.tmp` tree 324 for 0.07 GB, the Claude Code file-edit history
+//! 123 for 0.10 GB, and the paste cache a comparable count for about 2 MB.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -42,13 +42,25 @@ pub struct Agents;
 
 /// Caches an agent rebuilds on demand. Exact paths relative to `$HOME`; nothing
 /// is matched by prefix, so a sibling directory can never inherit authority.
-const REGENERABLE: &[(&str, &str, u8)] = &[
-    ("Claude Code downloads", ".claude/downloads", 2),
-    ("Claude Code metadata cache", ".claude/cache", 2),
-    ("Codex catalog cache", ".codex/cache", 2),
-    ("Pi web-search cache", ".pi/web-search-cache", 2),
-    ("OpenCode cache", ".cache/opencode", 2),
+///
+/// Each entry is here because a primary source says what it holds. `.claude/cache`
+/// is the vendor's changelog and model catalogue; `.codex/cache` holds only
+/// re-fetched remote catalogues; the Pi cache self-evicts on a one-hour lifetime;
+/// and OpenCode's own troubleshooting guide prescribes removing its cache as a
+/// reset step, with persistent data kept elsewhere. `.claude/downloads` was
+/// dropped from this list precisely because no such source exists for it — a
+/// deletion rule for a directory whose contents cannot be characterised is the
+/// weakest kind of entry, and this list is the only thing guarding these paths.
+const REGENERABLE: &[(&str, &str)] = &[
+    ("Claude Code metadata cache", ".claude/cache"),
+    ("Codex catalog cache", ".codex/cache"),
+    ("Pi web-search cache", ".pi/web-search-cache"),
+    ("OpenCode cache", ".cache/opencode"),
 ];
+
+/// Every regenerable entry shares one danger score: the cost of removing any of
+/// them is a re-fetch. A per-entry column would be a knob with one value.
+const REGENERABLE_DANGER: u8 = 2;
 
 /// A store whose children are per-session history rather than cache.
 struct HistoryRoot {
@@ -108,7 +120,7 @@ impl Op for Agents {
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        for (label, relative, danger) in REGENERABLE {
+        for (label, relative) in REGENERABLE {
             let path = ctx.home.join(relative);
             let size = dir_size(&path)?;
             if size > 0 {
@@ -117,7 +129,7 @@ impl Op for Agents {
                     Some(path),
                     size,
                     "rebuilt on demand by the agent",
-                    escalate(*danger, size),
+                    escalate(REGENERABLE_DANGER, size),
                     Action::Trash,
                 ));
             }
@@ -191,7 +203,7 @@ fn authorize(target: &Path, ctx: &Ctx) -> Result<()> {
     if is_regenerable_target(target, &ctx.home) {
         return Ok(());
     }
-    if owning_history_root(target, &ctx.home).is_none() {
+    if !is_history_child(target, &ctx.home) {
         anyhow::bail!(
             "agent target is outside its authorized namespace: {}",
             target.display()
@@ -209,14 +221,14 @@ fn authorize(target: &Path, ctx: &Ctx) -> Result<()> {
 fn is_regenerable_target(path: &Path, home: &Path) -> bool {
     REGENERABLE
         .iter()
-        .any(|(_, relative, _)| path == home.join(relative))
+        .any(|(_, relative)| path == home.join(relative))
 }
 
 /// Age in days and logical size for an eligible history child, or `None` when
 /// the path is not a direct child of a configured root at its configured depth,
 /// is a symlink, has the wrong file type, or is still inside the active window.
 fn history_details(path: &Path, home: &Path, active_days: u32) -> Result<Option<(u64, u64)>> {
-    if owning_history_root(path, home).is_none() {
+    if !is_history_child(path, home) {
         return Ok(None);
     }
     let metadata = match std::fs::symlink_metadata(path) {
@@ -238,6 +250,11 @@ fn history_details(path: &Path, home: &Path, active_days: u32) -> Result<Option<
         return Ok(None);
     }
     let (size, newest) = crate::safety::dir_stats(path)?;
+    // No timestamp means a file in this subtree would not say when it changed,
+    // so its staleness is unknown and the gate fails closed.
+    let Some(newest) = newest else {
+        return Ok(None);
+    };
     let Ok(elapsed) = SystemTime::now().duration_since(newest) else {
         return Ok(None);
     };
@@ -245,13 +262,13 @@ fn history_details(path: &Path, home: &Path, active_days: u32) -> Result<Option<
     Ok((age >= u64::from(active_days)).then_some((age, size)))
 }
 
-/// The configured root this path is a child of, at exactly the configured depth.
+/// Whether this path is a child of a configured root at exactly that root's depth.
 ///
 /// Matching is structural rather than by prefix: the path must be `root` plus
 /// exactly `depth` normal components, so neither a shallower ancestor (the root
 /// itself) nor a deeper descendant can borrow the root's authority.
-fn owning_history_root(path: &Path, home: &Path) -> Option<&'static HistoryRoot> {
-    HISTORY.iter().find(|root| {
+fn is_history_child(path: &Path, home: &Path) -> bool {
+    HISTORY.iter().any(|root| {
         let base = home.join(root.relative);
         let Ok(relative) = path.strip_prefix(&base) else {
             return false;
@@ -392,11 +409,8 @@ mod tests {
             "old",
             400,
         );
-        // `pins.json` is a file directly under a directories-only root.
-        write_aged(&home.join(".claude/jobs/pins.json"), "{}", 400);
-        // Positive control for the same switch: a loose file at depth under a
-        // root that does include files must be admitted, so the exclusion above
-        // is proven to come from `include_files` and not from file-ness itself.
+        // A loose file at the configured depth is a candidate; the fresh one
+        // beside it is the control proving the age gate is what excludes it.
         write_aged(&home.join(".codex/archived_sessions/old.jsonl"), "old", 400);
         write_aged(&home.join(".codex/archived_sessions/new.jsonl"), "new", 0);
 
@@ -406,7 +420,6 @@ mod tests {
 
         let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
         assert!(targets.contains(&home.join(".codex/sessions/2020/01/02").as_path()));
-        assert!(!targets.contains(&home.join(".claude/jobs/pins.json").as_path()));
         assert!(targets.contains(&home.join(".codex/archived_sessions/old.jsonl").as_path()));
         assert!(!targets.contains(&home.join(".codex/archived_sessions/new.jsonl").as_path()));
         // The root itself is never a finding, only its children at the configured depth.
@@ -653,6 +666,12 @@ mod tests {
         );
     }
 
+    /// A symlink planted inside a live root must be refused because it is a
+    /// symlink, not because it happens to sit somewhere unscanned. The link is
+    /// therefore placed under `.codex/archived_sessions` — a root that is
+    /// actually traversed — and an ordinary stale file beside it is the positive
+    /// control: if the scan returned nothing at all, the refusal would prove
+    /// nothing about symlinks.
     #[test]
     fn a_symlinked_history_child_is_refused() {
         let home = tempfile::Builder::new()
@@ -662,15 +681,42 @@ mod tests {
         let home = home.path();
         let outside = home.join("outside");
         write_aged(&outside.join("payload"), "keep", 400);
-        std::fs::create_dir_all(home.join(".claude/projects")).unwrap();
-        let link = home.join(".claude/projects/-linked");
+        let root = home.join(".codex/archived_sessions");
+        let genuine = root.join("rollout-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl");
+        write_aged(&genuine, "old", 400);
+        let link = root.join("rollout-linked.jsonl");
         std::os::unix::fs::symlink(&outside, &link).unwrap();
 
+        assert!(is_history_child(&link, home), "the fixture must be scanned");
         assert!(history_details(&link, home, 30).unwrap().is_none());
-        let findings = Agents
-            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
+
+        let ctx = test_ctx(home.to_path_buf());
+        let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
+        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
+        assert!(
+            targets.contains(&genuine.as_path()),
+            "positive control: the real stale transcript must be offered"
+        );
+        assert!(!targets.contains(&link.as_path()));
+
+        // Apply is the boundary that matters: a forged finding naming the link
+        // must be refused rather than followed out of the root.
+        let outcome = Agents
+            .apply(
+                &[Finding::new(
+                    "forged",
+                    Some(link.clone()),
+                    4,
+                    "test",
+                    6,
+                    Action::Shred,
+                )],
+                &ctx,
+            )
             .unwrap();
-        assert!(findings.is_empty());
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1);
         assert!(outside.join("payload").exists());
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
     }
 }

@@ -19,6 +19,8 @@ pub struct Caches;
 const CACHES: &[(&str, &str)] = &[
     ("huggingface model cache", ".cache/huggingface/hub"),
     ("uv package cache", ".cache/uv"),
+    // Corepack keeps its downloaded package-manager versions in
+    // `.cache/node/corepack`, so this one entry covers both.
     ("node core cache", ".cache/node"),
     ("bun package cache", ".bun/install/cache"),
     ("cargo registry download cache", ".cargo/registry/cache"),

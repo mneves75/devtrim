@@ -36,10 +36,9 @@ The independent model review found the one that mattered. Claude Code stores its
 auto memory at `~/.claude/projects/<project>/memory/`, and keys memory by
 repository root while keying transcripts by working directory — so a project
 directory can hold memory and no live transcript, go stale, and be deleted. The
-directories exist on this machine; the category would have destroyed them. The
-fix is positive corroboration, not a `memory` exception: a project directory is
-a candidate only when every entry is a `.jsonl` transcript or a session-id
-directory, which also covers whatever an agent stores there next. The same
+directories exist on this machine; the category would have destroyed them. The first
+fix narrowed the unit to session-shaped entries; a later pass retired the root
+outright, for the reason recorded below. The same
 review showed a shell snapshot is not a cache — it is written once per session,
 sourced by every later shell call, and never rewritten — so both snapshot
 directories moved to the age-gated tier; and that `Caches/JetBrains` is the IDE

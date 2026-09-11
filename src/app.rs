@@ -183,6 +183,7 @@ fn clean_operation_from_args(args: &[OsString]) -> &'static str {
         Some("xcode") => "xcode",
         Some("docker") => "docker",
         Some("toolchains") => "toolchains",
+        Some("agents") => "agents",
         Some("leftovers") => "leftovers",
         _ => "clean",
     }

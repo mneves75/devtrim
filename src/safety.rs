@@ -600,6 +600,8 @@ fn path_relative_to_ignore_ascii_case(path: &Path, base: &Path) -> Option<PathBu
 /// projects rather than free regenerable bytes.
 pub(crate) const MANAGED_LIBRARY_CACHES: &[(&str, &str)] = &[
     ("Playwright browser cache", "ms-playwright"),
+    // Squirrel.Mac update staging: removing it mid-update interrupts that
+    // update, which then restages on the next check.
     (
         "VS Code update staging cache",
         "com.microsoft.VSCode.ShipIt",
@@ -613,7 +615,11 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[(&str, &str)] = &[
     // on "Invalidate Caches" for that reason. Carving out only the `caches` and
     // `index` subdirectories would need a per-product depth rule, which this
     // exact-name list cannot express.
-    ("Claude Code CLI cache", "claude-cli-nodejs"),
+    // `Caches/claude-cli-nodejs` is deliberately absent. Despite living under
+    // `Caches` it holds per-project `mcp-logs-<server>/` diagnostic logs, which
+    // nothing regenerates — deleting them loses MCP debugging history rather
+    // than costing a re-fetch. Undocumented by the vendor, so its contents
+    // cannot be characterised with confidence either.
     ("pip package cache", "pip"),
     ("pnpm metadata cache", "pnpm"),
     ("GitHub CLI cache", "gh"),
@@ -623,6 +629,10 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[(&str, &str)] = &[
     // the sibling `local_storage` file backs `localStorage`. Both are documented
     // as persistent across runs and nothing rebuilds them. An exact-name list
     // cannot express a `location_data` exclusion.
+    // Go's own `go help cache` says clearing it should not be necessary in
+    // typical use. The one part that is not a pure rebuild is the fuzz corpus
+    // kept beneath it: those coverage-expanding inputs come back only by
+    // fuzzing again.
     ("Go build cache", "go-build"),
     ("TypeScript server cache", "typescript"),
 ];
@@ -790,12 +800,19 @@ pub fn dir_size(path: &Path) -> Result<u64> {
 /// active. An addition is still seen, because the added file carries its own
 /// fresh timestamp.
 ///
+/// The timestamp is `None` when any file's modification time could not be read.
+/// It is deliberately not an error: `dir_size` — which nine of the ten
+/// categories reach for and which needs no timestamp at all — would otherwise
+/// start failing on a tree it can measure perfectly well. A caller that judges
+/// staleness must treat `None` as a refusal; one that only wants bytes can
+/// ignore it.
+///
 /// A subtree with no regular files reports `UNIX_EPOCH`, which reads as
 /// maximally stale — harmless, because it also measures zero bytes, and every
 /// caller skips a zero-byte target.
-pub(crate) fn dir_stats(path: &Path) -> Result<(u64, std::time::SystemTime)> {
+pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTime>)> {
     let mut bytes = 0u64;
-    let mut newest = std::time::SystemTime::UNIX_EPOCH;
+    let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
     match std::fs::symlink_metadata(path) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, newest)),
@@ -812,16 +829,15 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(u64, std::time::SystemTime)> {
             let metadata = entry
                 .metadata()
                 .with_context(|| format!("cannot measure {}", entry.path().display()))?;
-            // An unreadable timestamp must refuse, not abstain: a file that did
-            // not vote would let the subtree read older than it is, and an
-            // active session would become deletable.
-            let modified = metadata.modified().with_context(|| {
-                format!(
-                    "cannot read modification time of {}",
-                    entry.path().display()
-                )
-            })?;
-            newest = newest.max(modified);
+            // An unreadable timestamp must not abstain: a file that did not
+            // vote would let the subtree read older than it is, and an active
+            // session would become deletable. Recording the gap rather than
+            // erroring leaves that judgement to the caller that makes it.
+            match metadata.modified() {
+                Ok(modified) => newest = newest.map(|newest| newest.max(modified)),
+                Err(_) => newest = None,
+            }
+
             bytes = bytes
                 .checked_add(metadata.len())
                 .ok_or_else(|| anyhow::anyhow!("logical size overflow under {}", path.display()))?;
@@ -1293,6 +1309,20 @@ mod tests {
     fn managed_library_caches_are_exact_exceptions() {
         let home = Path::new("/Users/example");
         assert!(!MANAGED_LIBRARY_CACHES.is_empty());
+        // Each entry must be exactly one normal component. The list is read by
+        // two places that treat it differently: `caches::library_caches` joins
+        // it raw, while this boundary only ever sees cleaned paths. An entry
+        // containing `..` would therefore be previewed under one spelling and
+        // matched under another, letting a target outside the carve-out reach
+        // the deletion sink. Nothing but this assertion prevents that.
+        for (_, name) in MANAGED_LIBRARY_CACHES {
+            let mut components = Path::new(name).components();
+            assert!(
+                matches!(components.next(), Some(std::path::Component::Normal(_))),
+                "{name} must be one normal path component"
+            );
+            assert!(components.next().is_none(), "{name} must be a single name");
+        }
         for (_, name) in MANAGED_LIBRARY_CACHES {
             let root = home.join("Library/Caches").join(name);
             assert!(!is_protected(&root, home), "{name}");

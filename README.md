@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.9.0.
+This source tree and its packaged documentation describe devtrim v0.9.1.
 
 ## Install
 
@@ -132,7 +132,7 @@ Apply re-checks the whole shape and refuses symlinks and any target outside
 those two directories.
 
 `clean agents` covers coding-agent storage in two tiers, because it is not one
-kind of data. *Regenerable caches* — Claude Code downloads and metadata cache,
+kind of data. *Regenerable caches* — the Claude Code metadata cache,
 the Codex catalog cache, the Pi web-search cache, the OpenCode cache — are exact
 paths their owner rebuilds on demand, so they are offered unconditionally at a
 low danger score. *Session history* — Claude Code shell snapshots; Codex shell snapshots,
@@ -147,7 +147,9 @@ memories, skills, agent definitions, installed plugins and the `.claude.json`
 backup copies are on neither list and are never candidates. Apply reasserts the
 full shape — tier membership, exact depth below the configured root, no
 symlink, and the age gate re-read from disk — so a session resumed after preview
-falls out of the plan.
+falls out of the plan. Agent *scratch worktrees* are a different question and
+stay where they were: `clean leftovers` lists them for review and never deletes
+them, because a worktree's staleness cannot be proven from its name.
 
 Two of those rules exist because the obvious design was wrong. A shell snapshot
 is *not* a cache: Claude Code writes one per session and sources that exact file
@@ -166,8 +168,7 @@ built against, so the honest trade was to leave it alone.
 
 `clean caches` also reaches a closed list of exact `~/Library/Caches`
 subdirectories — Playwright browsers, the VS Code HTTP cache and its Squirrel
-update staging, SwiftPM, the Claude Code CLI cache, pip, pnpm, GitHub CLI, Go
-and TypeScript. `~/Library` stays protected
+update staging, SwiftPM, pip, pnpm, GitHub CLI, Go and TypeScript. `~/Library` stays protected
 wholesale; that list is the carve-out, it is the same constant the protection
 boundary reads, and a name is only on it when one developer tool owns the
 directory and rebuilds it on demand.

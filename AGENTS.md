@@ -107,6 +107,35 @@ checked 2026-09-04. User instructions take precedence over skill procedures.
 - Keep CSP metadata intact in shipped HTML. Landing page is `index.html` + `styles.css`; demo media lives in `media/`.
 - Code review reads `CODING_STANDARDS.md`. Every bullet in this section is a hard standard, citable as `CLAUDE.md § Conventions`.
 
+## Apple platforms
+
+devtrim itself contains no Swift — it is a Rust CLI, and nothing in this
+repository triggers the rule below. It is recorded here because the workspace
+owner asked every repository to carry it; the workspace copy in
+`/Users/mneves/dev/AGENTS.md` remains authoritative if the two ever disagree.
+
+For Swift, SwiftUI, iOS, iPadOS, or macOS work, read the documentation bundled
+with the Xcode that is actually selected rather than older training data. Resolve
+it, never hardcode it:
+
+```bash
+DOCS="$(xcode-select -p)/../PlugIns/IDEIntelligenceChat.framework/Versions/A/Resources/AdditionalDocumentation"
+xcodebuild -version   # confirm which SDK that Xcode ships
+```
+
+`/Applications/Xcode.app` is not a synonym for the previous major version and
+`/Applications/Xcode-beta.app` frequently does not exist — on this machine the
+released `Xcode.app` is already 27.0 and there is no beta bundle, so a hardcoded
+`Xcode-beta.app` path for the newest SDK would point at nothing. Select by what
+`xcode-select -p` reports and what `xcodebuild -version` confirms, then read the
+`AdditionalDocumentation` note matching the API you are touching (Liquid Glass,
+App Intents, Swift Concurrency, SwiftData, FoundationModels, and so on).
+
+Load the matching skill in `/Users/mneves/dev/Skills/XCODE_AGENT_SKILLS` before
+changing Swift code — SwiftUI, Swift Concurrency, and Xcode Build Optimization
+in particular — and review the changed Swift surface against those sources and
+the project's own deployment target.
+
 ## Release
 1. Bump `Cargo.toml` and every version reference packaged with the artifact. This includes regenerating `fuzz/Cargo.lock` (`cd fuzz && cargo update -p devtrim --precise <version>`): the fuzz crate depends on `devtrim` by path, so its tracked lockfile still pins the old version and the hosted "fuzz gates leave the checkout clean" step fails on a dirty `fuzz/Cargo.lock` after every bump.
 2. Add the dated `CHANGELOG.md` section; update README, manual, security, and agent docs. Keep the production landing page on the live stable version during beta staging.

@@ -2,7 +2,32 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.9.1] - Unreleased
+## [0.9.1] - 2026-09-11
+
+Everything 0.9.0 claimed was checked against the vendors' own documentation
+rather than against the directory names. Nothing was contradicted — no shipped
+rule called a directory safe to delete when it is not — but two entries turned
+out to rest on no source at all, and they are gone.
+
+### Removed
+- `~/.claude/downloads` is no longer a regenerable-cache entry. No Anthropic documentation acknowledges the directory, so its contents cannot be characterised; a deletion rule for a directory nobody documents is the weakest kind of entry, and in this category the closed list is the only thing guarding the path. Every remaining entry now cites a primary source for what it holds
+- `~/Library/Caches/claude-cli-nodejs` leaves the `~/Library` carve-out. Despite its location it holds per-project `mcp-logs-<server>/` diagnostic logs, which nothing regenerates — removing them loses MCP debugging history rather than costing a re-fetch, so the "regenerated automatically on next use" note was wrong about it
+
+### Fixed
+- `devtrim clean agents --badflag --json` reported `"operation": "clean"` instead of `"agents"`, the only cleanup target missing from the error-envelope map. Every sibling target was already listed
+- The `agents` symlink refusal had no test coverage. The existing test planted its symlink under `~/.claude/projects`, a root retired during 0.9.0 review, so the scan never reached the symlink check and the assertion could not fail. The fixture now sits in a live root with a real stale transcript beside it as the positive control, and both the leaf refusal and the traversal skip are exercised
+- `SECURITY.md` still documented the session-shape corroboration rule that 0.9.0 removed along with the root it guarded, telling anyone auditing the boundary about a check that cannot fire
+- A stale test fixture and comment referred to `~/.claude/jobs` and the removed `include_files` field as if both still existed
+
+### Changed
+- `dir_stats` now reports an unreadable modification time as `None` rather than failing the whole measurement. 0.9.0 made every category fail-closed on a timestamp when only the `agents` age gate reads one, so a tree that measures perfectly well could stop being measurable; the staleness caller still treats a missing timestamp as a refusal
+- `MANAGED_LIBRARY_CACHES` entries are asserted to be exactly one normal path component. The list is read by two places that treat it differently — the cache category joins it raw, the protection boundary sees only cleaned paths — so an entry containing `..` would be previewed under one spelling and matched under another. Nothing but this assertion prevented that
+- Documented what the sources actually say: removing `com.microsoft.VSCode.ShipIt` mid-update interrupts that update, the Go build cache holds a fuzz corpus that only fuzzing regenerates, and Corepack's downloads live inside the `.cache/node` entry that already covers them
+- The regenerable tier no longer claims a running agent will not notice. No vendor documents these directories as removable mid-session; Trash-first is what makes the tier safe, and the claim is now only that the content comes back
+- `clean leftovers` is named in the README as where agent scratch worktrees are reported, closing a gap between what was asked for and what the docs said was delivered
+
+### Added
+- An Apple-platforms section in `AGENTS.md`/`CLAUDE.md`, recorded at the workspace owner's request. devtrim contains no Swift, so nothing here triggers it; it resolves the Xcode documentation path from `xcode-select -p` rather than hardcoding `Xcode-beta.app`, which does not exist on the machine this was written on — where the released `Xcode.app` is already 27.0
 
 ## [0.9.0] - 2026-09-10
 
