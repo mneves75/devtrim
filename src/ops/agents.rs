@@ -43,14 +43,25 @@ pub struct Agents;
 /// Caches an agent rebuilds on demand. Exact paths relative to `$HOME`; nothing
 /// is matched by prefix, so a sibling directory can never inherit authority.
 ///
-/// Each entry is here because a primary source says what it holds. `.claude/cache`
-/// is the vendor's changelog and model catalogue; `.codex/cache` holds only
-/// re-fetched remote catalogues; the Pi cache self-evicts on a one-hour lifetime;
-/// and OpenCode's own troubleshooting guide prescribes removing its cache as a
-/// reset step, with persistent data kept elsewhere. `.claude/downloads` was
-/// dropped from this list precisely because no such source exists for it — a
-/// deletion rule for a directory whose contents cannot be characterised is the
-/// weakest kind of entry, and this list is the only thing guarding these paths.
+/// Each entry names the evidence it rests on, because this list is the only
+/// thing guarding these paths: there is no age gate behind it and no
+/// corroboration signal, only Trash-first.
+///
+/// Documented by their vendors: `.claude/cache` holds the changelog and model
+/// catalogue Claude Code refreshes in the background; Pi's web-search cache
+/// self-evicts on a one-hour lifetime with fixed entry and size limits; and
+/// OpenCode's own troubleshooting guide prescribes removing its cache as a reset
+/// step, with persistent data kept under a different tree.
+///
+/// Rests on direct inspection only: `.codex/cache`, which no OpenAI
+/// documentation describes. Every child observed there was a hash-named JSON
+/// catalogue re-fetched from the network (`codex_app_directory`,
+/// `codex_apps_server_info`, `codex_apps_tools`, `remote_plugin_catalog`).
+/// Codex keeps its model catalogue in `models_cache.json` and plugin bundles in
+/// `plugins/cache/`, neither of which is this directory.
+///
+/// `.claude/downloads` was dropped for having neither: undocumented and empty
+/// wherever it could be examined, so nothing could say what it holds.
 const REGENERABLE: &[(&str, &str)] = &[
     ("Claude Code metadata cache", ".claude/cache"),
     ("Codex catalog cache", ".codex/cache"),
@@ -495,6 +506,74 @@ mod tests {
 
     /// A shell snapshot is sourced by every later shell call in the session that
     /// wrote it, and nothing rewrites it, so it belongs to the age-gated tier.
+    /// SECURITY.md states as a non-negotiable boundary that `~/.claude/projects`
+    /// and `~/.claude/jobs` are not cleanup roots, so nothing beneath either can
+    /// become a target. Both were roots at some point during development and
+    /// both were retired after review found live or unjudgeable data inside, so
+    /// the boundary needs to be executable rather than prose: re-adding either
+    /// path to a list must fail here. The structural half catches it at the
+    /// list, the behavioural half at the scan, and the `.codex` fixture is the
+    /// control proving the scan was capable of returning something.
+    #[test]
+    fn the_retired_claude_trees_can_never_become_roots_again() {
+        for retired in [".claude/projects", ".claude/jobs"] {
+            assert!(
+                !REGENERABLE
+                    .iter()
+                    .any(|(_, relative)| relative.starts_with(retired)),
+                "{retired} must never be a regenerable entry"
+            );
+            assert!(
+                !HISTORY
+                    .iter()
+                    .any(|root| root.relative.starts_with(retired)),
+                "{retired} must never be a history root"
+            );
+        }
+
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-agents-retired")
+            .tempdir()
+            .unwrap();
+        let home = home.path();
+        let session = "24bb0c93-fbb9-49b7-99b0-7a97be87baeb";
+        write_aged(
+            &home.join(format!(".claude/projects/-repo/{session}.jsonl")),
+            "old",
+            400,
+        );
+        write_aged(
+            &home.join(".claude/projects/-repo/memory/MEMORY.md"),
+            "durable fact",
+            400,
+        );
+        write_aged(&home.join(".claude/jobs/pins.json"), "[]", 400);
+        write_aged(&home.join(".claude/jobs/abc123/state.json"), "{}", 400);
+        let control = home.join(format!(".codex/archived_sessions/rollout-{session}.jsonl"));
+        write_aged(&control, "old", 400);
+
+        let findings = Agents
+            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
+            .unwrap();
+        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
+
+        assert!(
+            targets.contains(&control.as_path()),
+            "control: a stale transcript under a live root must still be offered"
+        );
+        assert!(
+            targets
+                .iter()
+                .all(|target| !target.starts_with(home.join(".claude/projects"))
+                    && !target.starts_with(home.join(".claude/jobs"))),
+            "nothing under a retired tree may be offered: {targets:?}"
+        );
+        assert!(
+            home.join(".claude/projects/-repo/memory/MEMORY.md")
+                .exists()
+        );
+    }
+
     #[test]
     fn shell_snapshots_are_age_gated_rather_than_offered_outright() {
         let home = tempfile::Builder::new()
@@ -679,13 +758,18 @@ mod tests {
             .tempdir()
             .unwrap();
         let home = home.path();
+        // The link must resolve to a *regular file*. Pointed at a directory it
+        // would also trip the wrong-file-type check, so removing the symlink
+        // branch would leave this test green while a symlink to a stale file
+        // outside the root was followed and offered.
         let outside = home.join("outside");
-        write_aged(&outside.join("payload"), "keep", 400);
+        let payload = outside.join("payload");
+        write_aged(&payload, "keep", 400);
         let root = home.join(".codex/archived_sessions");
         let genuine = root.join("rollout-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl");
         write_aged(&genuine, "old", 400);
         let link = root.join("rollout-linked.jsonl");
-        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        std::os::unix::fs::symlink(&payload, &link).unwrap();
 
         assert!(is_history_child(&link, home), "the fixture must be scanned");
         assert!(history_details(&link, home, 30).unwrap().is_none());
@@ -716,7 +800,12 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.summary.items_touched, 0);
         assert_eq!(outcome.errors.len(), 1);
-        assert!(outside.join("payload").exists());
+        assert!(
+            outcome.errors[0].contains("symlink"),
+            "the refusal must name the symlink, not some incidental check: {}",
+            outcome.errors[0]
+        );
+        assert_eq!(std::fs::read_to_string(&payload).unwrap(), "keep");
         assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
     }
 }

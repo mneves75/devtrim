@@ -539,3 +539,30 @@ fn command_error(
         Err(error)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::ValueEnum;
+
+    /// The clap error envelope must name the category the user typed. This is a
+    /// table over clap's own variant list rather than a fixed set of strings:
+    /// `agents` shipped with the wrong operation name precisely because nothing
+    /// enumerated the subcommands against this map, so an eleventh category
+    /// cannot regress the same way without failing here.
+    #[test]
+    fn every_clean_target_maps_to_its_own_operation_name() {
+        for target in cli::Target::value_variants() {
+            let name = target.as_str();
+            let args: Vec<OsString> = ["devtrim", "clean", name, "--unsupported", "--json"]
+                .iter()
+                .map(OsString::from)
+                .collect();
+            assert_eq!(
+                operation_from_args(&args),
+                name,
+                "`clean {name}` must report its own operation, not the `clean` fallback"
+            );
+        }
+    }
+}
