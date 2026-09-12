@@ -440,15 +440,17 @@ mod tests {
     /// build at all. What is left for a test is the gap that assertion cannot
     /// see: `is_ascii_whitespace` accepts non-ASCII blanks such as U+00A0, which
     /// `str::trim` strips. That is the only case these loops can catch. Both
-    /// are proven separately — `evidence/agents` for `REGENERABLE` and
-    /// `evidence/agents-history` for `HISTORY` — because two loops behind one
-    /// marker would let either be deleted while the other kept the gate green.
+    /// are proven separately — `evidence/agents-regenerable` for `REGENERABLE`
+    /// and `evidence/agents-history` for `HISTORY`. Each plant is visible only
+    /// to the loop over its own list, so a loop without its own case could be
+    /// deleted silently; the distinct markers keep the gate's attribution
+    /// honest about which one actually fired.
     #[test]
     fn every_agent_entry_carries_evidence() {
         for entry in REGENERABLE {
             assert!(
                 !entry.evidence.trim().is_empty(),
-                "PV evidence/agents: missing deletion evidence: {}",
+                "PV evidence/agents-regenerable: missing deletion evidence: {}",
                 entry.relative
             );
         }

@@ -13,10 +13,14 @@ enforced: the mutant must compile, so a build error is never mistaken for
 proof; and the failure must come from the tagged assertion, so an unrelated
 refusal cannot stand in for the boundary.
 
-Deliberately two fixed cases rather than a mutation framework. `cargo-mutants`
+Deliberately a fixed, named set rather than a mutation framework. `cargo-mutants`
 reports a mutant as caught when *a* test fails, which is exactly the confusion
 this exists to remove, and its cost is unbounded. Review still owns every
-assertion these two cases do not name.
+assertion these cases do not name.
+
+Marker names must stay mutually non-prefixing: the check is a substring match,
+so `PV evidence/agents` would also accept a failure tagged
+`PV evidence/agents-history` and attribute it to the wrong guard.
 """
 
 from __future__ import annotations
@@ -92,12 +96,12 @@ CASES = (
         marker="PV evidence/built-in-caches",
     ),
     Case(
-        name='evidence/agents',
+        name='evidence/agents-regenerable',
         relative_path='src/ops/agents.rs',
         before='DeletionEntry {\n        label: "Claude Code metadata cache",\n        relative: ".claude/cache",\n        evidence: "Vendor-documented: the `.claude` directory reference lists \\\n                   `cache/changelog.md` as refreshed in the background. The \\\n                   observed siblings (`model-catalog/`, `my-closed-issues.json`) \\\n                   are re-fetched the same way.",\n    },\n',
         after='DeletionEntry {\n        label: "Claude Code metadata cache",\n        relative: ".claude/cache",\n        evidence: "\\u{a0}",\n    },\n',
         tests=('ops::agents::tests::every_agent_entry_carries_evidence',),
-        marker="PV evidence/agents",
+        marker="PV evidence/agents-regenerable",
     ),
     Case(
         name='evidence/agents-history',
