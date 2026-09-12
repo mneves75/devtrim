@@ -1,6 +1,34 @@
 # Project Memory
 
-## Current state (0.9.1)
+## Current state (0.9.2)
+
+Two lessons that had lived only as prose are now structural. Evidence is a
+required field: `safety::DeletionEntry` and `HistoryRoot` carry it, so a new
+deletion-list entry without justification does not compile, a blank one fails a
+const assertion, and a test names the offending path. Six entries had already
+reached a release on the strength of a directory *name*; that specific mistake
+can no longer be made quietly. What the field cannot do is judge whether the
+cited source supports deletion — that stays review's job, and the standard says
+so rather than implying the gate is stronger than it is.
+
+`scripts/tests/planted-violations.py` answers the sharper failure: this repo
+shipped a symlink-refusal assertion that could not fail, and nothing noticed for
+several commits. The gate breaks each guarded branch on a throwaway copy and
+requires the *tagged* assertion to fail, rejecting a mutant that does not
+compile, selects no test, or fails elsewhere. Deleting the symlink branch is
+deliberately not the mutation — the file-type check below also rejects a link —
+so it makes a symlink positively eligible instead. Two fixed cases, ~14 seconds,
+wired into `verify.sh offline`, CI and the read-only release job, with
+`release-policy.sh` requiring all three and forbidding a fourth in the
+credential-bearing script.
+
+The plan came from GPT-6 Astra, which usefully argued *down* a broad
+`cargo-mutants` gate (its "caught" means any test failed, not the intended one),
+an evidence framework, and new gates for the regenerable paths. Every guard was
+proven by breaking what it guards: E0063, a const-evaluation panic, the named
+path, MISSED, ERROR, and the policy failure.
+
+## Previous state (0.9.1)
 
 0.9.0 justified every closed-list entry by what its directory was named. 0.9.1
 checked all fifteen load-bearing claims against the vendors' own documentation
