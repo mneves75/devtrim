@@ -69,6 +69,36 @@ CASES = (
         tests=("ops::agents::tests::a_symlinked_history_child_is_refused",),
         marker="PV agents/history-symlink",
     ),
+    # The const assertion rejects empty and ASCII-whitespace evidence while
+    # compiling, so the only thing the runtime loops can catch is a non-ASCII
+    # blank. Each list gets its own case: they are three separate guards, and
+    # deleting one loop must not be covered by another list's proof. The whole
+    # entry is replaced, because splicing into a multi-line evidence string
+    # leaves a dangling literal and the mutant fails to compile.
+    Case(
+        name='evidence/library-caches',
+        relative_path='src/safety.rs',
+        before='DeletionEntry {\n        label: "Playwright browser cache",\n        relative: "ms-playwright",\n        evidence: "Playwright\'s own docs describe this as the downloaded browser \\\n                   location, re-created by `npx playwright install`.",\n    },\n',
+        after='DeletionEntry {\n        label: "Playwright browser cache",\n        relative: "ms-playwright",\n        evidence: "\\u{a0}",\n    },\n',
+        tests=('safety::tests::every_managed_library_cache_carries_evidence',),
+        marker="PV evidence/library-caches",
+    ),
+    Case(
+        name='evidence/built-in-caches',
+        relative_path='src/ops/caches.rs',
+        before='DeletionEntry {\n        label: "huggingface model cache",\n        relative: ".cache/huggingface/hub",\n        evidence: "Model snapshots re-downloaded on next use. Scoped to `hub` \\\n                   so the sibling tokens and settings are never authority.",\n    },\n',
+        after='DeletionEntry {\n        label: "huggingface model cache",\n        relative: ".cache/huggingface/hub",\n        evidence: "\\u{a0}",\n    },\n',
+        tests=('ops::caches::tests::every_built_in_cache_carries_evidence',),
+        marker="PV evidence/built-in-caches",
+    ),
+    Case(
+        name='evidence/agents',
+        relative_path='src/ops/agents.rs',
+        before='DeletionEntry {\n        label: "Claude Code metadata cache",\n        relative: ".claude/cache",\n        evidence: "Vendor-documented: the `.claude` directory reference lists \\\n                   `cache/changelog.md` as refreshed in the background. The \\\n                   observed siblings (`model-catalog/`, `my-closed-issues.json`) \\\n                   are re-fetched the same way.",\n    },\n',
+        after='DeletionEntry {\n        label: "Claude Code metadata cache",\n        relative: ".claude/cache",\n        evidence: "\\u{a0}",\n    },\n',
+        tests=('ops::agents::tests::every_agent_entry_carries_evidence',),
+        marker="PV evidence/agents",
+    ),
     Case(
         name="agents/apply-namespace",
         relative_path="src/ops/agents.rs",

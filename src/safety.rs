@@ -1404,37 +1404,23 @@ mod tests {
         crate::ops::remove_test_path(home);
     }
 
-    /// The `~/Library/Caches` carve-out is exactly the closed list and nothing
-    /// else. The unprotected assertions are the positive control: if the
-    /// carve-out silently stopped applying, the cache category would preview
-    /// paths the sink then refuses, and this test would fail rather than pass
-    /// vacuously alongside the protected ones.
     /// The const assertion above rejects empty and ASCII-whitespace evidence
     /// while compiling, so those cases never reach a test — the crate does not
-    /// build at all. What is left for a test is the gap that assertion cannot
-    /// see: `is_ascii_whitespace` accepts non-ASCII blanks such as U+00A0, which
-    /// `str::trim` strips. That is the case proven below, and it is the only one
-    /// this test can catch.
+    /// build at all. What is left is the gap that assertion cannot see:
+    /// `is_ascii_whitespace` accepts non-ASCII blanks such as U+00A0, which
+    /// `str::trim` strips. That is the only case this loop can catch, and
+    /// `scripts/tests/planted-violations.py` (`evidence/library-caches`) plants
+    /// exactly it. Asserting facts about the helper here instead would prove
+    /// nothing about this loop.
     #[test]
     fn every_managed_library_cache_carries_evidence() {
         for entry in MANAGED_LIBRARY_CACHES {
             assert!(
                 !entry.evidence.trim().is_empty(),
-                "missing deletion evidence: Library/Caches/{}",
+                "PV evidence/library-caches: missing deletion evidence: Library/Caches/{}",
                 entry.relative
             );
         }
-        assert!(evidence_is_present(MANAGED_LIBRARY_CACHES));
-        // The gap itself: a non-ASCII blank passes the const check and must be
-        // caught here. Planting one in a real entry proves this is not vacuous.
-        assert!(
-            evidence_is_meaningful("\u{a0}"),
-            "the const check accepts U+00A0"
-        );
-        assert!(
-            "\u{a0}".trim().is_empty(),
-            "so the test must be the one to reject it"
-        );
     }
 
     #[test]
