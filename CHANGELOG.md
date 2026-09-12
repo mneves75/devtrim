@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.9.4] - Unreleased
+
 ## [0.9.3] - 2026-09-12
 
 A retroactive review of the shipped 0.9.2 commit — run because the release

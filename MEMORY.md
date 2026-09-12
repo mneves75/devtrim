@@ -1,6 +1,34 @@
 # Project Memory
 
-## Current state (0.9.2)
+## Current state (0.9.3)
+
+0.9.2 made deletion evidence a required field — and shipped an entry whose
+evidence was false. `~/Library/Caches/gh` was described as the GitHub CLI's
+cache; go-gh resolves that to `$XDG_CACHE_HOME/gh` then `~/.cache/gh` and never
+to `~/Library/Caches`. Verified here: `XDG_CACHE_HOME` unset, `~/.cache/gh`
+present, `~/Library/Caches/gh` absent. The entry had carried that authority
+since 0.9.1 on the strength of its name. It is gone; gh's real cache is listed
+with evidence that states the resolution order.
+
+That is the lesson worth keeping: **requiring evidence does not make the
+evidence true.** The mechanism worked exactly as designed while one of the
+strings it forced me to write was simply wrong. Only a review that went and
+read the vendor's source caught it.
+
+Three further rounds each found the claim running slightly ahead of the
+mechanism: a doc saying "proven below" applied to three tests when one had
+assertions; those assertions checking the const helper rather than the loop they
+sat in; and `every_agent_entry_carries_evidence` holding two loops where only
+one was planted. `planted-violations.py` now carries six cases — two deletion
+boundaries and four per-list evidence loops, markers kept mutually
+non-prefixing — and the gate leaked 558 MB per early failure until cleanup moved
+into a `finally`.
+
+Process note: the 0.9.2 release attestation (`DEVTRIM_AUTOREVIEW_COMMIT`) was
+given without running autoreview. Running it afterwards is what found all of the
+above. An attestation gate is worth exactly what the attestation is worth.
+
+## Previous state (0.9.2)
 
 Two lessons that had lived only as prose are now structural. Evidence is a
 required field: `safety::DeletionEntry` and `HistoryRoot` carry it, so a new
