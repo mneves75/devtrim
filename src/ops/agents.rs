@@ -3,10 +3,11 @@
 //! Two tiers with different promises, because they are not the same kind of data:
 //!
 //! * A *regenerable* entry is a cache the agent rebuilds on demand, so it is
-//!   offered unconditionally at a low danger score. Trash-first is what makes
-//!   that safe: no vendor documents these as removable *mid-session*, and this
-//!   tier claims only that the content comes back, not that a running agent
-//!   will not notice.
+//!   offered unconditionally at a low danger score. What that claims is only
+//!   that the content comes back — not that a running agent will not notice,
+//!   because no vendor documents these as removable mid-session. Trash-first
+//!   provides *recovery*, not safety, and `--shred` removes even that. The
+//!   preview says so rather than leaving the user to infer it.
 //! * A *history* entry is a session transcript or a shell snapshot. Nothing
 //!   regenerates it. It is therefore offered only after the
 //!   configured active window has passed over the whole subtree, and its note
@@ -36,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
-use crate::safety::{Ctx, escalate};
+use crate::safety::{Ctx, DeletionEntry, escalate};
 
 pub struct Agents;
 
@@ -62,12 +63,47 @@ pub struct Agents;
 ///
 /// `.claude/downloads` was dropped for having neither: undocumented and empty
 /// wherever it could be examined, so nothing could say what it holds.
-const REGENERABLE: &[(&str, &str)] = &[
-    ("Claude Code metadata cache", ".claude/cache"),
-    ("Codex catalog cache", ".codex/cache"),
-    ("Pi web-search cache", ".pi/web-search-cache"),
-    ("OpenCode cache", ".cache/opencode"),
+const REGENERABLE: &[DeletionEntry] = &[
+    DeletionEntry {
+        label: "Claude Code metadata cache",
+        relative: ".claude/cache",
+        evidence: "Vendor-documented: the `.claude` directory reference lists \
+                   `cache/changelog.md` as refreshed in the background. The \
+                   observed siblings (`model-catalog/`, `my-closed-issues.json`) \
+                   are re-fetched the same way.",
+    },
+    DeletionEntry {
+        label: "Codex catalog cache",
+        relative: ".codex/cache",
+        evidence: "Inspection only — no OpenAI documentation describes this \
+                   directory. Every child observed was a hash-named JSON \
+                   catalogue re-fetched from the network \
+                   (`codex_app_directory`, `codex_apps_server_info`, \
+                   `codex_apps_tools`, `remote_plugin_catalog`). Codex keeps \
+                   its model catalogue in `models_cache.json` and plugin \
+                   bundles in `plugins/cache/`, neither of which is this path. \
+                   Observation cannot exhaust future contents.",
+    },
+    DeletionEntry {
+        label: "Pi web-search cache",
+        relative: ".pi/web-search-cache",
+        evidence: "Vendor-documented as a private fetched-content cache with a \
+                   one-hour lifetime and fixed 128-entry / 128 MiB limits that \
+                   evict oldest-first; it discards itself.",
+    },
+    DeletionEntry {
+        label: "OpenCode cache",
+        relative: ".cache/opencode",
+        evidence: "OpenCode's troubleshooting guide prescribes removing this \
+                   directory as a reset step. Persistent state (auth, sessions, \
+                   messages, logs) lives under `~/.local/share/opencode`.",
+    },
 ];
+
+const _: () = assert!(
+    crate::safety::evidence_is_present(REGENERABLE),
+    "every regenerable agent cache needs evidence for why it may be deleted"
+);
 
 /// Every regenerable entry shares one danger score: the cost of removing any of
 /// them is a re-fetch. A per-entry column would be a knob with one value.
@@ -82,6 +118,10 @@ struct HistoryRoot {
     /// nests sessions as `<year>/<month>/<day>`, so waiting for a whole year to
     /// go stale would never offer the current one.
     depth: usize,
+    /// Why this root's children may be offered once stale, and the source that
+    /// establishes it. Required for the same reason as [`DeletionEntry`]: a
+    /// root added without evidence must not compile.
+    evidence: &'static str,
 }
 
 const HISTORY: &[HistoryRoot] = &[
@@ -100,23 +140,51 @@ const HISTORY: &[HistoryRoot] = &[
         label: "Claude Code shell snapshots",
         relative: ".claude/shell-snapshots",
         depth: 1,
+        evidence: "Vendor-documented: one snapshot per session, applied by the \
+                   Bash tool to each command, and swept by Claude Code's own \
+                   `cleanupPeriodDays` retention since v2.1.117 — so age is the \
+                   vendor's own criterion here. Not rewritten if removed \
+                   mid-session.",
     },
     HistoryRoot {
         label: "Codex shell snapshots",
         relative: ".codex/shell_snapshots",
         depth: 1,
+        evidence: "Per-session `<session-id>.<nanos>.sh` captures. Removing stale \
+                   ones is desirable: openai/codex#30971 documents that they \
+                   can retain exported secrets in plaintext. devtrim never \
+                   reads their contents.",
     },
     HistoryRoot {
         label: "Codex session transcripts",
         relative: ".codex/sessions",
         depth: 3,
+        evidence: "Rollout transcripts nested `<year>/<month>/<day>`, confirmed on \
+                   disk and in openai/codex#24948. Conversation history, not \
+                   cache: offered only past the active window, and the note \
+                   says it does not come back.",
     },
     HistoryRoot {
         label: "Codex archived sessions",
         relative: ".codex/archived_sessions",
         depth: 1,
+        evidence: "Rollout transcripts rolled off from `sessions/`, flat on this \
+                   installation; Codex rescans them to rebuild its session \
+                   index. Conversation history, not cache — same age gate and \
+                   same note as `sessions/`.",
     },
 ];
+
+const _: () = {
+    let mut index = 0;
+    while index < HISTORY.len() {
+        assert!(
+            crate::safety::evidence_is_meaningful(HISTORY[index].evidence),
+            "every history root needs evidence for why its children may be deleted"
+        );
+        index += 1;
+    }
+};
 
 const DAY: u64 = 60 * 60 * 24;
 
@@ -131,15 +199,15 @@ impl Op for Agents {
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        for (label, relative) in REGENERABLE {
-            let path = ctx.home.join(relative);
+        for entry in REGENERABLE {
+            let path = ctx.home.join(entry.relative);
             let size = dir_size(&path)?;
             if size > 0 {
                 findings.push(Finding::new(
-                    *label,
+                    entry.label,
                     Some(path),
                     size,
-                    "rebuilt on demand by the agent",
+                    "rebuilt on demand; cleanup may interrupt an active session, so close agents first",
                     escalate(REGENERABLE_DANGER, size),
                     Action::Trash,
                 ));
@@ -232,7 +300,7 @@ fn authorize(target: &Path, ctx: &Ctx) -> Result<()> {
 fn is_regenerable_target(path: &Path, home: &Path) -> bool {
     REGENERABLE
         .iter()
-        .any(|(_, relative)| path == home.join(relative))
+        .any(|entry| path == home.join(entry.relative))
 }
 
 /// Age in days and logical size for an eligible history child, or `None` when
@@ -365,6 +433,27 @@ mod tests {
             .unwrap()
             .set_modified(stale)
             .unwrap();
+    }
+
+    /// Both lists in this module, checked the same way: the compiler requires
+    /// the field, this requires it to carry something, and the failure names
+    /// the path so a new entry is obvious.
+    #[test]
+    fn every_agent_entry_carries_evidence() {
+        for entry in REGENERABLE {
+            assert!(
+                !entry.evidence.trim().is_empty(),
+                "missing deletion evidence: {}",
+                entry.relative
+            );
+        }
+        for root in HISTORY {
+            assert!(
+                !root.evidence.trim().is_empty(),
+                "missing deletion evidence: {}",
+                root.relative
+            );
+        }
     }
 
     #[test]
@@ -518,7 +607,7 @@ mod tests {
             assert!(
                 !REGENERABLE
                     .iter()
-                    .any(|(_, relative)| relative.starts_with(retired)),
+                    .any(|entry| entry.relative.starts_with(retired)),
                 "{retired} must never be a regenerable entry"
             );
             assert!(
@@ -592,17 +681,21 @@ mod tests {
                 &test_ctx(home.to_path_buf()),
             )
             .unwrap();
+        // Reason first, counts after: a mutation that removes `authorize` must
+        // fail HERE, not on a downstream refusal or a survival assertion that
+        // happens to hold for an unrelated reason. Keyed on the reason phrase
+        // rather than on `.claude/projects`, which is a substring of the forged
+        // target path and would be satisfied by any refusal echoing it.
+        assert!(
+            outcome
+                .errors
+                .first()
+                .is_some_and(|error| error.contains("outside its authorized namespace")),
+            "PV agents/apply-namespace: expected namespace refusal, got {:?}",
+            outcome.errors
+        );
         assert_eq!(outcome.summary.items_touched, 0);
         assert_eq!(outcome.errors.len(), 1);
-        // Keyed on the reason phrase, not on `.claude/projects`: that string is
-        // a substring of the forged target path, so any refusal echoing the path
-        // would satisfy it and the check would quietly decay to "declined
-        // somehow" — the vacuity this assertion exists to prevent.
-        assert!(
-            outcome.errors[0].contains("outside its authorized namespace"),
-            "the refusal must be the namespace boundary, not some other decline: {}",
-            outcome.errors[0]
-        );
         assert_eq!(std::fs::read_to_string(&memory).unwrap(), "durable fact");
     }
 
@@ -829,7 +922,10 @@ mod tests {
         .unwrap();
 
         assert!(is_history_child(&link, home), "the fixture must be scanned");
-        assert!(history_details(&link, home, 30).unwrap().is_none());
+        assert!(
+            history_details(&link, home, 30).unwrap().is_none(),
+            "PV agents/history-symlink: a symlink must not be eligible"
+        );
 
         let ctx = test_ctx(home.to_path_buf());
         let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();

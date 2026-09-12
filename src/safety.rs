@@ -598,16 +598,92 @@ fn path_relative_to_ignore_ascii_case(path: &Path, base: &Path) -> Option<PathBu
 /// content-addressable store (`~/Library/pnpm/store`): every installed
 /// `node_modules` hard-links into that store, so removing it would break
 /// projects rather than free regenerable bytes.
-pub(crate) const MANAGED_LIBRARY_CACHES: &[(&str, &str)] = &[
-    ("Playwright browser cache", "ms-playwright"),
-    // Squirrel.Mac update staging: removing it mid-update interrupts that
-    // update, which then restages on the next check.
-    (
-        "VS Code update staging cache",
-        "com.microsoft.VSCode.ShipIt",
-    ),
-    ("VS Code cache", "com.microsoft.VSCode"),
-    ("SwiftPM cache", "org.swift.swiftpm"),
+/// One path a category may delete, and the evidence that says it may.
+///
+/// `evidence` is a required field, so a new entry cannot be added without one:
+/// omission is a compile error rather than something review has to notice. Six
+/// entries reached a release justified only by a directory *name* that looked
+/// like a cache — `~/.claude/projects`, `~/.claude/jobs`, `Caches/JetBrains`,
+/// `Caches/deno`, `Caches/claude-cli-nodejs`, `~/.claude/downloads` — and every
+/// one of them turned out to hold something the owner does not regenerate.
+///
+/// What the field can and cannot do is worth stating plainly: the compiler
+/// forces evidence to exist, and [`evidence_is_present`] forces it to say
+/// something. Neither can judge whether the cited source actually supports
+/// deleting that path. That remains a review requirement, per
+/// `AGENTS.md § Conventions`.
+pub(crate) struct DeletionEntry {
+    pub(crate) label: &'static str,
+    /// Path relative to the list's own root — `$HOME` for the category lists,
+    /// `~/Library/Caches` for [`MANAGED_LIBRARY_CACHES`].
+    pub(crate) relative: &'static str,
+    /// What the directory holds, why removal is appropriate, and the source
+    /// that establishes it. Where no vendor documentation exists, say so and
+    /// name what was observed instead.
+    pub(crate) evidence: &'static str,
+}
+
+/// Whether every entry carries non-empty, non-whitespace evidence.
+///
+/// `const` so each list is checked while compiling; the owning modules also
+/// assert it in a test that names the offending path.
+pub(crate) const fn evidence_is_present(entries: &[DeletionEntry]) -> bool {
+    let mut index = 0;
+    while index < entries.len() {
+        if !evidence_is_meaningful(entries[index].evidence) {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+/// Whether one evidence string says anything at all. Whitespace does not count,
+/// so `" "` fails the same way `""` does: the point is to make a missing
+/// justification impossible to ship, and a space is a missing justification.
+pub(crate) const fn evidence_is_meaningful(evidence: &str) -> bool {
+    let bytes = evidence.as_bytes();
+    let mut byte = 0;
+    while byte < bytes.len() {
+        if !bytes[byte].is_ascii_whitespace() {
+            return true;
+        }
+        byte += 1;
+    }
+    false
+}
+
+const _: () = assert!(
+    evidence_is_present(MANAGED_LIBRARY_CACHES),
+    "every managed Library cache needs evidence for why it may be deleted"
+);
+
+pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
+    DeletionEntry {
+        label: "Playwright browser cache",
+        relative: "ms-playwright",
+        evidence: "Playwright's own docs describe this as the downloaded browser \
+                   location, re-created by `npx playwright install`.",
+    },
+    DeletionEntry {
+        label: "VS Code update staging cache",
+        relative: "com.microsoft.VSCode.ShipIt",
+        evidence: "Squirrel.Mac update staging. Regenerated on the next update \
+                   check; removing it mid-update interrupts that update.",
+    },
+    DeletionEntry {
+        label: "VS Code cache",
+        relative: "com.microsoft.VSCode",
+        evidence: "Electron/Chromium HTTP cache. VS Code keeps user data and \
+                   state under `~/Library/Application Support/Code`, not here.",
+    },
+    DeletionEntry {
+        label: "SwiftPM cache",
+        relative: "org.swift.swiftpm",
+        evidence: "Shared manifest/repository cache and the package-collection \
+                   index. Authoritative configuration lives outside Caches, in \
+                   `~/Library/org.swift.swiftpm/configuration`.",
+    },
     // `Caches/JetBrains` is deliberately absent. On macOS that is the IDE
     // *system directory*, not a cache: each `<Product><Version>` subdirectory
     // holds `LocalHistory`, the per-file change history the IDE keeps for files
@@ -620,9 +696,26 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[(&str, &str)] = &[
     // nothing regenerates — deleting them loses MCP debugging history rather
     // than costing a re-fetch. Undocumented by the vendor, so its contents
     // cannot be characterised with confidence either.
-    ("pip package cache", "pip"),
-    ("pnpm metadata cache", "pnpm"),
-    ("GitHub CLI cache", "gh"),
+    DeletionEntry {
+        label: "pip package cache",
+        relative: "pip",
+        evidence: "pip's caching documentation describes the HTTP and wheel \
+                   cache here, cleared by `pip cache purge`.",
+    },
+    DeletionEntry {
+        label: "pnpm metadata cache",
+        relative: "pnpm",
+        evidence: "pnpm's `cacheDir` (metadata and dlx). Deliberately NOT the \
+                   content-addressable store at `~/Library/pnpm/store`, which \
+                   every installed `node_modules` hard-links into.",
+    },
+    DeletionEntry {
+        label: "GitHub CLI cache",
+        relative: "gh",
+        evidence: "`gh` API-response cache. Credentials live in \
+                   `~/.config/gh/hosts.yml` or the keychain, never here; the \
+                   cache may hold private API response bodies.",
+    },
     // `Caches/deno` is deliberately absent. On macOS it is `DENO_DIR`, not a
     // module cache alone: `location_data/<hash>/kv.sqlite3` is where every
     // `Deno.openKv()` opened without an explicit path stores its database, and
@@ -633,8 +726,20 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[(&str, &str)] = &[
     // typical use. The one part that is not a pure rebuild is the fuzz corpus
     // kept beneath it: those coverage-expanding inputs come back only by
     // fuzzing again.
-    ("Go build cache", "go-build"),
-    ("TypeScript server cache", "typescript"),
+    DeletionEntry {
+        label: "Go build cache",
+        relative: "go-build",
+        evidence: "`go help cache`: clearing it should not be necessary in \
+                   typical use, i.e. it rebuilds. The fuzz corpus kept beneath \
+                   it is the one part that returns only by fuzzing again.",
+    },
+    DeletionEntry {
+        label: "TypeScript server cache",
+        relative: "typescript",
+        evidence: "Automatic type-acquisition cache (`<version>/node_modules/\
+                   @types`). Clearing it is the vendor's documented fix for a \
+                   corrupt acquisition.",
+    },
 ];
 
 fn is_managed_library_subpath(relative: &Path) -> bool {
@@ -658,7 +763,7 @@ fn is_managed_library_subpath(relative: &Path) -> bool {
     MANAGED.iter().copied().any(covered)
         || MANAGED_LIBRARY_CACHES
             .iter()
-            .any(|(_, name)| covered(&format!("Caches/{name}")))
+            .any(|entry| covered(&format!("Caches/{}", entry.relative)))
 }
 
 fn abs(path: &Path) -> PathBuf {
@@ -1305,6 +1410,22 @@ mod tests {
     /// carve-out silently stopped applying, the cache category would preview
     /// paths the sink then refuses, and this test would fail rather than pass
     /// vacuously alongside the protected ones.
+    /// The compiler forces `evidence` to exist; this forces it to say
+    /// something, and names the entry that does not. It iterates the production
+    /// list rather than a copy of it, so a new entry is covered the moment it
+    /// is added.
+    #[test]
+    fn every_managed_library_cache_carries_evidence() {
+        for entry in MANAGED_LIBRARY_CACHES {
+            assert!(
+                !entry.evidence.trim().is_empty(),
+                "missing deletion evidence: Library/Caches/{}",
+                entry.relative
+            );
+        }
+        assert!(evidence_is_present(MANAGED_LIBRARY_CACHES));
+    }
+
     #[test]
     fn managed_library_caches_are_exact_exceptions() {
         let home = Path::new("/Users/example");
@@ -1315,7 +1436,8 @@ mod tests {
         // containing `..` would therefore be previewed under one spelling and
         // matched under another, letting a target outside the carve-out reach
         // the deletion sink. Nothing but this assertion prevents that.
-        for (_, name) in MANAGED_LIBRARY_CACHES {
+        for entry in MANAGED_LIBRARY_CACHES {
+            let name = entry.relative;
             let mut components = Path::new(name).components();
             assert!(
                 matches!(components.next(), Some(std::path::Component::Normal(_))),
@@ -1323,7 +1445,8 @@ mod tests {
             );
             assert!(components.next().is_none(), "{name} must be a single name");
         }
-        for (_, name) in MANAGED_LIBRARY_CACHES {
+        for entry in MANAGED_LIBRARY_CACHES {
+            let name = entry.relative;
             let root = home.join("Library/Caches").join(name);
             assert!(!is_protected(&root, home), "{name}");
             assert!(!is_protected(&root.join("nested/file"), home), "{name}");

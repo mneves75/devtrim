@@ -582,4 +582,18 @@ bash "$subject/scripts/release.sh" 1.2.3 >/dev/null
 [[ "$(< "$homebrew_invocations")" == "1.2.3" ]] ||
   fail "production release did not invoke Homebrew publication exactly once"
 
+# The planted-violation gate only protects the boundaries it runs against, so
+# every place that claims to run it must actually invoke it. Dropping the call
+# from one workflow would otherwise leave a green release with no proof that the
+# named safety assertions can still fail.
+for planted_host in \
+  "$repo_root/scripts/verify.sh" \
+  "$ci_workflow" \
+  "$release_workflow"; do
+  require_fixed "$planted_host" "scripts/tests/planted-violations.py"
+done
+if grep -Fq "planted-violations.py" "$release_script"; then
+  fail "credential-bearing release script must not run the planted-violation gate"
+fi
+
 echo "release-policy: all checks passed"

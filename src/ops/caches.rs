@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::report::TargetAuthority;
-use crate::safety::{Ctx, escalate};
+use crate::safety::{Ctx, DeletionEntry, escalate};
 
 pub struct Caches;
 
@@ -16,24 +16,63 @@ pub struct Caches;
 /// [`crate::safety::MANAGED_LIBRARY_CACHES`], rather than twice under two
 /// spellings — two findings sharing one label would read as a duplicate rather
 /// than as two places.
-const CACHES: &[(&str, &str)] = &[
-    ("huggingface model cache", ".cache/huggingface/hub"),
-    ("uv package cache", ".cache/uv"),
-    // Corepack keeps its downloaded package-manager versions in
-    // `.cache/node/corepack`, so this one entry covers both.
-    ("node core cache", ".cache/node"),
-    ("bun package cache", ".bun/install/cache"),
-    ("cargo registry download cache", ".cargo/registry/cache"),
-    ("cargo registry sources", ".cargo/registry/src"),
+const CACHES: &[DeletionEntry] = &[
+    DeletionEntry {
+        label: "huggingface model cache",
+        relative: ".cache/huggingface/hub",
+        evidence: "Model snapshots re-downloaded on next use. Scoped to `hub` \
+                   so the sibling tokens and settings are never authority.",
+    },
+    DeletionEntry {
+        label: "uv package cache",
+        relative: ".cache/uv",
+        evidence: "uv's package cache, refilled on the next resolve. A source \
+                   distribution here can carry its own `.git`, which the \
+                   repository-root refusal then blocks — expected, not a bug.",
+    },
+    DeletionEntry {
+        label: "node core cache",
+        relative: ".cache/node",
+        evidence: "Node's XDG cache. Corepack keeps its downloaded \
+                   package-manager versions in `.cache/node/corepack`, so this \
+                   one entry covers both and neither is listed twice.",
+    },
+    DeletionEntry {
+        label: "bun package cache",
+        relative: ".bun/install/cache",
+        evidence: "Bun's documented global install cache; `bun pm cache rm` is \
+                   the vendor equivalent. Existing `node_modules` are untouched.",
+    },
+    DeletionEntry {
+        label: "cargo registry download cache",
+        relative: ".cargo/registry/cache",
+        evidence: "Cargo's own guide states any part of this cache may be \
+                   removed and Cargo restores sources by re-downloading.",
+    },
+    DeletionEntry {
+        label: "cargo registry sources",
+        relative: ".cargo/registry/src",
+        evidence: "Unpacked form of the `.crate` archives above; Cargo \
+                   re-extracts or re-downloads it, which is why Cargo's own CI \
+                   guidance excludes it from caching.",
+    },
 ];
+
+const _: () = assert!(
+    crate::safety::evidence_is_present(CACHES),
+    "every built-in cache needs evidence for why it may be deleted"
+);
 
 /// The `~/Library/Caches` half of the same list, derived from the closed
 /// carve-out in the protection boundary so a cache can never be previewed
 /// without also being deletable, or protected without also being unlisted.
 fn library_caches(home: &Path) -> impl Iterator<Item = (&'static str, PathBuf)> {
-    crate::safety::MANAGED_LIBRARY_CACHES
-        .iter()
-        .map(|(label, name)| (*label, home.join("Library/Caches").join(name)))
+    crate::safety::MANAGED_LIBRARY_CACHES.iter().map(|entry| {
+        (
+            entry.label,
+            home.join("Library/Caches").join(entry.relative),
+        )
+    })
 }
 
 impl Op for Caches {
@@ -47,11 +86,11 @@ impl Op for Caches {
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        for (label, relative) in CACHES {
-            let path = ctx.home.join(relative);
+        for entry in CACHES {
+            let path = ctx.home.join(entry.relative);
             let size = dir_size(&path)?;
             if size > 0 {
-                findings.push(cache_finding(label, path, size, 3));
+                findings.push(cache_finding(entry.label, path, size, 3));
             }
         }
         for (label, path) in library_caches(&ctx.home) {
@@ -141,9 +180,7 @@ fn authorize_cache_finding(finding: &Finding, home: &Path) -> Result<()> {
 }
 
 fn is_builtin_cache_root(path: &Path, home: &Path) -> bool {
-    CACHES
-        .iter()
-        .any(|(_, relative)| path == home.join(relative))
+    CACHES.iter().any(|entry| path == home.join(entry.relative))
         || library_caches(home).any(|(_, candidate)| path == candidate)
 }
 /// Owner-reported paths are trusted only inside the owner's exact cache namespace.
@@ -298,6 +335,17 @@ mod tests {
     /// The managed `~/Library/Caches` list is authority for exactly its own
     /// entries. Paired assertions: every listed root is accepted (so the list is
     /// live, not dead code) and a neighbour sharing a prefix is not.
+    #[test]
+    fn every_built_in_cache_carries_evidence() {
+        for entry in CACHES {
+            assert!(
+                !entry.evidence.trim().is_empty(),
+                "missing deletion evidence: {}",
+                entry.relative
+            );
+        }
+    }
+
     #[test]
     fn library_cache_authority_matches_the_protection_carve_out() {
         let home = Path::new("/Users/example");

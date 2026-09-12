@@ -73,6 +73,21 @@ positive control. Precedent, by searchable phrase: a surviving sentinel in
 the fuzz oracle is not vacuously false in `fuzz/fuzz_targets/validate_path.rs`
 (`A real existing-parent control`).
 
+**Planted-violation proof.** For a new or changed safety-refusal assertion,
+show three things: that the fixture reaches the intended boundary, that an
+eligible control still succeeds, and that deliberately permitting the forbidden
+case fails *that* assertion. A count, survival alone, or text the target path
+already contains is not proof — an unrelated refusal satisfies all three. Where
+the branch can be mutated repeatably, add it to
+`scripts/tests/planted-violations.py`, which tags the assertion and rejects a
+mutant that fails elsewhere, does not compile, or selects no test. That script
+covers only the cases it names; every other assertion is review's to judge.
+
+Precedent, by searchable phrase: `PV agents/history-symlink` in
+`src/ops/agents.rs` — deleting the symlink branch alone is not enough there,
+because the file-type check below also rejects a link, so the mutation makes a
+symlink positively eligible instead.
+
 ### S2 — Change-detector tests
 
 **Hard.** A test that mirrors *how* the code works instead of *what* it does:

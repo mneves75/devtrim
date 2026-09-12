@@ -1414,6 +1414,33 @@ fn agent_cleanup_removes_only_stale_history_and_regenerable_caches() {
     age(&credentials);
     age(&configuration);
 
+    // The preview must disclose the interruption risk before anything is
+    // applied, and in BOTH renderings: a warning present only in the JSON
+    // envelope is invisible to the person actually running the command.
+    let preview = run(&sandbox, &["clean", "agents", "--json"]);
+    let previewed = json(&preview);
+    let cache_note = previewed["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["label"] == "Claude Code metadata cache")
+        .map(|finding| finding["note"].as_str().unwrap().to_string())
+        .expect("the regenerable cache must be previewed");
+    for phrase in ["interrupt", "close agents"] {
+        assert!(
+            cache_note.contains(phrase),
+            "agent cache preview must disclose active-session interruption: {cache_note}"
+        );
+    }
+    let human = run(&sandbox, &["clean", "agents"]);
+    let human = String::from_utf8_lossy(&human.stdout);
+    for phrase in ["interrupt", "close agents"] {
+        assert!(
+            human.contains(phrase),
+            "the human preview must carry the same warning as the JSON one"
+        );
+    }
+
     let output = run(
         &sandbox,
         &["clean", "agents", "--apply", "--shred", "--yolo", "--json"],

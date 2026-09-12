@@ -2,7 +2,22 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.9.2] - Unreleased
+## [0.9.2] - 2026-09-12
+
+Every closed-list entry in 0.9.1 was justified by a doc comment covering several
+entries at once, and nothing failed if one arrived with no justification at all.
+Six entries had already reached a release on the strength of a directory *name*.
+This release makes that impossible to repeat quietly.
+
+### Added
+- Evidence is now a required field, not a comment. `safety::DeletionEntry` carries `label`, `relative` and `evidence`, and `HistoryRoot` gains the same field, so a new deletion-list entry without evidence **does not compile** (`E0063`) and one whose evidence is empty or whitespace fails a const assertion while compiling. A test additionally names the offending path. Each of the four lists — the two agent tiers, the built-in caches, and the `~/Library/Caches` carve-out — now states per entry what the directory holds and the source that establishes it, including `.codex/cache` recorded honestly as inspection-only because no vendor documentation describes it
+- `scripts/tests/planted-violations.py`: a gate that proves named safety assertions can still fail. It breaks each guarded branch on a throwaway copy of the source and requires the *tagged* assertion to fail, rejecting a mutant that does not compile, selects no test, or fails at a different check — devtrim had already shipped a symlink-refusal assertion that could not fail, and nothing noticed for several commits. Two fixed cases, not a mutation framework: `cargo-mutants` counts a mutant as caught when *any* test fails, which is exactly the confusion this removes. Runs in `verify.sh offline`, CI, and the read-only release job in about 14 seconds; `release-policy.sh` requires all three invocations and forbids a fourth in the credential-bearing script
+- `CODING_STANDARDS.md S1` gains a citable **planted-violation proof** rule with a worked example, rather than a competing new rule
+
+### Changed
+- The regenerable agent tier no longer under-warns. Its finding note said "rebuilt on demand by the agent", which describes the content coming back but not the cost of removing it from under a running agent; it now reads "rebuilt on demand; cleanup may interrupt an active session, so close agents first". No vendor documents these directories as removable mid-session, and Trash-first is *recovery* rather than safety — `--shred` removes even that. A CLI test asserts the warning reaches both the JSON envelope and the human preview, since a warning only machines can see is not a warning
+
+## [0.9.3] - Unreleased
 
 ## [0.9.1] - 2026-09-11
 

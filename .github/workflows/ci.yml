@@ -142,6 +142,7 @@ jobs:
           cargo build --locked
           python3 scripts/tests/tui.py target/debug/devtrim
           python3 scripts/tests/read-only-views.py target/debug/devtrim
+          python3 scripts/tests/planted-violations.py
 
       - name: MSRV tests
         run: |

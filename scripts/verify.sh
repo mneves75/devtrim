@@ -42,6 +42,7 @@ if [[ "$mode" == offline ]]; then
   run shellcheck scripts/tests/shellcheck-tracked.sh
   run workflow actionlint
   run release-policy bash scripts/tests/release-policy.sh
+  run planted-violations python3 scripts/tests/planted-violations.py
   run msrv rustup run 1.88.0 cargo test --locked --all-targets --all-features
   run audit cargo audit --no-fetch
   run fuzz-audit cargo audit --no-fetch --file fuzz/Cargo.lock
@@ -52,6 +53,6 @@ if [[ "$mode" == offline ]]; then
 fi
 
 if [[ "$mode" == focused ]]; then
-  echo "Not run: offline-mode MSRV, shell/workflow/policy checks, cached audits, and Gitleaks."
+  echo "Not run: offline-mode MSRV, shell/workflow/policy checks, planted violations, cached audits, and Gitleaks."
 fi
 printf '%s\n' "$mode checks complete. Not run: online advisory refresh, TruffleHog, bounded fuzzing, video install/audit/lint/format/build, release artifact verification, autoreview."

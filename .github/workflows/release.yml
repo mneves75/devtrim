@@ -240,6 +240,7 @@ jobs:
           cargo build --locked
           python3 scripts/tests/tui.py target/debug/devtrim
           python3 scripts/tests/read-only-views.py target/debug/devtrim
+          python3 scripts/tests/planted-violations.py
 
       - name: Video install, audit, lint, format, and build
         working-directory: video
