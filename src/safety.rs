@@ -709,13 +709,12 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
                    content-addressable store at `~/Library/pnpm/store`, which \
                    every installed `node_modules` hard-links into.",
     },
-    DeletionEntry {
-        label: "GitHub CLI cache",
-        relative: "gh",
-        evidence: "`gh` API-response cache. Credentials live in \
-                   `~/.config/gh/hosts.yml` or the keychain, never here; the \
-                   cache may hold private API response bodies.",
-    },
+    // `Caches/gh` is deliberately absent, and it is the reason this field
+    // exists. It shipped in 0.9.1 and 0.9.2 on the strength of its name: go-gh
+    // resolves the CLI's cache to `$XDG_CACHE_HOME/gh` or `~/.cache/gh` and
+    // never to `~/Library/Caches` by default, so the directory devtrim was
+    // authorizing belongs to an unidentified owner unless `XDG_CACHE_HOME`
+    // happens to point here. gh's real cache is listed in `caches::CACHES`.
     // `Caches/deno` is deliberately absent. On macOS it is `DENO_DIR`, not a
     // module cache alone: `location_data/<hash>/kv.sqlite3` is where every
     // `Deno.openKv()` opened without an explicit path stores its database, and
@@ -1410,10 +1409,12 @@ mod tests {
     /// carve-out silently stopped applying, the cache category would preview
     /// paths the sink then refuses, and this test would fail rather than pass
     /// vacuously alongside the protected ones.
-    /// The compiler forces `evidence` to exist; this forces it to say
-    /// something, and names the entry that does not. It iterates the production
-    /// list rather than a copy of it, so a new entry is covered the moment it
-    /// is added.
+    /// The const assertion above rejects empty and ASCII-whitespace evidence
+    /// while compiling, so those cases never reach a test — the crate does not
+    /// build at all. What is left for a test is the gap that assertion cannot
+    /// see: `is_ascii_whitespace` accepts non-ASCII blanks such as U+00A0, which
+    /// `str::trim` strips. That is the case proven below, and it is the only one
+    /// this test can catch.
     #[test]
     fn every_managed_library_cache_carries_evidence() {
         for entry in MANAGED_LIBRARY_CACHES {
@@ -1424,6 +1425,16 @@ mod tests {
             );
         }
         assert!(evidence_is_present(MANAGED_LIBRARY_CACHES));
+        // The gap itself: a non-ASCII blank passes the const check and must be
+        // caught here. Planting one in a real entry proves this is not vacuous.
+        assert!(
+            evidence_is_meaningful("\u{a0}"),
+            "the const check accepts U+00A0"
+        );
+        assert!(
+            "\u{a0}".trim().is_empty(),
+            "so the test must be the one to reject it"
+        );
     }
 
     #[test]

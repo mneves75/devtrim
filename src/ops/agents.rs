@@ -435,9 +435,12 @@ mod tests {
             .unwrap();
     }
 
-    /// Both lists in this module, checked the same way: the compiler requires
-    /// the field, this requires it to carry something, and the failure names
-    /// the path so a new entry is obvious.
+    /// The const assertion above rejects empty and ASCII-whitespace evidence
+    /// while compiling, so those cases never reach a test — the crate does not
+    /// build at all. What is left for a test is the gap that assertion cannot
+    /// see: `is_ascii_whitespace` accepts non-ASCII blanks such as U+00A0, which
+    /// `str::trim` strips. That is the case proven below, and it is the only one
+    /// this test can catch.
     #[test]
     fn every_agent_entry_carries_evidence() {
         for entry in REGENERABLE {

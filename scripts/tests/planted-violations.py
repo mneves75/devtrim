@@ -144,8 +144,24 @@ def selected_exactly_one(output: str) -> bool:
 
 
 def main() -> int:
-    deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS
+    """Every exit path removes the scratch tree.
+
+    `fail()` exits through `SystemExit` and a build can raise `TimeoutExpired`,
+    so cleanup cannot live at the end of the happy path: each early exit would
+    otherwise leave a full source copy and an `--all-features` debug build under
+    `target/`. The likeliest failures — `--offline` without a fetched
+    dependency, or the pinned toolchain missing — happen *after* the copy, in a
+    gate developers run locally.
+    """
     scratch = REPOSITORY / "target" / f"planted-violations-{int(time.time())}"
+    try:
+        return run_cases(scratch)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def run_cases(scratch: Path) -> int:
+    deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS
     workspace = scratch / "src-copy"
     target_dir = scratch / "cargo-target"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -219,7 +235,6 @@ def main() -> int:
     for line in caught:
         print(line)
     print(f"planted-violations: {len(caught)} boundary/ies proven covered")
-    shutil.rmtree(scratch, ignore_errors=True)
     return 0
 
 

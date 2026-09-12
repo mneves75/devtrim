@@ -44,6 +44,16 @@ const CACHES: &[DeletionEntry] = &[
                    the vendor equivalent. Existing `node_modules` are untouched.",
     },
     DeletionEntry {
+        label: "GitHub CLI cache",
+        relative: ".cache/gh",
+        evidence: "go-gh resolves the CLI cache to `$XDG_CACHE_HOME/gh`, then \
+                   `~/.cache/gh`; never `~/Library/Caches` on macOS. Verified \
+                   present here with `XDG_CACHE_HOME` unset. Holds API \
+                   responses and the sigstore trust cache, both re-fetched. \
+                   Credentials live in `~/.config/gh/hosts.yml` or the keychain, \
+                   never here — though cached private API bodies can.",
+    },
+    DeletionEntry {
         label: "cargo registry download cache",
         relative: ".cargo/registry/cache",
         evidence: "Cargo's own guide states any part of this cache may be \
@@ -332,9 +342,12 @@ mod tests {
         crate::ops::remove_test_path(home);
     }
 
-    /// The managed `~/Library/Caches` list is authority for exactly its own
-    /// entries. Paired assertions: every listed root is accepted (so the list is
-    /// live, not dead code) and a neighbour sharing a prefix is not.
+    /// The const assertion above rejects empty and ASCII-whitespace evidence
+    /// while compiling, so those cases never reach a test — the crate does not
+    /// build at all. What is left for a test is the gap that assertion cannot
+    /// see: `is_ascii_whitespace` accepts non-ASCII blanks such as U+00A0, which
+    /// `str::trim` strips. That is the case proven below, and it is the only one
+    /// this test can catch.
     #[test]
     fn every_built_in_cache_carries_evidence() {
         for entry in CACHES {

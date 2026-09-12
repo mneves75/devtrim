@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.9.2.
+This source tree and its packaged documentation describe devtrim v0.9.3.
 
 ## Install
 
@@ -168,7 +168,7 @@ built against, so the honest trade was to leave it alone.
 
 `clean caches` also reaches a closed list of exact `~/Library/Caches`
 subdirectories — Playwright browsers, the VS Code HTTP cache and its Squirrel
-update staging, SwiftPM, pip, pnpm, GitHub CLI, Go and TypeScript. `~/Library` stays protected
+update staging, SwiftPM, pip, pnpm, Go and TypeScript. `~/Library` stays protected
 wholesale; that list is the carve-out, it is the same constant the protection
 boundary reads, and a name is only on it when one developer tool owns the
 directory and rebuilds it on demand.

@@ -10,14 +10,26 @@ Six entries had already reached a release on the strength of a directory *name*.
 This release makes that impossible to repeat quietly.
 
 ### Added
-- Evidence is now a required field, not a comment. `safety::DeletionEntry` carries `label`, `relative` and `evidence`, and `HistoryRoot` gains the same field, so a new deletion-list entry without evidence **does not compile** (`E0063`) and one whose evidence is empty or whitespace fails a const assertion while compiling. A test additionally names the offending path. Each of the four lists — the two agent tiers, the built-in caches, and the `~/Library/Caches` carve-out — now states per entry what the directory holds and the source that establishes it, including `.codex/cache` recorded honestly as inspection-only because no vendor documentation describes it
+- Evidence is now a required field, not a comment. `safety::DeletionEntry` carries `label`, `relative` and `evidence`, and `HistoryRoot` gains the same field, so a new deletion-list entry without evidence **does not compile** (`E0063`) and one whose evidence is empty or whitespace fails a const assertion while compiling. Each of the four lists — the two agent tiers, the built-in caches, and the `~/Library/Caches` carve-out — now states per entry what the directory holds and the source that establishes it, including `.codex/cache` recorded honestly as inspection-only because no vendor documentation describes it
 - `scripts/tests/planted-violations.py`: a gate that proves named safety assertions can still fail. It breaks each guarded branch on a throwaway copy of the source and requires the *tagged* assertion to fail, rejecting a mutant that does not compile, selects no test, or fails at a different check — devtrim had already shipped a symlink-refusal assertion that could not fail, and nothing noticed for several commits. Two fixed cases, not a mutation framework: `cargo-mutants` counts a mutant as caught when *any* test fails, which is exactly the confusion this removes. Runs in `verify.sh offline`, CI, and the read-only release job in about 14 seconds; `release-policy.sh` requires all three invocations and forbids a fourth in the credential-bearing script
 - `CODING_STANDARDS.md S1` gains a citable **planted-violation proof** rule with a worked example, rather than a competing new rule
 
 ### Changed
 - The regenerable agent tier no longer under-warns. Its finding note said "rebuilt on demand by the agent", which describes the content coming back but not the cost of removing it from under a running agent; it now reads "rebuilt on demand; cleanup may interrupt an active session, so close agents first". No vendor documents these directories as removable mid-session, and Trash-first is *recovery* rather than safety — `--shred` removes even that. A CLI test asserts the warning reaches both the JSON envelope and the human preview, since a warning only machines can see is not a warning
 
-## [0.9.3] - Unreleased
+## [0.9.3] - 2026-09-12
+
+A retroactive review of the shipped 0.9.2 commit — run because the release
+attestation had been given without it — found that the release which made
+evidence mandatory shipped an entry with false evidence.
+
+### Fixed
+- `~/Library/Caches/gh` leaves the carve-out. Its evidence called it the GitHub CLI's API-response cache, but go-gh resolves that cache to `$XDG_CACHE_HOME/gh` and then `~/.cache/gh`, never to `~/Library/Caches` on macOS. Verified here: `XDG_CACHE_HOME` is unset, `~/.cache/gh` exists with content, and `~/Library/Caches/gh` does not exist at all. The entry was therefore authorized on the strength of its *name* — the exact thing 0.9.2's own convention calls insufficient — and it had been carrying that authority since 0.9.1
+- gh's real cache is now covered: `~/.cache/gh` joins the built-in list with evidence that states the resolution order, the verification, and that cached private API response bodies can live there even though credentials cannot
+- The three `carries_evidence` tests could not fail for the cases their documentation described. The const assertion rejects empty and ASCII-whitespace evidence *while compiling*, so such a crate never builds and no test runs; the 0.9.2 changelog's claim that "a test additionally names the offending path" was unobservable, and the commit's claim to have proven it was mistaken — that proof had shown the const assertion firing. Each test is now scoped to the one gap the const check cannot see, a non-ASCII blank such as U+00A0 that `str::trim` strips, and proven on it
+- `planted-violations.py` removed its scratch tree only on success. Every `fail()` and an uncaught build timeout exited first, leaving a full source copy and an `--all-features` debug build — about 558 MB each — under `target/`. The likeliest failures are the early ones, in a gate developers run locally. Cleanup now runs in a `finally`, verified on both the success and failure paths
+
+## [0.9.4] - Unreleased
 
 ## [0.9.1] - 2026-09-11
 
