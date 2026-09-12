@@ -100,6 +100,14 @@ CASES = (
         marker="PV evidence/agents",
     ),
     Case(
+        name='evidence/agents-history',
+        relative_path='src/ops/agents.rs',
+        before='HistoryRoot {\n        label: "Claude Code shell snapshots",\n        relative: ".claude/shell-snapshots",\n        depth: 1,\n        evidence: "Vendor-documented: one snapshot per session, applied by the \\\n                   Bash tool to each command, and swept by Claude Code\'s own \\\n                   `cleanupPeriodDays` retention since v2.1.117 — so age is the \\\n                   vendor\'s own criterion here. Not rewritten if removed \\\n                   mid-session.",\n    },\n',
+        after='HistoryRoot {\n        label: "Claude Code shell snapshots",\n        relative: ".claude/shell-snapshots",\n        depth: 1,\n        evidence: "\\u{a0}",\n    },\n',
+        tests=('ops::agents::tests::every_agent_entry_carries_evidence',),
+        marker="PV evidence/agents-history",
+    ),
+    Case(
         name="agents/apply-namespace",
         relative_path="src/ops/agents.rs",
         before="                authorize(target, ctx)?;\n",

@@ -439,9 +439,10 @@ mod tests {
     /// while compiling, so those cases never reach a test — the crate does not
     /// build at all. What is left for a test is the gap that assertion cannot
     /// see: `is_ascii_whitespace` accepts non-ASCII blanks such as U+00A0, which
-    /// `str::trim` strips. That is the only case this loop can catch, and
-    /// `scripts/tests/planted-violations.py` (`evidence/agents`) plants exactly
-    /// it.
+    /// `str::trim` strips. That is the only case these loops can catch. Both
+    /// are proven separately — `evidence/agents` for `REGENERABLE` and
+    /// `evidence/agents-history` for `HISTORY` — because two loops behind one
+    /// marker would let either be deleted while the other kept the gate green.
     #[test]
     fn every_agent_entry_carries_evidence() {
         for entry in REGENERABLE {
@@ -454,7 +455,7 @@ mod tests {
         for root in HISTORY {
             assert!(
                 !root.evidence.trim().is_empty(),
-                "PV evidence/agents: missing deletion evidence: {}",
+                "PV evidence/agents-history: missing deletion evidence: {}",
                 root.relative
             );
         }
