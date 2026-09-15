@@ -2,6 +2,14 @@
 
 ## Current state (0.9.6)
 
+Production is verified. `v0.9.6-beta1` and `v0.9.6` both point at `2d00795`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`c52e54f2490159bb6aa6c7733b48229b731156b0dedacc1ca0d6dceab0758f69`) and is
+immutable. The downloaded beta passed checksum, attestation, the PTY TUI flow
+and read-only views, and failed 0 of 10 real node-modules previews at load
+average 170-276 where released 0.9.5 failed 2 of 10. Homebrew installs and
+tests 0.9.6 as the sole visible `devtrim`.
+
 0.9.6 fixes a liveness probe that refused too often to be trusted. Using 0.9.5
 for real, `clean artifacts --apply` refused with "lsof cwd probe exited with
 status 1"; the probe reproduced at 2 of 5 runs and the released binary's
