@@ -2,6 +2,20 @@
 
 ## Current state (0.9.5)
 
+Production is verified. `v0.9.5-beta1` and `v0.9.5` both point at `d019459`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`490e5e3d86ff3ed9edfe3847e16ae473555afee02a7010b1131993f772d88061`), the
+release is immutable, and the attestation verifies against the release commit
+with self-hosted runners denied. The first production publisher attempt failed
+in "Revalidate publication state" on `unexpected end of JSON input` — an empty
+GitHub API response, before anything was published, with `main` and both tags
+unchanged — so only that job was rerun, which kept the digest-bound inputs; the
+script's post-publish verification and `scripts/update-homebrew.sh 0.9.5` were
+then run by hand. The downloaded beta passed the PTY TUI flow and read-only
+views, and its live previews on this Mac showed the simulator disclosure, no
+`.DS_Store` finding, and the corrected Docker notes. Homebrew installs and
+tests 0.9.5 as the sole visible `devtrim`.
+
 0.9.5 came from *using* devtrim on a Mac down to 1.7 GB free and comparing its
 plan with what actually held the space. The tool's safety held; its picture of
 the disk did not. Simulators that still work held 101 GB across 26 devices

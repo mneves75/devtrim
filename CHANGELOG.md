@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.9.6] - Unreleased
+
 ## [0.9.5] - 2026-09-15
 
 Found by using devtrim on a Mac that had run down to 1.7 GB free, and comparing
