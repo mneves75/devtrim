@@ -1691,7 +1691,7 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
     let record = format!("printf '%s\\n' \"${{0##*/}} $*\" >> '{}'", log.display());
     sandbox.script(
         "pgrep",
-        &format!("{record}\ncase \"$*\" in \"-x xcodebuild|SWBBuildService|XCBBuildService|Xcode\") exit 1 ;; esac\nprintf '4242\\n'"),
+        &format!("{record}\ncase \"$*\" in \"-a -x xcodebuild|SWBBuildService|XCBBuildService|Xcode\") exit 1 ;; esac\nprintf '4242\\n'"),
     );
     sandbox.script(
         "lsof",
@@ -1728,7 +1728,7 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
     let count = |needle: &str| spawns.lines().filter(|line| line.contains(needle)).count();
     // node_modules and artifacts both need the build-process probe and the
     // owning repo's last commit; one scan pays for each exactly once.
-    assert_eq!(count("pgrep -x node|"), 1, "{spawns}");
+    assert_eq!(count("pgrep -a -x node|"), 1, "{spawns}");
     assert_eq!(count("lsof "), 1, "{spawns}");
     assert_eq!(
         count(" log --no-show-signature -1 --format=%cs"),
@@ -1742,7 +1742,7 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
         sandbox.script(
             "pgrep",
             &format!(
-                "{record}\ncase \"$*\" in \"-x xcodebuild|SWBBuildService|XCBBuildService|Xcode\") exit 1 ;; esac\n{}",
+                "{record}\ncase \"$*\" in \"-a -x xcodebuild|SWBBuildService|XCBBuildService|Xcode\") exit 1 ;; esac\n{}",
                 if failed_probe == "liveness" {
                     "exit 2"
                 } else {
@@ -1768,7 +1768,7 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
         assert_eq!(
             spawns
                 .lines()
-                .filter(|line| line.contains("pgrep -x node|"))
+                .filter(|line| line.contains("pgrep -a -x node|"))
                 .count(),
             1,
             "{spawns}"

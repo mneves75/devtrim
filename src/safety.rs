@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
 use std::os::unix::ffi::OsStringExt;
@@ -969,25 +970,102 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTim
 
 const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake";
 
+/// `pgrep` matching shared by every liveness probe. `-a` keeps devtrim's own
+/// ancestors in the list: pgrep omits them by default, and a `make` or
+/// `npm run` that invokes devtrim from inside a build is exactly the process
+/// whose repository must not lose its dependencies.
+const PGREP_MATCH_ARGS: [&str; 2] = ["-a", "-x"];
+
 pub(crate) fn build_process_cwds() -> Result<Vec<PathBuf>> {
-    let pgrep = Command::new("pgrep")
-        .args(["-x", BUILD_PROCESS_PATTERN])
-        .output()
-        .context("cannot run build-process pgrep probe")?;
-    let pids = parse_pgrep_pids(&pgrep.stdout, pgrep.status.code())?;
+    let running_build_pids = || -> Result<BTreeSet<u32>> {
+        let pgrep = Command::new("pgrep")
+            .args(PGREP_MATCH_ARGS)
+            .arg(BUILD_PROCESS_PATTERN)
+            .output()
+            .context("cannot run build-process pgrep probe")?;
+        Ok(parse_pgrep_pids(&pgrep.stdout, pgrep.status.code())?
+            .into_iter()
+            .collect())
+    };
+    let cwds_of = |pids: &BTreeSet<u32>| -> Result<LsofCwds> {
+        let pid_list = pids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let lsof = Command::new("lsof")
+            .args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"])
+            .output()
+            .context("cannot run build-process cwd probe")?;
+        parse_lsof_cwds(&lsof.stdout, lsof.status.code())
+    };
+    let pids = running_build_pids()?;
     if pids.is_empty() {
         return Ok(Vec::new());
     }
-    let pid_list = pids
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    let lsof = Command::new("lsof")
-        .args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"])
-        .output()
-        .context("cannot run build-process cwd probe")?;
-    parse_lsof_cwds(&lsof.stdout, lsof.status.code())
+    let first = cwds_of(&pids)?;
+    resolve_build_process_cwds(&pids, first, running_build_pids, cwds_of)
+}
+
+/// Working directories `lsof -F n` reported, the processes it reported them
+/// for, and whether it reported every process it was asked about (exit 0).
+#[derive(Debug)]
+pub(crate) struct LsofCwds {
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) reported: BTreeSet<u32>,
+    pub(crate) complete: bool,
+}
+
+/// Decide whether one `lsof -p <pids> -d cwd` run proves every build process's
+/// working directory.
+///
+/// `lsof` exits 1 when any listed process is missing by the time it looks, and
+/// on a busy machine a short-lived `node` or `python` exits between `pgrep` and
+/// `lsof` routinely — 2 of 5 consecutive probes on the development machine,
+/// each refusing a whole `artifacts` apply. A process that no longer exists
+/// runs no build, so an incomplete run is accepted only when every PID `lsof`
+/// did not report is also absent from a fresh `pgrep`. `lsof` exits 1 the same
+/// way for a process it cannot read, such as another user's; one still running
+/// refuses, because its directory stays unknown.
+///
+/// The fresh `pgrep` can also show a build process that started after the
+/// first one — a build moving to its next step. Its directory was never looked
+/// up, so it is looked up once, and any gap in that second answer refuses
+/// rather than chasing a moving process list.
+pub(crate) fn resolve_build_process_cwds(
+    requested: &BTreeSet<u32>,
+    lsof: LsofCwds,
+    running_now: impl FnOnce() -> Result<BTreeSet<u32>>,
+    cwds_of: impl FnOnce(&BTreeSet<u32>) -> Result<LsofCwds>,
+) -> Result<Vec<PathBuf>> {
+    if let Some(unexpected) = lsof.reported.difference(requested).next() {
+        bail!("lsof reported process {unexpected}, which was not probed");
+    }
+    if lsof.complete {
+        return Ok(lsof.paths);
+    }
+    let unreported: BTreeSet<u32> = requested.difference(&lsof.reported).copied().collect();
+    if unreported.is_empty() {
+        bail!("lsof cwd probe exited with status 1 after reporting every process");
+    }
+    let running = running_now().context("cannot recheck the processes lsof did not report")?;
+    if let Some(pid) = unreported.intersection(&running).next() {
+        bail!("lsof could not read the working directory of running build process {pid}");
+    }
+    let mut paths = lsof.paths;
+    let successors: BTreeSet<u32> = running.difference(requested).copied().collect();
+    if !successors.is_empty() {
+        let later = cwds_of(&successors).context(
+            "cannot read the working directories of build processes that started during the probe",
+        )?;
+        if !later.complete || later.reported != successors {
+            bail!("build processes changed again while their working directories were read");
+        }
+        paths.extend(later.paths);
+        paths.sort();
+        paths.dedup();
+    }
+    Ok(paths)
 }
 
 /// Processes that write DerivedData: command-line builds, the Swift Build and
@@ -997,7 +1075,8 @@ const XCODE_BUILD_PATTERN: &str = "xcodebuild|SWBBuildService|XCBBuildService|Xc
 
 pub(crate) fn xcode_build_running() -> Result<bool> {
     let output = Command::new("pgrep")
-        .args(["-x", XCODE_BUILD_PATTERN])
+        .args(PGREP_MATCH_ARGS)
+        .arg(XCODE_BUILD_PATTERN)
         .output()
         .context("cannot run Xcode build liveness probe")?;
     Ok(!parse_pgrep_pids(&output.stdout, output.status.code())?.is_empty())
@@ -1073,29 +1152,65 @@ fn decode_lsof_name(name: &[u8]) -> Result<Vec<u8>> {
     Ok(decoded)
 }
 
-pub(crate) fn parse_lsof_cwds(output: &[u8], exit_code: Option<i32>) -> Result<Vec<PathBuf>> {
-    match exit_code {
-        Some(0) => {}
+pub(crate) fn parse_lsof_cwds(output: &[u8], exit_code: Option<i32>) -> Result<LsofCwds> {
+    let complete = match exit_code {
+        Some(0) => true,
+        // Exit 1 still carries every process lsof could read; whether the
+        // missing ones matter is `resolve_build_process_cwds`'s decision.
+        Some(1) => false,
         Some(code) => bail!("lsof cwd probe exited with status {code}"),
         None => bail!("lsof cwd probe terminated without an exit status"),
-    }
+    };
     let mut paths = Vec::new();
+    let mut reported = BTreeSet::new();
+    // The process whose fields follow, and whether it has named a cwd yet.
+    let mut current: Option<(u32, bool)> = None;
     for line in output.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if let Some(pid) = line.strip_prefix(b"p") {
+            if let Some((previous, false)) = current {
+                bail!("lsof reported process {previous} without a cwd");
+            }
+            let pid = std::str::from_utf8(pid)
+                .ok()
+                .and_then(|pid| pid.parse::<u32>().ok())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "lsof returned invalid pid `{}`",
+                        String::from_utf8_lossy(pid)
+                    )
+                })?;
+            if !reported.insert(pid) {
+                bail!("lsof reported process {pid} twice");
+            }
+            current = Some((pid, false));
+            continue;
+        }
         let Some(path) = line.strip_prefix(b"n") else {
             continue;
+        };
+        let Some((pid, _)) = current else {
+            bail!("lsof returned a cwd before naming its process");
         };
         if path.is_empty() {
             bail!("lsof returned an empty cwd path");
         }
         paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(path)?)));
+        current = Some((pid, true));
     }
-    if exit_code == Some(0) && paths.is_empty() {
+    if let Some((pid, false)) = current {
+        bail!("lsof reported process {pid} without a cwd");
+    }
+    if complete && paths.is_empty() {
         bail!("lsof reported success without any cwd paths");
     }
     paths.sort();
     paths.dedup();
-    Ok(paths)
+    Ok(LsofCwds {
+        paths,
+        reported,
+        complete,
+    })
 }
 
 #[cfg(test)]
@@ -1663,6 +1778,10 @@ mod tests {
         crate::ops::remove_test_path(root);
     }
 
+    fn cwds_complete_was(output: &[u8], exit: i32) -> bool {
+        parse_lsof_cwds(output, Some(exit)).unwrap().complete
+    }
+
     #[test]
     fn parses_build_process_probe_outputs() {
         assert!(
@@ -1679,10 +1798,210 @@ mod tests {
         assert!(parse_pgrep_pids(b"", Some(2)).is_err());
 
         let cwds = parse_lsof_cwds(b"p12\nfcwd\nn/tmp/a\np34\nfcwd\nn/tmp/b\n", Some(0)).unwrap();
-        assert_eq!(cwds, vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]);
-        assert!(parse_lsof_cwds(b"", Some(1)).is_err());
+        assert_eq!(
+            cwds.paths,
+            vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
+        );
+        assert_eq!(cwds.reported.into_iter().collect::<Vec<_>>(), vec![12, 34]);
+        assert!(cwds_complete_was(b"p12\nfcwd\nn/tmp/a\n", 0));
+        let gone = parse_lsof_cwds(b"", Some(1)).unwrap();
+        assert!(gone.paths.is_empty() && gone.reported.is_empty() && !gone.complete);
         assert!(parse_lsof_cwds(b"", Some(0)).is_err());
-        assert!(parse_lsof_cwds(b"n/tmp\n", Some(3)).is_err());
+        assert!(parse_lsof_cwds(b"p1\nn/tmp\n", Some(3)).is_err());
+        assert!(parse_lsof_cwds(b"p1\nn/tmp\n", None).is_err());
+        for malformed in [
+            &b"n/tmp/orphan\n"[..],
+            b"p12\nfcwd\n",
+            b"p12\np34\nn/tmp/b\n",
+            b"p12\nn/tmp/a\np12\nn/tmp/b\n",
+            b"px\nn/tmp/a\n",
+            b"p\nn/tmp/a\n",
+        ] {
+            assert!(
+                parse_lsof_cwds(malformed, Some(0)).is_err(),
+                "accepted {}",
+                String::from_utf8_lossy(malformed)
+            );
+        }
+    }
+
+    fn pid_set(pids: &[u32]) -> BTreeSet<u32> {
+        pids.iter().copied().collect()
+    }
+
+    #[test]
+    fn lsof_exit_one_passes_only_when_every_unreported_process_is_gone() {
+        let lsof = || parse_lsof_cwds(b"p12\nfcwd\nn/work/live\n", Some(1)).unwrap();
+        let unused =
+            |_: &BTreeSet<u32>| -> Result<LsofCwds> { bail!("no successor lookup expected") };
+
+        // PID 34 exited between pgrep and lsof, and a fresh pgrep agrees.
+        let cwds =
+            resolve_build_process_cwds(&pid_set(&[12, 34]), lsof(), || Ok(pid_set(&[12])), unused)
+                .unwrap();
+        assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+
+        // PID 34 is still running and lsof could not read it.
+        match resolve_build_process_cwds(
+            &pid_set(&[12, 34]),
+            lsof(),
+            || Ok(pid_set(&[12, 34])),
+            unused,
+        ) {
+            Ok(cwds) => panic!(
+                "PV liveness/lsof-unreported-running: accepted {cwds:?} with process 34 unread"
+            ),
+            Err(error) => assert!(
+                error.to_string().contains("running build process 34"),
+                "PV liveness/lsof-unreported-running: {error:#}"
+            ),
+        }
+
+        let error = resolve_build_process_cwds(
+            &pid_set(&[12, 34]),
+            lsof(),
+            || Err(anyhow::anyhow!("pgrep failed")),
+            unused,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("pgrep failed"), "{error:#}");
+
+        let error =
+            resolve_build_process_cwds(&pid_set(&[12]), lsof(), || Ok(pid_set(&[12])), unused)
+                .unwrap_err();
+        assert!(error.to_string().contains("after reporting every process"));
+
+        let complete = parse_lsof_cwds(b"p12\nfcwd\nn/work/live\n", Some(0)).unwrap();
+        let error =
+            resolve_build_process_cwds(&pid_set(&[34]), complete, || Ok(BTreeSet::new()), unused)
+                .unwrap_err();
+        assert!(error.to_string().contains("was not probed"));
+
+        let complete = parse_lsof_cwds(b"p12\nfcwd\nn/work/live\n", Some(0)).unwrap();
+        let cwds =
+            resolve_build_process_cwds(&pid_set(&[12]), complete, || Ok(BTreeSet::new()), unused)
+                .unwrap();
+        assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+    }
+
+    #[test]
+    fn a_build_process_that_started_during_the_probe_is_looked_up_once() {
+        let lsof = || parse_lsof_cwds(b"p12\nfcwd\nn/work/live\n", Some(1)).unwrap();
+
+        // PID 34 exited; PID 56 (the build's next step) appeared in the recheck.
+        let looked_up = std::cell::RefCell::new(BTreeSet::new());
+        let cwds = resolve_build_process_cwds(
+            &pid_set(&[12, 34]),
+            lsof(),
+            || Ok(pid_set(&[12, 56])),
+            |pids| {
+                looked_up.replace(pids.clone());
+                Ok(parse_lsof_cwds(b"p56\nfcwd\nn/work/next-step\n", Some(0)).unwrap())
+            },
+        )
+        .unwrap();
+        assert_eq!(*looked_up.borrow(), pid_set(&[56]));
+        assert_eq!(
+            cwds,
+            vec![
+                PathBuf::from("/work/live"),
+                PathBuf::from("/work/next-step")
+            ]
+        );
+
+        // The successor's directory could not be read, or it too vanished.
+        for (output, exit) in [(&b""[..], 1), (b"p56\nfcwd\nn/work/next-step\n", 1)] {
+            match resolve_build_process_cwds(
+                &pid_set(&[12, 34]),
+                lsof(),
+                || Ok(pid_set(&[12, 56])),
+                |_| parse_lsof_cwds(output, Some(exit)),
+            ) {
+                Ok(cwds) => panic!(
+                    "PV liveness/lsof-successor: accepted {cwds:?} without the successor's directory"
+                ),
+                Err(error) => assert!(
+                    error.to_string().contains("changed again"),
+                    "PV liveness/lsof-successor: {error:#}"
+                ),
+            }
+        }
+
+        let error = resolve_build_process_cwds(
+            &pid_set(&[12, 34]),
+            lsof(),
+            || Ok(pid_set(&[12, 56])),
+            |_| Err(anyhow::anyhow!("lsof failed")),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("lsof failed"), "{error:#}");
+    }
+
+    #[test]
+    fn real_lsof_race_with_an_exited_process_is_resolved_not_refused() {
+        // Reproduce the race deterministically: probe this test process together
+        // with one that has already exited, exactly as `lsof -p` sees it when a
+        // build tool exits between `pgrep` and `lsof`.
+        let mut child = Command::new("/usr/bin/true").spawn().unwrap();
+        let exited = child.id();
+        child.wait().unwrap();
+        let this = std::process::id();
+        let requested = pid_set(&[this, exited]);
+        let pid_list = requested
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let lsof = Command::new("lsof")
+            .args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            lsof.status.code(),
+            Some(1),
+            "control: lsof must exit 1 here"
+        );
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let no_successor = |_: &BTreeSet<u32>| -> Result<LsofCwds> { bail!("unexpected lookup") };
+
+        let parsed = parse_lsof_cwds(&lsof.stdout, lsof.status.code()).unwrap();
+        let cwds =
+            resolve_build_process_cwds(&requested, parsed, || Ok(pid_set(&[this])), no_successor)
+                .unwrap();
+        assert!(cwds.contains(&cwd), "{cwds:?} lacks {}", cwd.display());
+
+        // Control: had the exited PID still been running, the same output refuses.
+        let parsed = parse_lsof_cwds(&lsof.stdout, lsof.status.code()).unwrap();
+        let error =
+            resolve_build_process_cwds(&requested, parsed, || Ok(requested.clone()), no_successor)
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("running build process {exited}")),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn liveness_pgrep_matches_devtrims_own_ancestors() {
+        // A uniquely named zsh runs pgrep as its child, so the shell is an
+        // ancestor of the probe — the position of a `make` that runs devtrim.
+        let directory = temp("pgrep-ancestor");
+        std::fs::create_dir_all(&directory).unwrap();
+        let name = format!("devtrimanc{}", std::process::id());
+        let shell = directory.join(&name);
+        symlink("/bin/zsh", &shell).unwrap();
+        let args = PGREP_MATCH_ARGS.join(" ");
+        let script =
+            format!("pgrep {args} {name}; echo \"with=$?\"; pgrep -x {name}; echo \"without=$?\"");
+        let output = Command::new(&shell).args(["-c", &script]).output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        crate::ops::remove_test_path(&directory);
+
+        assert!(stdout.contains("with=0"), "ancestor not matched: {stdout}");
+        // Control: pgrep's default excludes the same ancestor.
+        assert!(stdout.contains("without=1"), "control failed: {stdout}");
     }
 
     #[test]
@@ -1691,10 +2010,10 @@ mod tests {
         // `\\`, a byte outside printable ASCII as `\xHH`, and a control byte as
         // `^X` — the last indistinguishable from a literal caret in the name.
         for ambiguous in [
-            &b"n/work/caret^Ay\n"[..],
-            b"n/work/unknown\\q\n",
-            b"n/work/short\\x4\n",
-            b"n/work/trailing\\\n",
+            &b"p1\nn/work/caret^Ay\n"[..],
+            b"p1\nn/work/unknown\\q\n",
+            b"p1\nn/work/short\\x4\n",
+            b"p1\nn/work/trailing\\\n",
         ] {
             assert!(
                 parse_lsof_cwds(ambiguous, Some(0)).is_err(),
@@ -1708,7 +2027,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            cwds,
+            cwds.paths,
             vec![
                 PathBuf::from("/work/a\nb"),
                 PathBuf::from("/work/c\\x41d"),

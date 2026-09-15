@@ -172,6 +172,22 @@ CASES = (
         tests=("safety::tests::lsof_cwd_names_are_decoded_or_refused_never_taken_literally",),
         marker="PV liveness/lsof-escape",
     ),
+    Case(
+        name="liveness/lsof-unreported-running",
+        relative_path="src/safety.rs",
+        before="unreported.intersection(&running).next()",
+        after="None::<&u32>",
+        tests=("safety::tests::lsof_exit_one_passes_only_when_every_unreported_process_is_gone",),
+        marker="PV liveness/lsof-unreported-running",
+    ),
+    Case(
+        name="liveness/lsof-successor",
+        relative_path="src/safety.rs",
+        before="!later.complete || later.reported != successors",
+        after="false",
+        tests=("safety::tests::a_build_process_that_started_during_the_probe_is_looked_up_once",),
+        marker="PV liveness/lsof-successor",
+    ),
 )
 
 

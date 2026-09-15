@@ -2,7 +2,11 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.9.6] - Unreleased
+## [0.9.6] - 2026-09-15
+
+### Fixed
+- Build-process liveness refused whole `artifacts` and `node-modules` runs whenever a build tool exited between its two probes. `lsof -p` exits 1 when any listed process is gone, and devtrim treated every nonzero exit as an unverifiable probe; on a busy machine that was 2 of 5 consecutive probes, and a real `clean artifacts --apply` refused for exactly this reason before a retry succeeded. The probe now records which processes `lsof` reported and accepts exit 1 only when every process it did not report is also absent from a fresh `pgrep`. A process still running whose working directory `lsof` could not read — another user's, for instance — refuses as before, and so does PID reuse by a build process, a failed recheck, any other exit status, and output that names a directory before its process, a process without a directory, or a process twice. A build process that appears in the recheck — a build moving to its next step — has its directory looked up once, and any gap in that answer refuses
+- Liveness `pgrep` left out devtrim's own ancestors, which it does by default, so a `make` or `npm run` that invoked devtrim inside a build never counted as that repository's build process. Both probes now pass `-a`
 
 ## [0.9.5] - 2026-09-15
 

@@ -1,6 +1,27 @@
 # Project Memory
 
-## Current state (0.9.5)
+## Current state (0.9.6)
+
+0.9.6 fixes a liveness probe that refused too often to be trusted. Using 0.9.5
+for real, `clean artifacts --apply` refused with "lsof cwd probe exited with
+status 1"; the probe reproduced at 2 of 5 runs and the released binary's
+node-modules preview failed 2 of 10 times. `lsof -p` exits 1 when *any* listed
+PID is gone or unreadable, and a short-lived `node` exiting between `pgrep`
+and `lsof` is routine on a machine running many agents.
+
+The fix binds each cwd to its `p` line, accepts exit 1 only when every
+unreported PID is absent from a fresh `pgrep`, and looks up once any PID that
+first appears in that recheck. Reviews moved it from "relax a check" to
+"relax it with evidence": Security found the successor gap (a build's next
+step, never looked up) and that `pgrep` hides devtrim's own ancestors without
+`-a`; Spec found the new planted case could not reach its marker because
+`unwrap_err` panicked first.
+
+Lesson: a fail-closed probe that fails on benign races trains people to retry
+until it passes, which is its own safety failure. Make the refusal precise
+rather than rare.
+
+## Previous state (0.9.5)
 
 Production is verified. `v0.9.5-beta1` and `v0.9.5` both point at `d019459`;
 production reused the beta archive byte for byte (ZIP SHA-256

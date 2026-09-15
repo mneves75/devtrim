@@ -81,6 +81,11 @@ Non-negotiable boundaries:
   runs, are refused. A working-directory name that `lsof` escapes ambiguously
   refuses rather than matching nothing. Liveness probes use fixed
   argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
+  `lsof` exiting 1 is accepted only when every process it did not report is
+  absent from a fresh `pgrep`, so a build that exited between the probes does
+  not block while one it could not read still does; a build process first seen
+  in that recheck has its directory read once, and a gap there refuses. `pgrep`
+  runs with `-a`, so a build that invoked devtrim is not hidden as its ancestor.
 - User-configured `protect` paths are refused at the deletion sink (literal and
   resolved, ASCII-case-insensitive and Unicode-normalization-insensitive, so
   NFC config text still protects NFD on-disk names) and filtered from previews;
