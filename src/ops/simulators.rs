@@ -3,10 +3,10 @@
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use super::{ApplyOutcome, Finding, Op, command_stdout, dir_size, optional_command_stdout};
+use super::{Action, ApplyOutcome, Finding, Op, command_stdout, dir_size, optional_command_stdout};
 use crate::report::CommandAuthority;
 use crate::safety::{Ctx, escalate};
 
@@ -22,6 +22,30 @@ struct Device {
     #[serde(rename = "isAvailable")]
     is_available: bool,
     udid: String,
+}
+
+/// The fields only the report-only disclosure reads. Parsed apart from
+/// [`Device`] so an unexpected shape here drops the disclosure, never the
+/// unavailable-device authority that shares the same simctl output.
+#[derive(serde::Deserialize)]
+struct DisclosedDeviceList {
+    devices: BTreeMap<String, Vec<DisclosedDevice>>,
+}
+
+#[derive(serde::Deserialize)]
+struct DisclosedDevice {
+    #[serde(rename = "isAvailable")]
+    is_available: bool,
+    udid: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(rename = "dataPathSize", default)]
+    data_path_size: Option<u64>,
+    // Xcode 27 reports `lastUsedAt`; Xcode 16 reported only `lastBootedAt`.
+    #[serde(rename = "lastUsedAt", default)]
+    last_used_at: Option<String>,
+    #[serde(rename = "lastBootedAt", default)]
+    last_booted_at: Option<String>,
 }
 
 fn simctl(args: &[&str]) -> Result<String> {
@@ -69,7 +93,7 @@ fn simulator_states(output: &str) -> Result<BTreeMap<String, bool>> {
 
 fn findings_from_simctl(output: &str, ctx: &Ctx) -> Result<Vec<Finding>> {
     let device_root = ctx.home.join("Library/Developer/CoreSimulator/Devices");
-    simulator_states(output)?
+    let mut findings: Vec<Finding> = simulator_states(output)?
         .into_iter()
         .filter(|(_, is_available)| !is_available)
         .map(|(udid, _)| {
@@ -87,7 +111,94 @@ fn findings_from_simctl(output: &str, ctx: &Ctx) -> Result<Vec<Finding>> {
                 CommandAuthority::DeleteSimulator { udid },
             ))
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    findings.extend(available_device_disclosure(output, device_root, ctx));
+    Ok(findings)
+}
+
+/// Report-only disclosure of the app data held by available simulators.
+///
+/// Those devices are the bulk of simulator storage on a working machine, yet
+/// deleting one destroys the apps and data inside it, which no preview can
+/// establish is unwanted — so the category's only authority stays unavailable
+/// devices, and this finding just makes the rest visible. The sizes are
+/// simctl's own `dataPathSize`; walking the trees here would cost minutes on a
+/// large set. When a size is missing or unreadable the disclosure is omitted
+/// with a diagnostic rather than showing a total known to be short.
+fn available_device_disclosure(output: &str, device_root: PathBuf, ctx: &Ctx) -> Option<Finding> {
+    let omitted = |reason: String| {
+        ctx.diagnostic(
+            "info",
+            format!("working simulators are not sized in this preview: {reason}"),
+        );
+        None
+    };
+    let devices: DisclosedDeviceList = match serde_json::from_str(output) {
+        Ok(devices) => devices,
+        Err(error) => return omitted(format!("simctl size fields did not parse: {error}")),
+    };
+    let mut available = Vec::new();
+    for device in devices.devices.values().flatten() {
+        if !device.is_available {
+            continue;
+        }
+        let Some(size) = device.data_path_size else {
+            return omitted(format!(
+                "simctl reported no dataPathSize for {}",
+                device.udid
+            ));
+        };
+        available.push((size, device));
+    }
+    let total = available
+        .iter()
+        .fold(0u64, |sum, (size, _)| sum.saturating_add(*size));
+    if total == 0 {
+        return None;
+    }
+    available.sort_by(|(a_size, a), (b_size, b)| b_size.cmp(a_size).then(a.udid.cmp(&b.udid)));
+    let largest = available
+        .iter()
+        .take(3)
+        .map(|(size, device)| {
+            let last_used = match (
+                stamp_day(device.last_used_at.as_deref()),
+                stamp_day(device.last_booted_at.as_deref()),
+            ) {
+                (Some(day), _) => format!("last used {day}"),
+                (None, Some(day)) => format!("last booted {day}"),
+                (None, None) => "last use not recorded".to_string(),
+            };
+            format!(
+                "{} ({}) {}, {last_used}",
+                device.name.as_deref().unwrap_or("unnamed"),
+                device.udid,
+                crate::report::gb(*size)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let count = match available.len() {
+        1 => "1 available device".to_string(),
+        count => format!("{count} available devices"),
+    };
+    Some(Finding::new(
+        format!("Simulator device data ({count})"),
+        Some(device_root),
+        total,
+        format!(
+            "EXCLUDED: apps and data inside simulators that still work, listed for visibility only; \
+             devtrim deletes only devices whose runtime is gone. Largest: {largest}. \
+             `xcrun simctl delete <UDID>` removes a device you no longer need, with everything in it"
+        ),
+        0,
+        Action::None,
+    ))
+}
+
+/// The `YYYY-MM-DD` prefix of a simctl timestamp, if it has one.
+fn stamp_day(stamp: Option<&str>) -> Option<&str> {
+    stamp.and_then(|stamp| stamp.get(..10))
 }
 
 impl Op for Simulators {
@@ -115,9 +226,24 @@ impl Op for Simulators {
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
-        let before = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"))?;
         let mut outcome = ApplyOutcome::new(self.name());
+        // The CLI applies a plan that holds only the report-only disclosure, and
+        // measuring before and after walks every simulator's data to change
+        // nothing.
+        if !findings
+            .iter()
+            .any(|finding| finding.action.is_actionable())
+        {
+            return Ok(outcome);
+        }
+        let before = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"))?;
         for finding in findings {
+            // The available-device disclosure is report-only. Skipping on
+            // actionability, never on a missing authority, keeps an actionable
+            // forgery refused below.
+            if !finding.action.is_actionable() {
+                continue;
+            }
             let result = (|| -> Result<String> {
                 let Some(authority) = finding.command_authority() else {
                     anyhow::bail!("refusing unexpected simulator action");
@@ -290,6 +416,148 @@ mod tests {
             Action::command("xcrun", &["simctl", "delete", "DEVICE-1"])
         );
         crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn available_simulator_data_is_disclosed_but_never_actionable() {
+        let mut ctx = test_ctx();
+        ctx.home = PathBuf::from("/Users/example");
+        let output = r#"{"devices":{
+            "com.apple.CoreSimulator.SimRuntime.iOS-27-0":[
+              {"udid":"AAAA-1","isAvailable":true,"name":"iPhone 17","state":"Booted","dataPathSize":14000000000,"lastUsedAt":"2026-09-15T07:48:32Z"},
+              {"udid":"BBBB-2","isAvailable":true,"name":"iPad Pro","state":"Shutdown","dataPathSize":11000000000,"lastBootedAt":"2026-07-04T09:00:00Z"},
+              {"udid":"CCCC-3","isAvailable":true,"name":"Apple Watch","state":"Shutdown","dataPathSize":8000},
+              {"udid":"DDDD-4","isAvailable":true,"name":"iPhone Air","state":"Shutdown","dataPathSize":4500000000,"lastBootedAt":null}
+            ]}}"#;
+
+        let findings = findings_from_simctl(output, &ctx).unwrap();
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let finding = &findings[0];
+        assert_eq!(finding.action, Action::None);
+        assert!(!finding.action.is_actionable());
+        assert_eq!(finding.danger, 0);
+        assert_eq!(finding.size_bytes, 29_500_008_000);
+        assert_eq!(
+            finding.target(),
+            Some(Path::new(
+                "/Users/example/Library/Developer/CoreSimulator/Devices"
+            ))
+        );
+        assert_eq!(finding.label, "Simulator device data (4 available devices)");
+        let note = &finding.note;
+        assert!(note.starts_with("EXCLUDED:"), "{note}");
+        let first = note.find("iPhone 17 (AAAA-1)").expect(note);
+        let second = note.find("iPad Pro (BBBB-2)").expect(note);
+        let third = note.find("iPhone Air (DDDD-4)").expect(note);
+        assert!(first < second && second < third, "{note}");
+        assert!(
+            !note.contains("Apple Watch"),
+            "only the three largest: {note}"
+        );
+        assert!(
+            note.contains("(AAAA-1) 13.0 GB, last used 2026-09-15"),
+            "{note}"
+        );
+        // Xcode 16 reported only `lastBootedAt`.
+        assert!(
+            note.contains("(BBBB-2) 10.2 GB, last booted 2026-07-04"),
+            "{note}"
+        );
+        assert!(
+            note.contains("(DDDD-4) 4.2 GB, last use not recorded"),
+            "{note}"
+        );
+        assert!(note.contains("xcrun simctl delete <UDID>"), "{note}");
+    }
+
+    #[test]
+    fn apply_skips_the_report_only_disclosure_instead_of_refusing_it() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-simulators-disclosure")
+            .tempdir()
+            .unwrap();
+        let mut ctx = test_ctx();
+        ctx.home = home.path().to_path_buf();
+        ctx.journal_path = home.path().join("journal.jsonl");
+        // An unreadable device makes any walk of the simulator tree fail. A
+        // disclosure-only plan must not walk it at all: on a working machine that
+        // tree is the 100+ GB this finding exists to describe.
+        let locked = home
+            .path()
+            .join("Library/Developer/CoreSimulator/Devices/LOCKED/data");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("payload"), "x").unwrap();
+        let locked = locked.parent().unwrap();
+        let original = std::fs::metadata(locked).unwrap().permissions();
+        std::fs::set_permissions(locked, std::os::unix::fs::PermissionsExt::from_mode(0o000))
+            .unwrap();
+        assert!(
+            dir_size(&home.path().join("Library/Developer/CoreSimulator/Devices")).is_err(),
+            "control: the locked device must make a tree walk fail"
+        );
+        let disclosure = Finding::new(
+            "Simulator device data (1 available devices)",
+            Some(home.path().join("Library/Developer/CoreSimulator/Devices")),
+            10,
+            "EXCLUDED: visibility only",
+            0,
+            Action::None,
+        );
+
+        let outcome = Simulators.apply(&[disclosure], &ctx);
+        std::fs::set_permissions(locked, original).unwrap();
+
+        let outcome = outcome.unwrap();
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        assert_eq!(outcome.summary.items_touched, 0);
+    }
+
+    #[test]
+    fn a_changed_size_field_drops_only_the_disclosure() {
+        let mut ctx = test_ctx();
+        ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
+        let output = r#"{"devices":{"runtime":[
+            {"udid":"AAAA-1","isAvailable":true,"name":"iPhone","dataPathSize":"12 GB"},
+            {"udid":"GONE-2","isAvailable":false,"name":"Old iPhone","dataPathSize":1.5}
+        ]}}"#;
+
+        let findings = findings_from_simctl(output, &ctx).unwrap();
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings[0].action,
+            Action::command("xcrun", &["simctl", "delete", "GONE-2"])
+        );
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|message| message.contains("size fields did not parse"))
+        );
+    }
+
+    #[test]
+    fn simulator_disclosure_is_omitted_when_any_size_is_unreported() {
+        let mut ctx = test_ctx();
+        ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
+        let output = r#"{"devices":{"runtime":[
+            {"udid":"AAAA-1","isAvailable":true,"name":"iPhone","dataPathSize":10},
+            {"udid":"BBBB-2","isAvailable":true,"name":"iPad"}
+        ]}}"#;
+
+        assert!(findings_from_simctl(output, &ctx).unwrap().is_empty());
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|message| message.contains("no dataPathSize for BBBB-2")),
+            "an omitted disclosure must say why"
+        );
+
+        // Positive control: the same list with every size reported is disclosed.
+        let reported = output.replace(r#""name":"iPad"}"#, r#""name":"iPad","dataPathSize":5}"#);
+        let findings = findings_from_simctl(&reported, &ctx).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].size_bytes, 15);
     }
 
     #[test]

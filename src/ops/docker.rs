@@ -15,11 +15,12 @@ pub struct Docker;
 /// relative to the user's home directory.
 ///
 /// `docker system df` reports space *inside* the guest filesystem. The host
-/// pays for these files instead, and pruning inside the VM never shrinks them:
-/// the runtime compacts its own image on its own schedule, in practice after
-/// the VM stops. Reporting only the guest number understates the host cost and
-/// hides the fact that reclaiming it needs a separate step, so devtrim
-/// discloses the image itself.
+/// pays for these files instead, and a prune inside the VM shrinks them only
+/// when the runtime hands the freed blocks back. OrbStack documents that as
+/// automatic (<https://docs.orbstack.dev/faq>) and Docker Desktop as taking a
+/// few seconds, but it is not guaranteed (orbstack/orbstack#2030), so the host
+/// file is measured rather than assumed. Reporting only the guest number
+/// understates the host cost, so devtrim discloses the image itself.
 const VM_DISK_IMAGES: &[(&str, &str)] = &[
     (
         "OrbStack",
@@ -147,8 +148,8 @@ fn vm_disk_findings(home: &Path) -> Result<Vec<Finding>> {
             format!(
                 "EXCLUDED: host-side virtual disk for the local Docker runtime, listed for visibility only. \
                  Shown size is allocated blocks; the file is sparse and reports {logical} logical bytes. \
-                 Pruning images or build cache frees space inside the VM but does not shrink this file: \
-                 {runtime} compacts it on its own schedule, in practice after the VM stops"
+                 Pruning images or build cache frees space inside the VM; this file shrinks only once \
+                 {runtime} returns those blocks to macOS, so scan again to measure what the host got back"
             ),
             0,
             Action::None,
@@ -164,7 +165,8 @@ fn parse_system_df(output: &str, host: &str) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
     for (index, line) in output.lines().enumerate() {
         let mut columns = line.split('\t');
-        let (Some(kind), Some(total), Some(reclaimable), None) = (
+        let (Some(kind), Some(total), Some(reclaimable), Some(active), None) = (
+            columns.next(),
             columns.next(),
             columns.next(),
             columns.next(),
@@ -175,32 +177,37 @@ fn parse_system_df(output: &str, host: &str) -> Result<Vec<Finding>> {
         if kind.is_empty() || total.is_empty() || reclaimable.is_empty() {
             anyhow::bail!("invalid Docker system df row {}", index.saturating_add(1));
         }
-        let (label, authority) = match kind {
+        let (label, bytes, effect, authority) = match kind {
             "Images" => (
                 "Docker Images reclaimable",
+                parse_size(reclaimable)
+                    .with_context(|| format!("invalid Docker reclaimable size: {reclaimable}"))?,
+                "removes every image not referenced by a container, including untagged local builds"
+                    .to_string(),
                 CommandAuthority::DockerImagePrune {
                     host: host.to_string(),
                 },
             ),
-            "Build Cache" => (
-                "Docker Build Cache reclaimable",
-                CommandAuthority::DockerBuilderPrune {
-                    host: host.to_string(),
-                },
-            ),
+            "Build Cache" => {
+                let (bytes, effect) = build_cache_estimate(total, reclaimable, active)?;
+                (
+                    "Docker Build Cache reclaimable",
+                    bytes,
+                    effect,
+                    CommandAuthority::DockerBuilderPrune {
+                        host: host.to_string(),
+                    },
+                )
+            }
             _ => continue,
         };
-        let bytes = parse_size(reclaimable)
-            .with_context(|| format!("invalid Docker reclaimable size: {reclaimable}"))?;
         if bytes == 0 {
             continue;
         }
         findings.push(Finding::command(
             label,
             bytes,
-            format!(
-                "{total} total on local endpoint {host}; removes every image not referenced by a container, including untagged local builds; volumes are never touched"
-            ),
+            format!("{total} total on local endpoint {host}; {effect}; volumes are never touched"),
             escalate(6, bytes),
             authority,
         ));
@@ -263,7 +270,7 @@ impl Op for Docker {
                 "system",
                 "df",
                 "--format",
-                "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}",
+                "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}\t{{.Active}}",
             ],
         )?;
         findings.extend(parse_system_df(&output, &host)?);
@@ -320,10 +327,48 @@ impl Op for Docker {
             outcome
                 .summary
                 .notes
-                .push("OrbStack compacts its disk lazily; restart it to trigger TRIM".into());
+                .push("the host VM disk image shrinks only once the runtime returns freed blocks; scan again to measure it".into());
         }
         Ok(outcome)
     }
+}
+
+/// Size and effect of `builder prune -a` for one `docker system df` row.
+///
+/// The daemon sums every record into SIZE but counts a record as RECLAIMABLE
+/// only when it is neither in use nor shared with the image store
+/// (moby `daemon/internal/builder-next/builder.go`, `DiskUsage`). `-a` prunes
+/// with BuildKit's `All`, which skips that shared check
+/// (`cache/manager.go`, `prune`), so it removes shared records RECLAIMABLE left
+/// out: one OrbStack machine showed RECLAIMABLE 4.902GB, SIZE 17.37GB, ACTIVE 0,
+/// and the prune reported 17.37GB. With nothing in use SIZE is therefore the
+/// ceiling; bytes an image still references stay on disk, so it is not a
+/// promise. With records in use their share of SIZE is unknown, and
+/// RECLAIMABLE is the floor.
+fn build_cache_estimate(total: &str, reclaimable: &str, active: &str) -> Result<(u64, String)> {
+    let active: u64 = active
+        .parse()
+        .with_context(|| format!("invalid Docker build cache active count: {active}"))?;
+    if active == 0 {
+        let bytes = parse_size(total)
+            .with_context(|| format!("invalid Docker build cache size: {total}"))?;
+        return Ok((
+            bytes,
+            "up to this much: no record is in use, and `builder prune -a` removes every record, \
+             including cache shared with images that Docker does not count as reclaimable; \
+             bytes an image still references stay on disk"
+                .to_string(),
+        ));
+    }
+    let bytes = parse_size(reclaimable)
+        .with_context(|| format!("invalid Docker reclaimable size: {reclaimable}"))?;
+    Ok((
+        bytes,
+        format!(
+            "at least this much: {active} in-use records are kept, and `builder prune -a` also \
+             removes unused cache shared with images, which this estimate leaves out"
+        ),
+    ))
 }
 
 pub(crate) fn parse_size(value: &str) -> Result<u64> {
@@ -438,8 +483,9 @@ mod tests {
         assert!(!finding.action.is_actionable());
         assert_eq!(finding.danger, 0);
         assert!(
-            finding.note.contains("does not shrink this file"),
-            "note must disclose that pruning does not reclaim the host image: {}",
+            finding.note.contains("shrinks only once")
+                && finding.note.contains("scan again to measure"),
+            "note must disclose that a prune does not itself shrink the host image: {}",
             finding.note
         );
     }
@@ -601,7 +647,53 @@ mod tests {
         let host = "unix:///var/run/docker.sock";
         assert!(parse_system_df("", host).is_err());
         assert!(parse_system_df("Images\t1GB", host).is_err());
-        assert!(parse_system_df("Images\t1GB\t500MB\textra", host).is_err());
+        assert!(parse_system_df("Images\t1GB\t500MB", host).is_err());
+        assert!(parse_system_df("Images\t1GB\t500MB\t1\textra", host).is_err());
+        assert!(parse_system_df("Build Cache\t1GB\t500MB\t", host).is_err());
+        assert!(parse_system_df("Build Cache\t1GB\t500MB\tsome", host).is_err());
+    }
+
+    #[test]
+    fn an_unused_row_cannot_fail_the_category() {
+        let host = "unix:///var/run/docker.sock";
+        // Only the Build Cache row reads ACTIVE. An odd value on a row devtrim
+        // ignores must not cost the whole plan its Images finding.
+        let findings = parse_system_df(
+            "Images\t2GB\t1GB (50%)\tn/a\nContainers\t1kB\t0B\t\nLocal Volumes\t9GB\t9GB\tsome",
+            host,
+        )
+        .unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].size_bytes, 1_000_000_000);
+    }
+
+    #[test]
+    fn build_cache_estimate_matches_what_prune_all_removes() {
+        let host = "unix:///var/run/docker.sock";
+        // Recorded `docker system df` output before `builder prune -a -f`
+        // reported "Total: 17.37GB".
+        let idle = parse_system_df("Build Cache\t17.37GB\t4.902GB\t0", host).unwrap();
+        assert_eq!(idle.len(), 1);
+        assert_eq!(idle[0].size_bytes, 17_370_000_000);
+        assert!(
+            idle[0].note.starts_with("17.37GB total"),
+            "{}",
+            idle[0].note
+        );
+        assert!(idle[0].note.contains("up to this much"), "{}", idle[0].note);
+
+        let busy = parse_system_df("Build Cache\t17.37GB\t4.902GB\t3", host).unwrap();
+        assert_eq!(busy[0].size_bytes, 4_902_000_000);
+        assert!(busy[0].note.contains("at least"), "{}", busy[0].note);
+
+        let images = parse_system_df("Images\t22.67GB\t16.38GB (72%)\t2", host).unwrap();
+        assert_eq!(images[0].size_bytes, 16_380_000_000);
+        assert!(images[0].note.contains("every image not referenced"));
+        assert!(
+            parse_system_df("Build Cache\t0B\t0B\t0", host)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

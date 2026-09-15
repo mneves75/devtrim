@@ -2,7 +2,19 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.9.5] - Unreleased
+## [0.9.5] - 2026-09-15
+
+Found by using devtrim on a Mac that had run down to 1.7 GB free, and comparing
+what it offered with what actually held the space.
+
+### Fixed
+- `clean xcode` offered Finder's `iOS DeviceSupport/.DS_Store` as a symbol cache: every direct child was listed whatever it was, so a file or a symlink beside the symbol directories borrowed the category's authority. The scan now lists only real directories, and apply refuses any other target shape on its own
+- The Docker build-cache estimate used `docker system df`'s RECLAIMABLE column while apply runs `builder prune -a`. The daemon leaves records shared with the image store out of RECLAIMABLE, and `-a` prunes them anyway: one OrbStack machine previewed 4.902 GB and the prune reported 17.37 GB. With no record in use the estimate is now SIZE, labelled "up to" because bytes an image still references stay on disk; with records in use it stays RECLAIMABLE, labelled "at least". Only the Build Cache row reads the new ACTIVE column, so an odd value on a row devtrim ignores cannot fail the category. The build-cache note also stopped describing image pruning
+- Notes about the Docker VM disk image said pruning does not shrink it until the VM stops, and told you to restart OrbStack to trigger TRIM. OrbStack documents that its image shrinks automatically as data is deleted and Docker Desktop returns space within seconds, though neither is guaranteed (orbstack/orbstack#2030). The notes now say the file shrinks once the runtime returns the blocks, and to scan again to measure it
+- The DeviceSupport note promised the symbols are "rebuilt on next device connect". Xcode copies them only from a connected device running that exact OS build, so a superseded build cannot come back and matters only for symbolicating its crash logs. The note now says so
+
+### Added
+- `clean simulators` discloses the data held by simulators that still work — on the machine above, 101 GB across 26 devices, while the category reported nothing because none was unavailable. It is one report-only finding sized from simctl's own `dataPathSize`, naming the three largest devices with their last use (last boot on Xcode versions that report only that) and `xcrun simctl delete <UDID>` as the manual step. Deleting a working simulator destroys its apps and data, so devtrim still deletes only devices whose runtime is gone; when a size is missing or its field changes shape the disclosure is omitted with a diagnostic, without touching unavailable-device cleanup, and applying a plan that holds only the disclosure measures nothing
 
 ## [0.9.4] - 2026-09-15
 

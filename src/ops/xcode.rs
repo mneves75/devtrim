@@ -1,6 +1,6 @@
 //! Xcode support files. Archives are deliberately exempt release artifacts.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, escalate, xcode_build_running};
@@ -17,7 +17,7 @@ const TARGETS: &[(&str, &str, &str)] = &[
     (
         "iOS DeviceSupport",
         "Developer/Xcode/iOS DeviceSupport",
-        "symbol cache; rebuilt on next device connect/debug",
+        "debug symbols copied from a device; Xcode copies them again only from a connected device running this exact OS build, so a build no device still runs is needed only to symbolicate its crash logs",
     ),
     (
         "DerivedData",
@@ -83,7 +83,25 @@ impl Xcode {
                 Err(error) => return Err(error.into()),
             };
             for entry in entries {
-                let path = entry?.path();
+                let entry = entry.with_context(|| {
+                    format!(
+                        "cannot read Xcode support directory {}",
+                        directory.display()
+                    )
+                })?;
+                // Only a real directory is a symbol or build tree. Finder's
+                // `.DS_Store` sits beside them, and a symlink child would lend
+                // this category's authority to whatever it names.
+                let file_type = entry.file_type().with_context(|| {
+                    format!(
+                        "cannot inspect Xcode support entry {}",
+                        entry.path().display()
+                    )
+                })?;
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let path = entry.path();
                 let size = dir_size(&path)?;
                 findings.push(Finding::new(
                     format!(
@@ -175,17 +193,23 @@ fn authorize_xcode_target(
     home: &std::path::Path,
 ) -> Result<XcodeTargetKind> {
     let device_support = home.join("Library/Developer/Xcode/iOS DeviceSupport");
-    if path.parent() == Some(device_support.as_path()) {
-        return Ok(XcodeTargetKind::DeviceSupport);
-    }
     let derived_data = home.join("Library/Developer/Xcode/DerivedData");
-    if path.parent() == Some(derived_data.as_path()) {
-        return Ok(XcodeTargetKind::DerivedData);
+    let kind = if path.parent() == Some(device_support.as_path()) {
+        XcodeTargetKind::DeviceSupport
+    } else if path.parent() == Some(derived_data.as_path()) {
+        XcodeTargetKind::DerivedData
+    } else {
+        anyhow::bail!(
+            "refusing Xcode target outside direct DeviceSupport or DerivedData children: {}",
+            path.display()
+        )
+    };
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("cannot inspect Xcode target {}", path.display()))?;
+    if !metadata.file_type().is_dir() {
+        anyhow::bail!("refusing non-directory Xcode target: {}", path.display());
     }
-    anyhow::bail!(
-        "refusing Xcode target outside direct DeviceSupport or DerivedData children: {}",
-        path.display()
-    )
+    Ok(kind)
 }
 
 #[cfg(test)]
@@ -237,6 +261,104 @@ mod tests {
                 .contains("cannot verify Xcode build activity")
         );
         crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn scan_offers_only_real_directories_as_xcode_support_children() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-xcode-shape-scan-{}", std::process::id()));
+        crate::ops::remove_test_path(&root);
+        let device_support = root.join("Library/Developer/Xcode/iOS DeviceSupport");
+        let derived_data = root.join("Library/Developer/Xcode/DerivedData");
+        std::fs::create_dir_all(device_support.join("iPhone18,2 27.0 (24A437)")).unwrap();
+        std::fs::create_dir_all(derived_data.join("project-abc")).unwrap();
+        std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+        // Finder writes `.DS_Store` beside the symbol directories; it is not a
+        // symbol cache, and a symlink child would borrow the category's authority
+        // for whatever it points at.
+        std::fs::write(device_support.join(".DS_Store"), "finder").unwrap();
+        std::fs::write(derived_data.join(".DS_Store"), "finder").unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), device_support.join("linked")).unwrap();
+        let home = root.canonicalize().unwrap();
+
+        let findings = Xcode
+            .scan_with_xcode_build_state(&test_context(home.clone()), Ok(false))
+            .unwrap();
+
+        let mut labels: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding.action != Action::None)
+            .map(|finding| finding.label.as_str())
+            .collect();
+        labels.sort_unstable();
+        assert_eq!(
+            labels,
+            [
+                "DerivedData: project-abc",
+                "iOS DeviceSupport: iPhone18,2 27.0 (24A437)"
+            ]
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn apply_refuses_a_non_directory_xcode_support_child() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-xcode-shape-apply-{}", std::process::id()));
+        crate::ops::remove_test_path(&root);
+        let device_support = root.join("Library/Developer/Xcode/iOS DeviceSupport");
+        std::fs::create_dir_all(device_support.join("real-build")).unwrap();
+        std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+        std::fs::write(device_support.join(".DS_Store"), "keep").unwrap();
+        std::fs::write(root.join("elsewhere/sentinel"), "keep").unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), device_support.join("linked")).unwrap();
+        let home = root.canonicalize().unwrap();
+        let device_support = home.join("Library/Developer/Xcode/iOS DeviceSupport");
+        let ctx = test_context(home.clone());
+        let finding = |name: &str| {
+            Finding::new(
+                format!("iOS DeviceSupport: {name}"),
+                Some(device_support.join(name)),
+                4,
+                "test",
+                4,
+                Action::Shred,
+            )
+        };
+
+        for name in [".DS_Store", "linked"] {
+            let outcome = Xcode
+                .apply_with_xcode_build_state(&[finding(name)], &ctx, None)
+                .unwrap();
+            assert_eq!(outcome.summary.items_touched, 0, "{name}");
+            assert_eq!(outcome.errors.len(), 1, "{name}");
+            assert!(
+                outcome.errors[0].contains("refusing non-directory Xcode target"),
+                "{name}: {:?}",
+                outcome.errors
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(device_support.join(".DS_Store")).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("elsewhere/sentinel")).unwrap(),
+            "keep"
+        );
+
+        // Positive control: the same apply removes a real directory child.
+        let outcome = Xcode
+            .apply_with_xcode_build_state(&[finding("real-build")], &ctx, None)
+            .unwrap();
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        assert_eq!(outcome.summary.items_touched, 1);
+        assert!(!device_support.join("real-build").exists());
+        crate::ops::remove_test_path(root);
     }
 
     #[test]

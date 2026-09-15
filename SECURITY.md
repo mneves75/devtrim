@@ -110,6 +110,8 @@ Non-negotiable boundaries:
   Unix-socket endpoint into the command authority.
 - Simulator cleanup creates one finding and command authority per validated
   UDID, then rechecks that exact device is still unavailable before deletion.
+  Working simulators appear only in one report-only finding that carries no
+  authority.
 - A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize a typed Docker or simulator operation with validated arguments, and apply must match both representations exactly.
 - Mutation flags are capability-scoped and rejected when the selected command cannot honor them; confirmation bypasses never add operations.
 - Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level, `trash-empty` included; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.

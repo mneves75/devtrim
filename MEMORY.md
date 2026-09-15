@@ -1,6 +1,32 @@
 # Project Memory
 
-## Current state (0.9.4)
+## Current state (0.9.5)
+
+0.9.5 came from *using* devtrim on a Mac down to 1.7 GB free and comparing its
+plan with what actually held the space. The tool's safety held; its picture of
+the disk did not. Simulators that still work held 101 GB across 26 devices
+while `clean simulators` reported nothing, because its only authority is
+unavailable devices. `clean xcode` offered Finder's `.DS_Store` as a symbol
+cache. The Docker build-cache preview said 4.902 GB where `builder prune -a`
+removed 17.37 GB, and the VM-image note contradicted OrbStack's own FAQ.
+
+Lesson worth keeping: **a report-only finding still changes behavior.** The
+first simulator disclosure made apply refuse the plan (it carried no command
+authority) and made a disclosure-only `--apply` walk 100+ GB twice, because the
+CLI applies plans with nothing actionable. Both were caught by writing the
+apply-path test before trusting "it's just visibility".
+
+Second lesson: settle a vendor-accounting claim in the vendor's source, not in
+one observation. moby's `DiskUsage` counts RECLAIMABLE as not-in-use *and*
+not-shared, and BuildKit's `prune` skips the shared check under `All`, so the
+estimate is "up to" SIZE, never "exactly".
+
+Rejected with reasons: deleting working simulators or old runtimes (destroys
+app data; runtimes here were all used within days), Playwright per-revision GC
+(Playwright already collects unreferenced revisions on install), and write-bit
+repair for read-only trees (no managed tree on this machine has one).
+
+## Previous state (0.9.4)
 
 Production is verified. `v0.9.4-beta1` and `v0.9.4` both point at `728ec4f`;
 production reused the beta archive byte for byte (ZIP SHA-256

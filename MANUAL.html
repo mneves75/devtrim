@@ -414,7 +414,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.9.4</span>
+    <span class="chip g">v0.9.5</span>
     <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
@@ -525,7 +525,7 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">xcode</span><span class="cmd-desc">DeviceSupport + DerivedData</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Clears only direct DeviceSupport and DerivedData children; apply reasserts that exact category shape before removal. Both rebuild on next use. <strong>Archives exempt by design</strong> — they're release artifacts.</p></div>
+    <div class="card-body"><p>Clears only direct DeviceSupport and DerivedData child directories — never a file or symlink beside them; apply reasserts that exact category shape before removal. DerivedData rebuilds on the next build. DeviceSupport symbols are copied again only from a connected device running that exact OS build, so a superseded build matters only for symbolicating its crash logs. <strong>Archives exempt by design</strong> — they're release artifacts.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">toolchains</span><span class="cmd-desc">old swift.org toolchains</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
@@ -567,7 +567,7 @@ devtrim clean caches</code></pre>
   <p class="group-label" id="g-nuclear">Nuclear — read twice, run once</p>
   <details class="card">
     <summary><span class="cmd-name">simulators</span><span class="cmd-desc">delete exact previewed unavailable devices</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Creates one finding per device whose runtime is gone, binds the exact UDID, and rechecks that device before deletion. <code>--yolo</code> may bypass confirmation, but it never adds <code>erase all</code> or any operation absent from preview.</p></div>
+    <div class="card-body"><p>Creates one finding per device whose runtime is gone, binds the exact UDID, and rechecks that device before deletion. <code>--yolo</code> may bypass confirmation, but it never adds <code>erase all</code> or any operation absent from preview. Simulators that still work are listed once, report-only, with their total data size and the three largest devices; deleting one destroys its apps and data, so that stays a manual <code>xcrun simctl delete &lt;UDID&gt;</code>.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">trash-empty</span><span class="cmd-desc">purge ~/.Trash permanently</span><span class="pill r"><span class="sq"><i class="on"></i><i class="on"></i><i class="on"></i></span>NUKE</span></summary>
@@ -711,7 +711,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
   <details class="card"><summary><span class="cmd-name">df says less space than expected after a clean</span></summary>
     <div class="card-body"><ul class="flow">
       <li><strong>Purgeable space accounting</strong> — macOS counts evictable content inconsistently between calls; trust trends over single readings.</li>
-      <li><strong>Docker sparse disk</strong> — space freed inside the VM returns only after TRIM compaction; restart the VM.</li>
+      <li><strong>Docker sparse disk</strong> — space freed inside the VM reaches macOS only when the runtime returns the blocks; OrbStack and Docker Desktop document that as automatic but it is not guaranteed, so scan again to measure the image.</li>
       <li><strong>Files went to Trash</strong> — Trash-first means space returns when Trash empties. That's the net working.</li>
     </ul></div>
   </details>
@@ -742,7 +742,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
 </section>
 
 <footer>
-  <span>devtrim <b>v0.9.4</b></span>
+  <span>devtrim <b>v0.9.5</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

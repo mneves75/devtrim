@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.9.4.
+This source tree and its packaged documentation describe devtrim v0.9.5.
 
 ## Install
 
@@ -87,8 +87,8 @@ devtrim scan --json                       # one machine-readable envelope
 devtrim clean caches --apply -y           # tool download caches (HF, uv, npm, brew, cargo, bun, gh, …)
 devtrim clean node-modules --apply -y     # exact paths in Git repos with no recent activity
 devtrim clean artifacts --apply -y        # corroborated build artifacts in stale Git repos
-devtrim clean simulators --apply -y       # delete exact previewed unavailable devices
-devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData children
+devtrim clean simulators --apply -y       # delete exact previewed unavailable devices; working ones are only reported
+devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData child directories
 devtrim clean docker --apply -y           # local daemon images + build cache; never volumes
 devtrim clean toolchains --apply -y       # only unreferenced swift.org toolchains
 devtrim clean installers --apply -y       # stale installer archives in Downloads/Desktop
@@ -236,9 +236,13 @@ Other Mac cleaners delete more. These boundaries are choices with reasons:
 
 `clean docker` also reports the host-side VM disk image for OrbStack and Docker
 Desktop, as a report-only finding that is never actionable. `docker system df`
-measures space *inside* the guest, while the host pays for a sparse image that
-pruning does not shrink — the runtime compacts it on its own schedule, in
-practice after the VM stops. That finding is measured in allocated blocks rather
+measures space *inside* the guest, while the host pays for a sparse image that a
+prune shrinks only once the runtime returns the freed blocks — OrbStack documents
+that as automatic and Docker Desktop as taking seconds, but neither is
+guaranteed, so scan again to measure what came back. The build-cache estimate is
+"up to" the full cache size when no record is in use, because `builder prune -a`
+also removes cache shared with images that Docker does not count as reclaimable,
+and otherwise "at least" the reclaimable figure. The VM image finding is measured in allocated blocks rather
 than logical length, and it is shown when `docker` is not installed at all.
 When `docker` is installed but its daemon is down, the category fails — a
 silently shorter plan would read as nothing to reclaim — and its error names
