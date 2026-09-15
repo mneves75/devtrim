@@ -210,19 +210,84 @@ checkout_count=$(grep -Fc 'uses: actions/checkout@' "$release_workflow")
 credentialless_count=$(grep -Fc 'persist-credentials: false' "$release_workflow")
 [[ "$checkout_count" -eq "$credentialless_count" ]] || fail "every source checkout must disable persisted credentials"
 
-[[ "$(grep -c '^      contents: write$' "$release_workflow")" -eq 1 ]] ||
-  fail "only the publisher may receive contents: write"
-[[ "$(grep -c '^      id-token: write$' "$release_workflow")" -eq 1 ]] ||
-  fail "only the publisher may receive id-token: write"
+# Permissions are checked on the parsed YAML, not on lines: GitHub reads
+# `contents: "write"`, `contents: write # why`, and `{ contents: write }` as the
+# same grant, and each of those spellings passed a line-matching check. A
+# workflow-wide `write-all`, or a write scope on any job but the publisher, hands
+# release or OIDC authority to dependency code.
+permission_errors=$(ruby -ryaml -e '
+  errors = []
+  ARGV.each_with_index do |path, index|
+    release = index.zero?
+    document = YAML.safe_load(File.read(path), aliases: false)
+    unless document.is_a?(Hash) && document["permissions"] == { "contents" => "read" }
+      errors << "#{path} must grant exactly contents: read at the workflow level"
+    end
+    jobs = document.is_a?(Hash) ? document["jobs"] : nil
+    unless jobs.is_a?(Hash) && !jobs.empty?
+      errors << "#{path} declares no jobs"
+      next
+    end
+    jobs.each do |name, job|
+      permissions = job.is_a?(Hash) ? job["permissions"] : nil
+      if permissions.nil?
+        errors << "release job #{name} must declare its own permissions mapping" if release
+        next
+      end
+      unless permissions.is_a?(Hash)
+        errors << "#{path} job #{name} must grant permissions as a mapping, not #{permissions.inspect}"
+        next
+      end
+      permissions.each do |scope, value|
+        next if %w[read none].include?(value)
+        next if release && name == "publish" && value == "write"
+        errors << "#{path} job #{name} grants #{scope}: #{value.inspect}; only the release publisher may write"
+      end
+    end
+    next unless release
+    publisher = jobs["publish"].is_a?(Hash) ? jobs["publish"]["permissions"] : nil
+    unless publisher.is_a?(Hash) && publisher["contents"] == "write" && publisher["id-token"] == "write"
+      errors << "the publisher lacks contents: write and id-token: write"
+    end
+  end
+  puts errors
+' "$release_workflow" "$ci_workflow") || fail "cannot parse workflow permissions"
+[[ -z "$permission_errors" ]] || fail "$permission_errors"
+publish_block=$(awk '/^  publish:[[:space:]]*$/ { found = 1; print; next } found && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { exit } found' "$release_workflow")
+[[ -n "$publish_block" ]] || fail "release workflow lacks the publish job"
 
-publish_block=$(sed -n '/^  publish:/,$p' "$release_workflow")
 if grep -Eq 'actions/checkout@|^[[:space:]]+(cargo|npm|npx|rustup)[[:space:]]' <<<"$publish_block"; then
   fail "publisher must neither check out nor execute project/dependency code"
 fi
+# Downloaded release inputs are data to attest and upload, never a program.
+if grep -Eq '(^|[[:space:];&|(])(bash|sh|zsh|source|\.|python3?|node|perl|ruby|chmod)[[:space:]][^#]*handoff/|\./handoff/' <<<"$publish_block"; then
+  fail "publisher must not execute downloaded release inputs"
+fi
+require_fixed "$release_workflow" 'handoff_digest: ${{ steps.handoff.outputs.digest }}'
+require_fixed "$release_workflow" 'EXPECTED_DIGEST: ${{ needs.prepare.outputs.handoff_digest }}'
+require_before "$release_workflow" 'EXPECTED_DIGEST: ${{ needs.prepare.outputs.handoff_digest }}' 'uses: actions/attest@'
+require_fixed "$release_workflow" '[[ "$actual" == "$EXPECTED_DIGEST" ]]'
+digest_step=$(awk '/^      - name: Verify reviewed release inputs by digest$/ { found = 1; print; next } found && /^      - / { exit } found' "$release_workflow")
+grep -Fq '[[ "$actual" == "$EXPECTED_DIGEST" ]]' <<<"$digest_step" ||
+  fail "the publisher's digest step must perform the digest comparison"
+if grep -Eq '^        (if|continue-on-error):' <<<"$digest_step"; then
+  fail "the publisher's digest verification must be unconditional"
+fi
+if grep -Eq '^[[:space:]]+continue-on-error:' <<<"$publish_block"; then
+  fail "no publisher step may continue past a failure"
+fi
+for attestation_owner in "$release_workflow" "$release_script" "$homebrew_script"; do
+  [[ "$(grep -Fc -- '--deny-self-hosted-runners' "$attestation_owner")" -eq "$(grep -Fc -- '--signer-workflow' "$attestation_owner")" ]] ||
+    fail "$attestation_owner must deny self-hosted runners in every attestation check"
+done
 
+uses_lines=$(grep -Ech '^[[:space:]]*(-[[:space:]]+)?uses:' "$release_workflow" "$ci_workflow" | awk '{ total += $1 } END { print total }')
+pinned_lines=0
 while IFS= read -r action_ref; do
   [[ "$action_ref" =~ ^[0-9a-f]{40}$ ]] || fail "GitHub Action is not pinned to a full commit SHA: $action_ref"
-done < <(sed -n 's/^[[:space:]]*uses: [^@]*@\([0-9A-Za-z._-]*\).*/\1/p' "$release_workflow" "$ci_workflow")
+  pinned_lines=$((pinned_lines + 1))
+done < <(sed -En 's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^@[:space:]]+@([0-9A-Za-z._-]*).*/\2/p' "$release_workflow" "$ci_workflow")
+[[ "$uses_lines" -eq "$pinned_lines" ]] || fail "every GitHub Action reference must name a repository and a pinned ref"
 
 require_fixed "$ci_workflow" 'bash scripts/tests/release-policy.sh'
 require_fixed "$ci_workflow" 'fetch-depth: 0'
@@ -276,6 +341,10 @@ require_fixed "$gitleaks_control_script" '"$gitleaks_bin" stdin --no-banner --re
 require_fixed "$landing_page" '<link rel="icon" href="favicon.svg" type="image/svg+xml">'
 require_fixed "$manual_page" '<link rel="icon" href="favicon.svg" type="image/svg+xml">'
 require_fixed "$dependabot" 'directory: /fuzz'
+# A freshly published release waits a week before a PR proposes it, so a
+# compromised version is more likely to be yanked before it is reviewed.
+[[ "$(grep -c '^  - package-ecosystem:' "$dependabot")" -eq "$(grep -c '^      default-days: 7$' "$dependabot")" ]] ||
+  fail "every Dependabot ecosystem must declare a seven-day cooldown"
 require_line "$repo_root/.gitignore" '.env*'
 require_line "$repo_root/.gitignore" '!.env.example'
 require_line "$repo_root/.gitignore" '!.env.sample'

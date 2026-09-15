@@ -2,7 +2,47 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.9.4] - Unreleased
+## [0.9.4] - 2026-09-15
+
+A whole-codebase review — two security audits, a Standards and a Spec axis, a
+correctness hunt, and an independent Codex review of every tracked source file —
+found two ways a *preview* or an unread screen could act, and a set of places
+where the code was weaker than its own documents.
+
+### Security
+- Previewing a directory could run a program chosen by a repository inside it. The Git activity probe disabled hooks and fsmonitor but not the two other ways `git log` spawns a configured program: `log.showSignature` with `gpg.program` on a signed HEAD, and a lazy fetch through a promisor remote's `uploadpack`. Both were reproduced end to end from a dry-run `clean node-modules --json` against a repository copied in with its `.git/config`. The probe now passes `-c log.showSignature=false`, `--no-show-signature`, `--no-lazy-fetch` and `--no-pager`; a `git` too old for `--no-lazy-fetch` refuses the repository. Each path has a fixture that arms exactly it, a positive control proving the fixture fires without the hardening, and its own planted case
+- The TUI delivered keys typed during a scan to the screen that appeared afterwards. Pressing `2sa0⏎` in one burst selected caches, switched to permanent mode, opened the critical confirmation and answered it — permanently deleting a cache whose results were never displayed. Input queued while a scan or apply blocks the loop is now discarded. `scripts/tests/tui.py` proves it in a real PTY, with the same keys typed after the results render as the positive control
+- CLI `trash-empty --apply` never reached the shared confirmation gate, so a piped `--confirm=0 --apply` purged permanently without `-y`, `--yolo` or a prompt, and a terminal run asked nothing — contradicting "every interactive mutation confirms". It now shows the set it will purge and requires typed confirmation on a terminal or `--yolo` unattended; `-y` and `--yolo` are no longer silent no-ops there
+- The size acknowledgment for a Trash purge measured the whole Trash while the plan excluded protected items, so in the TUI one large excluded item made the required `PURGE <gb>` unsatisfiable. Both the CLI and TUI now measure the exact findings being purged
+- Permanent deletion restored a refused quarantine with a check-then-rename, and `Dir::rename` replaces its destination, so a file recreated at the original name in that gap would have been overwritten by something no preview showed. Quarantine and restore now rename with `RENAME_EXCL`
+- `clap` quotes the offending argument in a parse error and strips ANSI sequences but not other controls; a bidirectional override in argv reached the terminal raw. Parse errors now go through a line-preserving terminal-safe renderer
+- Build-process liveness compared `lsof`'s *display* spelling of each working directory with repository paths. `lsof` renders a newline as `\n`, a backslash as `\\`, and a non-ASCII byte as `\xHH`, so a build running in such a directory matched no repository and its dependencies stayed deletable. Unambiguous escapes are decoded; `^X`, which `lsof` also uses for a literal caret, refuses
+- DerivedData liveness only looked for `xcodebuild`. Builds started from Xcode.app run through `SWBBuildService` (observed here with `Xcode` as its parent), so an IDE build or index could lose DerivedData underneath it. The probe now covers `Xcode`, `xcodebuild`, `SWBBuildService` and `XCBBuildService`
+- The release publisher attested whatever artifact arrived under the expected *name*. A dependency running in another release job that obtained the runtime token could have substituted it after upload. `prepare` now publishes a digest of the exact inputs and the publisher verifies it before attesting, and never executes a downloaded input
+- `release-policy.sh` passed with a workflow-level `write-all`, a job with no `permissions` block, extra write scopes on non-publisher jobs, any write scope in CI, a `- uses:` tag pin, or a publisher step running a downloaded script — each proven with a planted change. Permissions are now checked on the parsed workflow YAML, so `contents: "write"`, a trailing comment, and a flow mapping are the same grant they are to GitHub; every new rule was shown to fail on its violation, including those three spellings
+- Every `gh attestation verify` in the release workflow, release script and Homebrew closeout now passes `--deny-self-hosted-runners`, and README and the landing page document attestation verification for users rather than only a checksum downloaded beside the archive
+- Dependabot waits seven days before proposing a new release in every ecosystem; `actions/attest` moves to v4.2.2
+
+### Fixed
+- A repository was judged by HEAD's commit date alone, so an old project cloned today — whose `node_modules` had just been installed — was offered for cleanup immediately, as was a checkout of an old tag. Activity is now the newer of HEAD's commit date and HEAD's newest reflog entry, which clone, checkout and pull all write; with reflogs disabled it is the commit date, as before. HEAD is read on its own, not through the reflog walk, whose newest entry need not name HEAD
+- `status` read its tools in the user's locale. Under `pt_BR`, `sysctl` prints a load average as `65,41` and `ps` a CPU share as `136,6`, so both metrics became unavailable and the health score *rose* because the missing load input could no longer lower it. Tools now run with `LC_ALL=C`
+- `status` skipped a `netstat` link row of undocumented width, reporting a smaller network total with exit 0 even though the module's own comment says a sum refuses rather than skips. `vm_stat` sums saturated instead of refusing overflow
+- `analyze` refused to *measure* a directory on another device but entered one when you pressed Enter on it, rooting the next walk on that device and traversing a network share. It now refuses, and a lower-bound entry is reported in `--json` `errors` with a nonzero exit, as quitting the explorer does
+- A typed command that failed to start or exited nonzero reported neither its exit status nor its stderr. Docker, simulator and maintenance commands now share one runner that journals them and names both
+- Errors raised after parsing reported `"operation": "unknown"` in JSON even for a known command such as `clean caches`
+- A journal append after a short write (ENOSPC is likely on the disk this tool is cleaning) fused its record onto the unterminated fragment, and `history` discarded both. The tail is terminated first
+- An explicit `--root` that does not exist scanned nothing and reported a clean machine; it is now warned about
+- npm's and Homebrew's cache probes ran in whatever directory devtrim was started from, where a project `.npmrc` could redirect the reported cache root within the npm namespace. They run from `$HOME`, and report stderr when they fail
+
+### Changed
+- `trash` 5.2.8 (its only macOS change is a format string), `toml` 1.1.5 and `clap_mangen` 0.3.3; the generated man page is byte-identical. `toml` 1.1.6 was held back under the new seven-day cooldown
+- `planted-violations.py` proves twelve boundaries instead of six: the two Git probe hardenings, reflog activity, HEAD's own commit date, the no-replace rename and `lsof` name decoding join the existing cases
+
+### Documentation
+- `uninstall`'s output, its module contract, and README described a "four-entry allowlist" under `~/Library`; MANUAL listed only four paths. The carve-out also includes every managed `Caches` entry, and the text no longer states a count that drifts
+- README said the Docker VM disk image is shown even when the daemon is not running. It is shown when `docker` is not installed; with an installed but stopped daemon the category fails and its error names the image and size — the trade the code comment already recorded
+- `status --json` is a vitals document, not the response envelope, and exits nonzero when any metric is unavailable; README and MANUAL now say so. The caches descriptions list Node/Corepack and the GitHub CLI cache, `active_days = 0` is documented as 1, and `installers` states that age is modification time, so a copy preserving it counts as old
+- `CODING_STANDARDS.md S12` listed approved variable-program sites that no longer matched the tree; it names the four that exist. Stale comments about a removed resolver-flush task, a retired session-shape rule, and a misplaced `MANAGED_LIBRARY_CACHES` doc comment were corrected
 
 ## [0.9.3] - 2026-09-12
 

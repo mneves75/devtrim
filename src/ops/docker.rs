@@ -300,24 +300,13 @@ impl Op for Docker {
                 if finding.action != authority.action() {
                     anyhow::bail!("refusing altered Docker action");
                 }
-                let (program, args) = authority.parts();
-                let attempt = crate::journal::begin(
+                super::run_command_authority(
+                    self.name(),
+                    authority,
+                    finding.size_bytes,
                     ctx,
-                    crate::journal::JournalRecord::command_attempt(
-                        self.name(),
-                        program,
-                        &args,
-                        finding.size_bytes,
-                    ),
-                )?;
-                let result = (|| -> Result<String> {
-                    let output = Command::new(program).args(&args).output()?;
-                    if !output.status.success() {
-                        anyhow::bail!("`{program} {}` failed", args.join(" "));
-                    }
-                    Ok(format!("`{program} {}` completed", args.join(" ")))
-                })();
-                attempt.finish(ctx, result)
+                    |command| format!("{command} completed"),
+                )
             })();
             match result {
                 Ok(note) => outcome.record(finding, note),

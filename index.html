@@ -96,7 +96,7 @@
     <div class="feat-grid">
       <article data-reveal><h3><code>devtrim</code> / <code>tui</code></h3><p>Keyboard-first scan, preview, and confirmation with written risk labels. It reuses the same cleanup owners and rejects CLI bypass flags.</p></article>
       <article data-reveal><h3><code>scan</code></h3><p>Read-only report with estimated logical sizes, danger levels, and one-document JSON output for agents.</p></article>
-      <article data-reveal><h3><code>caches</code></h3><p>HuggingFace models, npm, Homebrew, uv. Re-downloads on demand — devtrim tells you the bandwidth cost instead of deciding.</p></article>
+      <article data-reveal><h3><code>caches</code></h3><p>Hugging Face models, npm, Homebrew, uv, bun, cargo, Node, the GitHub CLI and a closed list of editor and toolchain caches. Regenerated on demand — devtrim tells you the bandwidth cost instead of deciding.</p></article>
       <article data-reveal><h3><code>node-modules</code></h3><p>Applies exact previewed paths only when Git activity is conclusively older than 30 days. Unknown state is refused.</p></article>
       <article data-reveal><h3><code>artifacts</code></h3><p>Rust targets, virtualenvs, Pods, Gradle and bundler outputs — only with ecosystem corroboration, only in conclusively stale repos, never ambiguous names like <code>build</code> or <code>dist</code>.</p></article>
       <article data-reveal><h3><code>history</code></h3><p>Every apply is journaled write-ahead. Review what was attempted and what completed — interrupted applies are visible, not invisible.</p></article>
@@ -134,7 +134,11 @@
         <p class="dim">Installs the attested release binary plus shell completions and the man page.</p>
         <a class="btn primary big" href="https://github.com/mneves75/devtrim/releases/download/v0.9.3/devtrim-0.9.3-macos-arm64.zip">Download for Apple silicon</a>
         <p class="dim mono">SHA-256 in <a href="https://github.com/mneves75/devtrim/releases/tag/v0.9.3">release assets</a>. Verify before running:</p>
-        <pre tabindex="0"><code>shasum -a 256 -c SHA256SUMS.txt</code></pre>
+        <pre tabindex="0"><code>shasum -a 256 -c SHA256SUMS.txt
+gh attestation verify devtrim-*-macos-arm64.zip \
+  --repo mneves75/devtrim \
+  --signer-workflow mneves75/devtrim/.github/workflows/release.yml \
+  --deny-self-hosted-runners</code></pre>
       </div>
       <div data-reveal>
         <h3>Build from source</h3>

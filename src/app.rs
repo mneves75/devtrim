@@ -50,7 +50,9 @@ pub fn main_impl() -> ExitCode {
         Ok(code) => code,
         Err(error) => {
             if json {
-                if let Err(output_error) = report::print_error_json(&format!("{error:#}")) {
+                if let Err(output_error) =
+                    report::print_error_json(operation, &format!("{error:#}"))
+                {
                     eprintln!(
                         "{} {}",
                         "error:".red().bold(),
@@ -211,6 +213,12 @@ fn clap_error(error: clap::Error, json: bool, operation: &str) -> ExitCode {
     }
 
     let code = error.exit_code();
+    if error.use_stderr() {
+        // The message can quote an argument from argv; clap strips ANSI
+        // sequences but passes other controls such as bidirectional overrides.
+        eprint!("{}", report::terminal_safe_text(&error.to_string()));
+        return exit_code(code);
+    }
     if let Err(print_error) = error.print() {
         eprintln!(
             "{} {}",
@@ -393,8 +401,11 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             if !ctx.json {
                 report::print_human(&findings)?;
             }
-            safety::warn_data_loss(&ctx);
-            if let Err(error) = safety::trash_gate(&ctx.home, confirm_gb) {
+            // The size acknowledgment names what a purge removes; the shared
+            // gate is the consent every interactive mutation requires.
+            if let Err(error) = safety::trash_gate(&findings, confirm_gb)
+                .and_then(|()| safety::gate(safety::plan_danger(&findings), &ctx, &findings))
+            {
                 return command_error("trash-empty", false, &findings, &ctx, error);
             }
             match ops::purge_trash(&findings, &ctx) {

@@ -208,11 +208,22 @@ fn append_at(location: &JournalLocation, record: &JournalRecord) -> Result<()> {
     let mut file = open_regular_at(
         &location.parent,
         &location.leaf,
-        OFlags::WRONLY | OFlags::APPEND | OFlags::CREATE,
+        OFlags::RDWR | OFlags::APPEND | OFlags::CREATE,
         Mode::from(0o600),
     )?;
     file.set_permissions(Permissions::from_mode(0o600))?;
     flock(&file, FlockOperation::LockExclusive).map_err(io::Error::from)?;
+    // A write cut short (ENOSPC is likely on the disk this tool is cleaning)
+    // leaves a line with no terminator. Appending straight onto it would fuse
+    // this record with that fragment, and `history` would discard both.
+    let length = file.metadata()?.len();
+    if length > 0 {
+        let mut last = [0u8; 1];
+        std::os::unix::fs::FileExt::read_exact_at(&file, &mut last, length - 1)?;
+        if last != *b"\n" {
+            line.insert(0, b'\n');
+        }
+    }
     file.write_all(&line)?;
     file.flush()?;
     file.sync_data()?;
@@ -1120,6 +1131,37 @@ mod tests {
         symlink(&target, &path).unwrap();
         assert!(read_history(&path, 20).is_err());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "unchanged");
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn a_record_after_a_truncated_line_starts_on_its_own_line() {
+        let root = temp("truncated-tail");
+        let path = root.join("journal.jsonl");
+        std::fs::write(&path, b"{\"phase\":\"attem").unwrap();
+        let location = JournalLocation::open(&path, ParentMode::Existing)
+            .unwrap()
+            .unwrap();
+        let record =
+            JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
+
+        append_at(&location, &record).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines.len(),
+            2,
+            "the record fused with the fragment: {contents:?}"
+        );
+        assert_eq!(lines[0], "{\"phase\":\"attem");
+        assert!(serde_json::from_str::<serde_json::Value>(lines[1]).is_ok());
+        append_at(&location, &record).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().lines().count(),
+            3,
+            "positive control: a terminated tail gains no blank line"
+        );
         crate::ops::remove_test_path(root);
     }
 

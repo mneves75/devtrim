@@ -41,7 +41,9 @@ pub(crate) fn has_node_modules_ancestor(path: &Path) -> bool {
 
 pub use icloud::icloud_status;
 
-pub(crate) fn command_stdout(output: io::Result<Output>, command: &str) -> Result<String> {
+/// A command that could not start or exited unsuccessfully, named with its exit
+/// status and stderr so the error and the journal say what actually failed.
+fn successful_output(output: io::Result<Output>, command: &str) -> Result<Output> {
     let output = output.with_context(|| format!("cannot run {command}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -51,7 +53,35 @@ pub(crate) fn command_stdout(output: io::Result<Output>, command: &str) -> Resul
         }
         anyhow::bail!("{command} failed with {}: {detail}", output.status);
     }
+    Ok(output)
+}
+
+pub(crate) fn command_stdout(output: io::Result<Output>, command: &str) -> Result<String> {
+    let output = successful_output(output, command)?;
     String::from_utf8(output.stdout).with_context(|| format!("{command} returned non-UTF-8 output"))
+}
+
+/// Journals and runs one typed command whose program and arguments come only
+/// from its closed authority; `note` receives the displayed command line.
+pub(crate) fn run_command_authority(
+    op: &str,
+    authority: &crate::report::CommandAuthority,
+    size_bytes: u64,
+    ctx: &Ctx,
+    note: impl FnOnce(&str) -> String,
+) -> Result<String> {
+    let (program, args) = authority.parts();
+    let attempt = crate::journal::begin(
+        ctx,
+        crate::journal::JournalRecord::command_attempt(op, program, &args, size_bytes),
+    )?;
+    let command = format!("`{program} {}`", args.join(" "));
+    let result = successful_output(
+        std::process::Command::new(program).args(&args).output(),
+        &command,
+    )
+    .map(|_| note(&command));
+    attempt.finish(ctx, result)
 }
 
 pub(crate) fn optional_command_stdout(
@@ -295,7 +325,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
 
     let quarantine_name = next_quarantine_name(&dir)?;
     let quarantine_path = parent.join(&quarantine_name);
-    dir.rename(leaf, &dir, &quarantine_name)
+    rename_no_replace(&dir, leaf, &quarantine_name)
         .with_context(|| format!("cannot quarantine deletion target: {}", path.display()))?;
     let quarantined =
         verify_quarantined_target(&dir, leaf, &quarantine_name, &quarantine_path, expected)?;
@@ -485,6 +515,15 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
         })?;
     }
     Ok(())
+}
+
+/// A rename that refuses an occupied destination atomically (`renameatx_np`
+/// with `RENAME_EXCL`). `Dir::rename` replaces an existing destination, so a
+/// check-then-rename would let a file recreated in the gap be overwritten —
+/// and on restore that file is one no preview ever showed.
+fn rename_no_replace(dir: &cap_std::fs::Dir, from: &Path, to: &Path) -> Result<()> {
+    rustix::fs::renameat_with(dir, from, dir, to, rustix::fs::RenameFlags::NOREPLACE)
+        .with_context(|| format!("cannot rename {} to {}", from.display(), to.display()))
 }
 
 fn file_identity_at(dir: &cap_std::fs::Dir, path: &Path) -> Result<FileIdentity> {
@@ -681,7 +720,7 @@ fn restore_quarantined_target(
             });
         }
     }
-    dir.rename(quarantine_name, dir, leaf).with_context(|| {
+    rename_no_replace(dir, quarantine_name, leaf).with_context(|| {
         format!(
             "cannot restore quarantined target {}; nothing was deleted",
             quarantine_path.display()
@@ -1024,6 +1063,43 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
         assert!(std::fs::symlink_metadata(&quarantine_path).is_err());
         remove_test_path(home);
+    }
+
+    #[test]
+    fn quarantine_rename_never_replaces_an_occupied_name() {
+        let base = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-rename-no-replace-{}", std::process::id()));
+        remove_test_path(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("quarantined"), "quarantined").unwrap();
+        std::fs::write(base.join("recreated"), "recreated after the check").unwrap();
+        let dir = cap_std::fs::Dir::open_ambient_dir(&base, cap_std::ambient_authority()).unwrap();
+
+        let result = rename_no_replace(&dir, Path::new("quarantined"), Path::new("recreated"));
+
+        assert!(
+            result.as_ref().is_err_and(|error| error
+                .root_cause()
+                .downcast_ref::<rustix::io::Errno>()
+                .is_some_and(|errno| *errno == rustix::io::Errno::EXIST)),
+            "PV sink/rename-no-replace: an occupied destination must refuse with EEXIST: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("recreated")).unwrap(),
+            "recreated after the check"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("quarantined")).unwrap(),
+            "quarantined"
+        );
+        rename_no_replace(&dir, Path::new("quarantined"), Path::new("free")).unwrap();
+        assert!(
+            base.join("free").exists(),
+            "positive control: a free name renames"
+        );
+        remove_test_path(base);
     }
 
     #[test]

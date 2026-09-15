@@ -292,7 +292,7 @@ fn authorize(target: &Path, ctx: &Ctx) -> Result<()> {
         return Ok(());
     }
     anyhow::bail!(
-        "agent history no longer meets its preview shape — it became active, lost its session shape, or is now a symlink; refusing {}",
+        "agent history no longer meets its preview shape — it became active or is now a symlink; refusing {}",
         target.display()
     )
 }

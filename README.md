@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.9.3.
+This source tree and its packaged documentation describe devtrim v0.9.4.
 
 ## Install
 
@@ -19,11 +19,16 @@ brew install mneves75/devtrim/devtrim
 ```
 
 Or download the Apple silicon archive for the version you intend to run from
-[GitHub Releases](https://github.com/mneves75/devtrim/releases), then verify it
-with the included checksum:
+[GitHub Releases](https://github.com/mneves75/devtrim/releases), then verify it.
+The checksum comes from the same release as the archive, so it proves only an
+intact download; the build attestation proves which workflow built it from
+which commit:
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
+gh attestation verify devtrim-<version>-macos-arm64.zip --repo mneves75/devtrim \
+  --signer-workflow mneves75/devtrim/.github/workflows/release.yml \
+  --deny-self-hosted-runners
 ```
 
 Or build from source:
@@ -40,8 +45,9 @@ cp target/release/devtrim /usr/local/bin/
 - **Preview by default.** Every mutation, including `trash-empty`, requires `--apply`.
 - **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets. Xcode and Swift toolchain apply reassert exact direct-child authority; `node_modules` apply reasserts a real authorized directory leaf and rejects symlinks plus `.git`, nested dependency-tree, and non-normal ancestors.
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
+- **Untrusted repositories stay inert.** The Git activity probe disables every repository-configurable path by which `git log` runs a program — hooks, fsmonitor, signature verification through `gpg.program`, and lazy fetches through a promisor remote's `uploadpack` — so previewing a directory that arrived with a hostile `.git/config` runs nothing. A `git` too old for `--no-lazy-fetch` refuses the repository.
 - **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation.
-- **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while `xcodebuild` runs. A probe that cannot complete blocks instead of passing.
+- **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while Xcode, `xcodebuild`, or the build services Xcode.app builds run through are running. A probe that cannot complete blocks instead of passing.
 - **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle. Every directory action rejects foreign devices and Git repository/worktree markers at any depth before mutation. Permanent deletes additionally quarantine the verified leaf and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
 - **Write-ahead journal.** Every apply records an attempt before deletion and a result after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). Symlinked path components are refused, complete records are serialized and synced, and an unwritable journal blocks apply. Rotation (10 MiB, keep 3) cannot split an in-flight pair. `devtrim history` is read-only, waits for guarded applies before snapshotting, pairs legacy records across generations, reverse-scans only the bounded newest tail needed for the requested limit, and reports a genuinely unmatched attempt as interrupted.
 - **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
@@ -78,8 +84,8 @@ devtrim                                   # interactive TUI when stdin/stdout ar
 devtrim tui                               # explicit TUI launch
 devtrim scan                              # full read-only report
 devtrim scan --json                       # one machine-readable envelope
-devtrim clean caches --apply -y           # HF/uv/npm/brew/cargo/bun/Playwright download caches
-devtrim clean node-modules --apply -y     # exact paths in conclusively stale Git repos
+devtrim clean caches --apply -y           # tool download caches (HF, uv, npm, brew, cargo, bun, gh, …)
+devtrim clean node-modules --apply -y     # exact paths in Git repos with no recent activity
 devtrim clean artifacts --apply -y        # corroborated build artifacts in stale Git repos
 devtrim clean simulators --apply -y       # delete exact previewed unavailable devices
 devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData children
@@ -117,14 +123,17 @@ remains mandatory.
 **and** its ecosystem corroborates it — `target` next to `Cargo.toml`, `.venv`
 containing `pyvenv.cfg`, `Pods` next to `Podfile`, `.next` next to
 `package.json`, a valid `CACHEDIR.TAG` signature, and so on — inside a Git repo
-whose last commit is conclusively stale. Ambiguous names such as `build`,
+whose last activity is conclusively stale. Ambiguous names such as `build`,
 `dist`, `vendor`, `bin`, and `obj` are deliberately never matched, and the
 scanner/apply owner refuse artifacts below every ASCII-case variant of
 `node_modules`.
 
 `clean installers` considers only direct children of `Downloads` and `Desktop`
 whose extension is on a closed list (`dmg`, `pkg`, `mpkg`, `iso`, `xip`) and
-which have been untouched for longer than the configured active window.
+which have been untouched for longer than the configured active window. Age is
+the file's modification time, so a copy that preserves it — a Finder copy from
+another disk, for example — counts as old immediately; the preview shows the
+age it judged.
 Scanning is deliberately non-recursive, because those directories routinely hold
 extracted project trees whose bundled installers are not loose clutter. Formats
 that can carry source or user data, such as `zip` and `tar`, are never matched.
@@ -192,8 +201,9 @@ whatever the cursor was on would swap that evidence for the operator's aim. It
 measures on a worker thread and streams results in, so a directory that takes
 minutes to size never freezes the screen; leaving a directory cancels its walk.
 Symlinks are reported at their own size rather than followed, a different device
-is never entered, and anything unreadable is disclosed as a `(partial)` lower
-bound.
+is never measured or entered, and anything unreadable is disclosed as a
+`(partial)` lower bound. A lower bound is a partial result, so `analyze --json`
+lists each one in `errors` and exits nonzero, as quitting the explorer does.
 
 `status` reads machine vitals through fixed-argv system tools and reports a
 health score that **names every input it could not read** rather than scoring
@@ -209,8 +219,9 @@ Other Mac cleaners delete more. These boundaries are choices with reasons:
   conservative report, not an inventory: an app storing data under a product
   name is invisible to it, as Visual Studio Code's `~/Library/Application
   Support/Code` is. It does not delete because `is_protected` refuses
-  `/Applications` and everything under `~/Library` outside a four-entry
-  allowlist, and widening that would weaken every command, not just this one.
+  `/Applications` and everything under `~/Library` outside a closed allowlist
+  of developer-managed paths, and widening that would weaken every command,
+  not just this one.
 - **`optimize` is three tasks, not twenty-two.** Rebuilding a Spotlight index,
   running the periodic scripts and purging memory all need root and cost more
   than they return. A DNS flush is absent too: on modern macOS the resolver
@@ -228,11 +239,19 @@ Desktop, as a report-only finding that is never actionable. `docker system df`
 measures space *inside* the guest, while the host pays for a sparse image that
 pruning does not shrink — the runtime compacts it on its own schedule, in
 practice after the VM stops. That finding is measured in allocated blocks rather
-than logical length, and it is shown even when the daemon is not running, which
-is the one state where the cost is invisible to `docker` and still present.
+than logical length, and it is shown when `docker` is not installed at all.
+When `docker` is installed but its daemon is down, the category fails — a
+silently shorter plan would read as nothing to reclaim — and its error names
+the image and its size, which is the one state where the cost is invisible to
+`docker` and still present.
 
 `trash-empty` previews each current top-level Trash item as an exact target.
-Apply consumes only that set; anything moved to Trash after preview remains.
+`--apply` shows that set again and purges it only after the same confirmation
+every mutation requires — typed on a terminal, or `--yolo` — so an item moved
+to Trash after the earlier preview is shown before it can be approved. The
+`--confirm=<gb>` acknowledgment is measured over that exact set, not the whole
+Trash, so an excluded item never makes it unsatisfiable. Anything moved to
+Trash after confirmation remains.
 A direct item named as an ASCII-case variant of `.git` is warned about and left
 in Trash instead of blocking the other exact items.
 
@@ -262,7 +281,7 @@ was absent from the preview.
 
 ```toml
 roots = ["~/dev"]                 # scan roots
-active_days = 30                  # newer commits make a repo active
+active_days = 30                  # newer Git activity makes a repo active (0 means 1)
 protect = ["~/dev/keep"]          # never delete these paths or their children
 ```
 
@@ -275,8 +294,14 @@ an existing path warns loudly. Matching is Unicode-normalization-insensitive
 symlinked entries also protect their resolved location, and deleting an
 ancestor of a protected entry is refused too.
 
+A repository is active when its HEAD commit or its newest HEAD reflog entry is
+inside the window. The reflog is what a clone, checkout, or pull writes, so an
+old project cloned today — whose dependencies were just installed — is not
+offered; a repository with reflogs disabled is judged by its commit date.
+
 Explicit `--root` flags replace config/default roots. Existing roots are resolved
-before preview. An unreadable, malformed, or unknown config field is an error; devtrim never
+before preview; an explicit root that does not exist is warned about instead of
+silently scanning nothing. An unreadable, malformed, or unknown config field is an error; devtrim never
 silently falls back to another root.
 
 ## JSON contract
@@ -299,6 +324,14 @@ Applied commands additionally include `summary`. If a later target fails, the su
 journal record with numeric `ts`, `phase`, `op`, `action`, and either `target`
 or the exact `argv`. `completions` and `manpage` have no JSON form and return
 the standard error envelope when `--json` is passed.
+
+`devtrim status --json` is also its own single document: a vitals report with
+`uptime_seconds`, `load_average`, `cpu_count`, `memory`, `disk`, `battery`,
+`thermal`, `network`, `top_processes`, `health` (`score` and the
+`missing_inputs` it was computed without), and `unavailable` — one reason per
+metric that could not be read. A metric is `null` when unread, never zero, and
+the process exits nonzero whenever `unavailable` is not empty. `status --watch`
+is interactive and rejects `--json`.
 
 ### For agents
 

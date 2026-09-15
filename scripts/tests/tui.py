@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Exercise the real menu/help/quit flow in an isolated, sized PTY."""
+"""Exercise the real TUI in an isolated, sized PTY.
+
+Two flows: menu/help/quit with terminal restoration, and the type-ahead
+boundary — keys typed before a plan is displayed must never approve it.
+"""
 
 import argparse
 import errno
@@ -17,12 +21,13 @@ import termios
 import time
 
 
-def verify(binary):
-    with tempfile.TemporaryDirectory(prefix="devtrim-tui-") as directory:
-        home = Path(directory)
+class Session:
+    """One devtrim TUI process attached to its own PTY and disposable home."""
+
+    def __init__(self, binary, home):
         for name in ("bin", "config", "state", "cache"):
-            (home / name).mkdir()
-        environment = {
+            (home / name).mkdir(exist_ok=True)
+        self.environment = {
             "HOME": str(home),
             "PATH": str(home / "bin"),
             "XDG_CONFIG_HOME": str(home / "config"),
@@ -31,91 +36,146 @@ def verify(binary):
             "TERM": "xterm-256color",
             "LANG": "en_US.UTF-8",
         }
-        master, slave = pty.openpty()
-        process = None
-        output = bytearray()
-        try:
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-            original = termios.tcgetattr(slave)
-            def attach_terminal():
-                fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+        self.binary = binary
+        self.home = home
+        self.output = bytearray()
+        self.process = None
+        self.deadline = time.monotonic() + 15
 
-            process = subprocess.Popen(
-                [str(binary)], stdin=slave, stdout=slave, stderr=slave,
-                cwd=home, env=environment, start_new_session=True,
-                preexec_fn=attach_terminal,
-            )
-            deadline = time.monotonic() + 15
+    def __enter__(self):
+        self.master, self.slave = pty.openpty()
+        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+        self.original = termios.tcgetattr(self.slave)
+        slave = self.slave
 
-            def read_output():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise AssertionError("timed out waiting for TUI")
-                if select.select([master], [], [], min(remaining, 0.1))[0]:
-                    try:
-                        chunk = os.read(master, 65536)
-                    except OSError as error:
-                        if error.errno != errno.EIO:
-                            raise
-                        chunk = b""
-                    output.extend(chunk)
-                    if not chunk:
-                        return False
-                if len(output) > 2_000_000:
-                    raise AssertionError("TUI exceeded output bound")
-                return True
+        def attach_terminal():
+            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
 
-            def wait_for(text):
-                start = len(output)
-                while True:
-                    try:
-                        read_output()
-                    except AssertionError as error:
-                        raise AssertionError(f"waiting for {text!r}: {error}") from error
-                    rendered = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output[start:])
-                    if b"".join(text.encode().split()) in b"".join(rendered.split()):
-                        return
-                    if process.poll() is not None:
-                        raise AssertionError(f"TUI exited before rendering {text!r}")
+        self.process = subprocess.Popen(
+            [str(self.binary)], stdin=self.slave, stdout=self.slave, stderr=self.slave,
+            cwd=self.home, env=self.environment, start_new_session=True,
+            preexec_fn=attach_terminal,
+        )
+        return self
 
-            wait_for("Scan everything")
-            if b"\x1b[?1049h" not in output:
+    def __exit__(self, *_):
+        if self.process is not None and self.process.poll() is None:
+            self.process.kill()
+            self.process.wait()
+        os.close(self.master)
+        os.close(self.slave)
+
+    def read_output(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError("timed out waiting for TUI")
+        if select.select([self.master], [], [], min(remaining, 0.1))[0]:
+            try:
+                chunk = os.read(self.master, 65536)
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise
+                chunk = b""
+            self.output.extend(chunk)
+            if not chunk:
+                return False
+        if len(self.output) > 2_000_000:
+            raise AssertionError("TUI exceeded output bound")
+        return True
+
+    def send(self, keys):
+        os.write(self.master, keys)
+
+    def wait_for(self, text):
+        start = len(self.output)
+        while True:
+            try:
+                self.read_output()
+            except AssertionError as error:
+                screen = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b" ", self.output[-1200:])
+                tail = " ".join(screen.decode(errors="replace").split())
+                raise AssertionError(f"waiting for {text!r}: {error}; last output: {tail}") from error
+            rendered = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", self.output[start:])
+            if b"".join(text.encode().split()) in b"".join(rendered.split()):
+                return
+            if self.process.poll() is not None:
+                raise AssertionError(f"TUI exited before rendering {text!r}")
+
+    def settle(self, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self.read_output()
+
+    def quit(self):
+        self.send(b"q")
+        while self.process.poll() is None:
+            self.read_output()
+        # Drain the final terminal-restoration sequence after process exit.
+        while select.select([self.master], [], [], 0)[0]:
+            if not self.read_output():
+                break
+        if self.process.returncode != 0:
+            raise AssertionError(f"TUI exited with status {self.process.returncode}")
+
+
+def verify_menu(binary):
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-") as directory:
+        with Session(binary, Path(directory).resolve()) as session:
+            session.wait_for("Scan everything")
+            if b"\x1b[?1049h" not in session.output:
                 raise AssertionError("TUI did not enter alternate screen")
-            os.write(master, b"?")
-            wait_for("open or close this reference")
-            os.write(master, b"\x1b")
-            wait_for("Enter opens")
-            os.write(master, b"q")
-            while process.poll() is None:
-                read_output()
-            # Drain the final terminal-restoration sequence after process exit.
-            while select.select([master], [], [], 0)[0]:
-                if not read_output():
-                    break
-            if process.returncode != 0:
-                raise AssertionError(f"TUI exited with status {process.returncode}")
-            if termios.tcgetattr(master) != original:
+            session.send(b"?")
+            session.wait_for("open or close this reference")
+            session.send(b"\x1b")
+            session.wait_for("Enter opens")
+            session.quit()
+            if termios.tcgetattr(session.master) != session.original:
                 raise AssertionError("TUI did not restore terminal attributes")
-            if b"\x1b[?1049l" not in output or b"\x1b[?25h" not in output:
+            if b"\x1b[?1049l" not in session.output or b"\x1b[?25h" not in session.output:
                 raise AssertionError("TUI did not restore screen and cursor")
-        finally:
-            if process is not None and process.poll() is None:
-                process.kill()
-                process.wait()
-            os.close(master)
-            os.close(slave)
+
+
+def verify_type_ahead(binary):
+    """`2sa0⏎` selects caches, toggles SHRED, opens the critical confirmation
+    and types its 0 GB answer. Written in one burst, everything after `2` is
+    queued while the scan blocks the loop and must be discarded. The same keys
+    typed after the results render are the positive control that the burst
+    would otherwise have permanently deleted the cache."""
+    # The system temporary directory resolves under the protected /private/var,
+    # so an apply there is refused; the build directory is a writable user path.
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        cache = home / ".cache" / "uv"
+        cache.mkdir(parents=True)
+        (cache / "blob").write_bytes(b"x")
+        with Session(binary, home) as session:
+            session.wait_for("Scan everything")
+            session.send(b"2sa0\r")
+            session.wait_for("Review every finding")
+            session.settle(1.0)
+            if not cache.exists():
+                raise AssertionError("type-ahead approved a plan before it was displayed")
+            if b"permanentlydeleted" in b"".join(session.output.split()):
+                raise AssertionError("type-ahead reached the apply summary")
+            session.send(b"sa0\r")
+            session.wait_for("permanently deleted uv package cache")
+            if cache.exists():
+                raise AssertionError("positive control: the same keys after preview did not apply")
+            session.quit()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
     arguments = parser.parse_args()
+    binary = arguments.binary.resolve(strict=True)
     try:
-        verify(arguments.binary.resolve(strict=True))
+        verify_menu(binary)
+        verify_type_ahead(binary)
     except (AssertionError, OSError, termios.error) as error:
         print(f"tui: {error}", file=sys.stderr)
         return 1
-    print("tui: menu, help, cancel, quit, and terminal restoration passed")
+    print("tui: menu, help, cancel, quit, terminal restoration, and type-ahead discard passed")
     return 0
 
 

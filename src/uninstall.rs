@@ -11,7 +11,8 @@
 //! This command reports; it never deletes, and that is a structural fact rather
 //! than a policy choice. `safety::is_protected` refuses `/Applications` and
 //! everything beneath it, and refuses everything under `~/Library` outside a
-//! four-entry allowlist — a boundary the repository's own property tests assert
+//! closed allowlist of developer-managed paths — a boundary the repository's own
+//! property tests assert
 //! (`is_protected(home/"Library/Application Support")`). Deleting an app bundle
 //! and its support files would require widening that list for every code path,
 //! not just this one, so the useful half devtrim can honestly do is the half a
@@ -360,7 +361,8 @@ pub fn run(ctx: &Ctx, app: &str) -> Result<ExitCode> {
 and only those. An app that stores data under a product name is not listed — Visual \
 Studio Code keeps ~/Library/Application Support/Code, which contains no identifier — \
 so treat this as a conservative report, not an inventory. devtrim does not remove \
-them: /Applications and all of ~/Library outside a four-entry allowlist are refused \
+them: /Applications and all of ~/Library outside a closed allowlist of developer-managed \
+paths are refused \
 by the protected-path boundary, for every command rather than only this one.",
         report::terminal_safe(&identifier),
         "report-only:".yellow().bold(),

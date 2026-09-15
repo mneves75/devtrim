@@ -312,6 +312,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      handoff_digest: ${{ steps.handoff.outputs.digest }}
     steps:
       - name: Checkout tagged source without credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -376,6 +378,22 @@ jobs:
           ( cd dist && shasum -a 256 -c SHA256SUMS.txt )
           cp "dist/$out.zip" dist/SHA256SUMS.txt handoff/
 
+      # The publisher attests whatever it downloads, and an artifact is found by
+      # name. Binding the exact bytes to this job's output means a dependency
+      # running in another job cannot substitute them after upload.
+      - name: Bind reviewed release inputs by digest
+        id: handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -z "$(find handoff ! -type f ! -type d -print)" ]] || {
+            echo "ERROR: release inputs must be regular files"
+            exit 1
+          }
+          digest=$(cd handoff && find . -type f -print | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d ' ' -f 1)
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { echo "ERROR: cannot digest release inputs"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Transfer reviewed release inputs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -435,9 +453,29 @@ jobs:
           name: release-input-${{ github.run_id }}
           path: handoff
 
+      - name: Verify reviewed release inputs by digest
+        shell: bash
+        env:
+          EXPECTED_DIGEST: ${{ needs.prepare.outputs.handoff_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_DIGEST" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "ERROR: prepare did not publish a release-input digest"
+            exit 1
+          }
+          [[ -z "$(find handoff ! -type f ! -type d -print)" ]] || {
+            echo "ERROR: release inputs must be regular files"
+            exit 1
+          }
+          actual=$(cd handoff && find . -type f -print | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d ' ' -f 1)
+          [[ "$actual" == "$EXPECTED_DIGEST" ]] || {
+            echo "ERROR: downloaded release inputs differ from the bytes prepare produced"
+            exit 1
+          }
+
       - name: Attest beta artifact
         if: needs.validate.outputs.is_beta == 'true' && steps.state.outputs.release_exists == 'false'
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: handoff/${{ needs.validate.outputs.out }}.zip
 
@@ -500,6 +538,7 @@ jobs:
               --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
               --source-digest "${GITHUB_SHA}"
               --source-ref "refs/tags/$candidate"
+              --deny-self-hosted-runners
             )
             gh attestation verify "$candidate_dir/$out.zip" "${attestation_args[@]}" >/dev/null || continue
 
@@ -589,6 +628,7 @@ jobs:
             --repo "${GITHUB_REPOSITORY}"
             --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
             --source-digest "${GITHUB_SHA}"
+            --deny-self-hosted-runners
           )
           if [[ "${{ needs.validate.outputs.is_beta }}" == "true" ]]; then
             attestation_args+=(--source-ref "${GITHUB_REF}")

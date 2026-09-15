@@ -103,7 +103,8 @@ release_commit=$(gh api "repos/${source_repo}/commits/${tag}" --jq .sha) || {
 gh attestation verify "$verify_dir/$asset" \
   --repo "$source_repo" \
   --signer-workflow "$source_repo/.github/workflows/release.yml" \
-  --source-digest "$release_commit" >/dev/null
+  --source-digest "$release_commit" \
+  --deny-self-hosted-runners >/dev/null
 
 echo "==> updating ${tap_repo}"
 gh repo clone "$tap_repo" "$tap_dir" -- --quiet --filter=blob:none --single-branch

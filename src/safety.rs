@@ -74,6 +74,7 @@ impl Ctx {
         let active_days = file_cfg.active_days.unwrap_or(30).max(1);
         let (protect, protect_warnings) =
             configured_protect(file_cfg.protect.unwrap_or_default(), &home)?;
+        let explicit_roots = !cli.roots.is_empty() || !cfg_roots.is_empty();
         let roots = if !cli.roots.is_empty() {
             cli.roots
                 .iter()
@@ -87,6 +88,9 @@ impl Ctx {
         } else {
             vec![home.join("dev")]
         };
+        // A mistyped root would otherwise scan nothing and report a clean
+        // machine; the absent default `~/dev` is not a mistake worth a warning.
+        let mut root_warnings = Vec::new();
         let roots = roots
             .into_iter()
             .map(|root| {
@@ -94,6 +98,12 @@ impl Ctx {
                     root.canonicalize()
                         .with_context(|| format!("cannot resolve scan root: {}", root.display()))
                 } else {
+                    if explicit_roots {
+                        root_warnings.push(format!(
+                            "scan root does not exist and was skipped: {}",
+                            root.display()
+                        ));
+                    }
                     Ok(root)
                 }
             })
@@ -124,6 +134,9 @@ impl Ctx {
             diagnostics: Mutex::new(Vec::new()),
             journal_errors: Mutex::new(Vec::new()),
         };
+        for warning in root_warnings {
+            ctx.diagnostic("warn", warning);
+        }
         for warning in protect_warnings {
             ctx.diagnostic("warn", warning);
         }
@@ -583,21 +596,6 @@ fn path_relative_to_ignore_ascii_case(path: &Path, base: &Path) -> Option<PathBu
     )
 }
 
-/// Exact `~/Library/Caches` subdirectories devtrim manages, as
-/// `(human label, directory name)`.
-///
-/// `~/Library` is protected wholesale; this is the closed carve-out, and it is
-/// the single source of truth for both the protection boundary below and the
-/// cache category that acts on it, so the two cannot drift into a state where a
-/// path is previewed but refused (or worse, the reverse). Every entry is one
-/// directory owned by exactly one developer tool that rebuilds it on demand. A
-/// name shared by several producers, or one whose contents a tool cannot
-/// re-fetch, does not belong here.
-///
-/// The pnpm entry is the metadata cache under a cache root, never the
-/// content-addressable store (`~/Library/pnpm/store`): every installed
-/// `node_modules` hard-links into that store, so removing it would break
-/// projects rather than free regenerable bytes.
 /// One path a category may delete, and the evidence that says it may.
 ///
 /// `evidence` is a required field, so a new entry cannot be added without one:
@@ -625,8 +623,9 @@ pub(crate) struct DeletionEntry {
 
 /// Whether every entry carries non-empty, non-whitespace evidence.
 ///
-/// `const` so each list is checked while compiling; the owning modules also
-/// assert it in a test that names the offending path.
+/// `const` so each list is checked while compiling. It sees ASCII whitespace
+/// only: the owning modules' tests cover a non-ASCII blank such as U+00A0,
+/// which `str::trim` strips and a `const fn` cannot.
 pub(crate) const fn evidence_is_present(entries: &[DeletionEntry]) -> bool {
     let mut index = 0;
     while index < entries.len() {
@@ -658,6 +657,21 @@ const _: () = assert!(
     "every managed Library cache needs evidence for why it may be deleted"
 );
 
+/// Exact `~/Library/Caches` subdirectories devtrim manages, each a
+/// [`DeletionEntry`] whose `relative` is the directory name.
+///
+/// `~/Library` is protected wholesale; this is the closed carve-out, and it is
+/// the single source of truth for both the protection boundary below and the
+/// cache category that acts on it, so the two cannot drift into a state where a
+/// path is previewed but refused (or worse, the reverse). Every entry is one
+/// directory owned by exactly one developer tool that rebuilds it on demand. A
+/// name shared by several producers, or one whose contents a tool cannot
+/// re-fetch, does not belong here.
+///
+/// The pnpm entry is the metadata cache under a cache root, never the
+/// content-addressable store (`~/Library/pnpm/store`): every installed
+/// `node_modules` hard-links into that store, so removing it would break
+/// projects rather than free regenerable bytes.
 pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
     DeletionEntry {
         label: "Playwright browser cache",
@@ -876,11 +890,14 @@ pub fn warn_data_loss(ctx: &Ctx) {
     }
 }
 
-pub fn trash_gate(home: &Path, confirm_gb: Option<u64>) -> Result<()> {
+/// The acknowledgment is measured over the exact findings a purge would remove,
+/// the same basis the preview suggests. Measuring the whole Trash instead makes
+/// the acknowledgment unsatisfiable once a large item is excluded from the plan.
+pub fn trash_gate(findings: &[Finding], confirm_gb: Option<u64>) -> Result<()> {
     let Some(want) = confirm_gb else {
         bail!("Trash purge requires --confirm=<gb> matching current Trash size");
     };
-    let actual_gb = dir_size(&home.join(".Trash"))? / (1024 * 1024 * 1024);
+    let actual_gb = crate::report::actionable_bytes(findings) / (1024 * 1024 * 1024);
     let low = actual_gb.saturating_sub(2);
     let high = actual_gb.saturating_add(2);
     if !(low..=high).contains(&want) {
@@ -973,11 +990,16 @@ pub(crate) fn build_process_cwds() -> Result<Vec<PathBuf>> {
     parse_lsof_cwds(&lsof.stdout, lsof.status.code())
 }
 
-pub(crate) fn xcodebuild_running() -> Result<bool> {
+/// Processes that write DerivedData: command-line builds, the Swift Build and
+/// legacy XCBuild services that Xcode.app builds run through (their parent is
+/// the IDE, not `xcodebuild`), and the IDE itself, whose indexer writes there.
+const XCODE_BUILD_PATTERN: &str = "xcodebuild|SWBBuildService|XCBBuildService|Xcode";
+
+pub(crate) fn xcode_build_running() -> Result<bool> {
     let output = Command::new("pgrep")
-        .args(["-x", "xcodebuild"])
+        .args(["-x", XCODE_BUILD_PATTERN])
         .output()
-        .context("cannot run xcodebuild liveness probe")?;
+        .context("cannot run Xcode build liveness probe")?;
     Ok(!parse_pgrep_pids(&output.stdout, output.status.code())?.is_empty())
 }
 
@@ -1006,6 +1028,51 @@ pub(crate) fn parse_pgrep_pids(output: &[u8], exit_code: Option<i32>) -> Result<
     Ok(pids)
 }
 
+/// lsof escapes a name for display, and a build directory whose displayed
+/// spelling differs from its real path would never match the repository it
+/// runs in — leaving that repository's dependencies deletable mid-build. The
+/// unambiguous escapes are decoded; `^X` is refused because lsof renders a
+/// control byte and a literal caret identically.
+fn decode_lsof_name(name: &[u8]) -> Result<Vec<u8>> {
+    let mut decoded = Vec::with_capacity(name.len());
+    let mut index = 0;
+    while let Some(&byte) = name.get(index) {
+        let next = name.get(index + 1).copied();
+        match (byte, next) {
+            (b'\\', Some(b'x')) => {
+                let value = name
+                    .get(index + 2..index + 4)
+                    .and_then(|hex| std::str::from_utf8(hex).ok())
+                    .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                    .ok_or_else(|| anyhow::anyhow!("lsof returned an invalid cwd escape"))?;
+                decoded.push(value);
+                index += 4;
+                continue;
+            }
+            (b'\\', Some(escape)) => decoded.push(match escape {
+                b'\\' => b'\\',
+                b'n' => b'\n',
+                b't' => b'\t',
+                b'r' => b'\r',
+                b'b' => 0x08,
+                b'f' => 0x0c,
+                _ => bail!("lsof returned an unknown cwd escape"),
+            }),
+            (b'\\', None) => bail!("lsof returned a truncated cwd escape"),
+            (b'^', Some(b'@'..=b'_' | b'?')) => {
+                bail!("lsof cwd name is ambiguous: `^X` may stand for a control byte")
+            }
+            (other, _) => {
+                decoded.push(other);
+                index += 1;
+                continue;
+            }
+        }
+        index += 2;
+    }
+    Ok(decoded)
+}
+
 pub(crate) fn parse_lsof_cwds(output: &[u8], exit_code: Option<i32>) -> Result<Vec<PathBuf>> {
     match exit_code {
         Some(0) => {}
@@ -1021,7 +1088,7 @@ pub(crate) fn parse_lsof_cwds(output: &[u8], exit_code: Option<i32>) -> Result<V
         if path.is_empty() {
             bail!("lsof returned an empty cwd path");
         }
-        paths.push(PathBuf::from(OsString::from_vec(path.to_vec())));
+        paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(path)?)));
     }
     if exit_code == Some(0) && paths.is_empty() {
         bail!("lsof reported success without any cwd paths");
@@ -1504,6 +1571,36 @@ mod tests {
     }
 
     #[test]
+    fn trash_acknowledgment_measures_the_plan_not_the_whole_trash() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let small = Finding::new(
+            "Trash item: small",
+            Some(PathBuf::from("/Users/example/.Trash/small")),
+            1024,
+            "permanent purge",
+            9,
+            crate::ops::Action::Shred,
+        );
+        let large = Finding::new(
+            "Trash item: large",
+            Some(PathBuf::from("/Users/example/.Trash/large")),
+            10 * GIB,
+            "permanent purge",
+            9,
+            crate::ops::Action::Shred,
+        );
+        // A 10 GiB item excluded from the plan must not demand `--confirm=10`
+        // for the 1 KiB that will actually be purged…
+        assert!(trash_gate(std::slice::from_ref(&small), Some(0)).is_ok());
+        assert!(trash_gate(std::slice::from_ref(&small), Some(10)).is_err());
+        // …and a plan that does include it still requires acknowledging it.
+        let both = [small, large];
+        assert!(trash_gate(&both, Some(0)).is_err());
+        assert!(trash_gate(&both, Some(10)).is_ok());
+        assert!(trash_gate(&both, None).is_err());
+    }
+
+    #[test]
     fn aggregate_size_escalates() {
         assert_eq!(escalate(3, 11 * 1024 * 1024 * 1024), 7);
         assert_eq!(escalate(3, 51 * 1024 * 1024 * 1024), 8);
@@ -1586,6 +1683,39 @@ mod tests {
         assert!(parse_lsof_cwds(b"", Some(1)).is_err());
         assert!(parse_lsof_cwds(b"", Some(0)).is_err());
         assert!(parse_lsof_cwds(b"n/tmp\n", Some(3)).is_err());
+    }
+
+    #[test]
+    fn lsof_cwd_names_are_decoded_or_refused_never_taken_literally() {
+        // Observed on macOS: lsof renders a newline as `\n`, a backslash as
+        // `\\`, a byte outside printable ASCII as `\xHH`, and a control byte as
+        // `^X` — the last indistinguishable from a literal caret in the name.
+        for ambiguous in [
+            &b"n/work/caret^Ay\n"[..],
+            b"n/work/unknown\\q\n",
+            b"n/work/short\\x4\n",
+            b"n/work/trailing\\\n",
+        ] {
+            assert!(
+                parse_lsof_cwds(ambiguous, Some(0)).is_err(),
+                "PV liveness/lsof-escape: {} was taken literally",
+                String::from_utf8_lossy(ambiguous)
+            );
+        }
+        let cwds = parse_lsof_cwds(
+            b"p1\nn/work/a\\nb\np2\nn/work/c\\\\x41d\np3\nn/work/uni\\xe2\\x80\\xaeq\np4\nn/work/v1^2\n",
+            Some(0),
+        )
+        .unwrap();
+        assert_eq!(
+            cwds,
+            vec![
+                PathBuf::from("/work/a\nb"),
+                PathBuf::from("/work/c\\x41d"),
+                PathBuf::from("/work/uni\u{202e}q"),
+                PathBuf::from("/work/v1^2"),
+            ]
+        );
     }
 
     #[test]

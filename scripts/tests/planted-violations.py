@@ -121,6 +121,57 @@ CASES = (
         ),
         marker="PV agents/apply-namespace",
     ),
+    # Preview reads each owning repository's activity with git, and git will
+    # run programs a hostile `.git/config` names. Each hardening flag closes one
+    # path and is proven separately, against a fixture that arms exactly it.
+    Case(
+        name="git/signature-program",
+        relative_path="src/ops/project.rs",
+        before='            "-c",\n            "log.showSignature=false",\n            "--no-optional-locks",\n            "--no-lazy-fetch",\n            "--no-pager",\n            "log",\n            "--no-show-signature",\n',
+        after='            "--no-optional-locks",\n            "--no-lazy-fetch",\n            "--no-pager",\n            "log",\n',
+        tests=("ops::project::tests::activity_probe_never_runs_a_repository_configured_signature_program",),
+        marker="PV git/signature-program",
+    ),
+    Case(
+        name="git/lazy-fetch-transport",
+        relative_path="src/ops/project.rs",
+        before='            "--no-lazy-fetch",\n',
+        after="",
+        tests=("ops::project::tests::activity_probe_never_lazily_fetches_through_a_repository_configured_transport",),
+        marker="PV git/lazy-fetch-transport",
+    ),
+    Case(
+        name="git/reflog-activity",
+        relative_path="src/ops/project.rs",
+        before="    if reflog.is_empty() {\n",
+        after="    if !reflog.is_empty() || reflog.is_empty() {\n",
+        tests=("ops::project::tests::a_fresh_checkout_of_an_old_commit_is_active_not_stale",),
+        marker="PV git/reflog-activity",
+    ),
+    Case(
+        name="git/head-commit",
+        relative_path="src/ops/project.rs",
+        before="    Ok(commit.max(iso_date(entry, root)?))\n",
+        after="    let _ = commit;\n    iso_date(entry, root)\n",
+        tests=("ops::project::tests::a_recent_head_commit_counts_even_when_the_reflog_does_not_name_it",),
+        marker="PV git/head-commit",
+    ),
+    Case(
+        name="sink/rename-no-replace",
+        relative_path="src/ops/mod.rs",
+        before="    rustix::fs::renameat_with(dir, from, dir, to, rustix::fs::RenameFlags::NOREPLACE)\n",
+        after="    dir.rename(from, dir, to)\n",
+        tests=("ops::tests::quarantine_rename_never_replaces_an_occupied_name",),
+        marker="PV sink/rename-no-replace",
+    ),
+    Case(
+        name="liveness/lsof-escape",
+        relative_path="src/safety.rs",
+        before="decode_lsof_name(path)?",
+        after="path.to_vec()",
+        tests=("safety::tests::lsof_cwd_names_are_decoded_or_refused_never_taken_literally",),
+        marker="PV liveness/lsof-escape",
+    ),
 )
 
 
@@ -158,7 +209,10 @@ def build_test_binary(workspace: Path, target_dir: Path, deadline: float) -> Pat
         remaining,
     )
     if result.returncode != 0:
-        return None  # caller decides whether a build failure is an error
+        # The caller decides whether a build failure is an error; either way the
+        # reason must be visible, or an unproven case cannot be diagnosed.
+        print("\n".join(result.stderr.splitlines()[-20:]), file=sys.stderr)
+        return None
     executable = None
     for line in result.stdout.splitlines():
         try:

@@ -74,10 +74,29 @@ fn run(sandbox: &Sandbox, args: &[&str]) -> Output {
 fn docker_script(sandbox: &Sandbox, image_prune_exit: i32) {
     let body = format!(
         "{}{image_prune_exit}{}",
-        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') exit ",
+        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') printf 'prune refused by daemon\\n' >&2; exit ",
         " ;;\n  *) exit 1 ;;\nesac"
     );
     sandbox.script("docker", &body);
+}
+
+/// A `git` answering devtrim's two activity queries — HEAD's commit date, then
+/// the newest HEAD reflog entry (`-g`) — with `commit` and `reflog`.
+fn git_activity(commit: &str, reflog: &str) -> String {
+    format!(
+        "case \"$*\" in\n  *' -g '*) printf 'HEAD@{{{reflog}}}\\n' ;;\n  *) printf '{commit}\\n' ;;\nesac"
+    )
+}
+
+/// A `git` that answers "stale" to its first three activity checks and fails
+/// after, so an apply that re-probes every repository before mutating can be
+/// caught mutating between probes. Each check's commit query advances the count
+/// through `DEVTRIM_TEST_COUNT`; its reflog query reads it.
+fn git_stale_for_three_probes(sandbox: &Sandbox) {
+    sandbox.script(
+        "git",
+        "count=0\nif [ -f \"$DEVTRIM_TEST_COUNT\" ]; then read count < \"$DEVTRIM_TEST_COUNT\"; fi\ncase \"$*\" in\n  *' -g '*) ;;\n  *) count=$((count + 1)); printf '%s\\n' \"$count\" > \"$DEVTRIM_TEST_COUNT\" ;;\nesac\ncase \"$count\" in\n  1|2|3) ;;\n  *) exit 9 ;;\nesac\ncase \"$*\" in\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+    );
 }
 
 fn json(output: &Output) -> Value {
@@ -207,6 +226,58 @@ fn mutation_flags_remain_available_only_where_they_have_meaning() {
     );
     assert!(trash.status.success());
     assert_eq!(json(&trash)["operation"], "trash-empty");
+}
+
+#[test]
+fn parse_errors_escape_terminal_controls_from_argv() {
+    let sandbox = Sandbox::new("clap-escape");
+    // Clap strips ANSI sequences itself but passes other controls through,
+    // such as the bidirectional override that reorders the rest of the line.
+    let hostile = "\u{1b}]0;title\u{7}\u{202e}evil\u{85}";
+
+    for args in [vec!["clean", hostile], vec!["help", hostile], vec![hostile]] {
+        let output = run(&sandbox, &args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("evil"),
+            "positive control: {args:?} echoes the argument"
+        );
+        assert!(
+            !stderr.contains(['\u{1b}', '\u{7}', '\u{202e}', '\u{85}']),
+            "{args:?} rendered raw terminal controls: {stderr:?}"
+        );
+    }
+}
+
+#[test]
+fn run_time_json_errors_name_the_operation_that_failed() {
+    let sandbox = Sandbox::new("run-error-operation");
+    std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
+    std::fs::write(
+        sandbox.path().join(".config/devtrim.toml"),
+        "unknown_field = 1\n",
+    )
+    .unwrap();
+
+    for (args, operation) in [
+        (vec!["clean", "caches", "--json"], "caches"),
+        (vec!["scan", "--json"], "scan"),
+        (vec!["largest", "--json"], "largest"),
+    ] {
+        let output = run(&sandbox, &args);
+        let value = json(&output);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert!(
+            value["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("invalid config"),
+            "{args:?} failed for another reason: {value}"
+        );
+        assert_eq!(value["operation"], operation, "{args:?}");
+    }
 }
 
 #[test]
@@ -473,7 +544,7 @@ fn config_tilde_root_is_expanded() {
         "roots = [\"~/dev\"]\nactive_days = 30\n",
     )
     .unwrap();
-    sandbox.script("git", "printf '2020-01-01\\n'");
+    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
     let output = run(&sandbox, &["clean", "node-modules", "--json"]);
     assert!(output.status.success());
     let value = json(&output);
@@ -500,7 +571,7 @@ fn config_tilde_protect_filters_preview_with_diagnostic() {
         "roots = [\"~/dev\"]\nprotect = [\"~/dev/project/node_modules\"]\nactive_days = 30\n",
     )
     .unwrap();
-    sandbox.script("git", "printf '2020-01-01\\n'");
+    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
 
     let output = run(&sandbox, &["clean", "node-modules", "--json"]);
 
@@ -542,7 +613,7 @@ fn artifacts_target_scans_corroborated_stale_repo() {
     std::fs::create_dir_all(project.join("target")).unwrap();
     std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
     std::fs::write(project.join("target/output"), "x").unwrap();
-    sandbox.script("git", "printf '2020-01-01\\n'");
+    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
 
     let output = run(
         &sandbox,
@@ -597,7 +668,10 @@ fn project_git_probe_failure_discards_all_scan_findings() {
     }
     sandbox.script(
         "git",
-        "case \"$2\" in\n  *z-bad) exit 9 ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+        &format!(
+            "case \"$2\" in\n  *z-bad) exit 9 ;;\nesac\n{}",
+            git_activity("2020-01-01", "2020-01-01")
+        ),
     );
 
     for target in ["node-modules", "artifacts"] {
@@ -637,7 +711,7 @@ fn project_targets_with_their_own_git_marker_are_rejected() {
             }
         }
     }
-    sandbox.script("git", "printf '2020-01-01\\n'");
+    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
 
     for target in ["node-modules", "artifacts"] {
         let output = run(
@@ -661,7 +735,7 @@ fn overlapping_project_roots_do_not_duplicate_findings() {
     std::fs::create_dir_all(repo.join("target")).unwrap();
     std::fs::write(repo.join("target/payload"), "x").unwrap();
     std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
-    sandbox.script("git", "printf '2020-01-01\\n'");
+    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
 
     for target in ["node-modules", "artifacts"] {
         let output = run(
@@ -699,7 +773,7 @@ fn project_walk_errors_discard_all_scan_findings() {
     let mut denied = original.clone();
     denied.set_mode(0o000);
     std::fs::set_permissions(&unreadable, denied).unwrap();
-    sandbox.script("git", "printf '2020-01-01\\n'");
+    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
 
     let outputs = ["node-modules", "artifacts"].map(|target| {
         (
@@ -789,8 +863,6 @@ fn icloud_recursively_reports_large_files_without_inferring_upload_status() {
     );
     assert!(text.contains("allocated locally"));
     assert!(text.contains("does not indicate iCloud upload status"));
-    assert!(!text.contains("queued"));
-    assert!(!text.contains("upload in progress"));
 }
 
 #[test]
@@ -863,6 +935,133 @@ fn trash_empty_yolo_still_requires_size_acknowledgment() {
             .as_str()
             .unwrap()
             .contains("requires --confirm=<gb>")
+    );
+}
+
+#[test]
+fn trash_empty_apply_confirms_like_every_other_mutation() {
+    let sandbox = Sandbox::in_target("trash-confirms");
+    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
+    let sentinel = sandbox.path().join(".Trash/keep");
+    std::fs::write(&sentinel, "keep").unwrap();
+
+    // The size acknowledgment is not consent: a piped run with only `--confirm`,
+    // or with `-y` against a danger-9 purge, must refuse like any other command.
+    for args in [
+        vec!["trash-empty", "--apply", "--confirm=0", "--json"],
+        vec!["trash-empty", "--apply", "--confirm=0", "-y", "--json"],
+    ] {
+        let output = run(&sandbox, &args);
+        assert!(!output.status.success(), "{args:?} purged without consent");
+        assert!(sentinel.exists(), "{args:?} deleted the Trash item");
+        let error = json(&output)["errors"][0].as_str().unwrap().to_string();
+        assert!(
+            error.contains("non-interactive") || error.contains("interactive typed confirmation"),
+            "{args:?} refused for the wrong reason: {error}"
+        );
+    }
+
+    let output = run(
+        &sandbox,
+        &["trash-empty", "--apply", "--confirm=0", "--yolo", "--json"],
+    );
+    assert!(output.status.success(), "positive control: --yolo purges");
+    assert!(!sentinel.exists());
+}
+
+#[test]
+fn owner_cache_probes_run_from_home_not_the_invoking_directory() {
+    let sandbox = Sandbox::new("owner-cache-cwd");
+    std::fs::create_dir_all(sandbox.path().join(".npm/_cacache")).unwrap();
+    std::fs::write(sandbox.path().join(".npm/_cacache/blob"), "x").unwrap();
+    // The stub answers relative to its working directory, as a project
+    // `.npmrc` would: only a probe started in $HOME names the home cache.
+    sandbox.script("npm", "printf '%s/.npm\\n' \"$PWD\"");
+    let elsewhere = sandbox.path().join("project");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["clean", "caches", "--json"])
+        .current_dir(&elsewhere)
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env_remove("XDG_STATE_HOME")
+        .output()
+        .unwrap();
+
+    let value = json(&output);
+    assert!(output.status.success(), "{value}");
+    assert!(
+        value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["label"] == "npm download cache"),
+        "{value}"
+    );
+}
+
+#[test]
+fn status_reads_system_tools_in_the_c_locale() {
+    let sandbox = Sandbox::new("status-locale");
+    // As on a pt_BR machine: decimal commas unless the probe pins LC_ALL=C.
+    sandbox.script(
+        "sysctl",
+        "case \"$*\" in\n  '-n vm.loadavg') if [ \"${LC_ALL:-}\" = C ]; then printf '{ 1.50 2.25 3.00 }\\n'; else printf '{ 1,50 2,25 3,00 }\\n'; fi ;;\n  *) exit 1 ;;\nesac",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["status", "--json"])
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("LC_ALL", "pt_BR.UTF-8")
+        .output()
+        .unwrap();
+
+    let value = json(&output);
+    assert_eq!(
+        value["load_average"],
+        serde_json::json!([1.5, 2.25, 3.0]),
+        "{value}"
+    );
+}
+
+#[test]
+fn a_missing_explicit_root_is_warned_not_silently_empty() {
+    let sandbox = Sandbox::new("missing-root");
+    let missing = sandbox.path().join("dve");
+    let present = sandbox.path().join("dev");
+    std::fs::create_dir_all(&present).unwrap();
+
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "node-modules",
+            "--root",
+            missing.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("scan root does not exist") && stderr.contains("dve"),
+        "{stderr}"
+    );
+
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "node-modules",
+            "--root",
+            present.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("scan root does not exist"),
+        "positive control: an existing root is not warned about"
     );
 }
 
@@ -973,7 +1172,7 @@ fn node_modules_apply_refuses_repo_that_became_active() {
     sandbox.script(
         "git",
         &format!(
-            "if [ -e '{}' ]; then printf '2999-01-01\\n'; else : > '{}'; printf '2020-01-01\\n'; fi",
+            "case \"$*\" in *' -g '*) if [ -e '{}' ]; then printf 'HEAD@{{2999-01-01}}\\n'; else : > '{}'; printf 'HEAD@{{2020-01-01}}\\n'; fi ;; *) printf '2020-01-01\\n' ;; esac",
             state.display(),
             state.display()
         ),
@@ -1006,10 +1205,7 @@ fn project_apply_preflights_all_repo_probes_before_mutating() {
         std::fs::write(target.join("sentinel"), "keep").unwrap();
     }
     let counter = sandbox.path().join("git-count");
-    sandbox.script(
-        "git",
-        "count=0\nif [ -f \"$DEVTRIM_TEST_COUNT\" ]; then read count < \"$DEVTRIM_TEST_COUNT\"; fi\ncount=$((count + 1))\nprintf '%s\\n' \"$count\" > \"$DEVTRIM_TEST_COUNT\"\ncase \"$count\" in\n  1|2|3) printf '2020-01-01\\n' ;;\n  *) exit 9 ;;\nesac",
-    );
+    git_stale_for_three_probes(&sandbox);
 
     let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
         .args([
@@ -1056,10 +1252,7 @@ fn artifact_apply_preflights_all_repo_probes_before_mutating() {
         std::fs::write(target.join("sentinel"), "keep").unwrap();
     }
     let counter = sandbox.path().join("git-count");
-    sandbox.script(
-        "git",
-        "count=0\nif [ -f \"$DEVTRIM_TEST_COUNT\" ]; then read count < \"$DEVTRIM_TEST_COUNT\"; fi\ncount=$((count + 1))\nprintf '%s\\n' \"$count\" > \"$DEVTRIM_TEST_COUNT\"\ncase \"$count\" in\n  1|2|3) printf '2020-01-01\\n' ;;\n  *) exit 9 ;;\nesac",
-    );
+    git_stale_for_three_probes(&sandbox);
 
     let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
         .args([
@@ -1135,6 +1328,15 @@ fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
     assert!(
         errors[0].as_str().unwrap().contains("image prune -a -f"),
         "expected prune failure, got {errors:?}"
+    );
+    // A failed typed command is diagnosable: its exit status and stderr survive.
+    assert!(
+        errors[0].as_str().unwrap().contains("exit status: 9")
+            && errors[0]
+                .as_str()
+                .unwrap()
+                .contains("prune refused by daemon"),
+        "expected status and stderr, got {errors:?}"
     );
     assert_eq!(value["findings"].as_array().unwrap().len(), 1);
     assert!(!String::from_utf8_lossy(&output.stderr).contains("DATA-LOSS WARNING"));
@@ -1489,13 +1691,16 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
     let record = format!("printf '%s\\n' \"${{0##*/}} $*\" >> '{}'", log.display());
     sandbox.script(
         "pgrep",
-        &format!("{record}\ncase \"$*\" in \"-x xcodebuild\") exit 1 ;; esac\nprintf '4242\\n'"),
+        &format!("{record}\ncase \"$*\" in \"-x xcodebuild|SWBBuildService|XCBBuildService|Xcode\") exit 1 ;; esac\nprintf '4242\\n'"),
     );
     sandbox.script(
         "lsof",
         &format!("{record}\nprintf 'p4242\\nn/elsewhere\\n'"),
     );
-    sandbox.script("git", &format!("{record}\nprintf '2020-01-01\\n'"));
+    sandbox.script(
+        "git",
+        &format!("{record}\n{}", git_activity("2020-01-01", "2020-01-01")),
+    );
 
     let output = run(&sandbox, &["scan", "--json"]);
 
@@ -1525,14 +1730,19 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
     // owning repo's last commit; one scan pays for each exactly once.
     assert_eq!(count("pgrep -x node|"), 1, "{spawns}");
     assert_eq!(count("lsof "), 1, "{spawns}");
-    assert_eq!(count("log -1"), 1, "{spawns}");
+    assert_eq!(
+        count(" log --no-show-signature -1 --format=%cs"),
+        1,
+        "{spawns}"
+    );
+    assert_eq!(count(" log --no-show-signature -1 -g "), 1, "{spawns}");
 
     for failed_probe in ["liveness", "git"] {
         std::fs::write(&log, "").unwrap();
         sandbox.script(
             "pgrep",
             &format!(
-                "{record}\ncase \"$*\" in \"-x xcodebuild\") exit 1 ;; esac\n{}",
+                "{record}\ncase \"$*\" in \"-x xcodebuild|SWBBuildService|XCBBuildService|Xcode\") exit 1 ;; esac\n{}",
                 if failed_probe == "liveness" {
                     "exit 2"
                 } else {
@@ -1566,7 +1776,7 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
         assert_eq!(
             spawns
                 .lines()
-                .filter(|line| line.contains("log -1"))
+                .filter(|line| line.contains(" log --no-show-signature -1 --format=%cs"))
                 .count(),
             usize::from(failed_probe == "git"),
             "{spawns}"

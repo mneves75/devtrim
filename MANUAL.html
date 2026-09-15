@@ -414,7 +414,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.9.3</span>
+    <span class="chip g">v0.9.4</span>
     <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
@@ -513,11 +513,11 @@ devtrim clean caches</code></pre>
   <p class="group-label" id="g-reclaim">Reclaim safely — regenerable state only</p>
   <details class="card">
     <summary><span class="cmd-name">caches</span><span class="cmd-desc">package, model, and tool download caches</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Moves regenerable caches to Trash: Hugging Face models, uv, npm, Homebrew, bun, the cargo registry, the GitHub CLI cache, and a closed list of exact <code>~/Library/Caches</code> subdirectories (Playwright browsers, the VS Code HTTP cache and its Squirrel update staging, SwiftPM, pip, the pnpm metadata cache, Go, TypeScript). Hugging Face cleanup targets only <code>~/.cache/huggingface/hub</code>; authentication tokens and other state in its parent remain untouched. <code>~/Library</code> stays protected wholesale — that list is the carve-out, it is the same constant the protection boundary reads, and a name is on it only when one developer tool owns the directory and rebuilds it on demand. The pnpm entry is the metadata cache, never the content-addressable store at <code>~/Library/pnpm/store</code> that installed <code>node_modules</code> trees hard-link into. Editor <strong>logs and application data are out of scope</strong>: they live under <code>~/Library/Application Support</code> and <code>~/Library/Logs</code>, mixed in with real user state. <code>~/Library/Caches/JetBrains</code> is excluded too — on macOS it is the IDE system directory, and each product subdirectory holds the non-regenerable <code>LocalHistory</code> store. Regenerated automatically on next use — mind the bandwidth for large model caches and the rebuild time for editor indexes.</p></div>
+    <div class="card-body"><p>Moves regenerable caches to Trash: Hugging Face models, uv, npm, Homebrew, bun, Node and Corepack downloads, the cargo registry, the GitHub CLI cache, and a closed list of exact <code>~/Library/Caches</code> subdirectories (Playwright browsers, the VS Code HTTP cache and its Squirrel update staging, SwiftPM, pip, the pnpm metadata cache, Go, TypeScript). Hugging Face cleanup targets only <code>~/.cache/huggingface/hub</code>; authentication tokens and other state in its parent remain untouched. <code>~/Library</code> stays protected wholesale — that list is the carve-out, it is the same constant the protection boundary reads, and a name is on it only when one developer tool owns the directory and rebuilds it on demand. The pnpm entry is the metadata cache, never the content-addressable store at <code>~/Library/pnpm/store</code> that installed <code>node_modules</code> trees hard-link into. Editor <strong>logs and application data are out of scope</strong>: they live under <code>~/Library/Application Support</code> and <code>~/Library/Logs</code>, mixed in with real user state. <code>~/Library/Caches/JetBrains</code> is excluded too — on macOS it is the IDE system directory, and each product subdirectory holds the non-regenerable <code>LocalHistory</code> store. Regenerated automatically on next use — mind the bandwidth for large model caches and the rebuild time for editor indexes.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">node-modules</span><span class="cmd-desc">exact paths in conclusively stale repos</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Maps each <code>node_modules</code> to its owning Git repo, skips recent commits, and applies only the exact paths shown. Apply reasserts a real <code>node_modules</code> directory leaf and refuses symlinks plus <code>.git</code>, nested dependency-tree, or non-normal ancestors. Unknown Git activity is refused.</p></div>
+    <div class="card-body"><p>Maps each <code>node_modules</code> to its owning Git repo, skips repos with recent activity — the newer of HEAD's commit date and its newest reflog entry, so a clone or checkout of old history counts as active — and applies only the exact paths shown. Reading that activity runs no program the repository configures. Apply reasserts a real <code>node_modules</code> directory leaf and refuses symlinks plus <code>.git</code>, nested dependency-tree, or non-normal ancestors. Unknown Git activity is refused.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">artifacts</span><span class="cmd-desc">corroborated build artifacts in stale repos</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
@@ -545,15 +545,15 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">analyze</span><span class="cmd-desc">interactive disk explorer</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>INFO</span></summary>
-    <div class="card-body"><p>Drill into disk usage largest-first with <code>↑/↓</code>, <code>Enter</code> to open and <code>Esc</code> to go up. Measurement runs on a worker thread and streams in, so a directory that takes minutes to size never freezes the screen, and leaving a directory cancels its walk. Symlinks are reported at their own size rather than followed, a different device is never entered, and unreadable subtrees are disclosed as <code>(partial)</code> lower bounds. <strong>Never deletes</strong> — deletion in devtrim is always bound to a corroborated category, so use <code>devtrim clean &lt;category&gt;</code> for that.</p></div>
+    <div class="card-body"><p>Drill into disk usage largest-first with <code>↑/↓</code>, <code>Enter</code> to open and <code>Esc</code> to go up. Measurement runs on a worker thread and streams in, so a directory that takes minutes to size never freezes the screen, and leaving a directory cancels its walk. Symlinks are reported at their own size rather than followed, a different device is never measured or entered, and unreadable subtrees are disclosed as <code>(partial)</code> lower bounds. A lower bound is a partial result: <code>--json</code> lists each one in <code>errors</code> and exits nonzero. <strong>Never deletes</strong> — deletion in devtrim is always bound to a corroborated category, so use <code>devtrim clean &lt;category&gt;</code> for that.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">status</span><span class="cmd-desc">machine vitals and health score</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>INFO</span></summary>
-    <div class="card-body"><p>Uptime, load, memory, disk, battery, thermals, cumulative network, and the busiest processes, read through fixed-argv system tools whose parsers fail closed. A metric that cannot be read is reported as unavailable with its reason, never as a zero, and the health score <strong>names every input it was missing</strong> instead of scoring over the gap. Memory used is stated as <code>active + wired + compressed</code>, because counting macOS's reclaimable inactive pages reports a healthy machine at 96%.</p></div>
+    <div class="card-body"><p>Uptime, load, memory, disk, battery, thermals, cumulative network, and the busiest processes, read through fixed-argv system tools whose parsers fail closed. A metric that cannot be read is reported as unavailable with its reason, never as a zero, and the health score <strong>names every input it was missing</strong> instead of scoring over the gap. Tools run in the C locale, because a <code>pt_BR</code> decimal comma would otherwise make load and processes unreadable. Memory used is stated as <code>active + wired + compressed</code>, because counting macOS's reclaimable inactive pages reports a healthy machine at 96%.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">installers</span><span class="cmd-desc">stale downloaded installer archives</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Direct children of <code>Downloads</code> and <code>Desktop</code> whose extension is on a closed list (<code>dmg</code>, <code>pkg</code>, <code>mpkg</code>, <code>iso</code>, <code>xip</code>) and untouched for longer than the active window. Scanning never recurses, so a bundled installer inside an extracted project tree is left alone, and formats that can carry source or user data are never matched. Apply refuses symlinks and any target outside those two directories. <strong>Not a cache</strong> — nothing re-downloads these automatically.</p></div>
+    <div class="card-body"><p>Direct children of <code>Downloads</code> and <code>Desktop</code> whose extension is on a closed list (<code>dmg</code>, <code>pkg</code>, <code>mpkg</code>, <code>iso</code>, <code>xip</code>) and untouched for longer than the active window. Age is the modification time, so a copy that preserves it counts as old at once; the preview states the age it judged. Scanning never recurses, so a bundled installer inside an extracted project tree is left alone, and formats that can carry source or user data are never matched. Apply refuses symlinks and any target outside those two directories. <strong>Not a cache</strong> — nothing re-downloads these automatically.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">agents</span><span class="cmd-desc">agent caches and stale session history</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
@@ -571,7 +571,7 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">trash-empty</span><span class="cmd-desc">purge ~/.Trash permanently</span><span class="pill r"><span class="sq"><i class="on"></i><i class="on"></i><i class="on"></i></span>NUKE</span></summary>
-    <div class="card-body"><p>Preview with <code>--confirm=&lt;gb&gt;</code>; every eligible current top-level Trash item is shown as an exact target. Permanent purge additionally requires <code>--apply</code>, and the approximate size must match within ±2 GB. Items moved to Trash after preview are not added to the plan. A direct item named as an ASCII-case variant of <code>.git</code> is warned about and left in Trash instead of blocking the other exact items.</p></div>
+    <div class="card-body"><p>Preview with <code>--confirm=&lt;gb&gt;</code>; every eligible current top-level Trash item is shown as an exact target. Permanent purge additionally requires <code>--apply</code>, the size of that exact set must match within ±2 GB, and the purge still needs the same confirmation every mutation does — typed on a terminal, or <code>--yolo</code> unattended — after the set is shown again. Items moved to Trash after that confirmation are not added. A direct item named as an ASCII-case variant of <code>.git</code> is warned about and left in Trash instead of blocking the other exact items.</p></div>
   </details>
 </section>
 
@@ -596,14 +596,14 @@ devtrim clean caches</code></pre>
       <tr><td data-th="Layer">TUI approval</td><td data-th="Rule">a typed approval must match the current preview and danger requirement</td><td data-th="Bypass"><strong>nothing</strong>; CLI bypass flags are rejected</td></tr>
       <tr><td data-th="Layer">Protected paths</td><td data-th="Rule">hard denylist below</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Protect config</td><td data-th="Rule">user-listed <code>protect</code> paths are refused at the sink and filtered from previews</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
-      <tr><td data-th="Layer">Liveness guard</td><td data-th="Rule">repos owning a running build process, and DerivedData under a running <code>xcodebuild</code>, are refused; probe failure blocks</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
+      <tr><td data-th="Layer">Liveness guard</td><td data-th="Rule">repos owning a running build process, and DerivedData while Xcode, <code>xcodebuild</code>, or its build services run, are refused; probe failure blocks</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Apply journal</td><td data-th="Rule">write-ahead attempt/result records surround every deletion and typed command; an unwritable journal blocks apply</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Non-TTY guard</td><td data-th="Rule">piped runs refuse mutation without explicit consent</td><td data-th="Bypass">explicit flag</td></tr>
     </tbody>
   </table></div>
 
   <h3>Protected paths</h3>
-  <p>System roots (<code>/System</code>, <code>/usr</code>, <code>/etc</code>, <code>/Applications</code>, …) and user-critical dirs (<code>~/.ssh</code>, <code>~/.gnupg</code>) are refused unconditionally. Under <code>~/Library</code>, only these managed subpaths are eligible:</p>
+  <p>System roots (<code>/System</code>, <code>/usr</code>, <code>/etc</code>, <code>/Applications</code>, …) and user-critical dirs (<code>~/.ssh</code>, <code>~/.gnupg</code>) are refused unconditionally. Under <code>~/Library</code>, only these managed subpaths are eligible, plus the exact <code>Caches</code> entries listed under <code>caches</code> above:</p>
   <pre data-copy="none" tabindex="0"><code>Developer/Toolchains · Developer/Xcode/iOS DeviceSupport
 Developer/Xcode/DerivedData · Caches/Homebrew</code></pre>
   <div class="warn">npm and Homebrew may report configurable cache paths; devtrim accepts only their exact cache namespaces and revalidates them when applying. The denylist cannot be disabled by any flag. If you find yourself wanting to, the correct tool is a different tool.</div>
@@ -645,15 +645,15 @@ only the exact children from the displayed preview are eligible</code></pre>
   <h2 id="h-config"><span class="num">07</span> Configuration</h2>
   <p>Optional file at <code>~/.config/devtrim.toml</code>:</p>
   <pre data-copy="none" tabindex="0"><code>roots = ["~/dev", "~/sandbox"]   # scan roots (default: ~/dev)
-active_days = 30                 # commit recency defining "active" repos
+active_days = 30                 # Git activity recency defining "active" repos (0 means 1)
 protect = ["~/dev/keep"]         # never delete these paths or their children</code></pre>
-  <p>CLI <code>--root</code> flags override config roots entirely. Unknown keys are rejected so a misspelled safety setting cannot appear active. <code>protect</code> entries expand <code>~</code>, must be absolute, and are enforced deny-only at the deletion sink; a relative or malformed entry is an error.</p>
+  <p>CLI <code>--root</code> flags override config roots entirely, and an explicit root that does not exist is warned about rather than silently scanning nothing. Unknown keys are rejected so a misspelled safety setting cannot appear active. <code>protect</code> entries expand <code>~</code>, must be absolute, and are enforced deny-only at the deletion sink; a relative or malformed entry is an error.</p>
 </section>
 
 <!-- ============ 08 AGENTS ============ -->
 <section id="agents" aria-labelledby="h-agents">
   <h2 id="h-agents"><span class="num">08</span> Agent integration</h2>
-  <p>Every reporting command accepts <code>--json</code>, emitting exactly one response envelope:</p>
+  <p>Every non-interactive command accepts <code>--json</code>, emitting exactly one document — for cleanup and report commands this response envelope:</p>
   <pre data-copy="none" tabindex="0"><code>{
   "operation": "xcode",
   "applied": false,
@@ -670,11 +670,12 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
   "errors": []
 }</code></pre>
   <ul class="flow">
-    <li>agents must pass <code>-y</code> explicitly to mutate non-interactively — silent approval is refused</li>
+    <li>agents must pass <code>-y</code> explicitly to mutate non-interactively, or <code>--yolo</code> for a danger-9 plan such as <code>trash-empty</code> or <code>--shred</code> — silent approval is refused</li>
     <li>actions are typed as <code>trash</code>, <code>shred</code>, <code>command</code>, <code>info</code>, or <code>none</code>; command argv is never parsed from display text</li>
     <li><code>"info"</code> / <code>"none"</code> items must never trigger mutation logic</li>
   </ul>
   <p><code>devtrim history --json</code> emits its own single document — <code>{"operation":"history","entries":[…],"errors":[…]}</code> — where each entry carries numeric <code>ts</code>, <code>phase</code>, <code>op</code>, <code>action</code>, and either <code>target</code> or the exact <code>argv</code>. Agents can audit exactly what a previous apply attempted and what completed; an attempt without a result means the process was interrupted mid-apply.</p>
+  <p><code>devtrim status --json</code> is a vitals report rather than an envelope: <code>uptime_seconds</code>, <code>load_average</code>, <code>cpu_count</code>, <code>memory</code>, <code>disk</code>, <code>battery</code>, <code>thermal</code>, <code>network</code>, <code>top_processes</code>, <code>health</code>, and <code>unavailable</code>. An unread metric is <code>null</code> with its reason in <code>unavailable</code>, and the process exits nonzero whenever that list is not empty. <code>status --watch</code> is interactive and rejects <code>--json</code>.</p>
   <div class="note">Pair with an <code>AGENTS.md</code> rule: “run <code>devtrim scan --json</code> before proposing disk changes; propose <code>devtrim clean …</code> rather than raw <code>rm</code>; audit with <code>devtrim history --json</code>.”</div>
 </section>
 
@@ -724,7 +725,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
   </details>
 
   <details class="card"><summary><span class="cmd-name">skipping … because a build process is active</span></summary>
-    <div class="card-body"><p>A running build or package process has its working directory inside that repo, or <code>xcodebuild</code> is running. Finish or stop the build and re-run. If the probe itself fails, devtrim blocks instead of guessing — that is the guard working.</p></div>
+    <div class="card-body"><p>A running build or package process has its working directory inside that repo, or Xcode, <code>xcodebuild</code>, or an Xcode build service is running. Finish the build (or quit Xcode) and re-run. If the probe itself fails, devtrim blocks instead of guessing — that is the guard working.</p></div>
   </details>
 
   <details class="card"><summary><span class="cmd-name">refusing protected path</span></summary>
@@ -741,7 +742,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
 </section>
 
 <footer>
-  <span>devtrim <b>v0.9.3</b></span>
+  <span>devtrim <b>v0.9.4</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

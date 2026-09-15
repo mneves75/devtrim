@@ -345,8 +345,23 @@ impl Explorer {
         // immediately before entering, because measurement calls `read_dir`,
         // which follows symlinks: a path swapped for a link after the listing
         // would otherwise be walked outside this tree.
+        // Measurement refuses to walk another device, but entering one would
+        // root the next walk there and authorize that device wholesale.
+        let root_device = self
+            .stack
+            .first()
+            .and_then(|root| std::fs::symlink_metadata(root).ok())
+            .map(|metadata| metadata.dev());
         match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(metadata)
+                if metadata.file_type().is_dir() && Some(metadata.dev()) == root_device => {}
+            Ok(metadata) if metadata.file_type().is_dir() => {
+                self.errors.push(format!(
+                    "refusing to enter {}: it is on a different device",
+                    path.display()
+                ));
+                return;
+            }
             Ok(_) => {
                 self.errors.push(format!(
                     "refusing to enter {}: it is no longer a directory",
@@ -587,15 +602,31 @@ fn resolve_root(ctx: &Ctx, requested: Option<&str>) -> Result<PathBuf> {
 }
 
 /// One-shot machine-readable breakdown of the requested directory.
+/// A lower bound is a partial measurement, and a partial operation is visible
+/// in its status as well as in its entries (`CLAUDE.md § Conventions`).
+fn lower_bound_errors(entries: &[Entry]) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|entry| entry.partial)
+        .map(|entry| {
+            format!(
+                "size of {} is a lower bound: part of it was unreadable or on another device",
+                entry.path.display()
+            )
+        })
+        .collect()
+}
+
 fn run_json(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
     let root = resolve_root(ctx, requested)?;
     let cancel = AtomicBool::new(false);
     let mut entries = Vec::new();
     let result = measure_children(&root, &cancel, |entry| entries.push(entry));
-    let errors = match result {
+    let mut errors = match result {
         Ok(()) => Vec::new(),
         Err(error) => vec![format!("{error:#}")],
     };
+    errors.extend(lower_bound_errors(&entries));
     entries.sort_by(|left, right| {
         right
             .size
@@ -659,7 +690,8 @@ fn run_loop(terminal: &mut DefaultTerminal, root: PathBuf, ctx: &Ctx) -> Result<
             match event::read().context("cannot read terminal input")? {
                 Event::Key(key) => match explorer.handle_key(key) {
                     Intent::Quit => {
-                        break if explorer.errors.is_empty() {
+                        let partial = explorer.entries.iter().any(|entry| entry.partial);
+                        break if explorer.errors.is_empty() && !partial {
                             ExitCode::SUCCESS
                         } else {
                             ExitCode::from(1)
@@ -903,6 +935,58 @@ mod tests {
             "the refusal must be visible: {:?}",
             explorer.errors
         );
+    }
+
+    #[test]
+    fn descend_refuses_a_directory_on_another_device() {
+        // `/dev` is devfs on macOS: a directory whose `st_dev` differs from `/`.
+        assert_ne!(
+            std::fs::symlink_metadata("/dev").unwrap().dev(),
+            std::fs::symlink_metadata("/").unwrap().dev(),
+            "fixture needs a mount point"
+        );
+        let mut explorer = Explorer::new(PathBuf::from("/"), theme());
+        explorer.entries = vec![Entry {
+            path: PathBuf::from("/dev"),
+            size: 0,
+            is_dir: true,
+            partial: true,
+        }];
+        explorer.descend();
+        assert_eq!(
+            explorer.current(),
+            Path::new("/"),
+            "another device was entered"
+        );
+        assert!(
+            explorer
+                .errors
+                .iter()
+                .any(|error| error.contains("different device")),
+            "{:?}",
+            explorer.errors
+        );
+    }
+
+    #[test]
+    fn lower_bounds_are_reported_as_errors() {
+        let entries = [
+            Entry {
+                path: PathBuf::from("/tmp/whole"),
+                size: 1,
+                is_dir: true,
+                partial: false,
+            },
+            Entry {
+                path: PathBuf::from("/tmp/unreadable"),
+                size: 1,
+                is_dir: true,
+                partial: true,
+            },
+        ];
+        let errors = lower_bound_errors(&entries);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("/tmp/unreadable"));
     }
 
     #[test]

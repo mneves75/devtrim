@@ -1,6 +1,44 @@
 # Project Memory
 
-## Current state (0.9.3)
+## Current state (0.9.4)
+
+A whole-codebase review found the two things this tool must never do — act
+during a *preview*, and act on a screen nobody read — both reachable. A dry-run
+scan ran programs named by a scanned repository's `.git/config`
+(`gpg.program` through `log.showSignature`, a promisor remote's `uploadpack`
+through a lazy fetch), and TUI keys typed during a scan approved a permanent
+plan that was never displayed. Both were reproduced end to end, fixed, and are
+now proven by fixtures that arm exactly one path each, with positive controls.
+
+The same pass found `trash-empty --apply` bypassing the shared confirmation, a
+Trash acknowledgment measured over a different set than the plan, a
+check-then-rename restore that could overwrite a recreated file, clap errors
+carrying bidi controls from argv, `lsof` display escapes defeating liveness,
+DerivedData liveness blind to Xcode.app builds (`SWBBuildService`, observed with
+`Xcode` as parent), and a release publisher attesting an artifact bound only by
+name. `release-policy.sh` passed with `write-all` and friends; it now reads
+permissions from parsed YAML because line matching kept missing spellings.
+
+Staleness had a false-positive shape nobody had tested: an old project cloned
+today read as stale because only HEAD's commit date counted. Activity is now the
+newer of HEAD's commit date (read on its own) and the newest HEAD reflog entry.
+The first version read the commit date *through* the reflog walk; autoreview
+showed the newest entry need not name HEAD.
+
+Process that worked: three Claude reviewers plus a correctness hunt plus a Codex
+autoreview of the entire tree (a synthetic commit adding the tree onto an empty
+root, in a frozen clone), then autoreview on the fix diff, one rerun,
+scoped-clean. Every reviewer found something the others did not; the Codex pass
+independently confirmed the git-config execution. `planted-violations.py` went
+from 6 to 12 proven boundaries.
+
+Environment lessons: the host ran at load average 160–460 from other sessions,
+which made a 5-second test module take 318 s and once made a planted mutant
+"fail to compile" without saying why — the gate now prints the compiler tail.
+A PTY test home under the system temp dir resolves into protected
+`/private/var`, so apply there is refused; use the build directory.
+
+## Previous state (0.9.3)
 
 0.9.2 made deletion evidence a required field — and shipped an entry whose
 evidence was false. `~/Library/Caches/gh` was described as the GitHub CLI's

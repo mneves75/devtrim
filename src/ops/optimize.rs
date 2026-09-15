@@ -12,7 +12,6 @@
 //! carries the whole invocation.
 
 use anyhow::Result;
-use std::process::Command;
 
 use super::{ApplyOutcome, Finding, Op};
 use crate::report::{CommandAuthority, MaintenanceTask};
@@ -25,10 +24,11 @@ pub struct Optimize {
 impl Optimize {
     /// Selects tasks by name, or every task when none are named.
     ///
-    /// Selection exists because one confirmation must not cover two unrelated
-    /// kinds of risk: a resolver flush and a Launch Services rebuild differ by
-    /// orders of magnitude in cost, and `plan_danger` takes the maximum, so
-    /// without this the cheap task rides in on the expensive one's prompt.
+    /// Selection exists because one confirmation must not cover a task the
+    /// operator never named: a thumbnail reset and a Launch Services rebuild
+    /// differ by orders of magnitude in cost, and `plan_danger` takes the
+    /// maximum, so an unnamed task would ride in on another's prompt. Naming
+    /// several with repeated `--task` is consent to each of them.
     pub fn new(names: &[String], apply: bool) -> Result<Self> {
         if names.is_empty() {
             // Previewing everything is useful; applying everything behind one
@@ -116,24 +116,13 @@ impl Op for Optimize {
                 if finding.action != authority.action() {
                     anyhow::bail!("refusing altered maintenance action");
                 }
-                let (program, args) = authority.parts();
-                let attempt = crate::journal::begin(
+                super::run_command_authority(
+                    self.name(),
+                    authority,
+                    finding.size_bytes,
                     ctx,
-                    crate::journal::JournalRecord::command_attempt(
-                        self.name(),
-                        program,
-                        &args,
-                        finding.size_bytes,
-                    ),
-                )?;
-                let result = (|| -> Result<String> {
-                    let output = Command::new(program).args(&args).output()?;
-                    if !output.status.success() {
-                        anyhow::bail!("`{program} {}` failed", args.join(" "));
-                    }
-                    Ok(format!("reset {}", task.label()))
-                })();
-                attempt.finish(ctx, result)
+                    |_| format!("reset {}", task.label()),
+                )
             })();
             match result {
                 Ok(note) => outcome.record(finding, note),

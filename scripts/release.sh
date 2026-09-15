@@ -188,6 +188,7 @@ attestation_args=(
   --repo "$repo"
   --signer-workflow "$repo/.github/workflows/release.yml"
   --source-digest "$release_commit"
+  --deny-self-hosted-runners
 )
 if [[ "$expected_prerelease" == "true" ]]; then
   attestation_args+=(--source-ref "refs/tags/${tag}")

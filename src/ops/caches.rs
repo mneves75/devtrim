@@ -221,7 +221,7 @@ fn normalized_absolute(path: &Path) -> Option<PathBuf> {
 }
 
 fn owner_cache_path(program: &str, args: &[&str], ctx: &Ctx) -> Result<Option<PathBuf>> {
-    let Some(path) = command_path(program, args)? else {
+    let Some(path) = command_path(program, args, &ctx.home)? else {
         return Ok(None);
     };
     if !is_eligible_owner_cache(program, &path, &ctx.home) {
@@ -237,16 +237,17 @@ fn owner_cache_path(program: &str, args: &[&str], ctx: &Ctx) -> Result<Option<Pa
     Ok(Some(path))
 }
 
-fn command_path(program: &str, args: &[&str]) -> Result<Option<PathBuf>> {
-    let output = match std::process::Command::new(program).args(args).output() {
-        Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+/// Runs from `$HOME` so a project-level `.npmrc` in whatever directory devtrim
+/// was started from cannot redirect the reported cache root.
+fn command_path(program: &str, args: &[&str], home: &Path) -> Result<Option<PathBuf>> {
+    let command = format!("`{program} {}`", args.join(" "));
+    let output = std::process::Command::new(program)
+        .args(args)
+        .current_dir(home)
+        .output();
+    let Some(value) = super::optional_command_stdout(output, &command)? else {
+        return Ok(None);
     };
-    if !output.status.success() {
-        anyhow::bail!("`{program} {}` failed", args.join(" "));
-    }
-    let value = String::from_utf8(output.stdout).context("command returned non-UTF-8 path")?;
     let value = value.trim();
     if value.is_empty() {
         Ok(None)

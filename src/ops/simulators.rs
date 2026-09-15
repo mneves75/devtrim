@@ -138,24 +138,13 @@ impl Op for Simulators {
                         anyhow::bail!("simulator device vanished after preview; refusing `{udid}`")
                     }
                 }
-                let (program, args) = authority.parts();
-                let attempt = crate::journal::begin(
+                super::run_command_authority(
+                    self.name(),
+                    authority,
+                    finding.size_bytes,
                     ctx,
-                    crate::journal::JournalRecord::command_attempt(
-                        self.name(),
-                        program,
-                        &args,
-                        finding.size_bytes,
-                    ),
-                )?;
-                let result = (|| -> Result<String> {
-                    let output = Command::new(program).args(&args).output()?;
-                    if !output.status.success() {
-                        anyhow::bail!("`xcrun simctl delete {udid}` failed");
-                    }
-                    Ok(format!("deleted unavailable simulator device {udid}"))
-                })();
-                attempt.finish(ctx, result)
+                    |_| format!("deleted unavailable simulator device {udid}"),
+                )
             })();
             match result {
                 Ok(note) => outcome.record(finding, note),

@@ -282,6 +282,25 @@ pub fn terminal_safe(value: &str) -> String {
     value.chars().flat_map(char::escape_debug).collect()
 }
 
+/// Escapes what could drive or reorder the terminal while keeping line breaks,
+/// quotes and backslashes literal, for multi-line text such as a parser error
+/// that interpolates an argument from argv.
+pub fn terminal_safe_text(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|character| {
+            let keep = matches!(character, '\n' | '\'' | '"' | '\\')
+                || character.escape_debug().nth(1).is_none();
+            let escaped: Vec<char> = if keep {
+                vec![character]
+            } else {
+                character.escape_debug().collect()
+            };
+            escaped
+        })
+        .collect()
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct Summary {
     pub op: String,
@@ -409,8 +428,8 @@ pub fn print_json(
     write_stdout(&output)
 }
 
-pub fn print_error_json(message: &str) -> std::io::Result<()> {
-    print_json("unknown", false, &[], None, &[message.to_string()])
+pub fn print_error_json(operation: &str, message: &str) -> std::io::Result<()> {
+    print_json(operation, false, &[], None, &[message.to_string()])
 }
 
 pub fn write_stdout(output: &[u8]) -> std::io::Result<()> {

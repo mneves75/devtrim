@@ -84,10 +84,17 @@ impl SystemTool {
 }
 
 /// Runs one of the closed set above. No shell, ever.
+///
+/// The parsers read the C locale's spelling: under `pt_BR` `sysctl` prints a
+/// load average as `65,41` and `ps` a CPU share as `136,6`, which would turn
+/// two metrics unavailable and, with them, raise the health score.
 fn capture(tool: SystemTool) -> Result<String> {
     let (program, args) = tool.parts();
     let label = format!("`{program} {}`", args.join(" "));
-    crate::ops::command_stdout(Command::new(program).args(args).output(), &label)
+    crate::ops::command_stdout(
+        Command::new(program).args(args).env("LC_ALL", "C").output(),
+        &label,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -289,18 +296,28 @@ pub(crate) fn parse_vm_stat(output: &str, total_bytes: u64) -> Result<Memory> {
             .with_context(|| format!("invalid vm_stat value for `{name}`: {value}"))
     };
 
-    let bytes = |count: u64| count.saturating_mul(page_size);
-    let free = bytes(pages("Pages free")?.saturating_add(pages("Pages speculative")?));
-    let active = bytes(pages("Pages active")?);
-    let inactive = bytes(pages("Pages inactive")?);
-    let wired = bytes(pages("Pages wired down")?);
+    // A measured quantity is exact or refused (`CODING_STANDARDS.md` S8).
+    let overflow = || anyhow::anyhow!("vm_stat page counts overflow");
+    let bytes = |count: u64| count.checked_mul(page_size).ok_or_else(overflow);
+    let free = bytes(
+        pages("Pages free")?
+            .checked_add(pages("Pages speculative")?)
+            .ok_or_else(overflow)?,
+    )?;
+    let active = bytes(pages("Pages active")?)?;
+    let inactive = bytes(pages("Pages inactive")?)?;
+    let wired = bytes(pages("Pages wired down")?)?;
     // Absent only on a system with no memory compressor, where zero is the
     // correct value rather than a stand-in for an unread one.
     let compressed = output
         .lines()
         .find(|line| line.starts_with("Pages occupied by compressor"))
         .map_or(Ok(0), |_| pages("Pages occupied by compressor"))
-        .map(bytes)?;
+        .and_then(bytes)?;
+    let used = active
+        .checked_add(wired)
+        .and_then(|sum| sum.checked_add(compressed))
+        .ok_or_else(overflow)?;
     Ok(Memory {
         total_bytes,
         free_bytes: free,
@@ -308,10 +325,7 @@ pub(crate) fn parse_vm_stat(output: &str, total_bytes: u64) -> Result<Memory> {
         inactive_bytes: inactive,
         wired_bytes: wired,
         compressed_bytes: compressed,
-        used_bytes: active
-            .saturating_add(wired)
-            .saturating_add(compressed)
-            .min(total_bytes),
+        used_bytes: used.min(total_bytes),
     })
 }
 
@@ -428,19 +442,12 @@ pub(crate) fn parse_netstat(output: &str) -> Result<Network> {
         // populated for one with a MAC, so a link row is 10 or 11 fields wide
         // depending on the interface. Indexing from the left reads `Ipkts` as
         // `Ibytes` on exactly half of them; the trailing seven columns are
-        // always `Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll`.
-        // A link row is 10 fields without a hardware address and 11 with one.
-        // Anything narrower is not the documented shape, and reading it from
-        // the end would silently take `Address`/`Oerrs` as byte counters.
-        if fields.len() < 10 {
-            continue;
-        }
-        let (Some(ibytes), Some(obytes)) = (
-            fields.get(fields.len().saturating_sub(5)),
-            fields.get(fields.len().saturating_sub(2)),
-        ) else {
-            continue;
+        // always `Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll`. Any other width
+        // is not the documented shape, and a sum refuses rather than skips it.
+        let (10 | 11) = fields.len() else {
+            anyhow::bail!("unexpected netstat link row: {line}");
         };
+        let (ibytes, obytes) = (fields[fields.len() - 5], fields[fields.len() - 2]);
         // An aggregate is exact or it is refused. Skipping an unparseable link
         // row would report a confidently wrong total, which is the failure this
         // module exists to avoid; a top-N display list may skip a row, a sum
@@ -1315,6 +1322,16 @@ Note: No CPU power status has been recorded\n";
     fn netstat_fails_closed_without_link_rows() {
         assert!(parse_netstat("Name Mtu Network Address\n").is_err());
         assert!(parse_netstat("").is_err());
+    }
+
+    #[test]
+    fn netstat_refuses_a_link_row_of_undocumented_width_instead_of_skipping_it() {
+        let truncated = format!("{NETSTAT}lo1   16384 <Link#9>   12 0 3400\n");
+        let error = parse_netstat(&truncated).unwrap_err();
+        assert!(
+            error.to_string().contains("unexpected netstat link row"),
+            "a sum dropped a row it could not read: {error:#}"
+        );
     }
 
     #[test]

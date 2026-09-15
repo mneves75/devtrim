@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
-use crate::safety::{Ctx, escalate, xcodebuild_running};
+use crate::safety::{Ctx, escalate, xcode_build_running};
 
 pub struct Xcode;
 
@@ -36,7 +36,7 @@ impl Op for Xcode {
         ctx: &Ctx,
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
-        self.scan_with_xcodebuild_state(ctx, xcodebuild_running())
+        self.scan_with_xcode_build_state(ctx, xcode_build_running())
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
@@ -47,29 +47,29 @@ impl Op for Xcode {
                         .is_ok_and(|kind| kind == XcodeTargetKind::DerivedData)
                 })
         });
-        let xcodebuild_state = needs_probe.then(xcodebuild_running);
-        self.apply_with_xcodebuild_state(findings, ctx, xcodebuild_state)
+        let xcode_build_state = needs_probe.then(xcode_build_running);
+        self.apply_with_xcode_build_state(findings, ctx, xcode_build_state)
     }
 }
 
 impl Xcode {
-    fn scan_with_xcodebuild_state(
+    fn scan_with_xcode_build_state(
         &self,
         ctx: &Ctx,
-        xcodebuild_state: Result<bool>,
+        xcode_build_state: Result<bool>,
     ) -> Result<Vec<Finding>> {
-        let derived_data_safe = match xcodebuild_state {
+        let derived_data_safe = match xcode_build_state {
             Ok(true) => {
                 ctx.diagnostic(
                     "info",
-                    "xcodebuild is running; skipping DerivedData while the build process is active",
+                    "Xcode or an Xcode build is running; skipping DerivedData while it is active",
                 );
                 false
             }
             Ok(false) => true,
             // A failed probe must be visible to automation, not a silently
             // smaller plan with exit 0.
-            Err(error) => return Err(error.context("cannot verify xcodebuild activity")),
+            Err(error) => return Err(error.context("cannot verify Xcode build activity")),
         };
         let mut findings = Vec::new();
         for (label, relative, note) in TARGETS {
@@ -112,11 +112,11 @@ impl Xcode {
         }
         Ok(findings)
     }
-    fn apply_with_xcodebuild_state(
+    fn apply_with_xcode_build_state(
         &self,
         findings: &[Finding],
         ctx: &Ctx,
-        xcodebuild_state: Option<Result<bool>>,
+        xcode_build_state: Option<Result<bool>>,
     ) -> Result<ApplyOutcome> {
         let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
@@ -135,22 +135,22 @@ impl Xcode {
                     .ok_or_else(|| anyhow::anyhow!("Xcode finding missing internal target"))?;
                 let target_kind = authorize_xcode_target(path, &ctx.home)?;
                 if target_kind == XcodeTargetKind::DerivedData {
-                    match xcodebuild_state.as_ref() {
+                    match xcode_build_state.as_ref() {
                         Some(Ok(false)) => {}
                         Some(Ok(true)) => {
                             anyhow::bail!(
-                                "xcodebuild is running; refusing DerivedData target {}",
+                                "Xcode or an Xcode build is running; refusing DerivedData target {}",
                                 path.display()
                             );
                         }
                         Some(Err(error)) => {
                             anyhow::bail!(
-                                "cannot verify xcodebuild activity; refusing DerivedData target {}: {error:#}",
+                                "cannot verify Xcode build activity; refusing DerivedData target {}: {error:#}",
                                 path.display()
                             );
                         }
                         None => anyhow::bail!(
-                            "missing xcodebuild liveness result; refusing DerivedData target {}",
+                            "missing Xcode build liveness result; refusing DerivedData target {}",
                             path.display()
                         ),
                     }
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_skips_derived_data_when_xcodebuild_is_running_or_unknown() {
+    fn scan_skips_derived_data_when_an_xcode_build_is_running_or_unknown() {
         let home =
             std::env::temp_dir().join(format!("devtrim-xcode-scan-live-{}", std::process::id()));
         crate::ops::remove_test_path(&home);
@@ -219,22 +219,22 @@ mod tests {
             .unwrap();
         let ctx = test_context(home.clone());
 
-        let running = Xcode.scan_with_xcodebuild_state(&ctx, Ok(true)).unwrap();
+        let running = Xcode.scan_with_xcode_build_state(&ctx, Ok(true)).unwrap();
         assert_eq!(running.len(), 1);
         assert!(running[0].label.starts_with("iOS DeviceSupport"));
         assert!(
             ctx.take_diagnostics()
                 .iter()
-                .any(|message| message.contains("build process is active"))
+                .any(|message| message.contains("skipping DerivedData while it is active"))
         );
 
         let unknown = Xcode
-            .scan_with_xcodebuild_state(&ctx, Err(anyhow::anyhow!("probe failed")))
+            .scan_with_xcode_build_state(&ctx, Err(anyhow::anyhow!("probe failed")))
             .unwrap_err();
         assert!(
             unknown
                 .to_string()
-                .contains("cannot verify xcodebuild activity")
+                .contains("cannot verify Xcode build activity")
         );
         crate::ops::remove_test_path(home);
     }
@@ -344,7 +344,7 @@ mod tests {
         );
 
         let outcome = Xcode
-            .apply_with_xcodebuild_state(&[finding], &test_context(home.clone()), None)
+            .apply_with_xcode_build_state(&[finding], &test_context(home.clone()), None)
             .unwrap();
 
         assert!(outcome.errors.is_empty());
@@ -376,7 +376,7 @@ mod tests {
         );
 
         let outcome = Xcode
-            .apply_with_xcodebuild_state(&[finding], &test_context(home.clone()), None)
+            .apply_with_xcode_build_state(&[finding], &test_context(home.clone()), None)
             .unwrap();
 
         assert_eq!(outcome.summary.items_touched, 0);
@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_data_apply_refuses_running_or_unknown_xcodebuild() {
+    fn derived_data_apply_refuses_a_running_or_unknown_xcode_build() {
         let home = std::env::temp_dir().join(format!("devtrim-xcode-live-{}", std::process::id()));
         crate::ops::remove_test_path(&home);
         let target = home.join("Library/Developer/Xcode/DerivedData/project");
@@ -418,19 +418,19 @@ mod tests {
         };
 
         let running = Xcode
-            .apply_with_xcodebuild_state(std::slice::from_ref(&finding), &ctx, Some(Ok(true)))
+            .apply_with_xcode_build_state(std::slice::from_ref(&finding), &ctx, Some(Ok(true)))
             .unwrap();
-        assert!(running.errors[0].contains("xcodebuild is running"));
+        assert!(running.errors[0].contains("an Xcode build is running"));
         assert!(sentinel.exists());
 
         let unknown = Xcode
-            .apply_with_xcodebuild_state(
+            .apply_with_xcode_build_state(
                 &[finding],
                 &ctx,
                 Some(Err(anyhow::anyhow!("probe failed"))),
             )
             .unwrap();
-        assert!(unknown.errors[0].contains("cannot verify xcodebuild activity"));
+        assert!(unknown.errors[0].contains("cannot verify Xcode build activity"));
         assert!(sentinel.exists());
         crate::ops::remove_test_path(home);
     }

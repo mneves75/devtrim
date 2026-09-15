@@ -202,15 +202,23 @@ or not at all.
 the call site, so `let program = "sh"; Command::new(program)` passes the lint.
 
 Fix: name the program as a literal at the call site, or take it from
-`CommandAuthority::parts()`. The existing dynamic call sites in
-`src/ops/docker.rs`, `src/ops/simulators.rs`, and `src/ops/caches.rs` are
-approved because their program comes from a closed enum or an owner namespace.
-Docker's absolute local Unix-socket endpoint and the simulator UDID must be
-validated and carried by the closed authority. `repo_last_commit_with` in
-`src/ops/project.rs` takes `"git"` from its only production caller. That is the
-whole approved list for production: the only other variable program in the tree
-is `std::env::current_exe()` re-invoking the test binary inside
-`#[cfg(test)] mod tests` in `src/journal.rs`. A sixth site is a finding.
+`CommandAuthority::parts()`. The approved dynamic call sites in production are
+exactly four:
+
+- `run_command_authority` in `src/ops/mod.rs` — every typed Docker, simulator,
+  and maintenance command, taking program and arguments only from
+  `CommandAuthority::parts()`. Docker's absolute local Unix-socket endpoint and
+  the simulator UDID must be validated and carried by that closed authority.
+- `capture` in `src/status.rs` — `SystemTool::parts()`, the same closed-enum
+  shape.
+- `command_path` in `src/ops/caches.rs` — `"npm"` or `"brew"` from its two
+  callers, trusted only inside that owner's cache namespace.
+- `hardened_git_log` in `src/ops/project.rs` — `"git"` from
+  `repo_last_activity`, its only production caller.
+
+The only other variable program in the tree is `std::env::current_exe()`
+re-invoking the test binary inside `#[cfg(test)] mod tests` in
+`src/journal.rs`. A fifth production site is a finding.
 
 ## Adding a rule
 

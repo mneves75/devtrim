@@ -8,13 +8,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::safety::is_git_metadata_name;
 
-type CommitObservation = Arc<OnceLock<std::result::Result<String, String>>>;
+type ActivityObservation = Arc<OnceLock<std::result::Result<String, String>>>;
 
 /// Observations belong to one preview only; apply always probes again.
 #[derive(Default)]
 pub(crate) struct ScanObservations {
     process_cwds: OnceLock<std::result::Result<Vec<PathBuf>, String>>,
-    commits: Mutex<BTreeMap<PathBuf, CommitObservation>>,
+    commits: Mutex<BTreeMap<PathBuf, ActivityObservation>>,
 }
 
 impl ScanObservations {
@@ -30,7 +30,7 @@ impl ScanObservations {
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
-    pub(crate) fn last_commit(&self, root: &Path) -> Result<String> {
+    pub(crate) fn last_activity(&self, root: &Path) -> Result<String> {
         let commit = {
             let mut commits = self
                 .commits
@@ -42,8 +42,9 @@ impl ScanObservations {
                     .or_insert_with(|| Arc::new(OnceLock::new())),
             )
         };
-        match commit.get_or_init(|| repo_last_commit(root).map_err(|error| format!("{error:#}"))) {
-            Ok(last_commit) => Ok(last_commit.clone()),
+        match commit.get_or_init(|| repo_last_activity(root).map_err(|error| format!("{error:#}")))
+        {
+            Ok(last_activity) => Ok(last_activity.clone()),
             Err(error) => Err(anyhow::anyhow!("{error}")),
         }
     }
@@ -112,8 +113,8 @@ pub(crate) fn is_directory_if_present(path: &Path) -> Result<bool> {
     }
 }
 
-pub(crate) fn repo_last_commit(root: &Path) -> Result<String> {
-    repo_last_commit_with(root, "git")
+pub(crate) fn repo_last_activity(root: &Path) -> Result<String> {
+    repo_last_activity_with(root, "git")
 }
 
 #[cfg(test)]
@@ -155,13 +156,48 @@ pub(crate) fn init_old_git_repo(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn repo_last_commit_with(root: &Path, git: &str) -> Result<String> {
+/// The newest of HEAD's commit date and HEAD's newest reflog entry.
+///
+/// A commit date alone reads a repository as stale the moment an old project
+/// is cloned or an old tag checked out — exactly when its dependencies were
+/// just installed. Both of those write the HEAD reflog, so its newest entry is
+/// the activity signal; a repository with reflogs disabled falls back to the
+/// commit date, which is what it would have been judged by anyway.
+///
+/// HEAD is read on its own rather than through the reflog walk: the commit a
+/// newest reflog entry names need not be HEAD once an entry is deleted or HEAD
+/// moves without logging, and the walk would then answer for an older commit.
+pub(crate) fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> {
     if !has_git_marker(root)? {
         anyhow::bail!("not a Git repository: {}", root.display());
     }
+    let commit = iso_date(&hardened_git_log(root, git, &["--format=%cs"])?, root)?;
+    let reflog = hardened_git_log(root, git, &["-g", "--date=format:%Y-%m-%d", "--format=%gd"])?;
+    if reflog.is_empty() {
+        return Ok(commit);
+    }
+    let entry = reflog
+        .strip_prefix("HEAD@{")
+        .and_then(|selector| selector.strip_suffix('}'))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Git returned an invalid reflog entry for {}",
+                root.display()
+            )
+        })?;
+    Ok(commit.max(iso_date(entry, root)?))
+}
+
+/// One `git log -1` against a repository that may be hostile.
+fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
     // Neutralize repository-controlled config while inspecting an untrusted
     // clone, and ambient repository-selection variables that would make git
     // answer for a different repo than the one that owns the deletion target.
+    // Git cannot ignore repository config wholesale, so every path by which a
+    // date-only `log` spawns a configured program is closed explicitly:
+    // signature display runs `gpg.program`, and a promisor remote lazily
+    // fetches a missing commit through its configured `uploadpack`. A git too
+    // old to know `--no-lazy-fetch` fails, which refuses rather than trusts.
     let output = Command::new(git)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -178,18 +214,26 @@ pub(crate) fn repo_last_commit_with(root: &Path, git: &str) -> Result<String> {
             "core.fsmonitor=false",
             "-c",
             "core.hooksPath=/dev/null",
+            "-c",
+            "log.showSignature=false",
             "--no-optional-locks",
+            "--no-lazy-fetch",
+            "--no-pager",
             "log",
+            "--no-show-signature",
             "-1",
-            "--format=%cs",
         ])
+        .args(format)
         .output()
         .with_context(|| format!("cannot inspect Git activity for {}", root.display()))?;
     if !output.status.success() {
         anyhow::bail!("Git activity check failed for {}", root.display());
     }
-    let date = String::from_utf8(output.stdout).context("Git returned a non-UTF-8 date")?;
-    let date = date.trim();
+    let text = String::from_utf8(output.stdout).context("Git returned a non-UTF-8 date")?;
+    Ok(text.trim().to_string())
+}
+
+fn iso_date(date: &str, root: &Path) -> Result<String> {
     if date.len() != 10
         || !date.chars().enumerate().all(|(index, character)| {
             if index == 4 || index == 7 {
@@ -199,7 +243,10 @@ pub(crate) fn repo_last_commit_with(root: &Path, git: &str) -> Result<String> {
             }
         })
     {
-        anyhow::bail!("Git returned an invalid commit date for {}", root.display());
+        anyhow::bail!(
+            "Git returned an invalid activity date for {}",
+            root.display()
+        );
     }
     Ok(date.to_string())
 }
@@ -335,7 +382,188 @@ mod tests {
     fn git_failure_is_not_stale() {
         let base = temp("git-fail");
         std::fs::create_dir_all(base.join(".git")).unwrap();
-        assert!(repo_last_commit_with(&base, "/usr/bin/false").is_err());
+        assert!(repo_last_activity_with(&base, "/usr/bin/false").is_err());
+        crate::ops::remove_test_path(base);
+    }
+
+    fn git_in(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?} failed: {output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    /// A program the hostile config names; it proves execution by leaving a
+    /// marker beside itself.
+    fn planted_program(base: &Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let marker = base.join("executed");
+        let program = base.join("planted");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (program, marker)
+    }
+
+    /// Plain `git log`, as a caller without the hardening would run it. Used
+    /// as the positive control that each fixture really is armed.
+    fn unhardened_log(repo: &Path) {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["log", "-1", "--format=%cs"])
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn activity_probe_never_runs_a_repository_configured_signature_program() {
+        let base = temp("git-signature-program");
+        let repo = base.join("repo");
+        init_old_git_repo(&repo).unwrap();
+        let (program, marker) = planted_program(&base);
+        let tree = git_in(&repo, &["rev-parse", "HEAD^{tree}"]);
+        let signed = format!(
+            "tree {tree}\nauthor a <a@example.invalid> 946684800 +0000\ncommitter a <a@example.invalid> 946684800 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n -----END PGP SIGNATURE-----\n\nsigned\n"
+        );
+        std::fs::write(base.join("commit"), signed).unwrap();
+        let commit = git_in(
+            &repo,
+            &[
+                "hash-object",
+                "-t",
+                "commit",
+                "-w",
+                base.join("commit").to_str().unwrap(),
+            ],
+        );
+        git_in(&repo, &["update-ref", "HEAD", &commit]);
+        git_in(&repo, &["config", "log.showSignature", "true"]);
+        git_in(&repo, &["config", "gpg.program", program.to_str().unwrap()]);
+
+        unhardened_log(&repo);
+        assert!(marker.exists(), "fixture must arm the signature program");
+        std::fs::remove_file(&marker).unwrap();
+
+        let date = repo_last_activity(&repo);
+        assert!(
+            !marker.exists(),
+            "PV git/signature-program: the activity probe ran a repository-configured program"
+        );
+        // `update-ref` wrote today's reflog entry; the probe still answers.
+        assert_eq!(date.unwrap(), iso_days_ago(0));
+        crate::ops::remove_test_path(base);
+    }
+
+    #[test]
+    fn activity_probe_never_lazily_fetches_through_a_repository_configured_transport() {
+        let base = temp("git-lazy-fetch");
+        let repo = base.join("repo");
+        init_old_git_repo(&repo).unwrap();
+        let (program, marker) = planted_program(&base);
+        git_in(&repo, &["config", "core.repositoryformatversion", "1"]);
+        git_in(&repo, &["config", "extensions.partialClone", "origin"]);
+        git_in(
+            &repo,
+            &["config", "remote.origin.url", base.to_str().unwrap()],
+        );
+        git_in(&repo, &["config", "remote.origin.promisor", "true"]);
+        git_in(
+            &repo,
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                program.to_str().unwrap(),
+            ],
+        );
+        let missing = "0123456789abcdef0123456789abcdef01234567";
+        std::fs::write(repo.join(".git/HEAD"), format!("{missing}\n")).unwrap();
+
+        unhardened_log(&repo);
+        assert!(marker.exists(), "fixture must arm the promisor transport");
+        std::fs::remove_file(&marker).unwrap();
+
+        let date = repo_last_activity(&repo);
+        assert!(
+            !marker.exists(),
+            "PV git/lazy-fetch-transport: the activity probe ran a repository-configured transport"
+        );
+        assert!(
+            date.is_err(),
+            "a missing commit is unknown activity, not staleness"
+        );
+        crate::ops::remove_test_path(base);
+    }
+
+    #[test]
+    fn a_fresh_checkout_of_an_old_commit_is_active_not_stale() {
+        let base = temp("git-reflog-activity");
+        let repo = base.join("repo");
+        init_old_git_repo(&repo).unwrap();
+        assert_eq!(repo_last_activity(&repo).unwrap(), "2000-01-01");
+
+        // Checking out writes the HEAD reflog now, as a clone or a switch to
+        // an old tag does; the commit it lands on is still from 2000.
+        git_in(&repo, &["checkout", "-q", "-b", "fresh"]);
+        assert_eq!(
+            repo_last_activity(&repo).unwrap(),
+            iso_days_ago(0),
+            "PV git/reflog-activity: a just-checked-out old commit was judged stale"
+        );
+        crate::ops::remove_test_path(base);
+    }
+
+    #[test]
+    fn a_recent_head_commit_counts_even_when_the_reflog_does_not_name_it() {
+        let base = temp("git-head-beyond-reflog");
+        let repo = base.join("repo");
+        init_old_git_repo(&repo).unwrap();
+        git_in(
+            &repo,
+            &[
+                "-c",
+                "user.name=devtrim-test",
+                "-c",
+                "user.email=devtrim@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "fresh",
+            ],
+        );
+        // Deleting the newest entry leaves HEAD fresh while the reflog's newest
+        // surviving entry names the 2000 commit.
+        git_in(&repo, &["reflog", "delete", "HEAD@{0}"]);
+        assert_eq!(
+            git_in(&repo, &["log", "-g", "-1", "--format=%cs"]),
+            "2000-01-01",
+            "fixture: the newest reflog entry must name the old commit"
+        );
+        assert_eq!(
+            repo_last_activity(&repo).unwrap(),
+            iso_days_ago(0),
+            "PV git/head-commit: a fresh HEAD was judged by an older reflog entry"
+        );
+        crate::ops::remove_test_path(base);
+    }
+
+    #[test]
+    fn a_repository_without_reflogs_is_judged_by_its_commit_date() {
+        let base = temp("git-no-reflog");
+        let repo = base.join("repo");
+        init_old_git_repo(&repo).unwrap();
+        crate::ops::remove_test_path(repo.join(".git/logs"));
+        assert_eq!(repo_last_activity(&repo).unwrap(), "2000-01-01");
         crate::ops::remove_test_path(base);
     }
 

@@ -541,6 +541,16 @@ pub fn run(ctx: &Ctx) -> Result<ExitCode> {
     }
 }
 
+/// Keys typed while a scan or apply blocked the loop were aimed at a screen
+/// that no longer exists. Delivering them afterwards would let type-ahead
+/// toggle permanent mode and approve a plan before it was ever displayed.
+fn discard_pending_input() -> Result<()> {
+    while event::poll(std::time::Duration::ZERO).context("cannot poll terminal input")? {
+        event::read().context("cannot read terminal input")?;
+    }
+    Ok(())
+}
+
 fn run_loop(terminal: &mut DefaultTerminal, ctx: &Ctx) -> Result<ExitCode> {
     let mut app = App::default();
     loop {
@@ -562,12 +572,14 @@ fn run_loop(terminal: &mut DefaultTerminal, ctx: &Ctx) -> Result<ExitCode> {
                 app.begin_load(operation);
                 terminal.draw(|frame| render(frame, &app))?;
                 load_operation(&mut app, operation, ctx);
+                discard_pending_input()?;
             }
             Intent::Apply(plan) => {
                 app.screen = Screen::Loading;
                 app.status = "Applying only the exact previewed findings…".into();
                 terminal.draw(|frame| render(frame, &app))?;
                 apply_operation(&mut app, ctx, plan);
+                discard_pending_input()?;
             }
         }
     }
@@ -708,7 +720,7 @@ fn apply_trash(ctx: &Ctx, findings: &[Finding], approval: Approval) -> Result<Ap
     let Approval::TrashPurgeGigabytes(confirm_gb) = approval else {
         bail!("Trash purge requires its typed size acknowledgment");
     };
-    safety::trash_gate(&ctx.home, Some(confirm_gb))?;
+    safety::trash_gate(findings, Some(confirm_gb))?;
     ops::purge_trash(findings, ctx)
 }
 

@@ -24,7 +24,10 @@ Docker, Xcode, or Trash were involved.
 ## Threat model
 
 We assume the invoking user intentionally runs devtrim but can make mistakes,
-have stale config, or have paths change between inspection and action. We do
+have stale config, or have paths change between inspection and action. The
+contents of scanned directories are not trusted: a repository copied in with
+its `.git/config` intact, a file or directory named with terminal controls, and
+a local process racing a rename are all in scope. We do
 not defend against a user who modifies the binary/source to remove safeguards,
 or a fully compromised host.
 
@@ -63,12 +66,20 @@ Non-negotiable boundaries:
   recording which sessions are kept alive while idle. A closed category that
   must consult a liveness signal to stay safe has gone one directory too far.
 - Unknown Git activity or toolchain ownership is not deletion authority.
+- Reading a scanned repository's activity runs no program it configures. The
+  probe sets fixed `-c` overrides for hooks, fsmonitor, and signature display,
+  passes `--no-show-signature`, `--no-lazy-fetch`, and `--no-pager`, and clears
+  repository-selection variables; a `git` that cannot honor those refuses the
+  repository. Activity is the newer of HEAD's commit date and HEAD's newest
+  reflog entry, so a clone or checkout of old history is active.
 - Every directory deletion preflights foreign filesystem devices and Git
   repository/worktree markers at any depth before either Trash or permanent
   mutation. Git metadata matching is ASCII-case-insensitive, and permanent
   recursion repeats those checks through open handles.
 - A repo owning the working directory of a running build/package process, and
-  DerivedData while `xcodebuild` runs, are refused. Liveness probes use fixed
+  DerivedData while Xcode, `xcodebuild`, `SWBBuildService`, or `XCBBuildService`
+  runs, are refused. A working-directory name that `lsof` escapes ambiguously
+  refuses rather than matching nothing. Liveness probes use fixed
   argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
 - User-configured `protect` paths are refused at the deletion sink (literal and
   resolved, ASCII-case-insensitive and Unicode-normalization-insensitive, so
@@ -101,11 +112,11 @@ Non-negotiable boundaries:
   UDID, then rechecks that exact device is still unavailable before deletion.
 - A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize a typed Docker or simulator operation with validated arguments, and apply must match both representations exactly.
 - Mutation flags are capability-scoped and rejected when the selected command cannot honor them; confirmation bypasses never add operations.
-- Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
-- The TUI accepts no CLI confirmation bypass. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
+- Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level, `trash-empty` included; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
+- The TUI accepts no CLI confirmation bypass, and discards keys typed while a scan or apply blocked it, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
 - Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
 - Hugging Face cleanup is limited to `~/.cache/huggingface/hub`. Its parent contains authentication and other state and is never an authorized built-in cache target. A real-binary regression requires model data to be removed while synthetic tokens and settings survive.
-- Complete human-facing actions, findings, errors, and outcome notes escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values and JSON retains its original data.
+- Complete human-facing actions, findings, errors, outcome notes, and command-line parse errors (which quote argv) escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values and JSON retains its original data.
 - Failed or partial work returns nonzero; successful earlier actions remain visible in the summary.
 
 ## Defense layers
@@ -123,7 +134,8 @@ Non-negotiable boundaries:
    Every directory action first walks the opened tree and refuses device
    crossings and Git markers before a path-based Trash call or permanent
    mutation. Permanent deletes quarantine the verified leaf under a private
-   unpredictable name, re-verify, repeat those checks, and drive recursive
+   unpredictable name with an atomic no-replace rename (so a refused target is
+   never restored over a file recreated at its name), re-verify, repeat those checks, and drive recursive
    deletion through open handles.
 6. **Trash-first recovery** — normal filesystem removal uses macOS Trash.
 7. **Risk, danger, and non-TTY gates** — human apply displays the AS-IS/data-loss notice, every interactive mutation confirms, aggregate size can require typed input, and unattended mutation requires explicit consent.
@@ -133,9 +145,9 @@ Non-negotiable boundaries:
 10. **Truthful measurement** — traversal, metadata, numeric parsing, and overflow
    errors block actionable plans rather than producing partial estimates.
 11. **Terminal-safe presentation** — complete human-facing actions and other untrusted text escape control characters before rendering and are never parsed back into deletion authority.
-12. **Liveness guards** — running build processes (by working directory) and a
-   running `xcodebuild` block the affected repo or DerivedData targets, failing
-   closed when the probe itself fails.
+12. **Liveness guards** — running build processes (by working directory) and
+   Xcode or its build services block the affected repo or DerivedData targets,
+   failing closed when the probe itself fails.
 13. **Write-ahead journal** — attempt/result records surround every deletion and
    typed command; symlink-safe parent handles, serialized appends, and
    bounded read-only history preserve a coherent local audit trail.
@@ -157,7 +169,7 @@ Non-negotiable boundaries:
 - Rust 1.98.1 is pinned in `rust-toolchain.toml` and hosted workflows; `rust-version` records the separate MSRV. This avoids the vtable-generation miscompilation documented in the [Rust 1.98.1 advisory](https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/).
 - GitHub Actions are pinned to immutable commit SHAs.
 - Dependabot checks the root and fuzz Cargo graphs, the demo video's npm graph,
-  and Actions weekly.
+  and Actions weekly, with a seven-day cooldown before a new release is proposed.
 - Common local environment, private-key, and signing-material files are ignored;
   checksum-pinned full-history Gitleaks and TruffleHog scans run in PR/main CI
   and again during release validation. Both installation paths first prove
@@ -167,7 +179,16 @@ Non-negotiable boundaries:
 - Hosted repository and dependency code runs only in read-only validation,
   fuzz, and release-preparation jobs. A separate publisher downloads packaged inputs,
   never checks out or compiles the repository, and alone holds release-write
-  and OIDC permissions.
+  and OIDC permissions. The packaged inputs are bound by digest to the job
+  that produced them, so another job holding a runtime token cannot substitute
+  them between upload and attestation, and no downloaded input is ever run.
+  The release policy checks permissions on the parsed workflow YAML —
+  workflow-level `contents: read`, a `permissions` mapping on every release job,
+  and write scopes only on the publisher — so a quoted value, a trailing
+  comment, or a flow mapping cannot slip a grant past a line match.
+- Every attestation check denies self-hosted runners. Users can verify an
+  archive with `gh attestation verify` (see README), which is stronger than the
+  checksum shipped beside it.
 - GitHub releases and their tags/assets are immutable. Production promotes the exact verified beta archive from the same commit instead of rebuilding it.
 - Production closeout independently re-verifies that immutable archive,
   checksum manifest, GitHub asset digest, and attestation before changing the
@@ -222,6 +243,10 @@ Non-negotiable boundaries:
 - Liveness probes are point-in-time snapshots. A process can start after the
   final check; apply therefore still relies on immutable targets, identity
   checks, and conservative refusal rather than treating liveness as a lock.
+- `installers` judges age by modification time. A copy that preserves it (a
+  Finder copy from another disk) is offered immediately; the preview states the
+  age it judged, and the action is Trash. Change time is not used because it
+  moves on any metadata change and cannot be set by a test fixture.
 - Journal files are bounded local audit data, not tamper-evident logs. A user or
   fully compromised host with write access can alter past records.
 - `leftovers` is intentionally report-only because worktree or mission

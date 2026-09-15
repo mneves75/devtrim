@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use super::project::{
     ScanObservations, has_git_marker, is_directory_if_present, iso_days_ago, normalized_roots,
-    owning_repo, repo_has_active_build, repo_last_commit,
+    owning_repo, repo_has_active_build, repo_last_activity,
 };
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size,
@@ -70,8 +70,8 @@ impl Op for Artifacts {
                 build_active = build_active.saturating_add(candidates.len());
                 continue;
             }
-            let last_commit = observations.last_commit(&owner)?;
-            if last_commit.as_str() > cutoff.as_str() {
+            let last_activity = observations.last_activity(&owner)?;
+            if last_activity.as_str() > cutoff.as_str() {
                 active = active.saturating_add(candidates.len());
                 continue;
             }
@@ -82,7 +82,7 @@ impl Op for Artifacts {
                     Some(candidate.path),
                     size,
                     format!(
-                        "repo last committed {last_commit}; corroboration: {}",
+                        "repo last active {last_activity}; corroboration: {}",
                         candidate.evidence.corroboration
                     ),
                     escalate(5, size),
@@ -191,8 +191,8 @@ impl Artifacts {
                         path.display()
                     );
                 }
-                let last_commit = repo_last_commit(&owner)?;
-                if last_commit > cutoff {
+                let last_activity = repo_last_activity(&owner)?;
+                if last_activity > cutoff {
                     anyhow::bail!(
                         "repo became active after preview; refusing {}",
                         path.display()
