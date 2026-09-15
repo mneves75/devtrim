@@ -2,6 +2,17 @@
 
 ## Current state (0.9.4)
 
+Production is verified. `v0.9.4-beta1` and `v0.9.4` both point at `728ec4f`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`14d759aacbd3725a46a34b095e4a638589c96531acc4f26d57b779ad32a6dce2`), the
+release is immutable, and the attestation verifies against the tag with
+self-hosted runners denied. The new digest handoff step ran in both hosted
+workflows. The downloaded beta passed the PTY TUI flow including type-ahead
+discard, the read-only views, and end-to-end checks that a hostile
+`.git/config` runs nothing during preview (with a plain-`git` control that did
+run it) and that `trash-empty --apply` refuses without consent. Homebrew
+installs and tests 0.9.4 as the sole visible `devtrim`.
+
 A whole-codebase review found the two things this tool must never do — act
 during a *preview*, and act on a screen nobody read — both reachable. A dry-run
 scan ran programs named by a scanned repository's `.git/config`
