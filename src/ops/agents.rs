@@ -491,7 +491,11 @@ fn codex_digest_matches(path: &Path, expected: &str) -> Result<bool> {
 }
 
 fn codex_version_core(version: &str) -> Option<[u64; 3]> {
-    let (core, prerelease) = version.split_once('-').unwrap_or((version, ""));
+    let (core, prerelease) = match version.split_once('-') {
+        Some((_, "")) => return None,
+        Some(parts) => parts,
+        None => (version, ""),
+    };
     let parts: Vec<_> = core.split('.').collect();
     if parts.len() != 3
         || !parts
@@ -1105,6 +1109,12 @@ mod tests {
         std::fs::write(&manifest, "{").unwrap();
         blocked(&ctx);
         std::fs::write(&manifest, contents).unwrap();
+        let malformed_current = write_codex_release(home, "0.156.1-");
+        std::fs::remove_file(standalone.join("current")).unwrap();
+        symlink(&malformed_current, standalone.join("current")).unwrap();
+        blocked(&ctx);
+        std::fs::remove_file(standalone.join("current")).unwrap();
+        symlink(&current, standalone.join("current")).unwrap();
         let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
         assert!(
             findings
