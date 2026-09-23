@@ -71,7 +71,9 @@ Non-negotiable boundaries:
   newer releases, staging, and other Codex state are not candidates. A release
   any process is executing — its program or a library it loaded, as one
   system-wide `lsof -d txt` reports while the lock is held — is not offered,
-  and apply refuses it; a failed probe refuses release cleanup. That probe
+  and apply probes again before each release and refuses one in use. A failed
+  probe, or any mapping it reports without an absolute name, refuses release
+  cleanup. That probe
   cannot see other users' processes, and it is a point-in-time check: a
   process started from an older release after it runs is not seen. The local manifest is not authenticated: coordinated
   changes to a vendor-named file and its digest cannot be distinguished from a

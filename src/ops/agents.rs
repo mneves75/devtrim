@@ -346,16 +346,19 @@ impl CodexReleases {
         Ok(canonical != self.current)
     }
 
-    /// Whether any process was executing a file inside this release.
+    /// Whether any process was executing a file inside this release when the
+    /// lock was taken. Preview only: apply asks [`executes`] again per release.
     fn running(&self, path: &Path) -> Result<bool> {
-        let canonical = path
-            .canonicalize()
-            .with_context(|| format!("cannot resolve {}", path.display()))?;
-        Ok(self
-            .in_use
-            .iter()
-            .any(|mapped| mapped.starts_with(&canonical)))
+        executes(&self.in_use, path)
     }
+}
+
+/// Whether any of `mappings` lies inside the directory `path`.
+fn executes(mappings: &[PathBuf], path: &Path) -> Result<bool> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("cannot resolve {}", path.display()))?;
+    Ok(mappings.iter().any(|mapped| mapped.starts_with(&canonical)))
 }
 
 fn codex_package_version(path: &Path) -> Result<Option<[u64; 3]>> {
@@ -881,7 +884,11 @@ fn authorize(target: &Path, ctx: &Ctx, releases: Option<&CodexReleases>) -> Resu
                 target.display()
             );
         }
-        if releases.running(target)? {
+        // Probed again at this finding, not once for the whole plan: an agent
+        // can start a helper from this release while earlier findings apply.
+        let mappings = crate::safety::executable_mappings()
+            .context("cannot recheck which processes execute this Codex release")?;
+        if executes(&mappings, target)? {
             anyhow::bail!(
                 "Codex release is still executing in a running process: {}",
                 target.display()
@@ -1525,6 +1532,35 @@ mod tests {
             old.exists(),
             "PV agents/codex-running-release: a running release must survive apply"
         );
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn apply_rechecks_liveness_at_each_release_not_once_per_plan() {
+        let (home, old) = codex_home("late-start");
+        let ctx = test_ctx(home.clone());
+        // Opened while nothing runs from the release, as apply opens it before
+        // working through earlier findings.
+        let releases = CodexReleases::open(&home).unwrap().unwrap();
+        assert!(!releases.running(&old).unwrap(), "control: idle snapshot");
+
+        let mut running = execute_from(&old);
+        let decision = authorize(&old, &ctx, Some(&releases));
+        running.kill().unwrap();
+        running.wait().unwrap();
+
+        let error = decision.expect_err(
+            "PV agents/codex-running-release: a release started after the snapshot was authorized",
+        );
+        assert!(
+            format!("{error:#}").contains("still executing in a running process"),
+            "PV agents/codex-running-release: {error:#}"
+        );
+        assert!(
+            authorize(&old, &ctx, Some(&releases)).is_ok(),
+            "control: idle again"
+        );
+        drop(releases);
         crate::ops::remove_test_path(home);
     }
 

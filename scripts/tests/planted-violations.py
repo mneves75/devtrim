@@ -209,12 +209,20 @@ CASES = (
     Case(
         name="agents/codex-running-release",
         relative_path="src/ops/agents.rs",
-        before="        if releases.running(target)? {\n",
+        before="        if executes(&mappings, target)? {\n",
         after="        if false {\n",
         tests=(
             "ops::agents::tests::a_release_a_process_still_executes_is_neither_offered_nor_removed",
         ),
         marker="PV agents/codex-running-release",
+    ),
+    Case(
+        name="liveness/lsof-mapping-names",
+        relative_path="src/safety.rs",
+        before='    }\n    if awaiting_name {\n        bail!("lsof reported an executable mapping without a name");',
+        after='    }\n    if false {\n        bail!("lsof reported an executable mapping without a name");',
+        tests=("safety::tests::executable_mappings_refuse_any_mapping_they_cannot_name",),
+        marker="PV liveness/lsof-mapping-names",
     ),
     Case(
         name="xcode/non-directory-target",

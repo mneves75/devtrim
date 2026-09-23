@@ -1032,16 +1032,44 @@ pub(crate) fn parse_lsof_mappings(output: &[u8], exit_code: Option<i32>) -> Resu
         Some(code) => bail!("lsof executable-mapping probe exited with status {code}"),
         None => bail!("lsof executable-mapping probe terminated without an exit status"),
     }
+    // Every mapping is `p` (once per process), then `f`, then its `n`. A
+    // mapping whose name is missing or not an absolute path could be any file,
+    // including one inside the release being judged, so it fails the probe.
+    let mut in_process = false;
+    let mut awaiting_name = false;
     let mut paths = Vec::new();
     for line in output.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        let Some(name) = line.strip_prefix(b"n") else {
-            continue;
-        };
-        if name.is_empty() {
-            bail!("lsof returned an empty mapped path");
+        match line.first() {
+            None => continue,
+            Some(b'p') => {
+                if awaiting_name {
+                    bail!("lsof reported an executable mapping without a name");
+                }
+                in_process = true;
+            }
+            Some(b'f') => {
+                if !in_process || awaiting_name {
+                    bail!("lsof reported an executable mapping without a name or process");
+                }
+                awaiting_name = true;
+            }
+            Some(b'n') => {
+                if !awaiting_name {
+                    bail!("lsof reported a mapped path outside any mapping");
+                }
+                let name = &line[1..];
+                if !name.starts_with(b"/") {
+                    bail!("lsof reported a mapped path that is not absolute");
+                }
+                paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)));
+                awaiting_name = false;
+            }
+            Some(_) => bail!("lsof returned an unexpected executable-mapping field"),
         }
-        paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)));
+    }
+    if awaiting_name {
+        bail!("lsof reported an executable mapping without a name");
     }
     // devtrim itself maps its own binary, so an empty answer is a failed probe.
     if paths.is_empty() {
@@ -2043,6 +2071,40 @@ mod tests {
         assert_eq!(with, Some(0), "ancestor not matched");
         // Control: pgrep's default excludes the same ancestor.
         assert_eq!(without, Some(1), "control failed");
+    }
+
+    #[test]
+    fn executable_mappings_refuse_any_mapping_they_cannot_name() {
+        let parsed = parse_lsof_mappings(
+            b"p1\nftxt\nn/a\nftxt\nn/b\np2\nftxt\nn/c\nftxt\nn/a\n",
+            Some(0),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            ["/a", "/b", "/c"].map(PathBuf::from).to_vec(),
+            "control: complete output parses"
+        );
+        for incomplete in [
+            // A second process whose mapping lsof could not name.
+            &b"p1\nftxt\nn/usr/lib/dyld\np2\nftxt\n"[..],
+            b"p1\nftxt\nftxt\nn/a\n",
+            b"p1\nftxt\np2\nftxt\nn/a\n",
+            b"ftxt\nn/a\n",
+            b"p1\nn/a\n",
+            b"p1\nftxt\nnrelative\n",
+            b"p1\nftxt\nn\n",
+            b"p1\nx1\nftxt\nn/a\n",
+            b"",
+        ] {
+            assert!(
+                parse_lsof_mappings(incomplete, Some(0)).is_err(),
+                "PV liveness/lsof-mapping-names: accepted {}",
+                String::from_utf8_lossy(incomplete)
+            );
+        }
+        assert!(parse_lsof_mappings(b"p1\nftxt\nn/a\n", Some(1)).is_err());
+        assert!(parse_lsof_mappings(b"p1\nftxt\nn/a\n", None).is_err());
     }
 
     #[test]
