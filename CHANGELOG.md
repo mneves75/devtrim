@@ -8,7 +8,7 @@ A review of 0.9.5 and 0.9.6 on two axes (Standards and Spec), plus a security
 pass over the same diff. Each fix below has a test that fails without it.
 
 ### Added
-- `clean agents` offers older Codex standalone packages after checking the installer lock, current package, manifest, required executables, audited resource names, and manifest SHA-256 digests. Current, newer, same-version, staged, and unknown packages remain; an unverifiable release produces a read-only refusal and nonzero CLI status while cache/history cleanup stays available. Apply rechecks eligibility. Trash remains the default and does not free physical bytes until purged
+- `clean agents` offers older Codex standalone packages after checking the installer lock, current package, required voice manifest, executables, audited resource names, and manifest SHA-256 digests. Current, newer, same-version, staged, and unknown packages remain; an unverifiable release produces a read-only refusal and nonzero CLI status while cache/history cleanup stays available. Apply rechecks eligibility. Trash remains the default and does not free physical bytes until purged
 
 ### Fixed
 - The working-simulator disclosure summed simctl's sizes with saturating arithmetic, so a total that overflowed was shown capped at 18.4 EB instead of being refused. It now uses checked addition and drops only the disclosure with a diagnostic, as it already did for a missing size

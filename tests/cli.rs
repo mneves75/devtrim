@@ -1677,6 +1677,8 @@ fn agent_cleanup_removes_only_stale_history_and_regenerable_caches() {
         "PERSONAL CONTENT",
     )
     .unwrap();
+    let no_voice_release = release("0.149.0");
+    std::fs::remove_dir_all(no_voice_release.join("codex-resources/voice")).unwrap();
     std::fs::write(standalone.join("install.lock"), "").unwrap();
     std::os::unix::fs::symlink(&current_release, standalone.join("current")).unwrap();
 
@@ -1770,6 +1772,13 @@ fn agent_cleanup_removes_only_stale_history_and_regenerable_caches() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|finding| { finding["path"] == no_voice_release.display().to_string() })
+    );
+    assert!(
+        !previewed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|finding| {
                 [
                     &current_release,
@@ -1827,6 +1836,10 @@ fn agent_cleanup_removes_only_stale_history_and_regenerable_caches() {
     assert!(
         modified_voice_release.exists(),
         "modified voice resource must survive"
+    );
+    assert!(
+        no_voice_release.exists(),
+        "unverifiable package must survive"
     );
     assert!(
         incomplete_release.exists(),

@@ -394,48 +394,49 @@ fn codex_resources_known(release: &Path, version: &str, target: &str) -> Result<
     let resources = release.join("codex-resources");
     let voice = resources.join("voice");
     let mut expected = HashSet::new();
-    if let Some(metadata) = codex_entry_metadata(&voice)? {
-        if !metadata.file_type().is_dir() {
+    let Some(metadata) = codex_entry_metadata(&voice)? else {
+        return Ok(false);
+    };
+    if !metadata.file_type().is_dir() {
+        return Ok(false);
+    }
+    let Some(manifest) = codex_json_file(&voice.join("manifest.json"), 64 * 1024)? else {
+        return Ok(false);
+    };
+    let Some(files) = manifest["sha256"].as_object() else {
+        return Ok(false);
+    };
+    if manifest["schemaVersion"] != 1
+        || manifest["appVersion"] != version
+        || manifest["appTarget"] != target
+        || manifest["voiceTarget"] != target
+        || !files.contains_key("bin/codex")
+    {
+        return Ok(false);
+    }
+    for (name, digest) in files {
+        let Some(digest) = digest.as_str() else {
+            return Ok(false);
+        };
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Ok(false);
         }
-        let Some(manifest) = codex_json_file(&voice.join("manifest.json"), 64 * 1024)? else {
+        if name != "bin/codex" && !CODEX_VOICE_FILES.contains(&name.as_str()) {
             return Ok(false);
-        };
-        let Some(files) = manifest["sha256"].as_object() else {
-            return Ok(false);
-        };
-        if manifest["schemaVersion"] != 1
-            || manifest["appVersion"] != version
-            || manifest["appTarget"] != target
-            || manifest["voiceTarget"] != target
-            || !files.contains_key("bin/codex")
+        }
+        let relative = Path::new(name);
+        if !relative
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+            || !codex_digest_matches(&release.join(relative), digest)?
         {
             return Ok(false);
         }
-        for (name, digest) in files {
-            let Some(digest) = digest.as_str() else {
-                return Ok(false);
-            };
-            if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Ok(false);
-            }
-            if name != "bin/codex" && !CODEX_VOICE_FILES.contains(&name.as_str()) {
-                return Ok(false);
-            }
-            let relative = Path::new(name);
-            if !relative
-                .components()
-                .all(|component| matches!(component, std::path::Component::Normal(_)))
-                || !codex_digest_matches(&release.join(relative), digest)?
-            {
-                return Ok(false);
-            }
-            if name != "bin/codex" {
-                expected.insert(relative.to_path_buf());
-            }
+        if name != "bin/codex" {
+            expected.insert(relative.to_path_buf());
         }
-        expected.insert(PathBuf::from("codex-resources/voice/manifest.json"));
     }
+    expected.insert(PathBuf::from("codex-resources/voice/manifest.json"));
     let zsh = resources.join("zsh");
     if let Some(metadata) = codex_entry_metadata(&zsh)? {
         if !metadata.file_type().is_dir() || !codex_executable(&zsh.join("bin/zsh"))? {

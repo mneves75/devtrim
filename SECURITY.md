@@ -60,7 +60,8 @@ Non-negotiable boundaries:
   `packages/standalone/releases` whose major/minor/patch version is strictly
   below the verified `current` symlink target. The package manifest, expected
   files, and absence of extra package and resource entries are checked against
-  the audited 0.156.1 resource names. Manifest SHA-256 digests are checked for
+  the audited 0.156.1 resource names. A voice manifest is mandatory; its
+  SHA-256 digests are checked for
   voice files and the main executable. An installer lock is held during scan and
   apply, and apply rechecks eligibility. Missing or
   ambiguous current/lock state refuses release cleanup. Same-version prereleases,

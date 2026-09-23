@@ -163,7 +163,8 @@ them, because a worktree's staleness cannot be proven from its name.
 `clean agents` also offers older Codex standalone releases when the installer lock
 is available, `current` resolves to a verified package, and each candidate is a
 direct child with Codex's versioned package manifest, required executable files,
-and only resource names checked against the audited 0.156.1 bundle. Voice files
+and only resource names checked against the audited 0.156.1 bundle. A voice
+manifest is required; packages without one stay untouched. Voice files
 and the main executable must match the manifest's SHA-256 digests. This follows
 the [standalone installer's package checks](https://github.com/openai/codex/blob/0a2eb4696c26ac33204bcd255721ab30220a4774/scripts/install/install.sh). A
 release with the same or a newer major/minor/patch version is kept. Apply checks
