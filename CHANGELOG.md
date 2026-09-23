@@ -2,7 +2,20 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.9.7] - Unreleased
+## [0.9.7] - 2026-09-23
+
+A review of 0.9.5 and 0.9.6 on two axes (Standards and Spec), plus a security
+pass over the same diff. Each fix below has a test that fails without it.
+
+### Fixed
+- The working-simulator disclosure summed simctl's sizes with saturating arithmetic, so a total that overflowed was shown capped at 18.4 EB instead of being refused. It now uses checked addition and drops only the disclosure with a diagnostic, as it already did for a missing size
+- No test covered a simulator plan that mixed a device to delete with the report-only disclosure, and apply stops at its first error, so removing the skip that keeps the disclosure out of the command path passed every test. A new test gives the forgery its own refusal message and fails when the skip is removed
+
+### Changed
+- The test proving `pgrep -a` matches devtrim's own ancestors no longer runs a shell script; `/usr/bin/time` under a unique name is the ancestor. `CODING_STANDARDS.md` S12 lists it with the other test-only variable program
+- The real `lsof` race test calls the production probe instead of rebuilding its arguments, so the two cannot drift apart
+- `scripts/tests/planted-violations.py` proves the Xcode apply refusal of a non-directory target
+- SECURITY.md states the limit of the `lsof` recheck: it compares PIDs, so a reported build whose PID a new build reuses within the probe keeps the first directory. That window is no wider than a build starting just after a clean probe
 
 ## [0.9.6] - 2026-09-15
 

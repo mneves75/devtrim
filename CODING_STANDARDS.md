@@ -216,9 +216,11 @@ exactly four:
 - `hardened_git_log` in `src/ops/project.rs` — `"git"` from
   `repo_last_activity`, its only production caller.
 
-The only other variable program in the tree is `std::env::current_exe()`
-re-invoking the test binary inside `#[cfg(test)] mod tests` in
-`src/journal.rs`. A fifth production site is a finding.
+The only other variable programs in the tree are inside `#[cfg(test)] mod
+tests`: `std::env::current_exe()` re-invoking the test binary in
+`src/journal.rs`, and a uniquely named symlink to `/usr/bin/time` that makes a
+known ancestor of `pgrep` in `src/safety.rs`. Neither takes a shell or a script.
+A fifth production site is a finding.
 
 ## Adding a rule
 

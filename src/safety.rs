@@ -987,24 +987,26 @@ pub(crate) fn build_process_cwds() -> Result<Vec<PathBuf>> {
             .into_iter()
             .collect())
     };
-    let cwds_of = |pids: &BTreeSet<u32>| -> Result<LsofCwds> {
-        let pid_list = pids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        let lsof = Command::new("lsof")
-            .args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"])
-            .output()
-            .context("cannot run build-process cwd probe")?;
-        parse_lsof_cwds(&lsof.stdout, lsof.status.code())
-    };
     let pids = running_build_pids()?;
     if pids.is_empty() {
         return Ok(Vec::new());
     }
-    let first = cwds_of(&pids)?;
-    resolve_build_process_cwds(&pids, first, running_build_pids, cwds_of)
+    let first = lsof_cwds_of(&pids)?;
+    resolve_build_process_cwds(&pids, first, running_build_pids, lsof_cwds_of)
+}
+
+/// One `lsof` run for the working directories of exactly these processes.
+fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
+    let pid_list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let lsof = Command::new("lsof")
+        .args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"])
+        .output()
+        .context("cannot run build-process cwd probe")?;
+    parse_lsof_cwds(&lsof.stdout, lsof.status.code())
 }
 
 /// Working directories `lsof -F n` reported, the processes it reported them
@@ -1032,7 +1034,7 @@ pub(crate) struct LsofCwds {
 /// first one — a build moving to its next step. Its directory was never looked
 /// up, so it is looked up once, and any gap in that second answer refuses
 /// rather than chasing a moving process list.
-pub(crate) fn resolve_build_process_cwds(
+fn resolve_build_process_cwds(
     requested: &BTreeSet<u32>,
     lsof: LsofCwds,
     running_now: impl FnOnce() -> Result<BTreeSet<u32>>,
@@ -1947,31 +1949,19 @@ mod tests {
         child.wait().unwrap();
         let this = std::process::id();
         let requested = pid_set(&[this, exited]);
-        let pid_list = requested
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        let lsof = Command::new("lsof")
-            .args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"])
-            .output()
-            .unwrap();
-        assert_eq!(
-            lsof.status.code(),
-            Some(1),
-            "control: lsof must exit 1 here"
-        );
+        // The production probe itself, so its flags cannot drift from this test.
+        let parsed = lsof_cwds_of(&requested).unwrap();
+        assert!(!parsed.complete, "control: lsof must exit 1 here");
         let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
         let no_successor = |_: &BTreeSet<u32>| -> Result<LsofCwds> { bail!("unexpected lookup") };
 
-        let parsed = parse_lsof_cwds(&lsof.stdout, lsof.status.code()).unwrap();
         let cwds =
             resolve_build_process_cwds(&requested, parsed, || Ok(pid_set(&[this])), no_successor)
                 .unwrap();
         assert!(cwds.contains(&cwd), "{cwds:?} lacks {}", cwd.display());
 
         // Control: had the exited PID still been running, the same output refuses.
-        let parsed = parse_lsof_cwds(&lsof.stdout, lsof.status.code()).unwrap();
+        let parsed = lsof_cwds_of(&requested).unwrap();
         let error =
             resolve_build_process_cwds(&requested, parsed, || Ok(requested.clone()), no_successor)
                 .unwrap_err();
@@ -1985,23 +1975,31 @@ mod tests {
 
     #[test]
     fn liveness_pgrep_matches_devtrims_own_ancestors() {
-        // A uniquely named zsh runs pgrep as its child, so the shell is an
-        // ancestor of the probe — the position of a `make` that runs devtrim.
+        // `/usr/bin/time` under a unique name runs pgrep as its child, waits,
+        // and exits with pgrep's status, so it is an ancestor of the probe — the
+        // position of a `make` that runs devtrim — with no shell involved.
         let directory = temp("pgrep-ancestor");
         std::fs::create_dir_all(&directory).unwrap();
         let name = format!("devtrimanc{}", std::process::id());
-        let shell = directory.join(&name);
-        symlink("/bin/zsh", &shell).unwrap();
-        let args = PGREP_MATCH_ARGS.join(" ");
-        let script =
-            format!("pgrep {args} {name}; echo \"with=$?\"; pgrep -x {name}; echo \"without=$?\"");
-        let output = Command::new(&shell).args(["-c", &script]).output().unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let ancestor = directory.join(&name);
+        symlink("/usr/bin/time", &ancestor).unwrap();
+        let pgrep_status = |match_args: &[&str]| {
+            Command::new(&ancestor)
+                .arg("pgrep")
+                .args(match_args)
+                .arg(&name)
+                .output()
+                .unwrap()
+                .status
+                .code()
+        };
+        let with = pgrep_status(&PGREP_MATCH_ARGS);
+        let without = pgrep_status(&["-x"]);
         crate::ops::remove_test_path(&directory);
 
-        assert!(stdout.contains("with=0"), "ancestor not matched: {stdout}");
+        assert_eq!(with, Some(0), "ancestor not matched");
         // Control: pgrep's default excludes the same ancestor.
-        assert!(stdout.contains("without=1"), "control failed: {stdout}");
+        assert_eq!(without, Some(1), "control failed");
     }
 
     #[test]

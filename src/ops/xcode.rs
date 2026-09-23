@@ -334,11 +334,18 @@ mod tests {
             let outcome = Xcode
                 .apply_with_xcode_build_state(&[finding(name)], &ctx, None)
                 .unwrap();
-            assert_eq!(outcome.summary.items_touched, 0, "{name}");
-            assert_eq!(outcome.errors.len(), 1, "{name}");
+            assert_eq!(
+                outcome.summary.items_touched, 0,
+                "PV xcode/non-directory-target: {name} was touched"
+            );
+            assert_eq!(
+                outcome.errors.len(),
+                1,
+                "PV xcode/non-directory-target: {name}"
+            );
             assert!(
                 outcome.errors[0].contains("refusing non-directory Xcode target"),
-                "{name}: {:?}",
+                "PV xcode/non-directory-target: {name}: {:?}",
                 outcome.errors
             );
         }

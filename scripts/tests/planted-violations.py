@@ -188,6 +188,14 @@ CASES = (
         tests=("safety::tests::a_build_process_that_started_during_the_probe_is_looked_up_once",),
         marker="PV liveness/lsof-successor",
     ),
+    Case(
+        name="xcode/non-directory-target",
+        relative_path="src/ops/xcode.rs",
+        before="if !metadata.file_type().is_dir() {",
+        after="if false {",
+        tests=("ops::xcode::tests::apply_refuses_a_non_directory_xcode_support_child",),
+        marker="PV xcode/non-directory-target",
+    ),
 )
 
 

@@ -84,7 +84,11 @@ Non-negotiable boundaries:
   `lsof` exiting 1 is accepted only when every process it did not report is
   absent from a fresh `pgrep`, so a build that exited between the probes does
   not block while one it could not read still does; a build process first seen
-  in that recheck has its directory read once, and a gap there refuses. `pgrep`
+  in that recheck has its directory read once, and a gap there refuses. The
+  recheck compares PIDs, not process identities: a reported build that exits and
+  whose PID a new build takes before the recheck keeps the first directory. That
+  window is no wider than a build starting just after a clean probe, which no
+  snapshot probe sees either; liveness is a point-in-time check. `pgrep`
   runs with `-a`, so a build that invoked devtrim is not hidden as its ancestor.
 - User-configured `protect` paths are refused at the deletion sink (literal and
   resolved, ASCII-case-insensitive and Unicode-normalization-insensitive, so

@@ -150,13 +150,18 @@ fn available_device_disclosure(output: &str, device_root: PathBuf, ctx: &Ctx) ->
         };
         available.push((size, device));
     }
-    let total = available
+    let Some(total) = available
         .iter()
-        .fold(0u64, |sum, (size, _)| sum.saturating_add(*size));
+        .try_fold(0u64, |sum, (size, _)| sum.checked_add(*size))
+    else {
+        return omitted("the reported sizes overflow a byte total".to_string());
+    };
     if total == 0 {
         return None;
     }
-    available.sort_by(|(a_size, a), (b_size, b)| b_size.cmp(a_size).then(a.udid.cmp(&b.udid)));
+    available.sort_by(|(left_size, left), (right_size, right)| {
+        right_size.cmp(left_size).then(left.udid.cmp(&right.udid))
+    });
     let largest = available
         .iter()
         .take(3)
@@ -511,6 +516,78 @@ mod tests {
         let outcome = outcome.unwrap();
         assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
         assert_eq!(outcome.summary.items_touched, 0);
+    }
+
+    #[test]
+    fn a_mixed_plan_skips_the_disclosure_and_refuses_only_the_forgery() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-simulators-mixed")
+            .tempdir()
+            .unwrap();
+        std::fs::create_dir_all(home.path().join("Library/Developer/CoreSimulator/Devices"))
+            .unwrap();
+        let mut ctx = test_ctx();
+        ctx.home = home.path().to_path_buf();
+        ctx.journal_path = home.path().join("journal.jsonl");
+        let disclosure = Finding::new(
+            "Simulator device data (1 available devices)",
+            Some(home.path().join("Library/Developer/CoreSimulator/Devices")),
+            10,
+            "EXCLUDED: visibility only",
+            0,
+            Action::None,
+        );
+        // Real authority whose action changed after preview: apply refuses it
+        // with its own message before anything runs. Apply stops at the first
+        // error, so a disclosure mistaken for a command would surface instead.
+        let mut forged = Finding::command(
+            "unavailable Apple simulator device GONE-1",
+            10,
+            "forged",
+            4,
+            CommandAuthority::DeleteSimulator {
+                udid: "GONE-1".to_string(),
+            },
+        );
+        forged.action = Action::command("xcrun", &["simctl", "delete", "OTHER-2"]);
+
+        let outcome = Simulators.apply(&[disclosure, forged], &ctx).unwrap();
+
+        let errors = format!("{:?}", outcome.errors);
+        assert_eq!(outcome.errors.len(), 1, "{errors}");
+        assert!(
+            errors.contains("refusing altered simulator action"),
+            "the disclosure was treated as a command: {errors}"
+        );
+        assert_eq!(outcome.summary.items_touched, 0);
+    }
+
+    #[test]
+    fn an_overflowing_size_total_drops_only_the_disclosure() {
+        let mut ctx = test_ctx();
+        ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
+        let output = r#"{"devices":{"runtime":[
+            {"udid":"AAAA-1","isAvailable":true,"name":"iPhone","dataPathSize":18446744073709551615},
+            {"udid":"BBBB-2","isAvailable":true,"name":"iPad","dataPathSize":1},
+            {"udid":"GONE-3","isAvailable":false,"name":"Old iPhone","dataPathSize":2}
+        ]}}"#;
+
+        let findings = findings_from_simctl(output, &ctx).unwrap();
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "a capped total was reported: {findings:?}"
+        );
+        assert_eq!(
+            findings[0].action,
+            Action::command("xcrun", &["simctl", "delete", "GONE-3"])
+        );
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|message| message.contains("sizes overflow a byte total")),
+        );
     }
 
     #[test]
