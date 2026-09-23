@@ -128,8 +128,12 @@ def exercise(binary, home):
         view.wait("selected-child", start)
         start = view.send(b"?")
         view.wait("open or close this reference", start)
-        start = len(view.output)
+        # A PTY window-size ioctl does not always enqueue a resize event.
+        # Reopen help to verify its layout at the new dimensions.
         view.resize(24, 90)
+        start = view.send(b"?")
+        view.wait("selected-child", start)
+        start = view.send(b"?")
         view.wait("open or close this reference", start)
         start = view.send(b"\x1b")
         view.wait("selected-child", start)
