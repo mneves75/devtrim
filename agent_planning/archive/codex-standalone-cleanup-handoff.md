@@ -1,0 +1,14 @@
+I want to review and, if justified, implement safe cleanup of superseded Codex standalone releases in devtrim.
+
+Context:
+- devtrim is a Rust macOS disk hygiene CLI. Its `clean agents` category already offers the exact Codex catalog cache and separately warns that session transcripts are irreplaceable history.
+- On one Mac, `~/.codex` measured 11.58 GiB. Six old directories under `packages/standalone/releases` totaled about 1.68 GiB; `current` pointed to 0.156.1. Moving only those six directories to Trash left Codex 0.156.1 working. The cache regenerated. Sessions, thread history/index, authentication, configuration, goals, queue, memories, skills, and plugins were preserved. The Trash still held the bytes.
+- OpenAI's standalone installer owns `packages/standalone/releases`, the `current` symlink, an install lock, and staging paths. Verify its current source before granting deletion authority.
+
+Before implementation, read repository instructions, README, current memory, SECURITY.md, coding standards, and the affected scanner and deletion sink. Re-check the repository state and official installer source. Consider at least five approaches, including keeping the rule report-only; choose the smallest justified scope. Challenge whether old release directories are always expendable, especially during an install or while an older binary is running.
+
+If a safe rule is justified, extend the existing `agents` category. Preview only exact, installer-shaped direct-child release directories that are not the resolved current target. Reject symlinks, malformed or ambiguous current links, staging, other package roots, and unknown contents. Reassert the same authority at apply time, including a changed current link, without widening any confirmation flag. Keep Trash as the default and state clearly that Trash does not reclaim physical bytes until purged. Preserve all Codex state listed above and existing history behavior. Add no dependency or generic cleanup framework unless evidence requires it.
+
+Test the intended positive path and strong negative controls in an isolated HOME, never against the real HOME: current release survival, broken/foreign/changed current link, symlinked candidates, installer staging and locks, unrelated state, and forged apply findings. Run focused tests before the relevant repository gates. Review the resulting diff on Standards, Spec, and Security axes; verify real CLI preview/apply behavior in the sandbox. Fix confirmed issues once and re-verify.
+
+If all gates pass, update the established changelog and relevant user/security documentation, bump the next version, commit only task-owned paths, then follow devtrim's documented beta and production release process. Do not claim a push or release until the remote artifacts and installed result are verified. Report exact remaining blockers rather than weakening a safety gate.

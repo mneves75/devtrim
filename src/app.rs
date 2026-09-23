@@ -432,10 +432,15 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
     };
     ops::filter_protected_findings(&mut findings, ctx);
     report::effective_actions(&mut findings, cli.shred);
+    let scan_errors: Vec<_> = findings
+        .iter()
+        .filter_map(report::Finding::scan_error)
+        .map(str::to_owned)
+        .collect();
 
     if !cli.apply {
         if ctx.json {
-            report::print_json(operation.name(), false, &findings, None, &[])?;
+            report::print_json(operation.name(), false, &findings, None, &scan_errors)?;
         } else if findings.is_empty() {
             report::print_line(&format!(
                 "{} nothing to clean in '{}'",
@@ -450,7 +455,11 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
                 "--apply".cyan()
             ))?;
         }
-        return Ok(ExitCode::SUCCESS);
+        return Ok(if scan_errors.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        });
     }
 
     if findings.is_empty() {
@@ -499,6 +508,12 @@ fn print_outcome(
     // A journal failure after a successful mutation keeps the touched summary
     // truthful but must still surface as an error with a nonzero status.
     let mut errors = outcome.errors.clone();
+    errors.extend(
+        findings
+            .iter()
+            .filter_map(report::Finding::scan_error)
+            .map(str::to_owned),
+    );
     errors.extend(ctx.take_journal_errors());
     if ctx.json {
         report::print_json(operation, true, findings, Some(&outcome.summary), &errors)?;

@@ -213,6 +213,8 @@ pub struct Finding {
     authority: TargetAuthority,
     #[serde(skip)]
     command_authority: Option<CommandAuthority>,
+    #[serde(skip)]
+    scan_error: Option<String>,
 }
 
 impl Finding {
@@ -241,7 +243,17 @@ impl Finding {
             identity,
             authority: TargetAuthority::Standard,
             command_authority: None,
+            scan_error: None,
         }
+    }
+
+    pub(crate) fn with_scan_error(mut self, error: String) -> Self {
+        self.scan_error = Some(error);
+        self
+    }
+
+    pub(crate) fn scan_error(&self) -> Option<&str> {
+        self.scan_error.as_deref()
     }
 
     pub(crate) fn command(

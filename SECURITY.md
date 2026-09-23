@@ -56,6 +56,19 @@ Non-negotiable boundaries:
   depth below a configured root, and only once the newest regular file in the
   subtree is older than the active window. Apply re-reads that age from disk,
   so a session resumed after preview is refused rather than deleted.
+- Codex standalone cleanup considers only installer-shaped direct children of
+  `packages/standalone/releases` whose major/minor/patch version is strictly
+  below the verified `current` symlink target. The package manifest, expected
+  files, and absence of extra package and resource entries are checked against
+  the audited 0.156.1 resource names. Manifest SHA-256 digests are checked for
+  voice files and the main executable. An installer lock is held during scan and
+  apply, and apply rechecks eligibility. Missing or
+  ambiguous current/lock state refuses release cleanup. Same-version prereleases,
+  newer releases, staging, and other Codex state are not candidates. Running
+  older binaries can still be disrupted, so the preview tells users to close
+  Codex before applying. The local manifest is not authenticated: coordinated
+  changes to a vendor-named file and its digest cannot be distinguished from a
+  vendor package. Trash remains the recoverable default.
 - `~/.claude/projects` and `~/.claude/jobs` are not cleanup roots at all, so
   nothing beneath either can become a target. The first holds Claude Code auto
   memory (`<project>/memory/`) keyed by repository root, and transcripts that

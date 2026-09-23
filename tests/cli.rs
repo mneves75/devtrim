@@ -1578,7 +1578,7 @@ fn huggingface_cleanup_preserves_authentication_and_other_state() {
     }
 }
 
-/// End-to-end proof that `clean agents` removes exactly the two tiers it
+/// End-to-end proof that `clean agents` removes its three target kinds
 /// advertises and nothing beside them. The surviving assertions are the point:
 /// an agent's credentials, configuration and a still-active session must come
 /// through an `--apply --yolo` run untouched.
@@ -1609,18 +1609,178 @@ fn agent_cleanup_removes_only_stale_history_and_regenerable_caches() {
     std::fs::write(&live_session, "live").unwrap();
     age(&old_session);
 
+    let standalone = home.join(".codex/packages/standalone");
+    let releases = standalone.join("releases");
+    let release = |version: &str| {
+        let path = releases.join(format!("{version}-aarch64-apple-darwin"));
+        for directory in ["bin", "codex-resources", "codex-path"] {
+            std::fs::create_dir_all(path.join(directory)).unwrap();
+        }
+        for binary in ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"] {
+            let file = path.join(binary);
+            std::fs::write(&file, "binary").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::os::unix::fs::symlink("bin/codex", path.join("codex")).unwrap();
+        let voice = path.join("codex-resources/voice");
+        std::fs::create_dir_all(&voice).unwrap();
+        std::fs::write(voice.join("runtime.json"), "{}").unwrap();
+        std::fs::write(
+            voice.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "appVersion": version,
+                "appTarget": "aarch64-apple-darwin",
+                "voiceTarget": "aarch64-apple-darwin",
+                "sha256": {
+                    "bin/codex": "9a3a45d01531a20e89ac6ae10b0b0beb0492acd7216a368aa062d1a5fecaf9cd",
+                    "codex-resources/voice/runtime.json": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            path.join("codex-package.json"),
+            format!(r#"{{"layoutVersion":1,"version":"{version}","target":"aarch64-apple-darwin","variant":"codex","entrypoint":"bin/codex","resourcesDir":"codex-resources","pathDir":"codex-path"}}"#),
+        )
+        .unwrap();
+        path
+    };
+    let old_release = release("0.155.1");
+    let current_release = release("0.156.1");
+    let newer_release = release("0.157.0");
+    let unknown_release = release("0.154.0");
+    std::fs::write(unknown_release.join("bin/user-notes.txt"), "keep").unwrap();
+    let incomplete_release = release("0.153.0");
+    std::fs::remove_file(incomplete_release.join("bin/codex-code-mode-host")).unwrap();
+    let personal_release = release("0.152.0");
+    std::fs::write(
+        personal_release.join("codex-resources/personal.txt"),
+        "keep",
+    )
+    .unwrap();
+    let forged_voice_release = release("0.151.0");
+    std::fs::write(
+        forged_voice_release.join("codex-resources/voice/personal.txt"),
+        "keep",
+    )
+    .unwrap();
+    let voice_manifest = forged_voice_release.join("codex-resources/voice/manifest.json");
+    let mut voice_json: Value =
+        serde_json::from_slice(&std::fs::read(&voice_manifest).unwrap()).unwrap();
+    voice_json["sha256"]["codex-resources/voice/personal.txt"] = Value::String("0".repeat(64));
+    std::fs::write(&voice_manifest, voice_json.to_string()).unwrap();
+    let modified_voice_release = release("0.150.0");
+    std::fs::write(
+        modified_voice_release.join("codex-resources/voice/runtime.json"),
+        "PERSONAL CONTENT",
+    )
+    .unwrap();
+    std::fs::write(standalone.join("install.lock"), "").unwrap();
+    std::os::unix::fs::symlink(&current_release, standalone.join("current")).unwrap();
+
     let credentials = home.join(".codex/auth.json");
+    let thread_history = home.join(".codex/thread_history_1.sqlite");
+    let plugin = home.join(".codex/plugins/cache/keep.txt");
     let configuration = home.join(".claude/settings.json");
     std::fs::write(&credentials, "OAUTH TOKEN").unwrap();
+    std::fs::write(&thread_history, "thread index").unwrap();
+    std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    std::fs::write(&plugin, "plugin state").unwrap();
     std::fs::write(&configuration, "{\"theme\":\"dark\"}").unwrap();
     age(&credentials);
     age(&configuration);
+
+    std::fs::remove_file(standalone.join("current")).unwrap();
+    std::os::unix::fs::symlink(home.join("missing-current"), standalone.join("current")).unwrap();
+    let blocked_output = run(&sandbox, &["clean", "agents", "--json"]);
+    assert!(
+        !blocked_output.status.success(),
+        "partial preview must be nonzero"
+    );
+    let blocked = json(&blocked_output);
+    assert!(blocked["errors"].as_array().unwrap().iter().any(|error| {
+        error
+            .as_str()
+            .unwrap()
+            .contains("Codex release cleanup refused")
+    }));
+    let blocked_findings = blocked["findings"].as_array().unwrap();
+    assert!(blocked_findings.iter().any(|finding| {
+        finding["label"] == "Codex standalone releases unavailable"
+            && finding["action"]["type"] == "info"
+    }));
+    assert!(
+        blocked_findings
+            .iter()
+            .any(|finding| { finding["path"] == cache.display().to_string() })
+    );
+    assert!(
+        blocked_findings
+            .iter()
+            .any(|finding| { finding["path"] == old_session.display().to_string() })
+    );
+    assert!(
+        !blocked_findings
+            .iter()
+            .any(|finding| { finding["path"] == old_release.display().to_string() })
+    );
+    std::fs::remove_file(standalone.join("current")).unwrap();
+    std::os::unix::fs::symlink(&current_release, standalone.join("current")).unwrap();
 
     // The preview must disclose the interruption risk before anything is
     // applied, and in BOTH renderings: a warning present only in the JSON
     // envelope is invisible to the person actually running the command.
     let preview = run(&sandbox, &["clean", "agents", "--json"]);
     let previewed = json(&preview);
+    assert!(
+        previewed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| {
+                finding["path"] == old_release.display().to_string()
+                    && finding["action"]["type"] == "trash"
+            })
+    );
+    assert!(
+        !previewed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| { finding["path"] == personal_release.display().to_string() })
+    );
+    assert!(
+        !previewed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| { finding["path"] == forged_voice_release.display().to_string() })
+    );
+    assert!(
+        !previewed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| { finding["path"] == modified_voice_release.display().to_string() })
+    );
+    assert!(
+        !previewed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| {
+                [
+                    &current_release,
+                    &newer_release,
+                    &unknown_release,
+                    &incomplete_release,
+                ]
+                .iter()
+                .any(|path| finding["path"] == path.display().to_string())
+            })
+    );
     let cache_note = previewed["findings"]
         .as_array()
         .unwrap()
@@ -1650,14 +1810,39 @@ fn agent_cleanup_removes_only_stale_history_and_regenerable_caches() {
     let value = json(&output);
     assert!(output.status.success(), "{value}");
     assert_eq!(value["operation"], "agents");
-    assert_eq!(value["summary"]["items_touched"], 2, "{value}");
+    assert_eq!(value["summary"]["items_touched"], 3, "{value}");
     assert!(!cache.exists(), "a regenerable cache must be removed");
+    assert!(
+        !old_release.exists(),
+        "the obsolete release must be removed"
+    );
+    assert!(current_release.exists(), "the current release must survive");
+    assert!(newer_release.exists(), "newer release must survive");
+    assert!(unknown_release.exists(), "unknown contents must survive");
+    assert!(personal_release.exists(), "extra resource must survive");
+    assert!(
+        forged_voice_release.exists(),
+        "forged voice resource must survive"
+    );
+    assert!(
+        modified_voice_release.exists(),
+        "modified voice resource must survive"
+    );
+    assert!(
+        incomplete_release.exists(),
+        "incomplete release must survive"
+    );
     assert!(!old_session.exists(), "a stale session must be removed");
     assert!(live_session.exists(), "an active session must survive");
     assert_eq!(
         std::fs::read_to_string(&credentials).unwrap(),
         "OAUTH TOKEN"
     );
+    assert_eq!(
+        std::fs::read_to_string(&thread_history).unwrap(),
+        "thread index"
+    );
+    assert_eq!(std::fs::read_to_string(&plugin).unwrap(), "plugin state");
     assert_eq!(
         std::fs::read_to_string(&configuration).unwrap(),
         "{\"theme\":\"dark\"}"

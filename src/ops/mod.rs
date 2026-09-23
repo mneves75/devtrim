@@ -206,6 +206,12 @@ pub fn scan_all(ctx: &Ctx) -> ScanResult {
             match scan_thread.join() {
                 Ok(Ok(mut operation_findings)) => {
                     filter_protected_findings(&mut operation_findings, ctx);
+                    errors.extend(
+                        operation_findings
+                            .iter()
+                            .filter_map(Finding::scan_error)
+                            .map(|error| format!("{name}: {error}")),
+                    );
                     findings.append(&mut operation_findings);
                 }
                 Ok(Err(error)) => errors.push(format!("{name}: {error:#}")),

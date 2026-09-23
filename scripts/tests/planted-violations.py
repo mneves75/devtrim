@@ -114,12 +114,22 @@ CASES = (
     Case(
         name="agents/apply-namespace",
         relative_path="src/ops/agents.rs",
-        before="                authorize(target, ctx)?;\n",
-        after="",
+        before="                authorize(target, ctx, release_context)?;\n",
+        after="                let _ = release_context;\n",
         tests=(
             "ops::agents::tests::the_retired_claude_trees_can_never_become_roots_again",
         ),
         marker="PV agents/apply-namespace",
+    ),
+    Case(
+        name="agents/codex-current-executable",
+        relative_path="src/ops/agents.rs",
+        before='        || !codex_executable(&path.join("bin/codex-code-mode-host"))?\n',
+        after="",
+        tests=(
+            "ops::agents::tests::codex_releases_fail_closed_without_a_valid_current_link_or_install_lock",
+        ),
+        marker="PV agents/codex-current-executable",
     ),
     # Preview reads each owning repository's activity with git, and git will
     # run programs a hostile `.git/config` names. Each hardening flag closes one

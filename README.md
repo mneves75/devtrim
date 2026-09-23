@@ -92,7 +92,7 @@ devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData chil
 devtrim clean docker --apply -y           # local daemon images + build cache; never volumes
 devtrim clean toolchains --apply -y       # only unreferenced swift.org toolchains
 devtrim clean installers --apply -y       # stale installer archives in Downloads/Desktop
-devtrim clean agents --apply -y           # agent caches + session history past the active window
+devtrim clean agents --apply -y           # agent caches + older Codex releases + stale session history
 devtrim clean leftovers                   # report-only hints; never deletes worktrees
 devtrim icloud                            # large iCloud Drive files and local allocation
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
@@ -159,6 +159,23 @@ symlink, and the age gate re-read from disk — so a session resumed after previ
 falls out of the plan. Agent *scratch worktrees* are a different question and
 stay where they were: `clean leftovers` lists them for review and never deletes
 them, because a worktree's staleness cannot be proven from its name.
+
+`clean agents` also offers older Codex standalone releases when the installer lock
+is available, `current` resolves to a verified package, and each candidate is a
+direct child with Codex's versioned package manifest, required executable files,
+and only resource names checked against the audited 0.156.1 bundle. Voice files
+and the main executable must match the manifest's SHA-256 digests. This follows
+the [standalone installer's package checks](https://github.com/openai/codex/blob/0a2eb4696c26ac33204bcd255721ab30220a4774/scripts/install/install.sh). A
+release with the same or a newer major/minor/patch version is kept. Apply checks
+the installer lock, current target, and package shape again. Close Codex before
+applying: the installer lock protects updates, but removal may interrupt a
+running older binary. Trash is the default; moving releases there reduces
+`~/.codex` but does not reclaim physical disk space until Trash is emptied.
+If the lock or package cannot be verified, the preview shows a read-only refusal
+and still lists eligible caches and stale history. Package checks do not prove
+that a modified voice manifest still describes only vendor files, or that a
+nonempty executable reports the manifest's version. Inspect a release before
+permanently shredding it.
 
 Two of those rules exist because the obvious design was wrong. A shell snapshot
 is *not* a cache: Claude Code writes one per session and sources that exact file
