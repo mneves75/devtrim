@@ -1019,8 +1019,10 @@ fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
 /// it escapes ambiguously, refuses. Processes of other users are invisible to
 /// it, which is the same limit the build-process probe has.
 pub(crate) fn executable_mappings() -> Result<Vec<PathBuf>> {
+    // lsof after 4.93.2 omits `f` unless requested; the parser needs it to
+    // reject a mapped file whose name is missing.
     let lsof = Command::new("lsof")
-        .args(["-w", "-d", "txt", "-F", "n"])
+        .args(["-w", "-d", "txt", "-F", "fn"])
         .output()
         .context("cannot run executable-mapping probe")?;
     parse_lsof_mappings(&lsof.stdout, lsof.status.code())

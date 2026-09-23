@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.9.7.
+This source tree and its packaged documentation describe devtrim v0.9.8.
 
 ## Install
 
@@ -168,15 +168,18 @@ manifest is required; packages without one stay untouched. Voice files
 and the main executable must match the manifest's SHA-256 digests. This follows
 the [standalone installer's package checks](https://github.com/openai/codex/blob/0a2eb4696c26ac33204bcd255721ab30220a4774/scripts/install/install.sh). A
 release with the same or a newer major/minor/patch version is kept. Apply checks
-the installer lock, current target, and package shape again. A release that any
-running process still executes is skipped, and apply refuses it, so an agent
-started before an upgrade keeps working. Trash is the default; moving releases there reduces
+the installer lock, current target, and package shape again. A release reported
+in use by the system-wide `lsof` snapshot is skipped; apply probes again for
+each release. This reduces interruption risk for an agent started before an
+upgrade, but other users' processes may be invisible and a process can start
+after the probe. Trash is the default; moving releases there reduces
 `~/.codex` but does not reclaim physical disk space until Trash is emptied.
-If the lock or package cannot be verified, the preview shows a read-only refusal
-and still lists eligible caches and stale history. Package checks do not prove
-that a modified voice manifest still describes only vendor files, or that a
-nonempty executable reports the manifest's version. Inspect a release before
-permanently shredding it.
+If the lock or current package cannot be verified, the preview shows a read-only
+refusal, exits nonzero, and still lists eligible caches and stale history. An
+invalid older candidate is omitted without an error and left in place. Package
+checks cannot prove that a modified voice manifest still describes only vendor
+files, or that a nonempty executable reports the manifest's version. Inspect a
+release before permanently shredding it.
 
 Two of those rules exist because the obvious design was wrong. A shell snapshot
 is *not* a cache: Claude Code writes one per session and sources that exact file
