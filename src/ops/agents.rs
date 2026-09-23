@@ -118,14 +118,33 @@ const _: () = assert!(
 /// them is a re-fetch. A per-entry column would be a knob with one value.
 const REGENERABLE_DANGER: u8 = 2;
 
-// OpenAI's standalone installer at commit 0a2eb4696c26ac33204bcd255721ab30220a4774
-// (`scripts/install/install.sh`, lines 30-60, 947-1035, 1200-1285) owns
-// `releases/<version>-<target>`, the `current` symlink, and `install.lock`.
-// A 2026-09-23 local audit found six old release directories beside the current
-// one. This authority covers only verified older direct children, never the
-// whole packages tree or legacy layouts. The vendor does not promise removal
-// is safe mid-session.
+/// The standalone installer's root: `install.lock`, `current` and `releases`.
 const CODEX_STANDALONE: &str = ".codex/packages/standalone";
+
+/// Older Codex standalone packages, a closed authority of its own beside the
+/// regenerable and history tiers: only verified direct children strictly older
+/// than `current`, never the whole packages tree or a legacy layout.
+const CODEX_RELEASES: DeletionEntry = DeletionEntry {
+    label: "Codex standalone release",
+    relative: ".codex/packages/standalone/releases",
+    evidence: "Owner source: OpenAI's standalone installer at commit \
+               0a2eb4696c26ac33204bcd255721ab30220a4774 \
+               (`scripts/install/install.sh`) writes each release to \
+               `releases/<version>-<target>`, points `current` at one, and \
+               serializes itself on `install.lock` with macOS `lockf(1)`, \
+               which is BSD `flock(2)`. It removes only its own `.staging.*` \
+               directories, never an older release. Observed 2026-09-23: six \
+               old releases (1.68 GiB) beside `current`; moving them to Trash \
+               left the current release, sessions, auth and configuration \
+               working. The vendor does not promise removal is safe while an \
+               older binary still runs, so a release any process is executing \
+               is refused.",
+};
+
+const _: () = assert!(
+    crate::safety::evidence_is_meaningful(CODEX_RELEASES.evidence),
+    "the Codex release authority needs evidence for why it may be deleted"
+);
 
 // Observed in the official macOS standalone bundle at 0.156.1. New vendor
 // resource names need an explicit review before they can authorize deletion.
@@ -172,13 +191,15 @@ struct CodexReleases {
     root: PathBuf,
     current: PathBuf,
     current_version: [u64; 3],
+    /// Every file a process was executing when the lock was taken.
+    in_use: Vec<PathBuf>,
     _install_lock: File,
 }
 
 impl CodexReleases {
     fn open(home: &Path) -> Result<Option<Self>> {
         let standalone = home.join(CODEX_STANDALONE);
-        let root = standalone.join("releases");
+        let root = home.join(CODEX_RELEASES.relative);
         match fs::symlink_metadata(&root) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
@@ -192,7 +213,11 @@ impl CodexReleases {
             }
             Ok(_) => {}
         }
-        if !fs::symlink_metadata(&standalone)?.file_type().is_dir() {
+        if !fs::symlink_metadata(&standalone)
+            .with_context(|| format!("cannot inspect {}", standalone.display()))?
+            .file_type()
+            .is_dir()
+        {
             anyhow::bail!(
                 "Codex standalone root is not a real directory: {}",
                 standalone.display()
@@ -214,8 +239,14 @@ impl CodexReleases {
                 lock_path.display()
             );
         }
-        let install_lock = File::open(&lock_path)?;
-        let opened = install_lock.metadata()?;
+        let install_lock = File::open(&lock_path)
+            .with_context(|| format!("cannot open Codex installer lock {}", lock_path.display()))?;
+        let opened = install_lock.metadata().with_context(|| {
+            format!(
+                "cannot inspect Codex installer lock {}",
+                lock_path.display()
+            )
+        })?;
         if (lock_metadata.dev(), lock_metadata.ino()) != (opened.dev(), opened.ino()) {
             anyhow::bail!(
                 "Codex installer lock changed while opening: {}",
@@ -228,16 +259,37 @@ impl CodexReleases {
                 lock_path.display()
             )
         })?;
+        // A lock on a file already replaced at that name excludes no installer.
+        let locked = fs::symlink_metadata(&lock_path).with_context(|| {
+            format!(
+                "cannot recheck Codex installer lock {}",
+                lock_path.display()
+            )
+        })?;
+        if (locked.dev(), locked.ino()) != (opened.dev(), opened.ino()) {
+            anyhow::bail!(
+                "Codex installer lock was replaced while locking: {}",
+                lock_path.display()
+            );
+        }
         // The installer can fall back to a directory lock when neither lockf
         // nor flock exists. Even a stale directory is ambiguous to us.
-        match fs::symlink_metadata(standalone.join("install.lock.d")) {
-            Ok(_) => anyhow::bail!("Codex installer directory lock exists"),
+        let directory_lock = standalone.join("install.lock.d");
+        match fs::symlink_metadata(&directory_lock) {
+            Ok(_) => anyhow::bail!(
+                "Codex installer directory lock exists: {}",
+                directory_lock.display()
+            ),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("cannot inspect {}", directory_lock.display()));
+            }
         }
 
         let current_link = standalone.join("current");
-        if !fs::symlink_metadata(&current_link)?
+        if !fs::symlink_metadata(&current_link)
+            .with_context(|| format!("cannot inspect {}", current_link.display()))?
             .file_type()
             .is_symlink()
         {
@@ -252,7 +304,10 @@ impl CodexReleases {
                 current_link.display()
             )
         })?;
-        if current.parent() != Some(root.canonicalize()?.as_path()) {
+        let canonical_root = root
+            .canonicalize()
+            .with_context(|| format!("cannot resolve {}", root.display()))?;
+        if current.parent() != Some(canonical_root.as_path()) {
             anyhow::bail!(
                 "Codex current release is outside verified standalone packages: {}",
                 current_link.display()
@@ -264,18 +319,42 @@ impl CodexReleases {
                 current.display()
             );
         };
+        // Read while the lock is held: the installer cannot move `current`
+        // underneath this answer, and a failed probe refuses release cleanup.
+        let in_use = crate::safety::executable_mappings()
+            .context("cannot tell which Codex releases running processes execute")?;
         Ok(Some(Self {
             root,
             current,
             current_version,
+            in_use,
             _install_lock: install_lock,
         }))
     }
 
+    /// A verified package strictly older than `current`. Whether a process
+    /// still runs it is [`Self::running`]'s separate question.
     fn eligible(&self, path: &Path) -> Result<bool> {
-        Ok(path.parent() == Some(self.root.as_path())
-            && codex_package_version(path)?.is_some_and(|version| version < self.current_version)
-            && path.canonicalize()? != self.current)
+        if path.parent() != Some(self.root.as_path())
+            || !codex_package_version(path)?.is_some_and(|version| version < self.current_version)
+        {
+            return Ok(false);
+        }
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("cannot resolve {}", path.display()))?;
+        Ok(canonical != self.current)
+    }
+
+    /// Whether any process was executing a file inside this release.
+    fn running(&self, path: &Path) -> Result<bool> {
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("cannot resolve {}", path.display()))?;
+        Ok(self
+            .in_use
+            .iter()
+            .any(|mapped| mapped.starts_with(&canonical)))
     }
 }
 
@@ -351,15 +430,34 @@ fn codex_entry_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
     }
 }
 
-fn codex_json_file(path: &Path, max_bytes: u64) -> Result<Option<serde_json::Value>> {
-    let fd = match open(path, OFlags::RDONLY | OFlags::NOFOLLOW, Mode::empty()) {
+/// Open a regular file, or `None` for a symlink, a missing path, or any other
+/// file type. `NONBLOCK` keeps a FIFO planted at a vendor file name from
+/// stalling the whole preview on an open that waits for a writer; it has no
+/// effect on reading a regular file.
+fn codex_regular_file(path: &Path) -> Result<Option<File>> {
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let fd = match open(path, flags, Mode::empty()) {
         Ok(fd) => fd,
         Err(rustix::io::Errno::NOENT | rustix::io::Errno::LOOP) => return Ok(None),
         Err(error) => return Err(error).with_context(|| format!("cannot open {}", path.display())),
     };
     let file = File::from(fd);
-    let metadata = file.metadata()?;
-    if !metadata.file_type().is_file() || metadata.len() > max_bytes {
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("cannot inspect {}", path.display()))?;
+    Ok(metadata.file_type().is_file().then_some(file))
+}
+
+fn codex_json_file(path: &Path, max_bytes: u64) -> Result<Option<serde_json::Value>> {
+    let Some(file) = codex_regular_file(path)? else {
+        return Ok(None);
+    };
+    if file
+        .metadata()
+        .with_context(|| format!("cannot inspect {}", path.display()))?
+        .len()
+        > max_bytes
+    {
         return Ok(None);
     }
     let mut bytes = Vec::new();
@@ -464,19 +562,15 @@ fn codex_resources_known(release: &Path, version: &str, target: &str) -> Result<
 }
 
 fn codex_digest_matches(path: &Path, expected: &str) -> Result<bool> {
-    let fd = match open(path, OFlags::RDONLY | OFlags::NOFOLLOW, Mode::empty()) {
-        Ok(fd) => fd,
-        Err(rustix::io::Errno::NOENT | rustix::io::Errno::LOOP) => return Ok(false),
-        Err(error) => return Err(error).with_context(|| format!("cannot open {}", path.display())),
-    };
-    let mut file = File::from(fd);
-    if !file.metadata()?.file_type().is_file() {
+    let Some(mut file) = codex_regular_file(path)? else {
         return Ok(false);
-    }
+    };
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("cannot read {}", path.display()))?;
         if read == 0 {
             break;
         }
@@ -490,18 +584,24 @@ fn codex_digest_matches(path: &Path, expected: &str) -> Result<bool> {
         }))
 }
 
-fn codex_version_core(version: &str) -> Option<[u64; 3]> {
+/// The `major.minor.patch` core of a Codex release version, or `None` for any
+/// spelling that is not exactly one. A number is ASCII digits with no leading
+/// zero, so `0.0156.0` cannot pass for `0.156.0`; a prerelease is only the
+/// `alpha`/`beta` forms the installer publishes, and its core is compared
+/// without it, which keeps a same-core prerelease out of every older-than test.
+pub(crate) fn codex_version_core(version: &str) -> Option<[u64; 3]> {
+    fn canonical_number(part: &str) -> bool {
+        !part.is_empty()
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+            && (part == "0" || !part.starts_with('0'))
+    }
     let (core, prerelease) = match version.split_once('-') {
         Some((_, "")) => return None,
         Some(parts) => parts,
         None => (version, ""),
     };
     let parts: Vec<_> = core.split('.').collect();
-    if parts.len() != 3
-        || !parts
-            .iter()
-            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-    {
+    if parts.len() != 3 || !parts.iter().all(|part| canonical_number(part)) {
         return None;
     }
     let core = [
@@ -515,18 +615,8 @@ fn codex_version_core(version: &str) -> Option<[u64; 3]> {
     let fields: Vec<_> = prerelease.split('.').collect();
     let valid_prerelease = match fields.as_slice() {
         ["alpha"] | ["beta"] => true,
-        ["alpha", number] | ["beta", number]
-            if !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()) =>
-        {
-            true
-        }
-        ["alpha", first, second]
-            if [first, second].iter().all(|number| {
-                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
-            }) =>
-        {
-            true
-        }
+        ["alpha", number] | ["beta", number] => canonical_number(number),
+        ["alpha", first, second] => canonical_number(first) && canonical_number(second),
         _ => false,
     };
     valid_prerelease.then_some(core)
@@ -641,9 +731,24 @@ impl Op for Agents {
                 return Ok(Vec::new());
             };
             let mut release_findings = Vec::new();
-            for entry in fs::read_dir(&releases.root)? {
-                let path = entry?.path();
+            let entries = fs::read_dir(&releases.root)
+                .with_context(|| format!("cannot read {}", releases.root.display()))?;
+            for entry in entries {
+                let path = entry
+                    .with_context(|| format!("cannot read {}", releases.root.display()))?
+                    .path();
                 if !releases.eligible(&path)? {
+                    continue;
+                }
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if releases.running(&path)? {
+                    ctx.diagnostic(
+                        "info",
+                        format!(
+                            "{} {name} is still executing in a running process; close it to reclaim the release",
+                            CODEX_RELEASES.label
+                        ),
+                    );
                     continue;
                 }
                 let size = dir_size(&path)?;
@@ -651,10 +756,7 @@ impl Op for Agents {
                     continue;
                 }
                 release_findings.push(Finding::new(
-                    format!(
-                        "Codex standalone release {}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    ),
+                    format!("{} {name}", CODEX_RELEASES.label),
                     Some(path),
                     size,
                     "reinstallable previous release; close Codex first; Trash does not free disk space until purged",
@@ -767,17 +869,25 @@ fn authorize(target: &Path, ctx: &Ctx, releases: Option<&CodexReleases>) -> Resu
         return Ok(());
     }
     if is_codex_release_child(target, &ctx.home) {
-        if releases
-            .map(|releases| releases.eligible(target))
-            .transpose()?
-            .unwrap_or(false)
-        {
-            return Ok(());
+        let Some(releases) = releases else {
+            anyhow::bail!(
+                "Codex release authority was not verified for {}",
+                target.display()
+            );
+        };
+        if !releases.eligible(target)? {
+            anyhow::bail!(
+                "Codex release is no longer a verified obsolete package: {}",
+                target.display()
+            );
         }
-        anyhow::bail!(
-            "Codex release is no longer a verified obsolete package: {}",
-            target.display()
-        );
+        if releases.running(target)? {
+            anyhow::bail!(
+                "Codex release is still executing in a running process: {}",
+                target.display()
+            );
+        }
+        return Ok(());
     }
     if !is_history_child(target, &ctx.home) {
         anyhow::bail!(
@@ -795,7 +905,7 @@ fn authorize(target: &Path, ctx: &Ctx, releases: Option<&CodexReleases>) -> Resu
 }
 
 fn is_codex_release_child(path: &Path, home: &Path) -> bool {
-    path.parent() == Some(home.join(CODEX_STANDALONE).join("releases").as_path())
+    path.parent() == Some(home.join(CODEX_RELEASES.relative).as_path())
 }
 
 fn is_regenerable_target(path: &Path, home: &Path) -> bool {
@@ -1137,7 +1247,7 @@ mod tests {
         std::fs::write(&lock_path, "").unwrap();
         symlink(&current, standalone.join("current")).unwrap();
         let lock = File::open(&lock_path).unwrap();
-        flock(&lock, FlockOperation::NonBlockingLockExclusive).unwrap();
+        hold_installer_lock(&lock);
         let ctx = test_ctx(home.to_path_buf());
         let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
         assert!(findings.iter().any(|finding| {
@@ -1185,11 +1295,16 @@ mod tests {
             finding.action = Action::Shred;
         }
         let lock = File::open(&lock_path).unwrap();
-        flock(&lock, FlockOperation::NonBlockingLockExclusive).unwrap();
+        hold_installer_lock(&lock);
 
         let outcome = Agents.apply(&findings, &ctx).unwrap();
         assert_eq!(outcome.summary.items_touched, 1);
         assert_eq!(outcome.errors.len(), 1);
+        assert!(
+            outcome.errors[0].contains("installer is active or unverifiable"),
+            "{:?}",
+            outcome.errors
+        );
         assert!(!cache.exists(), "unrelated cache still applies");
         assert!(old.exists(), "busy release must survive");
         drop(lock);
@@ -1280,6 +1395,232 @@ mod tests {
         crate::ops::remove_test_path(home);
     }
 
+    /// Take the installer's exclusive lock the way the installer does, waiting
+    /// out a moment of contention. A process another test spawns from this
+    /// binary can briefly share a reference to a lock a scan just released, and
+    /// that is the fixture's problem, not the behaviour under test.
+    fn hold_installer_lock(lock: &File) {
+        for _ in 0..200 {
+            match flock(lock, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return,
+                Err(rustix::io::Errno::WOULDBLOCK) => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => panic!("cannot take the fixture installer lock: {error}"),
+            }
+        }
+        panic!("the fixture installer lock stayed contended for five seconds");
+    }
+
+    /// A standalone home with `0.155.1` obsolete beside a `0.156.1` current.
+    fn codex_home(prefix: &str) -> (PathBuf, PathBuf) {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-codex-{prefix}-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let old = write_codex_release(&home, "0.155.1");
+        let current = write_codex_release(&home, "0.156.1");
+        let standalone = home.join(CODEX_STANDALONE);
+        std::fs::write(standalone.join("install.lock"), "").unwrap();
+        symlink(&current, standalone.join("current")).unwrap();
+        (home, old)
+    }
+
+    /// Idles when re-invoked from inside a fixture release; see `execute_from`.
+    #[test]
+    #[ignore = "re-invoked as a child process by execute_from"]
+    fn codex_release_resident_child() {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    /// Runs a real program from inside `release`, as an agent started before an
+    /// upgrade keeps doing. `codex-path/rg` is checked for shape, not digest.
+    /// The program is a copy of this test binary: macOS kills a copied Apple
+    /// platform binary such as `/bin/sleep` on launch.
+    fn execute_from(release: &Path) -> std::process::Child {
+        let program = release.join("codex-path/rg");
+        std::fs::copy(std::env::current_exe().unwrap(), &program).unwrap();
+        let child = std::process::Command::new(&program)
+            .arg("--exact")
+            .arg("ops::agents::tests::codex_release_resident_child")
+            .arg("--ignored")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        // lsof sees the mapping only once exec has replaced the forked image.
+        let canonical = release.canonicalize().unwrap();
+        for _ in 0..100 {
+            if crate::safety::executable_mappings()
+                .unwrap()
+                .iter()
+                .any(|mapped| mapped.starts_with(&canonical))
+            {
+                return child;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut child = child;
+        child.kill().unwrap();
+        child.wait().unwrap();
+        panic!("control: lsof never reported the program running from the release");
+    }
+
+    #[test]
+    fn a_release_a_process_still_executes_is_neither_offered_nor_removed() {
+        let (home, old) = codex_home("running");
+        let mut ctx = test_ctx(home.clone());
+        ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
+        let offered = |ctx: &Ctx| {
+            Agents
+                .scan(ctx, &ScanObservations::default())
+                .unwrap()
+                .into_iter()
+                .filter(|finding| finding.target() == Some(old.as_path()))
+                .collect::<Vec<_>>()
+        };
+        // Previewed while idle, the release is offered: the positive control.
+        let mut plan = offered(&ctx);
+        assert_eq!(
+            plan.len(),
+            1,
+            "control: an idle obsolete release is offered"
+        );
+        plan[0].action = Action::Shred;
+
+        let mut running = execute_from(&old);
+        let hidden = offered(&ctx);
+        let outcome = Agents.apply(&plan, &ctx);
+        running.kill().unwrap();
+        running.wait().unwrap();
+
+        assert!(
+            hidden.is_empty(),
+            "PV agents/codex-running-release: a running release was offered"
+        );
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|message| message.contains("still executing in a running process")),
+        );
+        let outcome = outcome.unwrap();
+        assert_eq!(
+            outcome.summary.items_touched, 0,
+            "PV agents/codex-running-release: a running release was removed"
+        );
+        assert_eq!(
+            outcome.errors.len(),
+            1,
+            "PV agents/codex-running-release: {:?}",
+            outcome.errors
+        );
+        assert!(
+            outcome.errors[0].contains("still executing in a running process"),
+            "PV agents/codex-running-release: {:?}",
+            outcome.errors
+        );
+        assert!(
+            old.exists(),
+            "PV agents/codex-running-release: a running release must survive apply"
+        );
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn a_fifo_at_a_vendor_file_name_refuses_instead_of_hanging() {
+        let (home, old) = codex_home("fifo");
+        let runtime = old.join("codex-resources/voice/runtime.json");
+        std::fs::remove_file(&runtime).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(&runtime)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let ctx = test_ctx(home.clone());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let findings = Agents.scan(&ctx, &ScanObservations::default());
+            let _ = sender.send(findings.map(|findings| findings.len()));
+        });
+
+        let finished = receiver.recv_timeout(Duration::from_secs(20));
+        assert!(
+            finished.is_ok(),
+            "scan blocked on a FIFO named like a vendor file"
+        );
+        assert!(finished.unwrap().is_ok());
+        let findings = Agents
+            .scan(&test_ctx(home.clone()), &ScanObservations::default())
+            .unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.target() == Some(old.as_path())),
+            "a release with a FIFO in place of a vendor file is not vendor-shaped"
+        );
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn a_tampered_main_executable_is_not_a_vendor_package() {
+        let (home, old) = codex_home("tampered");
+        let tampered = write_codex_release(&home, "0.154.0");
+        std::fs::write(tampered.join("bin/codex"), "not the vendor binary").unwrap();
+
+        let findings = Agents
+            .scan(&test_ctx(home.clone()), &ScanObservations::default())
+            .unwrap();
+        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
+        assert!(
+            targets.contains(&old.as_path()),
+            "control: untampered release"
+        );
+        assert!(
+            !targets.contains(&tampered.as_path()),
+            "a main executable that fails its manifest digest was offered"
+        );
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn codex_versions_must_be_canonical() {
+        for accepted in [
+            "0.156.1",
+            "0.0.0",
+            "10.20.30",
+            "1.2.3-beta",
+            "1.2.3-alpha.10.2",
+        ] {
+            assert!(codex_version_core(accepted).is_some(), "{accepted}");
+        }
+        for rejected in [
+            "0.0156.0",
+            "01.2.3",
+            "1.02.3",
+            "1.2.03",
+            "1.2.3-beta.01",
+            "1.2.3-alpha.1.02",
+            "1.2.3-",
+            "1.2",
+            "1.2.3.4",
+            "1.2.3-rc.1",
+            "１.2.3",
+        ] {
+            assert!(codex_version_core(rejected).is_none(), "{rejected}");
+        }
+        assert_eq!(codex_version_core("0.156.1-beta.2"), Some([0, 156, 1]));
+    }
+
+    #[test]
+    fn the_release_authority_names_the_installer_root() {
+        assert_eq!(
+            CODEX_RELEASES.relative,
+            format!("{CODEX_STANDALONE}/releases")
+        );
+    }
+
     /// The const assertion above rejects empty and ASCII-whitespace evidence
     /// while compiling, so those cases never reach a test — the crate does not
     /// build at all. What is left for a test is the gap that assertion cannot
@@ -1306,6 +1647,11 @@ mod tests {
                 root.relative
             );
         }
+        assert!(
+            !CODEX_RELEASES.evidence.trim().is_empty(),
+            "PV evidence/agents-codex-releases: missing deletion evidence: {}",
+            CODEX_RELEASES.relative
+        );
     }
 
     #[test]

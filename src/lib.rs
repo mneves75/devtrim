@@ -54,6 +54,17 @@ pub mod fuzz_api {
         crate::safety::parse_lsof_cwds(output, exit_code).map(|cwds| cwds.paths)
     }
 
+    pub fn parse_lsof_mappings(
+        output: &[u8],
+        exit_code: Option<i32>,
+    ) -> anyhow::Result<Vec<PathBuf>> {
+        crate::safety::parse_lsof_mappings(output, exit_code)
+    }
+
+    pub fn codex_version_core(version: &str) -> Option<[u64; 3]> {
+        crate::ops::agents::codex_version_core(version)
+    }
+
     pub fn parse_config_str(input: &str) -> anyhow::Result<()> {
         crate::safety::parse_config_str(input).map(|_| ())
     }

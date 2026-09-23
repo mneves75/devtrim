@@ -62,12 +62,18 @@ Non-negotiable boundaries:
   files, and absence of extra package and resource entries are checked against
   the audited 0.156.1 resource names. A voice manifest is mandatory; its
   SHA-256 digests are checked for
-  voice files and the main executable. An installer lock is held during scan and
+  voice files and the main executable. `codex-resources/zsh/bin/zsh` is not in
+  that manifest, so it is checked for shape only. Version numbers must be
+  canonical, without leading zeros. Vendor files are opened without following
+  a symlink or blocking on a FIFO. An installer lock is held during scan and
   apply, and apply rechecks eligibility. Missing or
   ambiguous current/lock state refuses release cleanup. Same-version prereleases,
-  newer releases, staging, and other Codex state are not candidates. Running
-  older binaries can still be disrupted, so the preview tells users to close
-  Codex before applying. The local manifest is not authenticated: coordinated
+  newer releases, staging, and other Codex state are not candidates. A release
+  any process is executing — its program or a library it loaded, as one
+  system-wide `lsof -d txt` reports while the lock is held — is not offered,
+  and apply refuses it; a failed probe refuses release cleanup. That probe
+  cannot see other users' processes, and it is a point-in-time check: a
+  process started from an older release after it runs is not seen. The local manifest is not authenticated: coordinated
   changes to a vendor-named file and its digest cannot be distinguished from a
   vendor package. Trash remains the recoverable default.
 - `~/.claude/projects` and `~/.claude/jobs` are not cleanup roots at all, so
@@ -199,6 +205,9 @@ Non-negotiable boundaries:
   checksum-pinned full-history Gitleaks and TruffleHog scans run in PR/main CI
   and again during release validation. Both installation paths first prove
   Gitleaks detects a non-allowlisted synthetic PAT assembled at runtime.
+- `sha2` (RustCrypto) verifies the SHA-256 digests the Codex voice manifest
+  records; no existing dependency provides SHA-256, and running `shasum` once
+  per file would add dozens of processes per release.
 - Ratatui 0.30.2 and Crossterm 0.29 require Rust 1.88. Default Ratatui features stay disabled, including the optional layout cache; the graph resolves patched `lru 0.18.2` instead of the `0.12.5` affected by RUSTSEC-2026-0002 and RUSTSEC-2026-0253.
 - Hosted release builds produce SHA-256 checksums, the full Apache-2.0 license, and signed artifact provenance.
 - Hosted repository and dependency code runs only in read-only validation,

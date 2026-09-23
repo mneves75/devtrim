@@ -168,9 +168,9 @@ manifest is required; packages without one stay untouched. Voice files
 and the main executable must match the manifest's SHA-256 digests. This follows
 the [standalone installer's package checks](https://github.com/openai/codex/blob/0a2eb4696c26ac33204bcd255721ab30220a4774/scripts/install/install.sh). A
 release with the same or a newer major/minor/patch version is kept. Apply checks
-the installer lock, current target, and package shape again. Close Codex before
-applying: the installer lock protects updates, but removal may interrupt a
-running older binary. Trash is the default; moving releases there reduces
+the installer lock, current target, and package shape again. A release that any
+running process still executes is skipped, and apply refuses it, so an agent
+started before an upgrade keeps working. Trash is the default; moving releases there reduces
 `~/.codex` but does not reclaim physical disk space until Trash is emptied.
 If the lock or package cannot be verified, the preview shows a read-only refusal
 and still lists eligible caches and stale history. Package checks do not prove

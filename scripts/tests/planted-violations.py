@@ -199,6 +199,24 @@ CASES = (
         marker="PV liveness/lsof-successor",
     ),
     Case(
+        name="evidence/agents-codex-releases",
+        relative_path="src/ops/agents.rs",
+        before='const CODEX_RELEASES: DeletionEntry = DeletionEntry {\n    label: "Codex standalone release",\n    relative: ".codex/packages/standalone/releases",\n    evidence: "Owner source: OpenAI\'s standalone installer at commit \\\n               0a2eb4696c26ac33204bcd255721ab30220a4774 \\\n               (`scripts/install/install.sh`) writes each release to \\\n               `releases/<version>-<target>`, points `current` at one, and \\\n               serializes itself on `install.lock` with macOS `lockf(1)`, \\\n               which is BSD `flock(2)`. It removes only its own `.staging.*` \\\n               directories, never an older release. Observed 2026-09-23: six \\\n               old releases (1.68 GiB) beside `current`; moving them to Trash \\\n               left the current release, sessions, auth and configuration \\\n               working. The vendor does not promise removal is safe while an \\\n               older binary still runs, so a release any process is executing \\\n               is refused.",\n};\n',
+        after='const CODEX_RELEASES: DeletionEntry = DeletionEntry {\n    label: "Codex standalone release",\n    relative: ".codex/packages/standalone/releases",\n    evidence: "\\u{a0}",\n};\n',
+        tests=("ops::agents::tests::every_agent_entry_carries_evidence",),
+        marker="PV evidence/agents-codex-releases",
+    ),
+    Case(
+        name="agents/codex-running-release",
+        relative_path="src/ops/agents.rs",
+        before="        if releases.running(target)? {\n",
+        after="        if false {\n",
+        tests=(
+            "ops::agents::tests::a_release_a_process_still_executes_is_neither_offered_nor_removed",
+        ),
+        marker="PV agents/codex-running-release",
+    ),
+    Case(
         name="xcode/non-directory-target",
         relative_path="src/ops/xcode.rs",
         before="if !metadata.file_type().is_dir() {",

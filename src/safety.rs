@@ -1009,6 +1009,49 @@ fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
     parse_lsof_cwds(&lsof.stdout, lsof.status.code())
 }
 
+/// Every file a process has mapped for execution — its program and each library
+/// it loaded — across every process `lsof` can read.
+///
+/// A long-lived agent keeps running the release it started from after an
+/// upgrade moves `current`, and spawns helpers from that same directory by path,
+/// so a release a process is still executing is not obsolete. `lsof -d txt` over
+/// the whole system exits 0 when it lists anything; any other status, or a name
+/// it escapes ambiguously, refuses. Processes of other users are invisible to
+/// it, which is the same limit the build-process probe has.
+pub(crate) fn executable_mappings() -> Result<Vec<PathBuf>> {
+    let lsof = Command::new("lsof")
+        .args(["-w", "-d", "txt", "-F", "n"])
+        .output()
+        .context("cannot run executable-mapping probe")?;
+    parse_lsof_mappings(&lsof.stdout, lsof.status.code())
+}
+
+pub(crate) fn parse_lsof_mappings(output: &[u8], exit_code: Option<i32>) -> Result<Vec<PathBuf>> {
+    match exit_code {
+        Some(0) => {}
+        Some(code) => bail!("lsof executable-mapping probe exited with status {code}"),
+        None => bail!("lsof executable-mapping probe terminated without an exit status"),
+    }
+    let mut paths = Vec::new();
+    for line in output.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(name) = line.strip_prefix(b"n") else {
+            continue;
+        };
+        if name.is_empty() {
+            bail!("lsof returned an empty mapped path");
+        }
+        paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)));
+    }
+    // devtrim itself maps its own binary, so an empty answer is a failed probe.
+    if paths.is_empty() {
+        bail!("lsof reported no executable mappings, not even its own");
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 /// Working directories `lsof -F n` reported, the processes it reported them
 /// for, and whether it reported every process it was asked about (exit 0).
 #[derive(Debug)]

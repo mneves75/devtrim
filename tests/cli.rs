@@ -1732,6 +1732,52 @@ fn agent_cleanup_removes_only_stale_history_and_regenerable_caches() {
     std::fs::remove_file(standalone.join("current")).unwrap();
     std::os::unix::fs::symlink(&current_release, standalone.join("current")).unwrap();
 
+    // A process still executing from the old release keeps it out of the plan;
+    // the rest of the category is unaffected.
+    sandbox.script(
+        "lsof",
+        &format!(
+            "printf 'p77\\nftxt\\nn{}\\n'",
+            old_release
+                .canonicalize()
+                .unwrap()
+                .join("bin/codex")
+                .display()
+        ),
+    );
+    let running = run(&sandbox, &["clean", "agents", "--json"]);
+    assert!(running.status.success());
+    let running_findings = json(&running)["findings"].as_array().unwrap().clone();
+    assert!(
+        !running_findings
+            .iter()
+            .any(|finding| finding["path"] == old_release.display().to_string()),
+        "a release a process still executes was offered"
+    );
+    assert!(
+        running_findings
+            .iter()
+            .any(|finding| finding["path"] == cache.display().to_string())
+    );
+    assert!(
+        String::from_utf8_lossy(&running.stderr).contains("still executing in a running process")
+    );
+    // A probe that fails refuses release cleanup instead of passing.
+    sandbox.script("lsof", "exit 1");
+    let unprobed = run(&sandbox, &["clean", "agents", "--json"]);
+    assert!(!unprobed.status.success());
+    assert!(
+        json(&unprobed)["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error
+                .as_str()
+                .unwrap()
+                .contains("cannot tell which Codex releases running processes execute"))
+    );
+    sandbox.script("lsof", "printf 'p1\\nftxt\\nn/usr/lib/dyld\\n'");
+
     // The preview must disclose the interruption risk before anything is
     // applied, and in BOTH renderings: a warning present only in the JSON
     // envelope is invisible to the person actually running the command.

@@ -5,16 +5,24 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ## [0.9.7] - 2026-09-23
 
 A review of 0.9.5 and 0.9.6 on two axes (Standards and Spec), plus a security
-pass over the same diff. Each fix below has a test that fails without it.
+pass over the same diff, and the same three passes over the new Codex release
+cleanup before it left beta. Each fix below has a test that fails without it.
 
 ### Added
 - `clean agents` offers older Codex standalone packages after checking the installer lock, current package, required voice manifest, executables, audited resource names, and manifest SHA-256 digests. Current, newer, same-version, staged, and unknown packages remain; an unverifiable release produces a read-only refusal and nonzero CLI status while cache/history cleanup stays available. Apply rechecks eligibility. Trash remains the default and does not free physical bytes until purged
+- Codex release cleanup skips any release a running process still executes — its program or a library it loaded — and apply refuses one that started running after the preview. An agent started before an upgrade keeps running from its old release and spawns helpers from it by path; on the machine this was built on, 11 processes were executing from the current release at once, and each would have been left pointing at a moved directory after the next upgrade. The check is one system-wide `lsof -d txt` taken under the installer lock, and a failed probe refuses release cleanup rather than passing. `0.9.7-beta1` shipped without it
 
 ### Fixed
 - The working-simulator disclosure summed simctl's sizes with saturating arithmetic, so a total that overflowed was shown capped at 18.4 EB instead of being refused. It now uses checked addition and drops only the disclosure with a diagnostic, as it already did for a missing size
 - No test covered a simulator plan that mixed a device to delete with the report-only disclosure, and apply stops at its first error, so removing the skip that keeps the disclosure out of the command path passed every test. A new test gives the forgery its own refusal message and fails when the skip is removed
 
+### Security
+- Codex release checks opened vendor files with a blocking read, so a FIFO planted at a name such as `voice/runtime.json` hung `scan`, `clean agents` and the TUI indefinitely (reproduced in `0.9.7-beta1`). Files are now opened non-blocking and close-on-exec, and anything but a regular file disqualifies the release
+- A release version with a leading zero (`0.0156.0`) was read as `0.156.0` and offered. Every version number must now be canonical, in the release core and in prerelease fields alike
+- The installer lock's identity is checked again after it is locked, so a lock file replaced in that gap refuses instead of excluding nothing. `lockf(1)`, which the installer uses on macOS, is BSD `flock(2)` and keeps the file when given a descriptor, so a shared `flock` does exclude it
+
 ### Changed
+- The Codex release authority is a `DeletionEntry` with required evidence, checked while compiling and by its own planted case, instead of a path constant with a comment. `sha2` is a new dependency: the vendor's voice manifest records SHA-256 digests, and matching them is what distinguishes an installer-shaped release from a directory of the same names. `codex-resources/zsh/bin/zsh` ships in the release but is not in that manifest, so it is checked for shape only
 - The test proving `pgrep -a` matches devtrim's own ancestors no longer runs a shell script; `/usr/bin/time` under a unique name is the ancestor. `CODING_STANDARDS.md` S12 lists it with the other test-only variable program
 - The real `lsof` race test calls the production probe instead of rebuilding its arguments, so the two cannot drift apart
 - `scripts/tests/planted-violations.py` proves the Xcode apply refusal of a non-directory target
