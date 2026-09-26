@@ -845,7 +845,10 @@ fn apply_operation(app: &mut App, ctx: &Ctx, plan: ApprovedPlan) {
             {
                 "Apply failed before any item was changed.".into()
             } else {
-                "Apply stopped after an error; earlier successes remain reported.".into()
+                // Some categories continue past a refused item, so "stopped"
+                // would be false; the summary is the record either way.
+                "Apply finished with errors; the summary below lists what changed and what failed."
+                    .into()
             };
         }
         Err(error) => app.fail(error),
@@ -2048,6 +2051,81 @@ mod tests {
         assert_eq!(app.screen, Screen::Error);
         assert!(app.summary.is_none());
         assert!(app.errors[0].contains("refusing to apply a read-only operation"));
+    }
+
+    /// An apply that continues past a refusal must not report that it
+    /// stopped: here the refused folder comes first, and the plain one after
+    /// it is still removed.
+    #[test]
+    fn a_partial_apply_does_not_claim_it_stopped_when_it_continued() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-tui-partial-{}", std::process::id()));
+        crate::ops::remove_test_path(&root);
+        let device_support = root.join("Library/Developer/Xcode/iOS DeviceSupport");
+        let marker = device_support.join("refused/Symbols/checkout/.git");
+        std::fs::create_dir_all(&marker).unwrap();
+        std::fs::write(marker.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(device_support.join("plain")).unwrap();
+        std::fs::write(device_support.join("plain/symbols"), "remove").unwrap();
+        let home = root.canonicalize().unwrap();
+        let device_support = home.join("Library/Developer/Xcode/iOS DeviceSupport");
+        let finding = |name: &str| {
+            Finding::new(
+                format!("iOS DeviceSupport: {name}"),
+                Some(device_support.join(name)),
+                1,
+                "test",
+                9,
+                Action::Shred,
+            )
+        };
+        let mut app = App::default();
+        app.finish_results(
+            Operation::Clean(Target::Xcode),
+            vec![finding("refused"), finding("plain")],
+            Vec::new(),
+            Vec::new(),
+        );
+        let Intent::Apply(plan) = app.approve(Approval::CriticalGigabytes(0)) else {
+            panic!("expected an approved plan");
+        };
+        let ctx = Ctx {
+            yes: false,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
+            home: home.clone(),
+            interactive: true,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
+
+        apply_operation(&mut app, &ctx, plan);
+
+        assert!(
+            device_support
+                .join("refused/Symbols/checkout/.git/HEAD")
+                .exists()
+        );
+        assert!(
+            !device_support.join("plain").exists(),
+            "the apply did not continue past the refusal: {:?}",
+            app.errors
+        );
+        assert_eq!(app.errors.len(), 1, "{:?}", app.errors);
+        assert!(!app.status.contains("stopped"), "{}", app.status);
+        assert!(
+            app.status.contains("finished with errors"),
+            "{}",
+            app.status
+        );
+        crate::ops::remove_test_path(root);
     }
 
     #[test]
