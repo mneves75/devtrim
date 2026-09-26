@@ -1,6 +1,21 @@
 # Project Memory
 
-## Current state (0.10.0)
+## Current state (0.10.1)
+
+Production is verified. `v0.10.1-beta2` and `v0.10.1` both point at `0a1a9c2`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`61ba4571c06d988f69daba9b992979d568bdaceda2cc6ffd10d24d7d52540be6`) and is
+immutable. The downloaded beta passed checksum, attestation (source `0a1a9c2`,
+the beta tag, a GitHub-hosted runner), the five PTY TUI flows run from its own
+143-character download directory, and read-only views. Homebrew installs and
+tests 0.10.1 as the sole visible `devtrim`.
+
+`v0.10.1-beta1` (`b0aa29a`) exists only as a tag. A push to main during its
+workflow made the hosted publish job refuse, because the release commit was no
+longer origin/main's head. The 0.10.0 review residual (a space in a row's last
+cell) is fixed. Open items are in `memory/2026-09-26.md`.
+
+## Previous state (0.10.0)
 
 Production is verified. `v0.10.0-beta2` and `v0.10.0` both point at `acc53f9`;
 production reused the beta archive byte for byte (ZIP SHA-256
