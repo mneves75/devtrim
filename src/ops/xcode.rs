@@ -106,9 +106,8 @@ impl Xcode {
                 let path = entry.path();
                 if *label == "DerivedData" && holds_package_checkouts(&path)? {
                     let folder = path.file_name().unwrap_or_default().to_string_lossy();
-                    let package_note = format!(
-                        "{note}. The folder's SwiftPM package checkouts are Git clones and stay"
-                    );
+                    let package_note =
+                        format!("{note}. SwiftPM package checkouts here are Git clones and stay");
                     for child in package_folder_children(&path)? {
                         let size = dir_size(&child)?;
                         findings.push(Finding::new(
