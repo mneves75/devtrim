@@ -106,16 +106,23 @@ Non-negotiable boundaries:
   invalid format, so it marks no repository. It must be an empty regular file
   spelled exactly `.git`, examined without following links, in a directory named
   `sdists-v<digits>` that is a direct child of the deletion root, and the root
-  must carry a valid `CACHEDIR.TAG` opened no-follow and non-blocking. A
-  worktree pointer, a case variant, a directory or symlink, an untagged root, a
-  marker at another depth, and one in another bucket all still refuse, each
-  proven by a planted case on both the Trash and the permanent path.
+  must carry a valid `CACHEDIR.TAG` opened no-follow and non-blocking; a tag
+  that cannot be read only withholds the exception. A worktree pointer, a case
+  variant, a directory, a symlink, a FIFO or other special file, an untagged
+  root, a marker at another depth, and one in another bucket all still refuse.
+  Each condition is proven by a planted case against the preflight that both
+  paths run, and each path's reading of the tag is proven separately. The
+  permanent removal walk repeats the same checks through open handles to catch
+  a change made after that preflight — a race no deterministic test reaches, so
+  that repetition is defense in depth rather than a proven boundary.
 - The uv cache is removed only while holding uv's own cache lock exclusively.
   Every running uv holds a shared `flock` on `<cache>/.lock`, as `uv cache
   clean` expects; devtrim takes the lock without waiting and refuses the cache
   while any uv process holds it, then keeps it until the cache has moved so a
-  new uv process cannot start inside the tree. The lock file is opened
-  without following links or blocking and is created when missing, as uv does.
+  new uv process cannot start inside the tree. A cache reached through a
+  symlink or a symlinked ancestor is refused before anything is created; the
+  lock file is otherwise opened without following links or blocking and is
+  created when missing, as uv does.
 - A repo owning the working directory of a running build/package process, and
   DerivedData while Xcode, `xcodebuild`, `SWBBuildService`, or `XCBBuildService`
   runs, are refused. A working-directory name that `lsof` escapes ambiguously
@@ -165,7 +172,7 @@ Non-negotiable boundaries:
 - Mutation flags are capability-scoped and rejected when the selected command cannot honor them; confirmation bypasses never add operations.
 - Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level, `trash-empty` included; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
 - The TUI accepts no CLI confirmation bypass, and discards keys typed while a scan or apply blocked it, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
-- TUI selection can only narrow a plan. The approved plan is the displayed findings minus those the operator left out; danger and the typed confirmation are computed over that subset, and a selection change invalidates an earlier approval. Read-only results and non-actionable rows cannot be selected.
+- TUI selection can only narrow a plan. The approved plan is the displayed findings minus those the operator left out; danger and the typed confirmation are computed over that subset, the confirmation states how many findings it covers and how many were left out, and a selection change invalidates an earlier approval. Read-only results and non-actionable rows cannot be selected. Each row shows the action and danger the current Trash or permanent mode gives it, through the same policy the plan uses.
 - `purge` adds no deletion authority. It is the `node-modules` and `artifacts` scanners in one plan, and each finding is applied by its own category, which reasserts its exact target shape, staleness and build liveness; a finding routed to the other category is refused.
 - Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
 - Hugging Face cleanup is limited to `~/.cache/huggingface/hub`. Its parent contains authentication and other state and is never an authorized built-in cache target. A real-binary regression requires model data to be removed while synthetic tokens and settings survive.

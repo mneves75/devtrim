@@ -282,6 +282,13 @@ impl App {
         self.findings.len() + self.errors.len() + self.warnings.len()
     }
 
+    /// How many previewed findings the operator can choose between.
+    fn choice_count(&self) -> usize {
+        (0..self.findings.len())
+            .filter(|index| self.is_selectable(*index))
+            .count()
+    }
+
     fn move_cursor(&mut self, to: usize) {
         self.cursor = to.min(self.row_count().saturating_sub(1));
     }
@@ -543,7 +550,7 @@ impl App {
                 self.toggle_selected();
                 Intent::None
             }
-            KeyCode::Char('A') if self.operation.is_some_and(|op| !op.read_only()) => {
+            KeyCode::Char('A') if self.choice_count() > 0 => {
                 self.toggle_all();
                 Intent::None
             }
@@ -1073,19 +1080,18 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         "TRASH-FIRST"
     };
-    let choices = (0..app.findings.len())
-        .filter(|index| app.is_selectable(*index))
-        .count();
+    let choices = app.choice_count();
+    // The mode is a safety signal, so it leads: counts and sizes grow with the
+    // plan and would otherwise push it past the minimum width.
     let title = if choices > 0 {
-        // Short enough that the mode — a safety signal — survives the minimum width.
         format!(
-            " Preview · {}/{choices} selected · {} · danger-{danger} · {mode} ",
+            " {mode} · {}/{choices} selected · {} · danger-{danger} ",
             choices.saturating_sub(app.excluded.len()),
             report::gb(total),
         )
     } else {
         format!(
-            " Preview · {} finding(s) · {} actionable · danger-{danger} · {mode} ",
+            " {mode} · {} finding(s) · {} actionable · danger-{danger} ",
             app.findings.len(),
             report::gb(total),
         )
@@ -1137,18 +1143,13 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     } else {
         Span::raw("  ")
     };
-    let Some(finding) = app.findings.get(row) else {
-        let index = row - app.findings.len();
-        let (text, token) = match app.errors.get(index) {
-            Some(error) => (format!("error: {error}"), Token::Critical),
-            None => (
-                app.warnings
-                    .get(index - app.errors.len())
-                    .cloned()
-                    .unwrap_or_default(),
-                Token::Warning,
-            ),
-        };
+    let Some(finding) = app
+        .findings
+        .get(row)
+        .map(|finding| effective_finding(app, finding))
+    else {
+        let (text, token) =
+            diagnostic_at(app, row).unwrap_or_else(|| (String::new(), Token::Warning));
         return Line::from(vec![
             marker,
             Span::styled(report::terminal_safe(&text), app.theme.style(token)),
@@ -1167,7 +1168,7 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     let size = format!(
         "{:>8}  {:<8} ",
         report::gb(finding.size_bytes),
-        action_label(&effective_action(app, finding))
+        action_label(&finding.action)
     );
     let label = report::terminal_safe(&finding.label);
     let used = 2 + check.len() + danger.len() + size.len() + Span::raw(label.as_str()).width() + 2;
@@ -1185,19 +1186,34 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     ])
 }
 
-/// The action a row will take once the Trash/permanent mode is applied.
-fn effective_action(app: &App, finding: &Finding) -> Action {
-    if app.shred && finding.action == Action::Trash {
-        Action::Shred
-    } else {
-        finding.action.clone()
+/// A finding as the current Trash/permanent mode would apply it — its action
+/// and its danger both — through the one policy the plan itself uses.
+fn effective_finding(app: &App, finding: &Finding) -> Finding {
+    let mut effective = [finding.clone()];
+    report::effective_actions(&mut effective, app.shred);
+    let [finding] = effective;
+    finding
+}
+
+/// The scan error or warning shown on a row past the findings.
+fn diagnostic_at(app: &App, row: usize) -> Option<(String, Token)> {
+    let index = row.checked_sub(app.findings.len())?;
+    match app.errors.get(index) {
+        Some(error) => Some((format!("error: {error}"), Token::Critical)),
+        None => app
+            .warnings
+            .get(index - app.errors.len())
+            .map(|warning| (warning.clone(), Token::Warning)),
     }
 }
 
 /// Everything about the highlighted row, unclipped.
 fn detail_lines(app: &App) -> Vec<Line<'static>> {
-    if let Some(finding) = app.findings.get(app.cursor) {
-        let action = effective_action(app, finding);
+    if let Some(finding) = app
+        .findings
+        .get(app.cursor)
+        .map(|finding| effective_finding(app, finding))
+    {
         let mut lines = vec![
             Line::styled(
                 report::terminal_safe(&finding.label),
@@ -1207,7 +1223,7 @@ fn detail_lines(app: &App) -> Vec<Line<'static>> {
                 "{} · danger-{} · {}",
                 report::gb(finding.size_bytes),
                 finding.danger,
-                report::human_action_display(&action)
+                report::human_action_display(&finding.action)
             )),
             Line::raw(report::terminal_safe(
                 finding.path.as_deref().unwrap_or("command action"),
@@ -1231,18 +1247,8 @@ fn detail_lines(app: &App) -> Vec<Line<'static>> {
         }
         return lines;
     }
-    let index = app.cursor.saturating_sub(app.findings.len());
-    let diagnostic = app
-        .errors
-        .get(index)
-        .map(|error| format!("error: {error}"))
-        .or_else(|| {
-            app.warnings
-                .get(index.saturating_sub(app.errors.len()))
-                .cloned()
-        });
-    match diagnostic {
-        Some(text) => vec![Line::raw(report::terminal_safe(&text))],
+    match diagnostic_at(app, app.cursor) {
+        Some((text, _)) => vec![Line::raw(report::terminal_safe(&text))],
         None => vec![Line::styled(
             "No findings.",
             app.theme.style(Token::Success),
@@ -1285,6 +1291,15 @@ fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
                     (false, _) => Token::Warning,
                 }),
         ));
+        if !app.excluded.is_empty() {
+            lines.push(Line::styled(
+                format!(
+                    "{} left out of this plan and not touched.",
+                    app.excluded.len()
+                ),
+                app.theme.style(Token::Muted),
+            ));
+        }
         lines.push(Line::raw(""));
         for note in &summary.notes {
             lines.push(Line::raw(format!("• {}", report::terminal_safe(note))));
@@ -1340,15 +1355,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let keys = match app.screen {
         Screen::Menu => "↑/↓ navigate · Enter select · ? keys · q quit",
         Screen::Results => {
-            if app.can_toggle_shred() {
-                "Space select · A all · a apply · s permanent · b back · ? keys"
-            } else if app
-                .operation
-                .is_some_and(|operation| !operation.read_only())
-            {
-                "Space select · A all · a apply · r rescan · b back · ? keys"
-            } else {
+            if app.choice_count() == 0 {
                 "↑/↓ move · r rescan · b back · ? keys"
+            } else if app.can_toggle_shred() {
+                "Space select · A all · a apply · s permanent · b back · ? keys"
+            } else {
+                "Space select · A all · a apply · r rescan · b back · ? keys"
             }
         }
         Screen::Confirm => "Esc cancel · type the exact requested acknowledgment",
@@ -1385,9 +1397,21 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App) {
             "Trash purge is permanent. Type PURGE {expected_gb} and press Enter. Esc cancels."
         ),
     };
+    // Consent is given here, so this screen — not only the title behind it —
+    // says how much of the preview the approval covers.
+    let choices = app.choice_count();
+    let coverage = if choices > 0 {
+        Line::raw(format!(
+            "This plan: {} of {choices} selected · {} left out",
+            choices.saturating_sub(app.excluded.len()),
+            app.excluded.len()
+        ))
+    } else {
+        Line::raw("")
+    };
     let text = Text::from(vec![
         Line::styled("DATA-LOSS WARNING", app.theme.bold(Token::Critical)),
-        Line::raw(""),
+        coverage,
         Line::raw(safety::DATA_LOSS_NOTICE),
         Line::raw(""),
         Line::styled(prompt, app.theme.style(Token::Warning)),
@@ -2309,6 +2333,87 @@ mod tests {
 
         assert!(output.contains("60. danger-2"), "{output}");
         assert!(!output.contains("  1. danger-2"), "{output}");
+    }
+
+    /// Permanent mode raises every Trash finding to critical; a row that kept
+    /// its Trash-mode danger beside SHRED understated what `a` would do.
+    #[test]
+    fn permanent_mode_rows_show_the_danger_the_plan_carries() {
+        let mut app = cleanup(vec![trash("cache", 1, 3)]);
+        app.handle_key(key(KeyCode::Char('s')));
+
+        let output = rendered(&app, 100, 30);
+
+        assert!(output.contains("1. danger-9"), "{output}");
+        assert!(!output.contains("1. danger-3"), "{output}");
+        assert!(output.contains("danger-9 · permanently delete"), "{output}");
+    }
+
+    /// The mode is a safety signal, so it leads the title: a title that grew
+    /// with the plan's counts and size clipped TRASH-FIRST at 64 columns.
+    #[test]
+    fn the_mode_survives_the_minimum_width_on_a_large_plan() {
+        let mut app = cleanup(
+            (0..120)
+                .map(|index| trash(&format!("cache-{index}"), 1 << 30, 5))
+                .collect(),
+        );
+
+        let trash_first = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+        app.handle_key(key(KeyCode::Char('s')));
+        let permanent = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+
+        assert!(trash_first.contains("TRASH-FIRST"), "{trash_first}");
+        assert!(permanent.contains("PERMANENT"), "{permanent}");
+    }
+
+    #[test]
+    fn the_footer_offers_selection_only_when_something_can_be_selected() {
+        let mut disclosure = App::default();
+        disclosure.finish_results(
+            Operation::Clean(Target::Simulators),
+            vec![Finding::new("disclosure", None, 1, "test", 0, Action::None)],
+            Vec::new(),
+            Vec::new(),
+        );
+        let report_only = rendered(&disclosure, 100, 30);
+        assert!(!report_only.contains("Space select"), "{report_only}");
+        assert!(report_only.contains("r rescan"), "{report_only}");
+
+        let choosable = rendered(&cleanup(vec![trash("cache", 1, 2)]), 100, 30);
+        assert!(choosable.contains("Space select"), "{choosable}");
+    }
+
+    /// The confirmation is where consent is given, so it says how much of the
+    /// preview the approval covers, not only the results title behind it.
+    #[test]
+    fn the_confirmation_names_how_much_of_the_preview_it_covers() {
+        let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        app.handle_key(key(KeyCode::Char(' ')));
+        app.begin_confirmation();
+
+        let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+
+        assert!(output.contains("1 of 2 selected"), "{output}");
+        assert!(output.contains("1 left out"), "{output}");
+    }
+
+    #[test]
+    fn the_outcome_says_what_was_left_out() {
+        let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        app.handle_key(key(KeyCode::Char(' ')));
+        app.screen = Screen::Outcome;
+        app.summary = Some(Summary {
+            op: "caches".into(),
+            items_touched: 1,
+            bytes_freed_estimate: 1,
+            bytes_trashed_estimate: 1,
+            notes: vec!["trashed second".into()],
+        });
+
+        let output = rendered(&app, 100, 30);
+
+        assert!(output.contains("1 left out of this plan"), "{output}");
     }
 
     #[test]

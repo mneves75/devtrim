@@ -125,7 +125,7 @@ impl Artifacts {
         )
     }
 
-    fn apply_with_process_cwds(
+    pub(super) fn apply_with_process_cwds(
         &self,
         findings: &[Finding],
         ctx: &Ctx,

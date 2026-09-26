@@ -414,7 +414,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.9.8</span>
+    <span class="chip g">v0.10.0</span>
     <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
@@ -465,7 +465,7 @@ devtrim --version</code></pre>
   <h2 id="h-quickstart"><span class="num">03</span> Quick start</h2>
   <p>In an interactive terminal, start with the keyboard interface:</p>
   <pre data-copy="safe"><code>devtrim</code></pre>
-  <p>Choose an operation, inspect its exact findings, and press <code>a</code> only when you intend to apply. A preview lists one finding per line with the highlighted one shown in full below. <code>Space</code> leaves the highlighted finding out of the plan or adds it back, and <code>A</code> selects every finding or none; the confirmation then covers exactly what stays selected. Arrow keys or <code>j</code>/<code>k</code> move through results; <code>Esc</code> cancels confirmation. Scanner warnings and partial-apply errors remain visible in the interface. Below 64×18, operation input is blocked until the terminal is resized. The TUI labels risk in text as well as color.</p>
+  <p>Choose an operation, inspect its exact findings, and press <code>a</code> only when you intend to apply. A preview lists one finding per line with the highlighted one shown in full below. <code>Space</code> leaves the highlighted finding out of the plan or adds it back, and <code>A</code> selects every finding or none; the confirmation then covers exactly what stays selected and says how many findings that is and how many were left out. Arrow keys or <code>j</code>/<code>k</code> move through results; <code>Esc</code> cancels confirmation. Scanner warnings and partial-apply errors remain visible in the interface. Below 64×18, operation input is blocked until the terminal is resized. The TUI labels risk in text as well as color.</p>
   <p>Everything starts as a <strong>dry-run preview</strong>. Look first:</p>
   <pre data-copy="safe"><code>devtrim scan
 devtrim clean caches</code></pre>
@@ -747,7 +747,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
 </section>
 
 <footer>
-  <span>devtrim <b>v0.9.8</b></span>
+  <span>devtrim <b>v0.10.0</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

@@ -2,7 +2,7 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.10.0] - 2026-09-26
 
 Found by using devtrim to free space on a Mac at 97% full. Its scan listed 830
 findings, the uv cache failed on every run, and a 25 GB apply reported space
@@ -11,8 +11,8 @@ follows a study of Mole V1.56.0 (`239c90d`): its ergonomics are ported, its
 matching is not.
 
 ### Added
-- `devtrim purge` puts stale `node_modules` and corroborated build artifacts in one plan, ordered by project with the largest first and a header per project. It adds no authority: every finding comes from the `node-modules` or `artifacts` scanner, with that category's staleness and build-liveness gates, and is applied by the same category, which reasserts its exact target shape, so a finding routed to the wrong one is refused. Ambiguous names such as `build`, `dist` or `coverage` stay unmatched. Mole's `mo purge` preselects exactly those names without a manifest or Git and deletes permanently; in a sandboxed dry run it queued a `target` folder holding a tax PDF
-- The interactive view can leave items out of a plan. Space leaves out the highlighted item or adds it back, `A` selects every item or none, and the confirmation is recomputed for the selected items, so leaving out a critical item can lower a typed-size confirmation to y/N. Selection only narrows: the approved plan is always a subset of the displayed preview, and changing the selection invalidates an earlier approval. The interactive view also gains a Project purge entry (`p`)
+- `devtrim purge` puts stale `node_modules` and corroborated build artifacts in one plan, ordered by project with the largest first and a header per project. It adds no authority: every finding comes from the `node-modules` or `artifacts` scanner, with that category's staleness and build-liveness gates, and is applied by the same category, which reasserts its exact target shape, so a finding routed to the wrong one is refused. Ambiguous names such as `build`, `dist` or `coverage` stay unmatched; Mole V1.56.0's `mo purge` matches those names without requiring a manifest or Git (`lib/clean/purge_shared.sh`, `lib/clean/project.sh`) and deletes permanently, and that is the part deliberately not ported
+- The interactive view can leave items out of a plan. Space leaves out the highlighted item or adds it back, `A` selects every item or none, and the confirmation is recomputed for the selected items, so leaving out a critical item can lower a typed-size confirmation to y/N. The confirmation states how many findings it covers and how many were left out, and the outcome repeats the count. Selection only narrows: the approved plan is always a subset of the displayed preview, and changing the selection invalidates an earlier approval. The interactive view also gains a Project purge entry (`p`)
 - Findings from `node-modules` and `artifacts` carry the repository that owns them, as a `project` field in JSON and a header per project in human output
 
 ### Changed
@@ -23,7 +23,7 @@ matching is not.
 
 ### Fixed
 - The uv cache could never be removed. uv writes an empty `.git` into its `sdists-v<N>` bucket every time it initialises a cache (uv 0.9.24 `crates/uv-cache/src/lib.rs:439-449`), so builds there never read Git metadata from an enclosing repository, and the nested-repository refusal blocked the whole cache on every run, in `clean caches` and again in `trash-empty`. Git rejects an empty gitfile as an invalid format, so that file marks no repository. The sink now tolerates it in exactly that shape: an empty regular file spelled `.git`, in a bucket named `sdists-v<digits>` directly under a deletion root carrying a valid `CACHEDIR.TAG`. A worktree pointer, a case variant, a directory, a symlink, an untagged root, a marker at another depth and one in another bucket all still refuse
-- Removing the uv cache now honours uv's own lock. Every running uv holds a shared `flock` on `<cache>/.lock` and `uv cache clean` takes it exclusively; devtrim takes it the same way without waiting, so the cache is refused while any uv process uses it instead of being moved out from under a running `uv sync`
+- Removing the uv cache now honours uv's own lock. Every running uv holds a shared `flock` on `<cache>/.lock` and `uv cache clean` takes it exclusively; devtrim takes it the same way without waiting, so the cache is refused while any uv process uses it instead of being moved out from under a running `uv sync`. A cache reached through a symlink or symlinked ancestor is refused before the lock file is created
 - `trash-empty` stopped at the first item it refused, so one trashed project that still held its repository kept every item after it. It now continues and records each refusal, reporting a nonzero status
 - Git activity dates were read in each entry's recorded time zone while the cutoff counted UTC days, so west of Greenwich an evening's activity landed a day early, and three activity-probe tests failed every evening in UTC−3
 

@@ -347,15 +347,15 @@ pub fn summary_counts(summary: &Summary) -> String {
         .min(summary.bytes_freed_estimate);
     let reclaimed = summary.bytes_freed_estimate - trashed;
     let items = format!("{} item(s)", summary.items_touched);
-    let trash = "the Trash part is freed once the Trash is emptied (devtrim trash-empty)";
+    let freed_later = "freed once the Trash is emptied (devtrim trash-empty)";
     match (reclaimed, trashed) {
         (_, 0) => format!("{items}, ~{} reclaimed estimate", gb(reclaimed)),
         (0, _) => format!(
-            "{items}, ~{} moved to Trash; it is freed once the Trash is emptied (devtrim trash-empty)",
+            "{items}, ~{} moved to Trash; it is {freed_later}",
             gb(trashed)
         ),
         _ => format!(
-            "{items}, ~{} reclaimed estimate and ~{} moved to Trash; {trash}",
+            "{items}, ~{} reclaimed estimate and ~{} moved to Trash; the Trash part is {freed_later}",
             gb(reclaimed),
             gb(trashed)
         ),
@@ -422,7 +422,7 @@ pub fn print_human(findings: &[Finding]) -> std::io::Result<()> {
 }
 
 /// Consecutive findings that share a project, with their combined size.
-pub fn project_runs(findings: &[Finding]) -> Vec<(Option<&str>, std::ops::Range<usize>, u64)> {
+fn project_runs(findings: &[Finding]) -> Vec<(Option<&str>, std::ops::Range<usize>, u64)> {
     let mut runs: Vec<(Option<&str>, std::ops::Range<usize>, u64)> = Vec::new();
     for (index, finding) in findings.iter().enumerate() {
         let project = finding.project.as_deref();
@@ -442,24 +442,31 @@ const SCAN_FULL_LISTING: usize = 8;
 /// How many of a longer category's largest findings a scan lists.
 const SCAN_LARGEST: usize = 5;
 
+/// One category's contiguous slice of a scan's findings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanSection {
+    pub category: &'static str,
+    pub range: std::ops::Range<usize>,
+}
+
 /// The scan report: one line per category with its size and the command that
 /// acts on it, largest first, then each category's largest findings.
 pub fn print_scan_human(
     findings: &[Finding],
-    sections: &[(&'static str, std::ops::Range<usize>)],
+    sections: &[ScanSection],
     all: bool,
 ) -> std::io::Result<()> {
     write_stdout(scan_text(findings, sections, all).as_bytes())
 }
 
-fn scan_text(
-    findings: &[Finding],
-    sections: &[(&'static str, std::ops::Range<usize>)],
-    all: bool,
-) -> String {
+fn scan_text(findings: &[Finding], sections: &[ScanSection], all: bool) -> String {
     let mut ordered: Vec<(&str, &[Finding])> = sections
         .iter()
-        .filter_map(|(name, range)| findings.get(range.clone()).map(|part| (*name, part)))
+        .filter_map(|section| {
+            findings
+                .get(section.range.clone())
+                .map(|part| (section.category, part))
+        })
         .filter(|(_, part)| !part.is_empty())
         .collect();
     ordered.sort_by_key(|(_, part)| std::cmp::Reverse(actionable_bytes(part)));

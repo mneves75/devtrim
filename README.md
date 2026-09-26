@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.9.8.
+This source tree and its packaged documentation describe devtrim v0.10.0.
 
 ## Install
 
@@ -302,8 +302,8 @@ switches an already-previewed Trash action to permanent mode, and `Esc` cancels.
 A preview lists one finding per line with a detail pane for the highlighted one.
 `Space` leaves the highlighted finding out of the plan or adds it back and `A`
 selects every finding or none; the confirmation then covers exactly the
-selected findings, so leaving out a critical item can lower a typed-size
-confirmation to y/N. Selection only narrows what was previewed, and changing it
+selected findings and says how many that is and how many were left out, so
+leaving out a critical item can lower a typed-size confirmation to y/N. Selection only narrows what was previewed, and changing it
 after confirming discards that confirmation. `p` opens the project purge view.
 Results show retained scanner warnings as rows after the findings; outcomes
 scroll with arrows or `j`/`k`, including partial-apply errors. Risk labels are written as text as well as

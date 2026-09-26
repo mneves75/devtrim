@@ -185,7 +185,7 @@ impl ApplyOutcome {
 pub struct ScanResult {
     pub findings: Vec<Finding>,
     /// Each category's contiguous slice of `findings`, in registry order.
-    pub sections: Vec<(&'static str, std::ops::Range<usize>)>,
+    pub sections: Vec<crate::report::ScanSection>,
     pub errors: Vec<String>,
 }
 
@@ -247,7 +247,10 @@ pub fn scan_all(ctx: &Ctx) -> ScanResult {
                     );
                     let start = findings.len();
                     findings.append(&mut operation_findings);
-                    sections.push((name, start..findings.len()));
+                    sections.push(crate::report::ScanSection {
+                        category: name,
+                        range: start..findings.len(),
+                    });
                 }
                 Ok(Err(error)) => errors.push(format!("{name}: {error:#}")),
                 Err(_) => errors.push(format!("{name}: scan thread terminated abnormally")),
@@ -407,8 +410,18 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
             if handle_identity != expected {
                 anyhow::bail!("quarantined directory identity changed");
             }
-            preflight_same_device_tree(&target_dir, deletion_device, &quarantine_path)
-                .context("permanent deletion preflight failed")?;
+            // One reading of the tag serves the preflight and the removal walk,
+            // so both apply the same marker rule to this tree.
+            let tagged_root = has_cachedir_tag(&target_dir);
+            preflight_tree(
+                &target_dir,
+                deletion_device,
+                &quarantine_path,
+                tagged_root,
+                0,
+                GitMarkerScope::Strict,
+            )
+            .context("permanent deletion preflight failed")?;
             struct RemovalFrame {
                 dir: cap_std::fs::Dir,
                 path: PathBuf,
@@ -430,7 +443,6 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                 )
             })?;
             ensure_same_device(root_identity, deletion_device, &quarantine_path)?;
-            let tagged_root = has_cachedir_tag(&target_dir);
             let names = directory_entry_names(&target_dir, &quarantine_path)?;
             refuse_git_repository_root_names(
                 &target_dir,
@@ -1275,6 +1287,17 @@ mod tests {
                 std::fs::remove_file(root.join("sdists-v9/.git")).unwrap();
                 std::fs::write(root.join("sdists-v9/empty"), "").unwrap();
                 symlink("empty", root.join("sdists-v9/.git")).unwrap();
+            }),
+            // Zero bytes like uv's own, but not a regular file: on APFS a
+            // directory or symlink already fails the size test, so only this
+            // shape proves the file-type test on its own.
+            ("PV sink/uv-marker-special-file", |root| {
+                std::fs::remove_file(root.join("sdists-v9/.git")).unwrap();
+                let status = Command::new("mkfifo")
+                    .arg(root.join("sdists-v9/.git"))
+                    .status()
+                    .unwrap();
+                assert!(status.success());
             }),
             ("PV sink/uv-marker-untagged", |root| {
                 std::fs::remove_file(root.join("CACHEDIR.TAG")).unwrap();

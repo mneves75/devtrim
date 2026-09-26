@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::artifacts::Artifacts;
 use super::node_modules::NodeModules;
@@ -33,6 +33,19 @@ impl Op for Purge {
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
+        self.apply_with_process_cwds(findings, ctx, crate::safety::build_process_cwds)
+    }
+}
+
+impl Purge {
+    /// Each category probes build liveness afresh for its own batch, as its
+    /// own `apply` does; tests supply the process list instead of the host's.
+    fn apply_with_process_cwds(
+        &self,
+        findings: &[Finding],
+        ctx: &Ctx,
+        process_cwds: impl Fn() -> Result<Vec<PathBuf>>,
+    ) -> Result<ApplyOutcome> {
         let (node_modules, artifacts): (Vec<Finding>, Vec<Finding>) =
             findings.iter().cloned().partition(|finding| {
                 finding
@@ -43,16 +56,16 @@ impl Op for Purge {
         let mut outcome = ApplyOutcome::new(self.name());
         // The two categories authorize their batches independently, so one
         // refusing must not keep the other's unrelated targets.
-        for (category, plan) in [
-            (&NodeModules as &dyn Op, node_modules),
-            (&Artifacts, artifacts),
-        ] {
-            if plan.is_empty() {
-                continue;
-            }
-            match category.apply(&plan, ctx) {
+        if !node_modules.is_empty() {
+            match NodeModules.apply_with_process_cwds(&node_modules, ctx, process_cwds()) {
                 Ok(part) => outcome.merge(part),
-                Err(error) => outcome.fail(error.context(category.name())),
+                Err(error) => outcome.fail(error.context(NodeModules.name())),
+            }
+        }
+        if !artifacts.is_empty() {
+            match Artifacts.apply_with_process_cwds(&artifacts, ctx, process_cwds()) {
+                Ok(part) => outcome.merge(part),
+                Err(error) => outcome.fail(error.context(Artifacts.name())),
             }
         }
         Ok(outcome)
@@ -123,7 +136,9 @@ mod tests {
 
     /// Routing trusts nothing but the leaf name, and each category reasserts its
     /// own shape at apply; a finding sent to the wrong one must come back as a
-    /// refusal with the target intact.
+    /// refusal with the target intact. The repository is genuinely stale, so
+    /// the artifacts shape check is the only thing standing between the decoy
+    /// and deletion — no later staleness refusal can stand in for it.
     #[test]
     fn a_misrouted_finding_is_refused_by_the_category_that_receives_it() {
         let root = std::env::current_dir()
@@ -131,8 +146,10 @@ mod tests {
             .join("target")
             .join(format!("devtrim-purge-route-{}", std::process::id()));
         crate::ops::remove_test_path(&root);
+        crate::ops::project::init_old_git_repo(&root.join("dev/project")).unwrap();
+        // Without reflogs the repository is judged by its commit from 2000.
+        crate::ops::remove_test_path(root.join("dev/project/.git/logs"));
         let decoy = root.join("dev/project/src");
-        std::fs::create_dir_all(root.join("dev/project/.git")).unwrap();
         std::fs::create_dir_all(&decoy).unwrap();
         std::fs::write(decoy.join("main.rs"), "fn main() {}").unwrap();
         let root = root.canonicalize().unwrap();
@@ -158,11 +175,25 @@ mod tests {
         )];
         crate::report::effective_actions(&mut plan, true);
 
-        let outcome = Purge.apply(&plan, &ctx).unwrap();
+        // No build process runs in the fixture; the host's own churn must not
+        // decide which check refuses.
+        let outcome = Purge
+            .apply_with_process_cwds(&plan, &ctx, || Ok(Vec::new()))
+            .unwrap();
 
+        assert!(
+            decoy.join("main.rs").exists(),
+            "PV purge/misroute-refused: a misrouted source directory was deleted"
+        );
         assert_eq!(outcome.summary.items_touched, 0);
-        assert!(!outcome.errors.is_empty());
-        assert!(decoy.join("main.rs").exists());
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("artifact corroboration changed after preview")),
+            "the refusal must come from the artifacts shape check: {:?}",
+            outcome.errors
+        );
         crate::ops::remove_test_path(root);
     }
 }

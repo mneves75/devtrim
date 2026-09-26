@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Exercise the real TUI in an isolated, sized PTY.
 
-Two flows: menu/help/quit with terminal restoration, and the type-ahead
-boundary — keys typed before a plan is displayed must never approve it.
+Four flows: menu/help/quit with terminal restoration; the type-ahead
+boundary — keys typed before a plan is displayed must never approve it;
+selection narrowing a plan; and the project purge view applying through the
+real node-modules and artifacts owners.
 """
 
 import argparse
@@ -193,6 +195,51 @@ def verify_selection(binary):
             session.quit()
 
 
+def write_script(path, body):
+    path.write_text(f"#!/bin/sh\nset -eu\n{body}\n")
+    path.chmod(0o755)
+
+
+def verify_purge(binary):
+    """The project purge view runs the real node-modules and artifacts owners.
+    A stale repository offers its `target` and its `node_modules`; leaving the
+    second out with Space must remove only the first. The surviving
+    `node_modules` proves the selection held through both categories' apply;
+    the removed `target` is the positive control that the approval applied."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        (home / "bin").mkdir()
+        # No build process is running, and the repository's history is old.
+        write_script(home / "bin" / "pgrep", "exit 1")
+        write_script(
+            home / "bin" / "git",
+            "case \"$*\" in\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n"
+            "  *) printf '2020-01-01\\n' ;;\nesac",
+        )
+        project = home / "dev" / "project"
+        (project / ".git").mkdir(parents=True)
+        (project / "Cargo.toml").write_text('[package]\nname = "fixture"\n')
+        (project / "target" / "debug").mkdir(parents=True)
+        (project / "target" / "debug" / "out").write_bytes(b"x" * 4096)
+        (project / "node_modules" / "pkg").mkdir(parents=True)
+        (project / "node_modules" / "pkg" / "index.js").write_bytes(b"x")
+        with Session(binary, home) as session:
+            session.wait_for("Scan everything")
+            session.send(b"p")
+            session.wait_for("Review every finding")
+            # The larger `target` is first; move to `node_modules` and leave it out.
+            session.send(b"j ")
+            session.wait_for("Left out of this plan")
+            session.send(b"sa0\r")
+            # The note names the full path, which can wrap; the headline cannot.
+            session.wait_for("purge: 1 item(s)")
+            if (project / "target").exists():
+                raise AssertionError("positive control: the selected target was not removed")
+            if not (project / "node_modules" / "pkg" / "index.js").exists():
+                raise AssertionError("a node_modules left out of the plan was removed")
+            session.quit()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -202,12 +249,13 @@ def main():
         verify_menu(binary)
         verify_type_ahead(binary)
         verify_selection(binary)
+        verify_purge(binary)
     except (AssertionError, OSError, termios.error) as error:
         print(f"tui: {error}", file=sys.stderr)
         return 1
     print(
         "tui: menu, help, cancel, quit, terminal restoration, type-ahead discard,"
-        " and selection passed"
+        " selection, and project purge passed"
     )
     return 0
 

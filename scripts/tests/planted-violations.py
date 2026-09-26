@@ -253,13 +253,33 @@ CASES = (
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
         marker="PV sink/uv-marker-case",
     ),
+    # The Trash preflight and the permanent path each read the tag once; each
+    # reading is broken on its own, and the failure must name its own path.
     Case(
-        name="sink/uv-marker-tag",
+        name="sink/uv-marker-tag-trash",
         relative_path="src/ops/mod.rs",
         before="    let tagged_root = has_cachedir_tag(dir);\n",
         after="    let tagged_root = true;\n",
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
-        marker="PV sink/uv-marker-untagged",
+        marker="PV sink/uv-marker-untagged: Trash preflight",
+    ),
+    Case(
+        name="sink/uv-marker-tag-permanent",
+        relative_path="src/ops/mod.rs",
+        before="            let tagged_root = has_cachedir_tag(&target_dir);\n",
+        after="            let tagged_root = true;\n",
+        tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
+        marker="PV sink/uv-marker-untagged: permanent deletion",
+    ),
+    # A directory or symlink already fails the size test on APFS, so only a
+    # zero-length FIFO shows the file-type test doing work of its own.
+    Case(
+        name="sink/uv-marker-regular-file",
+        relative_path="src/ops/mod.rs",
+        before="        rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::RegularFile\n",
+        after="        rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::Directory\n",
+        tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
+        marker="PV sink/uv-marker-special-file",
     ),
     Case(
         name="sink/uv-marker-depth",
@@ -284,6 +304,25 @@ CASES = (
         after="                    .filter(|_| false)\n",
         tests=("ops::caches::tests::uv_cache_is_refused_while_a_uv_process_holds_its_lock",),
         marker="PV caches/uv-lock",
+    ),
+    Case(
+        name="caches/uv-lock-ancestor",
+        relative_path="src/ops/caches.rs",
+        before="    if resolved != root {\n",
+        after="    if false {\n",
+        tests=("ops::caches::tests::uv_lock_is_never_created_through_a_symlinked_ancestor",),
+        marker="PV caches/ancestor-lock",
+    ),
+    # `purge` routes by leaf name and relies on the receiving category to
+    # refuse a shape it does not own; the repository in the test is stale, so
+    # without this check the misrouted source directory would be deleted.
+    Case(
+        name="purge/misroute-corroboration",
+        relative_path="src/ops/artifacts.rs",
+        before="                if artifact_evidence(path)?.is_none() {\n",
+        after="                if false {\n",
+        tests=("ops::purge::tests::a_misrouted_finding_is_refused_by_the_category_that_receives_it",),
+        marker="PV purge/misroute-refused",
     ),
     Case(
         name="trash/continue-past-refusal",

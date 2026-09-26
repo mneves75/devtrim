@@ -178,6 +178,18 @@ impl Op for Caches {
 fn lock_uv_cache(root: &Path) -> Result<std::fs::File> {
     use rustix::fs::{FlockOperation, Mode, OFlags};
 
+    // The lock is taken before the sink validates the target, so it must not
+    // reach through a symlink and create a file in the directory behind it.
+    let resolved = root
+        .canonicalize()
+        .with_context(|| format!("cannot resolve uv cache {}", root.display()))?;
+    if resolved != root {
+        anyhow::bail!(
+            "refusing uv cache through a symlink or symlinked ancestor: {} resolves to {}",
+            root.display(),
+            resolved.display()
+        );
+    }
     let lock = root.join(".lock");
     let directory = rustix::fs::open(
         root,
@@ -558,6 +570,60 @@ mod tests {
 
         assert!(removed.errors.is_empty(), "{:?}", removed.errors);
         assert!(!uv.exists(), "with uv idle the cache must be removed");
+        crate::ops::remove_test_path(home);
+    }
+
+    /// The lock is taken before the sink validates the target, so it must not
+    /// follow a symlinked ancestor and create a file in the directory behind it.
+    #[test]
+    fn uv_lock_is_never_created_through_a_symlinked_ancestor() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-uv-lock-link-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        std::fs::create_dir_all(home.join("elsewhere/uv")).unwrap();
+        let home = home.canonicalize().unwrap();
+        std::fs::write(home.join("elsewhere/uv/entry"), "cached").unwrap();
+        std::os::unix::fs::symlink(home.join("elsewhere"), home.join(".cache")).unwrap();
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
+            home: home.clone(),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
+        let mut plan = vec![cache_finding(
+            "uv package cache",
+            home.join(".cache/uv"),
+            6,
+            3,
+        )];
+        crate::report::effective_actions(&mut plan, true);
+
+        let outcome = Caches.apply(&plan, &ctx).unwrap();
+
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("symlinked ancestor")),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(
+            !home.join("elsewhere/uv/.lock").exists(),
+            "PV caches/ancestor-lock: the lock was created through a symlinked ancestor"
+        );
+        assert!(home.join("elsewhere/uv/entry").exists());
         crate::ops::remove_test_path(home);
     }
 
