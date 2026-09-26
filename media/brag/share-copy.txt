@@ -1,0 +1,3 @@
+My Mac hit 97% full, so devtrim 0.10.0 got `purge`: every stale node_modules and build folder across your projects in one plan, biggest first. Space leaves anything out, and nothing moves until you approve the exact plan. It goes to the Trash first.
+
+brew install mneves75/devtrim/devtrim · github.com/mneves75/devtrim
