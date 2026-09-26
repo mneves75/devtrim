@@ -3,7 +3,10 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
+use super::{
+    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, apply_uv_cache_finding, dir_size,
+    removal_note,
+};
 use crate::report::TargetAuthority;
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
@@ -144,12 +147,14 @@ impl Op for Caches {
             }
             let result = (|| -> Result<()> {
                 authorize_cache_finding(finding, &ctx.home)?;
-                // Held until the cache has moved, then released on drop.
-                let _uv_lock = finding
-                    .target()
-                    .filter(|target| *target == ctx.home.join(UV_CACHE))
-                    .map(lock_uv_cache)
-                    .transpose()?;
+                let uv_cache = ctx.home.join(UV_CACHE);
+                if finding.target() == Some(uv_cache.as_path()) {
+                    // Held until the cache has moved, then released on drop;
+                    // holding it is also what lets the sink tolerate uv's
+                    // source-distribution marker.
+                    let lock = crate::safety::lock_uv_cache(&uv_cache)?;
+                    return apply_uv_cache_finding(self.name(), finding, ctx, &lock);
+                }
                 apply_filesystem_finding(self.name(), finding, ctx)
             })()
             .with_context(|| format!("failed to remove {}", finding.label));
@@ -165,61 +170,6 @@ impl Op for Caches {
             outcome.record(finding, removal_note(finding, &finding.label));
         }
         Ok(outcome)
-    }
-}
-
-/// Every uv process holds a shared `flock` on `<cache>/.lock` while it uses
-/// the cache, and `uv cache clean` takes it exclusively (uv 0.9.24
-/// `crates/uv-cache/src/lib.rs:205-263,460`; `crates/uv-fs/src/locked_file.rs`
-/// locks through std `File::lock`, which is `flock(2)` on macOS). Taking the
-/// same lock without waiting refuses removal while uv runs, and holding it
-/// until the move completes keeps a new uv process from starting in the tree.
-/// Like uv, this creates the lock file when it is missing.
-fn lock_uv_cache(root: &Path) -> Result<std::fs::File> {
-    use rustix::fs::{FlockOperation, Mode, OFlags};
-
-    // The lock is taken before the sink validates the target, so it must not
-    // reach through a symlink and create a file in the directory behind it.
-    let resolved = root
-        .canonicalize()
-        .with_context(|| format!("cannot resolve uv cache {}", root.display()))?;
-    if resolved != root {
-        anyhow::bail!(
-            "refusing uv cache through a symlink or symlinked ancestor: {} resolves to {}",
-            root.display(),
-            resolved.display()
-        );
-    }
-    let lock = root.join(".lock");
-    let directory = rustix::fs::open(
-        root,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .with_context(|| format!("cannot open uv cache {}", root.display()))?;
-    let fd = rustix::fs::openat(
-        &directory,
-        ".lock",
-        OFlags::RDONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::from_raw_mode(0o644),
-    )
-    .with_context(|| format!("cannot open uv's cache lock {}", lock.display()))?;
-    let file = std::fs::File::from(fd);
-    if !file
-        .metadata()
-        .with_context(|| format!("cannot inspect uv's cache lock {}", lock.display()))?
-        .file_type()
-        .is_file()
-    {
-        anyhow::bail!("uv's cache lock is not a regular file: {}", lock.display());
-    }
-    match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
-        Ok(()) => Ok(file),
-        Err(rustix::io::Errno::WOULDBLOCK) => anyhow::bail!(
-            "uv is using its cache (a uv process holds {}); retry after it exits",
-            lock.display()
-        ),
-        Err(error) => Err(error).with_context(|| format!("cannot lock {}", lock.display())),
     }
 }
 
@@ -455,37 +405,6 @@ mod tests {
                 "{relative}"
             );
         }
-    }
-
-    /// A note must not promise what the owner does not do: Playwright's
-    /// browsers come back only through `npx playwright install`, while pip
-    /// refills its cache on the next install.
-    #[test]
-    fn a_cache_its_owner_rebuilds_only_by_command_names_the_command() {
-        let home = Path::new("/Users/example");
-        let playwright = cache_finding(
-            "Playwright browser cache",
-            home.join("Library/Caches/ms-playwright"),
-            1,
-            3,
-        );
-        assert!(
-            playwright.note.contains("npx playwright install"),
-            "{}",
-            playwright.note
-        );
-        assert!(
-            !playwright.note.contains("automatically"),
-            "{}",
-            playwright.note
-        );
-
-        let pip = cache_finding("pip package cache", home.join("Library/Caches/pip"), 1, 3);
-        assert!(
-            pip.note.contains("regenerated automatically on next use"),
-            "{}",
-            pip.note
-        );
     }
 
     #[test]

@@ -137,8 +137,9 @@ CASES = (
     Case(
         name="git/signature-program",
         relative_path="src/ops/project.rs",
-        before='            "-c",\n            "log.showSignature=false",\n            "--no-optional-locks",\n            "--no-lazy-fetch",\n            "--no-pager",\n            "log",\n            "--no-show-signature",\n',
-        after='            "--no-optional-locks",\n            "--no-lazy-fetch",\n            "--no-pager",\n            "log",\n',
+        # Either setting alone suppresses the display, so both go together.
+        before='        .args([\n            "-c",\n            "log.showSignature=false",\n            "log",\n            "--no-show-signature",\n            "-1",\n        ])\n',
+        after='        .args(["log", "-1"])\n',
         tests=("ops::project::tests::activity_probe_never_runs_a_repository_configured_signature_program",),
         marker="PV git/signature-program",
     ),
@@ -248,28 +249,22 @@ CASES = (
     Case(
         name="sink/uv-marker-spelling",
         relative_path="src/ops/mod.rs",
-        before='    if name.as_bytes() != b".git" {\n',
-        after="    if !is_git_metadata_name(name) {\n",
+        before='fn is_uv_source_distribution_marker(dir: &cap_std::fs::Dir, name: &OsStr) -> Result<bool> {\n    if name.as_bytes() != b".git" {\n',
+        after='fn is_uv_source_distribution_marker(dir: &cap_std::fs::Dir, name: &OsStr) -> Result<bool> {\n    if !is_git_metadata_name(name) {\n',
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
         marker="PV sink/uv-marker-case",
     ),
     # The Trash preflight and the permanent path each read the tag once; each
     # reading is broken on its own, and the failure must name its own path.
+    # Both deletion paths build their marker rules through `MarkerRules::new`,
+    # so one reading of the tag serves them both.
     Case(
-        name="sink/uv-marker-tag-trash",
+        name="sink/uv-marker-tag",
         relative_path="src/ops/mod.rs",
-        before="    let tagged_root = has_cachedir_tag(dir);\n",
-        after="    let tagged_root = true;\n",
+        before="            uv: markers.uv() && has_cachedir_tag(dir),\n",
+        after="            uv: markers.uv(),\n",
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
         marker="PV sink/uv-marker-untagged: Trash preflight",
-    ),
-    Case(
-        name="sink/uv-marker-tag-permanent",
-        relative_path="src/ops/mod.rs",
-        before="            let tagged_root = has_cachedir_tag(&target_dir);\n",
-        after="            let tagged_root = true;\n",
-        tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
-        marker="PV sink/uv-marker-untagged: permanent deletion",
     ),
     # A directory or symlink already fails the size test on APFS, so only a
     # zero-length FIFO shows the file-type test doing work of its own.
@@ -284,30 +279,46 @@ CASES = (
     Case(
         name="sink/uv-marker-depth",
         relative_path="src/ops/mod.rs",
-        before="    if tagged_root && depth == 1 && uv_bucket {\n",
-        after="    if tagged_root && depth >= 1 && uv_bucket {\n",
+        before="    if rules.uv && depth == 1 && uv_bucket {\n",
+        after="    if rules.uv && depth >= 1 && uv_bucket {\n",
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
         marker="PV sink/uv-marker-depth",
     ),
     Case(
         name="sink/uv-marker-bucket",
         relative_path="src/ops/mod.rs",
-        before="    if tagged_root && depth == 1 && uv_bucket {\n",
-        after="    if tagged_root && depth == 1 && (uv_bucket || !uv_bucket) {\n",
+        before="    if rules.uv && depth == 1 && uv_bucket {\n",
+        after="    if rules.uv && depth == 1 && (uv_bucket || !uv_bucket) {\n",
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
         marker="PV sink/uv-marker-other-bucket",
     ),
     Case(
+        name="sink/uv-marker-grant",
+        relative_path="src/ops/mod.rs",
+        before="            uv: markers.uv() && has_cachedir_tag(dir),\n",
+        after="            uv: has_cachedir_tag(dir),\n",
+        tests=("ops::tests::a_uv_cache_without_uv_s_lock_keeps_its_marker_refused",),
+        marker="PV sink/uv-marker-grant",
+    ),
+    Case(
+        name="sink/uv-grant-root",
+        relative_path="src/safety.rs",
+        before="        if lock.root != self.path {\n",
+        after="        if false {\n",
+        tests=("ops::tests::a_uv_lock_grants_only_its_own_root",),
+        marker="PV sink/uv-grant-root",
+    ),
+    Case(
         name="caches/uv-lock",
-        relative_path="src/ops/caches.rs",
-        before="                    .filter(|target| *target == ctx.home.join(UV_CACHE))\n",
-        after="                    .filter(|_| false)\n",
+        relative_path="src/safety.rs",
+        before="    match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {\n",
+        after="    match Ok::<(), rustix::io::Errno>(()) {\n",
         tests=("ops::caches::tests::uv_cache_is_refused_while_a_uv_process_holds_its_lock",),
         marker="PV caches/uv-lock",
     ),
     Case(
         name="caches/uv-lock-ancestor",
-        relative_path="src/ops/caches.rs",
+        relative_path="src/safety.rs",
         before="    if resolved != root {\n",
         after="    if false {\n",
         tests=("ops::caches::tests::uv_lock_is_never_created_through_a_symlinked_ancestor",),
@@ -355,6 +366,98 @@ CASES = (
         after="",
         tests=("ops::project::tests::activity_dates_are_read_in_utc_like_the_cutoff",),
         marker="PV git/utc-dates",
+    ),
+    # Mole V1.56.0 refuses a purge target holding files Git tracks or a
+    # `*-keypair.json` (`lib/clean/project.sh`). Scan and apply each check on
+    # their own, so each check is proven on its own.
+    Case(
+        name="project/tracked-files",
+        relative_path="src/ops/project.rs",
+        before="    if !listed.is_empty() {\n        return Ok(true);\n    }\n",
+        after="    if false && !listed.is_empty() {\n        return Ok(true);\n    }\n",
+        tests=(
+            "ops::artifacts::tests::a_tree_its_repository_tracks_is_never_offered_or_removed",
+            "ops::node_modules::tests::a_committed_node_modules_is_never_offered_or_removed",
+        ),
+        marker="PV project/tracked-files",
+    ),
+    # On a case-insensitive volume Git keeps a tracked directory's old spelling
+    # after a case-only rename, so the query must match case-insensitively.
+    Case(
+        name="project/tracked-files-case",
+        relative_path="src/ops/project.rs",
+        before='    let mut pathspec = std::ffi::OsString::from(":(literal,icase)");\n    pathspec.push(relative);\n',
+        after='    let mut pathspec = std::ffi::OsString::from(":(literal)");\n    pathspec.push(relative);\n',
+        tests=("ops::artifacts::tests::a_tracked_tree_renamed_only_in_case_is_never_offered",),
+        marker="PV project/tracked-case-rename",
+    ),
+    # Git folds ASCII case only; the volume folds Unicode case too, so a
+    # non-ASCII case-only rename is settled by the filesystem's own matching.
+    Case(
+        name="project/tracked-unicode-case",
+        relative_path="src/ops/project.rs",
+        before="    if relative.as_os_str().is_ascii() {\n",
+        after="    if true || relative.as_os_str().is_ascii() {\n",
+        tests=("ops::artifacts::tests::a_tracked_tree_renamed_only_in_unicode_case_is_never_offered",),
+        marker="PV project/tracked-unicode-case",
+    ),
+    Case(
+        name="artifacts/tracked-apply",
+        relative_path="src/ops/artifacts.rs",
+        before="                if tracks_files_under(&owner, path)? {\n",
+        after="                if false && tracks_files_under(&owner, path)? {\n",
+        tests=("ops::artifacts::tests::a_tree_its_repository_tracks_is_never_offered_or_removed",),
+        marker="PV artifacts/tracked-apply",
+    ),
+    Case(
+        name="node_modules/tracked-apply",
+        relative_path="src/ops/node_modules.rs",
+        before="                if tracks_files_under(&owner, path)? {\n",
+        after="                if false && tracks_files_under(&owner, path)? {\n",
+        tests=("ops::node_modules::tests::a_committed_node_modules_is_never_offered_or_removed",),
+        marker="PV node_modules/tracked-apply",
+    ),
+    Case(
+        name="artifacts/keypair-scan",
+        relative_path="src/ops/artifacts.rs",
+        before="                if program_keypair_under(&candidate.path)?.is_some() {\n",
+        after="                if false && program_keypair_under(&candidate.path)?.is_some() {\n",
+        tests=("ops::artifacts::tests::a_tree_holding_a_program_keypair_is_never_offered_or_removed",),
+        marker="PV artifacts/keypair-scan",
+    ),
+    Case(
+        name="artifacts/keypair-apply",
+        relative_path="src/ops/artifacts.rs",
+        before="                if let Some(keypair) = program_keypair_under(path)? {\n",
+        after="                if let Some(keypair) = program_keypair_under(path)?.filter(|_| false) {\n",
+        tests=("ops::artifacts::tests::a_tree_holding_a_program_keypair_is_never_offered_or_removed",),
+        marker="PV artifacts/keypair-apply",
+    ),
+    Case(
+        name="sink/trash-grant-root",
+        relative_path="src/safety.rs",
+        before="        if self.path.parent() != Some(trash) {\n",
+        after="        if false && self.path.parent() != Some(trash) {\n",
+        tests=("ops::tests::the_trash_grant_covers_only_items_directly_in_the_trash",),
+        marker="PV sink/trash-grant-root",
+    ),
+    # DerivedData holding SwiftPM package checkouts is cleaned around them:
+    # they are Git clones, never offered by the scan nor removed by apply.
+    Case(
+        name="xcode/package-checkouts-offered",
+        relative_path="src/ops/xcode.rs",
+        before="        if file_type.is_dir() && !is_source_packages(&entry.file_name()) {\n",
+        after="        if file_type.is_dir() {\n",
+        tests=("ops::xcode::tests::a_derived_data_folder_holding_package_checkouts_is_cleaned_around_them",),
+        marker="PV xcode/package-checkouts-offered",
+    ),
+    Case(
+        name="xcode/package-checkouts-kept",
+        relative_path="src/ops/xcode.rs",
+        before="    if path.file_name().is_some_and(is_source_packages) {\n",
+        after="    if false && path.file_name().is_some_and(is_source_packages) {\n",
+        tests=("ops::xcode::tests::apply_never_removes_the_package_checkouts",),
+        marker="PV xcode/package-checkouts-kept",
     ),
 )
 

@@ -38,6 +38,7 @@ Non-negotiable boundaries:
 - Xcode and Swift toolchain apply reassert that every target still has the exact direct-child category shape its scanner authorized before the shared deletion sink can consume it.
 - `node_modules` apply reasserts that each target is a real `node_modules` directory leaf inside its owning repository and rejects symlinks, ASCII-case-insensitive `.git` and outer `node_modules` ancestors, and non-normal paths before the shared deletion sink can consume it.
 - Artifact discovery never traverses an ASCII-case variant of `node_modules`, and artifact apply independently refuses any target below such an ancestor before corroboration or deletion.
+- `artifacts` and `node_modules` never offer or apply a directory holding a file its repository tracks, asked of Git with one literal, case-insensitive pathspec per target so Git does its own matching, Unicode precomposition included, and a directory renamed only in case still matches the spelling Git's index kept. Git folds ASCII case only, so for a path with non-ASCII names that query is followed by the filesystem's own matching: any tracked path whose ancestor at the target's depth is the target itself, by device and inode, refuses it. `artifacts` never offers or applies a tree holding an entry named `*-keypair.json` (ASCII-case-insensitive, links not followed): `cargo build-sbf` writes a Solana program's keypair there once, and no rebuild restores it. Both checks run at preview and again at apply, and a query or walk that fails refuses.
 - Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
 - Literal and physically resolved parents must agree; symlinked ancestors fail closed. Any ASCII-case variant of a `.git` path component is refused.
 - `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children. An item the sink refuses at apply — a trashed project that still holds its repository — is recorded and skipped; the purge continues with the other exact items and reports nonzero.
@@ -88,41 +89,51 @@ Non-negotiable boundaries:
   recording which sessions are kept alive while idle. A closed category that
   must consult a liveness signal to stay safe has gone one directory too far.
 - Unknown Git activity or toolchain ownership is not deletion authority.
-- Reading a scanned repository's activity runs no program it configures. The
-  probe sets fixed `-c` overrides for hooks, fsmonitor, and signature display,
-  passes `--no-show-signature`, `--no-lazy-fetch`, and `--no-pager`, and clears
-  repository-selection variables; a `git` that cannot honor those refuses the
-  repository. Activity is the newer of HEAD's commit date and HEAD's newest
-  reflog entry, so a clone or checkout of old history is active. Both dates are
-  rendered in UTC, the clock the staleness cutoff counts in; the probe pins
-  `TZ=UTC0` for `git` alone.
+- Reading a scanned repository's activity or tracked files runs no program it
+  configures. Both queries set fixed `-c` overrides for hooks and fsmonitor,
+  pass `--no-lazy-fetch` and `--no-pager`, and clear repository-selection and
+  pathspec variables (Git refuses `--literal-pathspecs` beside an ambient
+  pathspec setting); the activity probe also overrides signature display and
+  passes `--no-show-signature`. A `git` that cannot honor those refuses the
+  repository, and its refusal names Git's own reason. Activity is the newer of
+  HEAD's commit date and HEAD's newest reflog entry, so a clone or checkout of
+  old history is active. Both dates are rendered in UTC, the clock the
+  staleness cutoff counts in; the probe pins `TZ=UTC0` for `git` alone.
 - Every directory deletion preflights foreign filesystem devices and Git
   repository/worktree markers at any depth before either Trash or permanent
   mutation. Git metadata matching is ASCII-case-insensitive, and permanent
-  recursion repeats those checks through open handles. One marker is tolerated:
-  the empty `.git` uv writes into its source-distribution bucket so that builds
-  there never read an enclosing repository (uv 0.9.24
+  recursion repeats those checks through open handles. One marker is
+  tolerated: the empty `.git` uv writes into its source-distribution bucket so
+  that builds there never read an enclosing repository (uv 0.9.24
   `crates/uv-cache/src/lib.rs:439-449`). Git rejects an empty gitfile as an
   invalid format, so it marks no repository. It must be an empty regular file
-  spelled exactly `.git`, examined without following links, in a directory named
-  `sdists-v<digits>` that is a direct child of the deletion root, and the root
-  must carry a valid `CACHEDIR.TAG` opened no-follow and non-blocking; a tag
+  spelled exactly `.git`, examined without following links, in a directory
+  named `sdists-v<digits>` that is a direct child of the deletion root, the
+  root must carry a valid `CACHEDIR.TAG` opened no-follow and non-blocking,
+  and the deletion must be granted the exception: by `clean caches` holding
+  uv's cache lock on that exact root, or by `trash-empty` for a direct Trash
+  child, where no uv uses the tree. A tagged uv cache reached through
+  `artifacts` (a repository-local `UV_CACHE_DIR`) keeps the refusal. A tag
   that cannot be read only withholds the exception. A worktree pointer, a case
   variant, a directory, a symlink, a FIFO or other special file, an untagged
   root, a marker at another depth, and one in another bucket all still refuse.
   Each condition is proven by a planted case against the preflight that both
-  paths run, and each path's reading of the tag is proven separately. The
-  permanent removal walk repeats the same checks through open handles to catch
-  a change made after that preflight — a race no deterministic test reaches, so
-  that repetition is defense in depth rather than a proven boundary.
+  paths run, and both paths share one reading of the tag. The permanent
+  removal walk repeats the same checks through open handles to catch a change
+  made after that preflight — a race no deterministic test reaches, so that
+  repetition is defense in depth rather than a proven boundary. A real Git
+  repository is never removed: a DerivedData folder holding SwiftPM's package
+  checkouts, each a Git clone, is cleaned around them instead, and
+  `SourcePackages` is refused at apply in any spelling.
 - The uv cache is removed only while holding uv's own cache lock exclusively.
-  Every running uv holds a shared `flock` on `<cache>/.lock`, as `uv cache
-  clean` expects; devtrim takes the lock without waiting and refuses the cache
-  while any uv process holds it, then keeps it until the cache has moved so a
-  new uv process cannot start inside the tree. A cache reached through a
-  symlink or a symlinked ancestor is refused before anything is created; the
-  lock file is otherwise opened without following links or blocking and is
-  created when missing, as uv does.
+  A running uv holds a shared `flock` on `<cache>/.lock` where the filesystem
+  supports shared locks, as APFS does, and `uv cache clean` expects it;
+  devtrim takes the lock without waiting and refuses the cache while any uv
+  process holds it, then keeps it until the cache has moved so a new uv
+  process cannot start inside the tree. A cache reached through a symlink or a
+  symlinked ancestor is refused before anything is created; the lock file is
+  otherwise opened without following links or blocking and is created when
+  missing, as uv does.
 - A repo owning the working directory of a running build/package process, and
   DerivedData while Xcode, `xcodebuild`, `SWBBuildService`, or `XCBBuildService`
   runs, are refused. A working-directory name that `lsof` escapes ambiguously
@@ -157,8 +168,8 @@ Non-negotiable boundaries:
   generation.
 - `artifacts` requires both a closed directory-name list with ecosystem
   corroboration (or an exact `CACHEDIR.TAG` signature) and a conclusively stale
-  owning Git repo; corroboration, ownership, staleness, and liveness are all
-  re-verified at apply time.
+  owning Git repo; corroboration, ownership, staleness, liveness, tracked
+  files, and program keypairs are all re-verified at apply time.
 - Incomplete directory traversal, metadata, or numeric parsing is not size authority for an actionable plan.
 - Unknown configuration fields are rejected so a misspelled safety setting cannot appear active.
 - Docker volumes and Xcode Archives are never pruned.

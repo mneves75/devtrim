@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::report::{Action, Finding, Summary};
 pub use crate::safety::dir_size;
-use crate::safety::{Ctx, FileIdentity, VerifiedTarget, is_git_metadata_name};
+use crate::safety::{Ctx, FileIdentity, MarkerGrant, VerifiedTarget, is_git_metadata_name};
 
 static QUARANTINE_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
@@ -285,6 +285,35 @@ pub fn filter_protected_findings(findings: &mut Vec<Finding>, ctx: &Ctx) {
 }
 
 pub fn apply_filesystem_finding(op: &str, finding: &Finding, ctx: &Ctx) -> Result<()> {
+    apply_verified_finding(op, finding, ctx, Ok)
+}
+
+/// The same sink for uv's cache: the held lock is what lets it tolerate uv's
+/// source-distribution marker, so no other path can remove a uv cache that a
+/// running uv holds.
+pub(crate) fn apply_uv_cache_finding(
+    op: &str,
+    finding: &Finding,
+    ctx: &Ctx,
+    lock: &crate::safety::UvCacheLock,
+) -> Result<()> {
+    apply_verified_finding(op, finding, ctx, |verified| verified.grant_uv_marker(lock))
+}
+
+/// Applies an item directly in the Trash, which may be a uv cache `clean
+/// caches` moved there with its marker.
+fn apply_trashed_finding(finding: &Finding, ctx: &Ctx, trash: &Path) -> Result<()> {
+    apply_verified_finding("trash-empty", finding, ctx, |verified| {
+        verified.grant_trashed_markers(trash)
+    })
+}
+
+fn apply_verified_finding(
+    op: &str,
+    finding: &Finding,
+    ctx: &Ctx,
+    grant: impl FnOnce(VerifiedTarget) -> Result<VerifiedTarget>,
+) -> Result<()> {
     let (permanent, action) = match finding.action {
         Action::Trash => (false, "trash"),
         Action::Shred => (true, "shred"),
@@ -299,6 +328,7 @@ pub fn apply_filesystem_finding(op: &str, finding: &Finding, ctx: &Ctx) -> Resul
     )
     .with_context(|| format!("cannot write apply journal: {}", ctx.journal_path.display()))?;
     let result = crate::safety::validate_path_for_deletion(target, &ctx.home, &ctx.protect)
+        .and_then(grant)
         .and_then(|verified| {
             let expected = finding
                 .identity()
@@ -309,7 +339,7 @@ pub fn apply_filesystem_finding(op: &str, finding: &Finding, ctx: &Ctx) -> Resul
 }
 
 fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
-    let path = target.into_path();
+    let (path, markers) = target.into_parts();
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("refusing target without parent: {}", path.display()))?;
@@ -354,7 +384,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                     path.display()
                 );
             }
-            preflight_same_device_tree(&target_dir, deletion_device, &path)
+            preflight_same_device_tree(&target_dir, deletion_device, &path, &markers)
                 .context("Trash deletion preflight failed")?;
         }
         let final_identity = file_identity_at(&dir, leaf)
@@ -393,10 +423,12 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                         quarantine_path.display()
                     );
                 }
-                anyhow::bail!(
-                    "cannot open quarantined directory {}; entry was restored: {error}",
-                    quarantine_path.display()
-                );
+                return Err(restored_error(
+                    &format!("cannot open {} in quarantine", path.display()),
+                    &path,
+                    &quarantine_path,
+                    &error.to_string(),
+                ));
             }
         };
         let mut removal_started = false;
@@ -410,14 +442,14 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
             if handle_identity != expected {
                 anyhow::bail!("quarantined directory identity changed");
             }
-            // One reading of the tag serves the preflight and the removal walk,
-            // so both apply the same marker rule to this tree.
-            let tagged_root = has_cachedir_tag(&target_dir);
+            // One reading of the rules serves the preflight and the removal
+            // walk, so both apply the same marker rule to this tree.
+            let rules = MarkerRules::new(&markers, &target_dir);
             preflight_tree(
                 &target_dir,
                 deletion_device,
                 &quarantine_path,
-                tagged_root,
+                rules,
                 0,
                 GitMarkerScope::Strict,
             )
@@ -496,7 +528,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                                 );
                             }
                             let names = directory_entry_names(&child, &child_path)?;
-                            let scope = git_marker_scope(tagged_root, child_depth, &name);
+                            let scope = git_marker_scope(rules, child_depth, &name);
                             refuse_git_repository_root_names(&child, &names, &child_path, scope)?;
                             RemovalStep::Descend(RemovalFrame {
                                 dir: child,
@@ -568,10 +600,12 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                     quarantine_path.display()
                 );
             }
-            anyhow::bail!(
-                "permanent deletion preparation refused {}; entry was restored: {error:#}",
-                quarantine_path.display()
-            );
+            return Err(restored_error(
+                &format!("permanent deletion preparation refused {}", path.display()),
+                &path,
+                &quarantine_path,
+                &format!("{error:#}"),
+            ));
         }
     } else {
         // macOS has no fd-relative unlink, so the final single-entry removal is
@@ -617,6 +651,23 @@ fn ensure_same_device(identity: FileIdentity, expected_device: u64, path: &Path)
     Ok(())
 }
 
+/// The Git-marker exceptions one deletion was granted, fixed for its tree.
+#[derive(Clone, Copy, Debug)]
+struct MarkerRules {
+    /// uv's marker: granted, and the root carries a valid `CACHEDIR.TAG`.
+    uv: bool,
+}
+
+impl MarkerRules {
+    /// Rules for the tree open at `dir`. Without uv's grant the tag is not even
+    /// read.
+    fn new(markers: &MarkerGrant, dir: &cap_std::fs::Dir) -> Self {
+        Self {
+            uv: markers.uv() && has_cachedir_tag(dir),
+        }
+    }
+}
+
 /// Which Git markers a directory's own entries may carry.
 ///
 /// uv writes an empty `.git` into its source-distribution bucket every time it
@@ -626,19 +677,21 @@ fn ensure_same_device(identity: FileIdentity, expected_device: u64, path: &Path)
 /// repository or worktree — yet while it refused, no uv cache could ever be
 /// removed. It is tolerated in exactly that shape and nowhere else: an empty
 /// regular file spelled `.git`, in a bucket named `sdists-v<digits>` that is a
-/// direct child of a deletion root carrying a valid `CACHEDIR.TAG`.
+/// direct child of a deletion root carrying a valid `CACHEDIR.TAG`, and only
+/// in a target granted it by holding uv's cache lock on that root, or by
+/// `trash-empty` once the cache is in the Trash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GitMarkerScope {
     Strict,
     UvSourceDistributionBucket,
 }
 
-fn git_marker_scope(tagged_root: bool, depth: usize, name: &OsStr) -> GitMarkerScope {
+fn git_marker_scope(rules: MarkerRules, depth: usize, name: &OsStr) -> GitMarkerScope {
     let uv_bucket = name
         .as_bytes()
         .strip_prefix(b"sdists-v")
         .is_some_and(|version| !version.is_empty() && version.iter().all(u8::is_ascii_digit));
-    if tagged_root && depth == 1 && uv_bucket {
+    if rules.uv && depth == 1 && uv_bucket {
         GitMarkerScope::UvSourceDistributionBucket
     } else {
         GitMarkerScope::Strict
@@ -647,18 +700,18 @@ fn git_marker_scope(tagged_root: bool, depth: usize, name: &OsStr) -> GitMarkerS
 
 /// Whether the deletion root is a cache directory by the CACHEDIR.TAG
 /// convention. Opened without following links and without blocking, so a FIFO
-/// or a symlink at the tag's name is simply not a tag. Every directory deletion
-/// asks, so any failure to read the tag means "not tagged": that can only
-/// withhold uv's marker exception, never refuse a target that had no use for it.
+/// or a symlink at the tag's name is simply not a tag. Only a deletion granted
+/// uv's exception asks, and any failure to read the tag means "not tagged":
+/// that can only withhold the exception, never refuse a target.
 fn has_cachedir_tag(dir: &cap_std::fs::Dir) -> bool {
     use rustix::fs::{Mode, OFlags};
     use std::io::Read;
 
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-    let Ok(fd) = rustix::fs::openat(dir, "CACHEDIR.TAG", flags, Mode::empty()) else {
+    let Ok(descriptor) = rustix::fs::openat(dir, "CACHEDIR.TAG", flags, Mode::empty()) else {
         return false;
     };
-    let mut file = std::fs::File::from(fd);
+    let mut file = std::fs::File::from(descriptor);
     if !file
         .metadata()
         .is_ok_and(|metadata| metadata.file_type().is_file())
@@ -723,13 +776,13 @@ fn preflight_same_device_tree(
     dir: &cap_std::fs::Dir,
     expected_device: u64,
     path: &Path,
+    markers: &MarkerGrant,
 ) -> Result<()> {
-    let tagged_root = has_cachedir_tag(dir);
     preflight_tree(
         dir,
         expected_device,
         path,
-        tagged_root,
+        MarkerRules::new(markers, dir),
         0,
         GitMarkerScope::Strict,
     )
@@ -739,7 +792,7 @@ fn preflight_tree(
     dir: &cap_std::fs::Dir,
     expected_device: u64,
     path: &Path,
-    tagged_root: bool,
+    rules: MarkerRules,
     depth: usize,
     scope: GitMarkerScope,
 ) -> Result<()> {
@@ -776,9 +829,9 @@ fn preflight_tree(
                 &child,
                 expected_device,
                 &child_path,
-                tagged_root,
+                rules,
                 child_depth,
-                git_marker_scope(tagged_root, child_depth, &name),
+                git_marker_scope(rules, child_depth, &name),
             )?;
         }
     }
@@ -823,6 +876,7 @@ fn verify_quarantined_target(
     quarantine_path: &Path,
     expected: FileIdentity,
 ) -> Result<cap_std::fs::Metadata> {
+    let original = quarantine_path.with_file_name(leaf);
     let metadata = match dir.symlink_metadata(quarantine_name) {
         Ok(metadata) => metadata,
         Err(error) => {
@@ -834,12 +888,12 @@ fn verify_quarantined_target(
                     quarantine_path.display()
                 );
             }
-            return Err(error).with_context(|| {
-                format!(
-                    "cannot inspect quarantined target: {}",
-                    quarantine_path.display()
-                )
-            });
+            return Err(restored_error(
+                &format!("cannot inspect {} in quarantine", original.display()),
+                &original,
+                quarantine_path,
+                &error.to_string(),
+            ));
         }
     };
     let actual = match file_identity_at(dir, quarantine_name) {
@@ -853,10 +907,15 @@ fn verify_quarantined_target(
                     quarantine_path.display()
                 );
             }
-            anyhow::bail!(
-                "cannot inspect quarantined target identity {}; entry was restored: {error:#}",
-                quarantine_path.display()
-            );
+            return Err(restored_error(
+                &format!(
+                    "cannot inspect the identity of {} in quarantine",
+                    original.display()
+                ),
+                &original,
+                quarantine_path,
+                &format!("{error:#}"),
+            ));
         }
     };
     if actual == expected {
@@ -871,7 +930,28 @@ fn verify_quarantined_target(
             quarantine_path.display()
         );
     }
-    anyhow::bail!("target identity changed after quarantine; restored original name and refusing")
+    anyhow::bail!(
+        "target identity changed after quarantine; restored {} to its name and refusing",
+        original.display()
+    )
+}
+
+/// A refusal raised after the entry went back to its own name. The private
+/// quarantine name no longer exists, so a message naming it would point the
+/// operator nowhere: the summary names the original path, and the same
+/// substitution is made inside the underlying cause. A restore that failed
+/// keeps the quarantine path instead, because the entry is still there.
+fn restored_error(
+    summary: &str,
+    original: &Path,
+    quarantine_path: &Path,
+    cause: &str,
+) -> anyhow::Error {
+    let cause = cause.replace(
+        &quarantine_path.display().to_string(),
+        &original.display().to_string(),
+    );
+    anyhow::anyhow!("{summary}; entry was restored: {cause}")
 }
 
 fn restore_quarantined_target(
@@ -947,7 +1027,7 @@ pub fn purge_trash(findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
             if target.parent() != Some(directory.as_path()) {
                 anyhow::bail!("refusing target outside the previewed Trash root");
             }
-            apply_filesystem_finding("trash-empty", finding, ctx)
+            apply_trashed_finding(finding, ctx, &directory)
         })();
         // Trash items are unrelated to one another. One the sink refuses — a
         // trashed project that still holds its repository — must not keep every
@@ -1154,6 +1234,38 @@ mod tests {
         remove_test_path(home);
     }
 
+    /// A permanent deletion refused during preparation restores the entry to
+    /// its own name, so the refusal names that path: the private quarantine
+    /// name it held for a moment no longer exists and points the operator
+    /// nowhere.
+    #[test]
+    fn a_restored_permanent_refusal_names_the_original_target() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-restored-name-{}", std::process::id()));
+        remove_test_path(&home);
+        let target = home.join("dev/cache");
+        std::fs::create_dir_all(target.join("nested/.git")).unwrap();
+        std::fs::write(target.join("nested/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let home = home.canonicalize().unwrap();
+        let target = home.join("dev/cache");
+        let finding = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
+        let expected = finding.identity().unwrap();
+        let verified = crate::safety::validate_path_for_deletion(&target, &home, &[]).unwrap();
+
+        let message = format!("{:#}", remove_path(verified, true, expected).unwrap_err());
+
+        assert!(message.contains("entry was restored"), "{message}");
+        assert!(!message.contains(".devtrim-quarantine-"), "{message}");
+        assert!(
+            message.contains(&target.join("nested").display().to_string()),
+            "{message}"
+        );
+        assert!(target.join("nested/.git/HEAD").exists());
+        remove_test_path(home);
+    }
+
     const UV_CACHEDIR_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n\
         # This file is a cache directory tag created by uv.\n\
         # For information about cache directory tags see https://bford.info/cachedir/\n";
@@ -1186,10 +1298,26 @@ mod tests {
         home.canonicalize().unwrap()
     }
 
+    /// The Trash preflight of a target no category granted a marker.
     fn trash_preflight(target: &Path) -> Result<()> {
         let dir = cap_std::fs::Dir::open_ambient_dir(target, cap_std::ambient_authority())?;
         let device = file_identity_for_dir(&dir)?.dev;
-        preflight_same_device_tree(&dir, device, target)
+        preflight_same_device_tree(&dir, device, target, &MarkerGrant::default())
+    }
+
+    /// The Trash preflight of a target granted uv's marker exception, as the
+    /// `caches` category grants it while holding uv's lock.
+    fn trash_preflight_granted(target: &Path) -> Result<()> {
+        let lock = crate::safety::lock_uv_cache(target)?;
+        let home = target
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("fixture has no parent"))?;
+        let (_, grant) = crate::safety::validate_path_for_deletion(target, home, &[])?
+            .grant_uv_marker(&lock)?
+            .into_parts();
+        let dir = cap_std::fs::Dir::open_ambient_dir(target, cap_std::ambient_authority())?;
+        let device = file_identity_for_dir(&dir)?.dev;
+        preflight_same_device_tree(&dir, device, target, &grant)
     }
 
     fn shred(home: &Path, target: &Path) -> Result<()> {
@@ -1208,6 +1336,25 @@ mod tests {
         remove_path(verified, true, expected)
     }
 
+    /// Permanent deletion with uv's marker exception granted by the real lock.
+    fn shred_with_uv_lock(home: &Path, target: &Path) -> Result<()> {
+        let lock = crate::safety::lock_uv_cache(target)?;
+        let finding = Finding::new(
+            "cache",
+            Some(target.to_path_buf()),
+            0,
+            "test",
+            9,
+            Action::Shred,
+        );
+        let expected = finding
+            .identity()
+            .ok_or_else(|| anyhow::anyhow!("fixture has no identity"))?;
+        let verified =
+            crate::safety::validate_path_for_deletion(target, home, &[])?.grant_uv_marker(&lock)?;
+        remove_path(verified, true, expected)
+    }
+
     /// uv writes that empty `.git` on every cache initialisation, so while every
     /// nested `.git` refused, no uv cache could ever be removed — neither by
     /// `clean caches` nor by a later `trash-empty` of the same tree.
@@ -1217,10 +1364,56 @@ mod tests {
         let target = home.join("uv");
         uv_cache_fixture(&target);
 
-        trash_preflight(&target).expect("Trash preflight must accept uv's own marker");
-        shred(&home, &target).expect("permanent deletion must accept uv's own marker");
+        trash_preflight_granted(&target).expect("Trash preflight must accept uv's own marker");
+        shred_with_uv_lock(&home, &target).expect("permanent deletion must accept uv's own marker");
 
         assert!(!target.exists());
+        remove_test_path(home);
+    }
+
+    /// uv's marker is tolerated only where uv's lock is held. A tagged uv cache
+    /// reached any other way — a repository-local `UV_CACHE_DIR` that
+    /// `artifacts` offers by its CACHEDIR.TAG — keeps the refusal, so no path
+    /// can remove a uv cache under a running uv.
+    #[test]
+    fn a_uv_cache_without_uv_s_lock_keeps_its_marker_refused() {
+        let home = sink_test_home("uv-marker-ungranted");
+        let target = home.join("dev/project/.uv-cache");
+        uv_cache_fixture(&target);
+
+        let trash = trash_preflight(&target).expect_err("PV sink/uv-marker-grant: Trash");
+        let permanent = shred(&home, &target).expect_err("PV sink/uv-marker-grant: permanent");
+
+        for error in [trash, permanent] {
+            assert!(
+                format!("{error:#}").contains("Git repository/worktree root"),
+                "PV sink/uv-marker-grant: {error:#}"
+            );
+        }
+        assert!(target.join("sdists-v9/.git").exists());
+        remove_test_path(home);
+    }
+
+    /// Holding uv's lock on one cache grants nothing on another: the grant is
+    /// bound to the exact root the lock was taken on.
+    #[test]
+    fn a_uv_lock_grants_only_its_own_root() {
+        let home = sink_test_home("uv-grant-root");
+        let locked = home.join("uv");
+        let other = home.join("other-uv");
+        uv_cache_fixture(&locked);
+        uv_cache_fixture(&other);
+        let lock = crate::safety::lock_uv_cache(&locked).unwrap();
+
+        let refused = crate::safety::validate_path_for_deletion(&other, &home, &[])
+            .unwrap()
+            .grant_uv_marker(&lock)
+            .expect_err("PV sink/uv-grant-root: a lock on one cache granted another");
+
+        assert!(
+            format!("{refused:#}").contains("refusing uv marker grant"),
+            "{refused:#}"
+        );
         remove_test_path(home);
     }
 
@@ -1246,10 +1439,12 @@ mod tests {
             .unwrap();
         }
 
-        trash_preflight(&plain).expect("an unreadable tag must not refuse an ordinary target");
-        shred(&home, &plain).expect("an unreadable tag must not refuse an ordinary target");
+        trash_preflight_granted(&plain)
+            .expect("an unreadable tag must not refuse an ordinary target");
+        shred_with_uv_lock(&home, &plain)
+            .expect("an unreadable tag must not refuse an ordinary target");
         assert!(!plain.exists());
-        let refused = shred(&home, &uv).unwrap_err();
+        let refused = shred_with_uv_lock(&home, &uv).unwrap_err();
         assert!(
             format!("{refused:#}").contains("Git repository/worktree root"),
             "{refused:#}"
@@ -1329,8 +1524,9 @@ mod tests {
             plant(&target);
             let sentinel = target.join("archive-v0/abc123/module.py");
 
-            let trash = trash_preflight(&target);
-            let shredded = shred(&home, &target);
+            // Granted, so only the shape checks can refuse.
+            let trash = trash_preflight_granted(&target);
+            let shredded = shred_with_uv_lock(&home, &target);
 
             for (path, result) in [
                 ("Trash preflight", &trash),
@@ -1351,6 +1547,26 @@ mod tests {
         }
     }
 
+    /// The Trash grant belongs to items directly in the Trash that
+    /// `trash-empty` previewed, and to nothing else.
+    #[test]
+    fn the_trash_grant_covers_only_items_directly_in_the_trash() {
+        let home = sink_test_home("trash-grant-root");
+        let trash = home.join(".Trash");
+        for elsewhere in [home.join("dev/uv"), trash.join("folder/uv")] {
+            uv_cache_fixture(&elsewhere);
+            let refused = crate::safety::validate_path_for_deletion(&elsewhere, &home, &[])
+                .unwrap()
+                .grant_trashed_markers(&trash)
+                .expect_err("PV sink/trash-grant-root: granted outside the Trash");
+            assert!(
+                format!("{refused:#}").contains("refusing Trash marker grant"),
+                "{refused:#}"
+            );
+        }
+        remove_test_path(home);
+    }
+
     #[test]
     fn same_device_preflight_refuses_a_foreign_directory_before_deletion() {
         let home = std::env::current_dir()
@@ -1368,8 +1584,13 @@ mod tests {
             cap_std::fs::Dir::open_ambient_dir(&target, cap_std::ambient_authority()).unwrap();
         let actual_device = file_identity_for_dir(&target_dir).unwrap().dev;
 
-        let error = preflight_same_device_tree(&target_dir, actual_device.wrapping_add(1), &target)
-            .unwrap_err();
+        let error = preflight_same_device_tree(
+            &target_dir,
+            actual_device.wrapping_add(1),
+            &target,
+            &MarkerGrant::default(),
+        )
+        .unwrap_err();
 
         assert!(error.to_string().contains("foreign filesystem device"));
         assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
@@ -1950,6 +2171,38 @@ mod tests {
         );
         assert!(home.join(".Trash/a-project/.git/HEAD").exists());
         assert!(!home.join(".Trash/z-later").exists());
+        remove_test_path(root);
+    }
+
+    /// What `clean caches` moves to the Trash, `trash-empty` must be able to
+    /// purge: a uv cache carries the same marker there as where it came from.
+    /// uv's lock guarded only the live cache; in the Trash only the marker's
+    /// shape and the tag still apply, so a project trashed with its own
+    /// repository is still refused.
+    #[test]
+    fn trash_empty_purges_a_trashed_uv_cache_but_not_a_trashed_repository() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-trash-markers-{}", std::process::id()));
+        remove_test_path(&root);
+        std::fs::create_dir_all(root.join(".Trash")).unwrap();
+        let home = root.canonicalize().unwrap();
+        uv_cache_fixture(&home.join(".Trash/uv"));
+        std::fs::create_dir_all(home.join(".Trash/a-project/.git")).unwrap();
+        std::fs::write(
+            home.join(".Trash/a-project/.git/HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .unwrap();
+        let ctx = context(home.clone());
+        let findings = trash_findings(&ctx).unwrap();
+
+        let outcome = purge_trash(&findings, &ctx).unwrap();
+
+        assert!(!home.join(".Trash/uv").exists(), "{:?}", outcome.errors);
+        assert!(home.join(".Trash/a-project/.git/HEAD").exists());
+        assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
         remove_test_path(root);
     }
 

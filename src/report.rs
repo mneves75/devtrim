@@ -422,16 +422,26 @@ pub fn print_human(findings: &[Finding]) -> std::io::Result<()> {
 }
 
 /// Consecutive findings that share a project, with their combined size.
-fn project_runs(findings: &[Finding]) -> Vec<(Option<&str>, std::ops::Range<usize>, u64)> {
-    let mut runs: Vec<(Option<&str>, std::ops::Range<usize>, u64)> = Vec::new();
+struct ProjectRun<'a> {
+    project: Option<&'a str>,
+    findings: std::ops::Range<usize>,
+    bytes: u64,
+}
+
+fn project_runs(findings: &[Finding]) -> Vec<ProjectRun<'_>> {
+    let mut runs: Vec<ProjectRun<'_>> = Vec::new();
     for (index, finding) in findings.iter().enumerate() {
         let project = finding.project.as_deref();
         match runs.last_mut() {
-            Some((current, range, total)) if *current == project => {
-                range.end = index + 1;
-                *total = total.saturating_add(finding.size_bytes);
+            Some(run) if run.project == project => {
+                run.findings.end = index + 1;
+                run.bytes = run.bytes.saturating_add(finding.size_bytes);
             }
-            _ => runs.push((project, index..index + 1, finding.size_bytes)),
+            _ => runs.push(ProjectRun {
+                project,
+                findings: index..index + 1,
+                bytes: finding.size_bytes,
+            }),
         }
     }
     runs
@@ -505,11 +515,7 @@ fn scan_text(findings: &[Finding], sections: &[ScanSection], all: bool) -> Strin
                 .fold(0, |total: u64, finding| total.saturating_add(finding.size_bytes)))
         ));
     }
-    output.push_str(&format!(
-        "\n{} actionable across {} finding(s)\n",
-        gb(actionable_bytes(findings)).bold(),
-        findings.len()
-    ));
+    output.push_str(&actionable_total(findings));
     if !ordered.is_empty() {
         output.push_str(&format!(
             "Pick items one by one in the interactive view: {}. Project build output together: {}.\n",
@@ -522,12 +528,17 @@ fn scan_text(findings: &[Finding], sections: &[ScanSection], all: bool) -> Strin
 
 fn human_text(findings: &[Finding]) -> String {
     let mut output = findings_text(findings);
-    output.push_str(&format!(
+    output.push_str(&actionable_total(findings));
+    output
+}
+
+/// The closing line of every human findings report.
+fn actionable_total(findings: &[Finding]) -> String {
+    format!(
         "\n{} actionable across {} finding(s)\n",
         gb(actionable_bytes(findings)).bold(),
         findings.len()
-    ));
-    output
+    )
 }
 
 /// One entry per finding, with a header wherever a new project begins.
@@ -535,16 +546,15 @@ fn findings_text(findings: &[Finding]) -> String {
     let mut output = String::new();
     let mut headers = project_runs(findings)
         .into_iter()
-        .filter_map(|(project, range, bytes)| {
-            project.map(|project| (range.start, project, range.len(), bytes))
-        })
+        .filter_map(|run| run.project.map(|project| (project, run)))
         .peekable();
     for (index, finding) in findings.iter().enumerate() {
-        if let Some((_, project, count, bytes)) = headers.next_if(|(start, ..)| *start == index) {
+        if let Some((project, run)) = headers.next_if(|(_, run)| run.findings.start == index) {
             output.push_str(&format!(
-                "\n{} · {} in {count} item(s)\n",
+                "\n{} · {} in {} item(s)\n",
                 terminal_safe(project).bold(),
-                gb(bytes)
+                gb(run.bytes),
+                run.findings.len()
             ));
         }
         let path = finding.path.as_deref().unwrap_or("-");

@@ -314,11 +314,139 @@ impl FileIdentity {
 /// Validation resolves the parent before the sink opens its directory handle;
 /// target identity is rechecked through that handle before deletion.
 #[derive(Debug)]
-pub(crate) struct VerifiedTarget(PathBuf);
+pub(crate) struct VerifiedTarget {
+    path: PathBuf,
+    markers: MarkerGrant,
+}
+
+/// The nested Git markers the sink may tolerate inside one target. Validation
+/// grants none; each is granted only with proof of what makes it safe, so a
+/// target reached any other way keeps the refusal. The sink still checks
+/// every marker's exact shape.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MarkerGrant {
+    /// uv's empty `.git` in `sdists-v<N>`: granted while uv's cache lock on
+    /// this exact root is held, or to a tree in the Trash, where no uv uses it.
+    uv: bool,
+}
+
+impl MarkerGrant {
+    pub(crate) fn uv(&self) -> bool {
+        self.uv
+    }
+}
 
 impl VerifiedTarget {
-    pub(crate) fn into_path(self) -> PathBuf {
-        self.0
+    pub(crate) fn into_parts(self) -> (PathBuf, MarkerGrant) {
+        (self.path, self.markers)
+    }
+
+    /// Lets the sink tolerate uv's source-distribution marker in this target,
+    /// on proof that uv's cache lock on this exact root is held.
+    pub(crate) fn grant_uv_marker(mut self, lock: &UvCacheLock) -> Result<Self> {
+        if lock.root != self.path {
+            bail!(
+                "refusing uv marker grant: the held lock covers {}, not {}",
+                lock.root.display(),
+                self.path.display()
+            );
+        }
+        self.markers.uv = true;
+        Ok(self)
+    }
+
+    /// Lets the sink tolerate uv's marker in a tree directly in the Trash:
+    /// `clean caches` moves the uv cache there, and no uv uses a cache that has
+    /// moved away, so the lock guarded only its live location. The marker's
+    /// exact shape and the tree's tag are still checked.
+    pub(crate) fn grant_trashed_markers(mut self, trash: &Path) -> Result<Self> {
+        if self.path.parent() != Some(trash) {
+            bail!(
+                "refusing Trash marker grant: {} is not directly in {}",
+                self.path.display(),
+                trash.display()
+            );
+        }
+        self.markers.uv = true;
+        Ok(self)
+    }
+}
+
+/// uv's cache lock, held exclusively for as long as this value lives. Its only
+/// constructor takes the lock, so holding one proves no uv process is using
+/// that cache — the condition for tolerating uv's marker there.
+#[derive(Debug)]
+pub(crate) struct UvCacheLock {
+    root: PathBuf,
+    file: std::fs::File,
+}
+
+impl Drop for UvCacheLock {
+    /// Releases the lock explicitly. A `flock` belongs to the open file
+    /// description, which a child forked in the moment before its close-on-exec
+    /// runs shares; closing only this descriptor could leave uv's cache locked
+    /// until that child execs.
+    fn drop(&mut self) {
+        let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
+    }
+}
+
+/// A uv process holds a shared `flock` on `<cache>/.lock` while it uses the
+/// cache (where the filesystem supports shared locks, as APFS does), and
+/// `uv cache clean` takes it exclusively (uv 0.9.24
+/// `crates/uv-cache/src/lib.rs:205-263,460`; `crates/uv-fs/src/locked_file.rs`
+/// locks through std `File::lock`, which is `flock(2)` on macOS). Taking the
+/// same lock without waiting refuses removal while uv runs, and holding it
+/// until the removal completes keeps a new uv process from starting in the
+/// tree. Like uv, this creates the lock file when it is missing.
+pub(crate) fn lock_uv_cache(root: &Path) -> Result<UvCacheLock> {
+    use rustix::fs::{FlockOperation, Mode, OFlags};
+
+    // The lock is taken before the sink validates the target, so it must not
+    // reach through a symlink and create a file in the directory behind it.
+    let resolved = root
+        .canonicalize()
+        .with_context(|| format!("cannot resolve uv cache {}", root.display()))?;
+    if resolved != root {
+        bail!(
+            "refusing uv cache through a symlink or symlinked ancestor: {} resolves to {}",
+            root.display(),
+            resolved.display()
+        );
+    }
+    let lock = root.join(".lock");
+    let directory = rustix::fs::open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("cannot open uv cache {}", root.display()))?;
+    let descriptor = rustix::fs::openat(
+        &directory,
+        ".lock",
+        OFlags::RDONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o644),
+    )
+    .with_context(|| format!("cannot open uv's cache lock {}", lock.display()))?;
+    let file = std::fs::File::from(descriptor);
+    if !file
+        .metadata()
+        .with_context(|| format!("cannot inspect uv's cache lock {}", lock.display()))?
+        .file_type()
+        .is_file()
+    {
+        bail!("uv's cache lock is not a regular file: {}", lock.display());
+    }
+    match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(UvCacheLock {
+            root: root.to_path_buf(),
+            file,
+        }),
+        Err(rustix::io::Errno::WOULDBLOCK) => bail!(
+            "uv is using its cache (a uv process holds {}); retry after it exits",
+            lock.display()
+        ),
+        Err(error) => Err(error).with_context(|| format!("cannot lock {}", lock.display())),
     }
 }
 
@@ -365,7 +493,10 @@ pub(crate) fn validate_path_for_deletion(
         bail!("refusing protected resolved path: {}", resolved.display());
     }
     refuse_git_repository_root(&resolved)?;
-    Ok(VerifiedTarget(literal))
+    Ok(VerifiedTarget {
+        path: literal,
+        markers: MarkerGrant::default(),
+    })
 }
 
 fn revalidate_configured_protect_aliases(protect: &[PathBuf]) -> Result<()> {
@@ -1390,7 +1521,7 @@ mod tests {
             }));
             let target = home.join(std::ffi::OsString::from_vec(bytes));
             let verified = validate_path_for_deletion(&target, &home, &[]).unwrap();
-            prop_assert_eq!(verified.into_path(), target);
+            prop_assert_eq!(verified.into_parts().0, target);
             crate::ops::remove_test_path(home);
         }
     }

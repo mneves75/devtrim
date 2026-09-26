@@ -81,21 +81,23 @@ fn docker_script(sandbox: &Sandbox, image_prune_exit: i32) {
 }
 
 /// A `git` answering devtrim's two activity queries — HEAD's commit date, then
-/// the newest HEAD reflog entry (`-g`) — with `commit` and `reflog`.
+/// the newest HEAD reflog entry (`-g`) — with `commit` and `reflog`, and its
+/// tracked-file check (`ls-files`) with nothing tracked.
 fn git_activity(commit: &str, reflog: &str) -> String {
     format!(
-        "case \"$*\" in\n  *' -g '*) printf 'HEAD@{{{reflog}}}\\n' ;;\n  *) printf '{commit}\\n' ;;\nesac"
+        "case \"$*\" in\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{{{reflog}}}\\n' ;;\n  *) printf '{commit}\\n' ;;\nesac"
     )
 }
 
 /// A `git` that answers "stale" to its first three activity checks and fails
 /// after, so an apply that re-probes every repository before mutating can be
 /// caught mutating between probes. Each check's commit query advances the count
-/// through `DEVTRIM_TEST_COUNT`; its reflog query reads it.
+/// through `DEVTRIM_TEST_COUNT`; its reflog query reads it. The tracked-file
+/// check finds nothing tracked and leaves the count alone.
 fn git_stale_for_three_probes(sandbox: &Sandbox) {
     sandbox.script(
         "git",
-        "count=0\nif [ -f \"$DEVTRIM_TEST_COUNT\" ]; then read count < \"$DEVTRIM_TEST_COUNT\"; fi\ncase \"$*\" in\n  *' -g '*) ;;\n  *) count=$((count + 1)); printf '%s\\n' \"$count\" > \"$DEVTRIM_TEST_COUNT\" ;;\nesac\ncase \"$count\" in\n  1|2|3) ;;\n  *) exit 9 ;;\nesac\ncase \"$*\" in\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+        "case \"$*\" in\n  *ls-files*) exit 0 ;;\nesac\ncount=0\nif [ -f \"$DEVTRIM_TEST_COUNT\" ]; then read count < \"$DEVTRIM_TEST_COUNT\"; fi\ncase \"$*\" in\n  *' -g '*) ;;\n  *) count=$((count + 1)); printf '%s\\n' \"$count\" > \"$DEVTRIM_TEST_COUNT\" ;;\nesac\ncase \"$count\" in\n  1|2|3) ;;\n  *) exit 9 ;;\nesac\ncase \"$*\" in\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
     );
 }
 
@@ -701,6 +703,238 @@ fn purge_fixture(sandbox: &Sandbox) -> (PathBuf, PathBuf, PathBuf) {
     sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
     let dev = dev.canonicalize().unwrap();
     (dev.clone(), dev.join("alpha"), dev.join("beta"))
+}
+
+/// A build directory holding a file its repository tracks is part of the
+/// repository, not build output, so neither `purge` half offers it. The
+/// untracked `node_modules` beside it is the positive control.
+#[test]
+fn purge_never_offers_a_build_directory_holding_tracked_files() {
+    let sandbox = Sandbox::new("purge-tracked");
+    let (dev, _small, large) = purge_fixture(&sandbox);
+    sandbox.script(
+        "git",
+        "case \"$*\" in\n  *ls-files*target*) printf 'target/committed.txt\\0' ;;\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+    );
+
+    let output = run(
+        &sandbox,
+        &["purge", "--root", dev.to_str().unwrap(), "--json"],
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let paths = finding_paths(&json(&output));
+    assert!(
+        !paths.contains(&large.join("target").display().to_string()),
+        "a build directory holding tracked files was offered: {paths:?}"
+    );
+    assert!(
+        paths.contains(&large.join("node_modules").display().to_string()),
+        "positive control: the untracked node_modules was not offered: {paths:?}"
+    );
+}
+
+/// A cache its owner rebuilds only when a command runs names that command and
+/// never promises an automatic rebuild: Playwright's browsers come back only
+/// through `npx playwright install`. pip refills its cache on the next install,
+/// and its finding keeps that promise.
+#[test]
+fn a_cache_rebuilt_only_by_a_command_names_that_command() {
+    let sandbox = Sandbox::new("caches-rebuilt-by-command");
+    let caches = sandbox.path().join("Library/Caches");
+    std::fs::create_dir_all(caches.join("ms-playwright/chromium-1200")).unwrap();
+    std::fs::write(
+        caches.join("ms-playwright/chromium-1200/chrome"),
+        vec![b'x'; 2048],
+    )
+    .unwrap();
+    std::fs::create_dir_all(caches.join("pip/http")).unwrap();
+    std::fs::write(caches.join("pip/http/entry"), vec![b'x'; 2048]).unwrap();
+
+    let output = run(&sandbox, &["clean", "caches", "--json"]);
+
+    let value = json(&output);
+    assert!(output.status.success(), "{value}");
+    let note = |leaf: &str| {
+        value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["path"].as_str().unwrap().ends_with(leaf))
+            .map(|finding| finding["note"].as_str().unwrap().to_string())
+            .unwrap_or_else(|| panic!("no finding for {leaf}: {value}"))
+    };
+    let playwright = note("Library/Caches/ms-playwright");
+    assert!(
+        playwright.contains("npx playwright install") && !playwright.contains("automatically"),
+        "{playwright}"
+    );
+    let pip = note("Library/Caches/pip");
+    assert!(pip.contains("automatically"), "positive control: {pip}");
+}
+
+/// Xcode keeps a project's resolved packages in its DerivedData folder, each a
+/// Git clone, which devtrim never deletes. `clean xcode` removes the folder's
+/// build output around them, and a folder without packages whole.
+#[test]
+fn clean_xcode_cleans_derived_data_around_package_checkouts() {
+    let sandbox = Sandbox::in_target("xcode-packages");
+    let derived_data = sandbox.path().join("Library/Developer/Xcode/DerivedData");
+    let checkout = derived_data.join("App-pkg/SourcePackages/checkouts/Example");
+    std::fs::create_dir_all(checkout.join(".git/objects")).unwrap();
+    std::fs::write(checkout.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    for build in [
+        derived_data.join("App-pkg/Build/Products/Debug"),
+        derived_data.join("App-pkg/Index.noindex/DataStore"),
+        derived_data.join("App-plain/Build/Products/Debug"),
+    ] {
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(build.join("output"), vec![b'x'; 4096]).unwrap();
+    }
+
+    let output = run(
+        &sandbox,
+        &["clean", "xcode", "--apply", "--shred", "--yolo", "--json"],
+    );
+
+    let value = json(&output);
+    assert!(output.status.success(), "{value}");
+    assert_eq!(value["summary"]["items_touched"], 3, "{value}");
+    assert!(!derived_data.join("App-pkg/Build").exists(), "{value}");
+    assert!(
+        !derived_data.join("App-pkg/Index.noindex").exists(),
+        "{value}"
+    );
+    assert!(!derived_data.join("App-plain").exists(), "{value}");
+    assert!(checkout.join(".git/HEAD").exists(), "{value}");
+}
+
+fn finding_paths(value: &Value) -> Vec<String> {
+    value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|finding| finding["path"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// `cargo build-sbf`, which `anchor build` runs, writes a Solana program's
+/// keypair into `target/deploy` only when none exists, and its public key is the
+/// program's address: a rebuild after removal mints a different one. `target`
+/// is ignored, so the key is untracked and only its name can protect it.
+#[test]
+fn purge_never_offers_a_build_directory_holding_a_program_keypair() {
+    let sandbox = Sandbox::new("purge-keypair");
+    let (dev, _small, large) = purge_fixture(&sandbox);
+    std::fs::create_dir_all(large.join("target/deploy")).unwrap();
+    std::fs::write(large.join("target/deploy/program-keypair.json"), "[0]").unwrap();
+
+    let output = run(
+        &sandbox,
+        &["purge", "--root", dev.to_str().unwrap(), "--json"],
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let paths = finding_paths(&json(&output));
+    assert!(
+        !paths.contains(&large.join("target").display().to_string()),
+        "a build directory holding a program keypair was offered: {paths:?}"
+    );
+    assert!(
+        paths.contains(&large.join("node_modules").display().to_string()),
+        "positive control: the node_modules beside it was not offered: {paths:?}"
+    );
+}
+
+/// The tracked-file check against real Git. A pathspec setting in the caller's
+/// environment makes Git refuse `--literal-pathspecs` outright, so the check
+/// must not inherit one. CocoaPods recommends committing `Pods`; the untracked
+/// `target` beside it is the positive control.
+#[test]
+fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() {
+    let sandbox = Sandbox::new("tracked-real-git");
+    let resolved = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(resolved.status.success(), "git is required for this test");
+    let git = String::from_utf8(resolved.stdout).unwrap();
+    sandbox.script("git", &format!("exec '{}' \"$@\"", git.trim()));
+    let project = sandbox.path().join("dev/app");
+    std::fs::create_dir_all(project.join("Pods/Alamofire")).unwrap();
+    std::fs::write(project.join("Podfile"), "platform :ios, '17.0'\n").unwrap();
+    std::fs::write(
+        project.join("Pods/Alamofire/Session.swift"),
+        "// vendored\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"app\"\n").unwrap();
+    std::fs::create_dir_all(project.join("target/debug")).unwrap();
+    std::fs::write(project.join("target/debug/out"), vec![b'x'; 4096]).unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "--", "Podfile", "Pods", "Cargo.toml"],
+        vec![
+            "-c",
+            "user.name=devtrim-test",
+            "-c",
+            "user.email=devtrim@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "vendored pods",
+        ],
+    ] {
+        let status = Command::new(git.trim())
+            .args(&args)
+            .current_dir(&project)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+    let project = project.canonicalize().unwrap();
+
+    // One makes Git refuse the query outright; the other would silently turn
+    // its pathspec magic into a literal name that matches nothing.
+    for setting in ["GIT_ICASE_PATHSPECS", "GIT_LITERAL_PATHSPECS"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+            .args(["purge", "--root", project.to_str().unwrap(), "--json"])
+            .env("HOME", sandbox.path())
+            .env("PATH", sandbox.bin())
+            .env_remove("XDG_STATE_HOME")
+            .env(setting, "1")
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{setting}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let paths = finding_paths(&json(&output));
+        assert!(
+            !paths.contains(&project.join("Pods").display().to_string()),
+            "{setting}: a committed Pods directory was offered: {paths:?}"
+        );
+        assert!(
+            paths.contains(&project.join("target").display().to_string()),
+            "{setting}: positive control: the untracked target was not offered: {paths:?}"
+        );
+    }
 }
 
 /// `purge` is `node-modules` and `artifacts` in one plan — the same closed
@@ -1344,7 +1578,7 @@ fn node_modules_apply_refuses_repo_that_became_active() {
     sandbox.script(
         "git",
         &format!(
-            "case \"$*\" in *' -g '*) if [ -e '{}' ]; then printf 'HEAD@{{2999-01-01}}\\n'; else : > '{}'; printf 'HEAD@{{2020-01-01}}\\n'; fi ;; *) printf '2020-01-01\\n' ;; esac",
+            "case \"$*\" in *ls-files*) ;; *' -g '*) if [ -e '{}' ]; then printf 'HEAD@{{2999-01-01}}\\n'; else : > '{}'; printf 'HEAD@{{2020-01-01}}\\n'; fi ;; *) printf '2020-01-01\\n' ;; esac",
             state.display(),
             state.display()
         ),
@@ -2164,6 +2398,8 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
         "{spawns}"
     );
     assert_eq!(count(" log --no-show-signature -1 -g "), 1, "{spawns}");
+    // The tracked-file check runs once per offered candidate, never per file.
+    assert_eq!(count(" ls-files -z -- :(literal,icase)"), 2, "{spawns}");
 
     for failed_probe in ["liveness", "git"] {
         std::fs::write(&log, "").unwrap();

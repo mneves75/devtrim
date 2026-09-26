@@ -176,6 +176,20 @@ class Session:
             if self.process.poll() is not None:
                 raise AssertionError(f"TUI exited before showing {texts!r}")
 
+    def wait_for_screen_without(self, text):
+        """Waits until `text` is gone from the rebuilt screen, as an overlay's
+        text is once the overlay closes."""
+        while True:
+            try:
+                self.read_output()
+            except AssertionError as error:
+                screen = "\n".join(render_screen(self.output, self.rows, self.columns))
+                raise AssertionError(f"waiting for {text!r} to leave the screen: {error}\n{screen}") from error
+            if text not in screen_text(render_screen(self.output, self.rows, self.columns)):
+                return
+            if self.process.poll() is not None:
+                raise AssertionError(f"TUI exited while still showing {text!r}")
+
     def settle(self, seconds):
         end = time.monotonic() + seconds
         while time.monotonic() < end:
@@ -202,7 +216,11 @@ def verify_menu(binary):
             session.send(b"?")
             session.wait_for("open or close this reference")
             session.send(b"\x1b")
-            session.wait_for("Enter opens")
+            # The overlay is gone and the menu beneath it intact. Only the cells
+            # the overlay covered are redrawn, so this reads the screen rather
+            # than waiting for new output.
+            session.wait_for_screen_without("open or close this reference")
+            session.wait_for_screen("Enter opens")
             session.quit()
             if termios.tcgetattr(session.master) != session.original:
                 raise AssertionError("TUI did not restore terminal attributes")
@@ -277,11 +295,12 @@ def stale_project(home):
     """A stale repository offering a `target` and a `node_modules`, under a
     directory name long enough that its paths wrap in the detail pane."""
     (home / "bin").mkdir()
-    # No build process is running, and the repository's history is old.
+    # No build process is running, the repository's history is old, and it
+    # tracks nothing under either directory.
     write_script(home / "bin" / "pgrep", "exit 1")
     write_script(
         home / "bin" / "git",
-        "case \"$*\" in\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n"
+        "case \"$*\" in\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n"
         "  *) printf '2020-01-01\\n' ;;\nesac",
     )
     project = home / "dev" / "-".join(["a-project-whose-directory-name-wraps"] * 4)
@@ -325,16 +344,28 @@ def verify_purge(binary):
 def verify_minimum_size(binary):
     """At the minimum 64×18 the same long path cannot fit in the detail pane.
     The pane must still show the selection state and say how many lines it
-    hides, never cut them silently."""
+    hides, never cut them silently, and Enter must show them: the view scrolls
+    to the finding's last line, the project, and Esc returns to the results."""
     with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
         home = Path(directory).resolve()
-        stale_project(home)
+        project = stale_project(home)
         with Session(binary, home, rows=18, columns=64) as session:
             session.wait_for("Scan everything")
             session.send(b"p")
             session.wait_for("Review every finding")
             session.send(b"j ")
-            session.wait_for_screen("Left out of this plan", "more line(s); enlarge the terminal")
+            session.wait_for_screen("Left out of this plan", "more line(s); Enter shows all")
+            session.send(b"\r")
+            session.wait_for_screen(
+                "Esc back to the results", "Details · lines 1-", str(project / "node_modules")
+            )
+            visible = screen_text(render_screen(session.output, session.rows, session.columns))
+            if f"project: {project}" in visible:
+                raise AssertionError("the project line must need scrolling to prove the view scrolls")
+            session.send(b"G")
+            session.wait_for_screen(f"project: {project}")
+            session.send(b"\x1b")
+            session.wait_for_screen("Left out of this plan", "more line(s); Enter shows all")
             session.quit()
 
 
@@ -354,7 +385,7 @@ def main():
         return 1
     print(
         "tui: menu, help, cancel, quit, terminal restoration, type-ahead discard,"
-        " selection, project purge, and the minimum-size detail pane passed"
+        " selection, project purge, and the minimum-size detail pane and view passed"
     )
     return 0
 

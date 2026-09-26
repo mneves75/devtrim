@@ -1,6 +1,8 @@
 //! Xcode support files. Archives are deliberately exempt release artifacts.
 
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, escalate, xcode_build_running};
@@ -25,6 +27,10 @@ const TARGETS: &[(&str, &str, &str)] = &[
         "build output; rebuilt on next build",
     ),
 ];
+
+/// The note on a directory of a DerivedData folder whose package checkouts
+/// stay behind.
+const PACKAGE_FOLDER_NOTE: &str = "build output; rebuilt on next build. The folder's SwiftPM package checkouts are Git clones and stay";
 
 impl Op for Xcode {
     fn name(&self) -> &'static str {
@@ -102,6 +108,24 @@ impl Xcode {
                     continue;
                 }
                 let path = entry.path();
+                if *label == "DerivedData" && holds_package_checkouts(&path)? {
+                    let folder = path.file_name().unwrap_or_default().to_string_lossy();
+                    for child in package_folder_children(&path)? {
+                        let size = dir_size(&child)?;
+                        findings.push(Finding::new(
+                            format!(
+                                "{label}: {folder}/{}",
+                                child.file_name().unwrap_or_default().to_string_lossy()
+                            ),
+                            Some(child),
+                            size,
+                            PACKAGE_FOLDER_NOTE,
+                            escalate(4, size),
+                            Action::Trash,
+                        ));
+                    }
+                    continue;
+                }
                 let size = dir_size(&path)?;
                 findings.push(Finding::new(
                     format!(
@@ -176,10 +200,10 @@ impl Xcode {
                 apply_filesystem_finding(self.name(), finding, ctx)?;
                 Ok(removal_note(finding, path.display()))
             })();
-            // A refusal costs only its own finding: DerivedData holding
-            // SwiftPM checkouts carries nested Git markers the sink always
-            // refuses, and stopping there would strand every build tree after
-            // it. Each failure is recorded, so the run still reports nonzero.
+            // A refusal costs only its own finding: a DerivedData folder that
+            // holds a Git repository is refused by the sink, and stopping there
+            // would strand every build tree after it. Each failure is recorded,
+            // so the run still reports nonzero.
             match result {
                 Ok(note) => outcome.record(finding, note),
                 Err(error) => outcome.fail(error),
@@ -189,15 +213,85 @@ impl Xcode {
     }
 }
 
-fn authorize_xcode_target(
-    path: &std::path::Path,
-    home: &std::path::Path,
-) -> Result<XcodeTargetKind> {
+/// Whether a DerivedData folder holds SwiftPM package checkouts. Each is a Git
+/// clone of the package, which the deletion sink never removes, so such a
+/// folder is offered directory by directory with `SourcePackages` kept.
+fn holds_package_checkouts(folder: &Path) -> Result<bool> {
+    let checkouts = folder.join("SourcePackages/checkouts");
+    match std::fs::symlink_metadata(&checkouts) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", checkouts.display()));
+        }
+    }
+    let first = std::fs::read_dir(&checkouts)
+        .with_context(|| format!("cannot read {}", checkouts.display()))?
+        .next()
+        .transpose()
+        .with_context(|| format!("cannot read {}", checkouts.display()))?;
+    Ok(first.is_some())
+}
+
+/// Every real directory of a DerivedData folder holding package checkouts but
+/// `SourcePackages`, which holds them: all of it is build output Xcode rebuilds.
+fn package_folder_children(folder: &Path) -> Result<Vec<PathBuf>> {
+    let mut children = Vec::new();
+    for entry in std::fs::read_dir(folder)
+        .with_context(|| format!("cannot read DerivedData folder {}", folder.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("cannot read DerivedData folder {}", folder.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("cannot inspect {}", entry.path().display()))?;
+        if file_type.is_dir() && !is_source_packages(&entry.file_name()) {
+            children.push(entry.path());
+        }
+    }
+    children.sort();
+    Ok(children)
+}
+
+/// `SourcePackages` in any ASCII case, which names the same directory on a
+/// case-insensitive volume.
+fn is_source_packages(name: &OsStr) -> bool {
+    name.as_encoded_bytes()
+        .eq_ignore_ascii_case(b"SourcePackages")
+}
+
+/// Whether `path` is a directory a scan offers inside a DerivedData folder
+/// holding package checkouts: a direct child of such a folder, and never
+/// `SourcePackages`.
+fn is_package_folder_child(path: &Path, derived_data: &Path) -> Result<bool> {
+    let Some(folder) = path
+        .parent()
+        .filter(|folder| folder.parent() == Some(derived_data))
+    else {
+        return Ok(false);
+    };
+    if path.file_name().is_some_and(is_source_packages) {
+        anyhow::bail!(
+            "refusing the SwiftPM package checkouts in {}: they are Git clones",
+            folder.display()
+        );
+    }
+    let folder_is_directory = std::fs::symlink_metadata(folder)
+        .with_context(|| format!("cannot inspect DerivedData folder {}", folder.display()))?
+        .file_type()
+        .is_dir();
+    Ok(folder_is_directory && holds_package_checkouts(folder)?)
+}
+
+fn authorize_xcode_target(path: &Path, home: &Path) -> Result<XcodeTargetKind> {
     let device_support = home.join("Library/Developer/Xcode/iOS DeviceSupport");
     let derived_data = home.join("Library/Developer/Xcode/DerivedData");
     let kind = if path.parent() == Some(device_support.as_path()) {
         XcodeTargetKind::DeviceSupport
-    } else if path.parent() == Some(derived_data.as_path()) {
+    } else if path.parent() == Some(derived_data.as_path())
+        || is_package_folder_child(path, &derived_data)?
+    {
         XcodeTargetKind::DerivedData
     } else {
         anyhow::bail!(
@@ -483,8 +577,9 @@ mod tests {
         crate::ops::remove_test_path(root);
     }
 
-    /// DerivedData that holds SwiftPM checkouts carries nested Git markers the
-    /// sink always refuses. That refusal must cost only its own folder, not
+    /// A DerivedData folder that holds a Git repository — here one forged over
+    /// a package checkout, which a scan offers only directory by directory —
+    /// is refused by the sink. That refusal must cost only its own folder, not
     /// every build tree after it in the plan.
     #[test]
     fn a_refused_derived_data_folder_does_not_block_the_rest_of_the_plan() {
@@ -534,6 +629,131 @@ mod tests {
         assert!(
             !derived_data.join("Plain").exists(),
             "PV xcode/continue-past-refusal: a refused folder blocked the DerivedData after it"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    /// A DerivedData folder of a project using a package: Xcode's checkout of
+    /// it is a Git clone beside the folder's build output.
+    fn package_folder(folder: &Path) {
+        let checkout = folder.join("SourcePackages/checkouts/Example");
+        std::fs::create_dir_all(checkout.join(".git/objects")).unwrap();
+        std::fs::write(checkout.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(checkout.join("Package.swift"), "// package\n").unwrap();
+        std::fs::create_dir_all(folder.join("SourcePackages/repositories/Example-1a2b/objects"))
+            .unwrap();
+        for child in [
+            "Build/Products/Debug",
+            "Index.noindex/DataStore",
+            "Logs/Build",
+        ] {
+            std::fs::create_dir_all(folder.join(child)).unwrap();
+            std::fs::write(folder.join(child).join("output"), "rebuilt").unwrap();
+        }
+        std::fs::write(folder.join("info.plist"), "<plist/>").unwrap();
+    }
+
+    /// The sink never removes a Git repository, and each package checkout
+    /// Xcode keeps in a DerivedData folder is one, so such a folder could
+    /// never be cleaned. A scan offers its build output instead — every
+    /// directory but `SourcePackages` — and apply removes exactly that.
+    #[test]
+    fn a_derived_data_folder_holding_package_checkouts_is_cleaned_around_them() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-xcode-packages-{}", std::process::id()));
+        crate::ops::remove_test_path(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let home = root.canonicalize().unwrap();
+        let derived_data = home.join("Library/Developer/Xcode/DerivedData");
+        package_folder(&derived_data.join("App-pkg"));
+        std::fs::create_dir_all(derived_data.join("App-plain/Build")).unwrap();
+        std::fs::write(derived_data.join("App-plain/Build/output"), "rebuilt").unwrap();
+        let ctx = test_context(home.clone());
+
+        let mut findings = Xcode.scan_with_xcode_build_state(&ctx, Ok(false)).unwrap();
+
+        let mut offered: Vec<_> = findings
+            .iter()
+            .filter_map(Finding::target)
+            .map(|path| path.strip_prefix(&derived_data).unwrap().to_path_buf())
+            .collect();
+        offered.sort();
+        assert!(
+            !offered.contains(&PathBuf::from("App-pkg/SourcePackages")),
+            "PV xcode/package-checkouts-offered: {offered:?}"
+        );
+        assert_eq!(
+            offered,
+            [
+                "App-pkg/Build",
+                "App-pkg/Index.noindex",
+                "App-pkg/Logs",
+                "App-plain"
+            ]
+            .map(PathBuf::from)
+        );
+        crate::report::effective_actions(&mut findings, true);
+        let outcome = Xcode
+            .apply_with_xcode_build_state(&findings, &ctx, Some(Ok(false)))
+            .unwrap();
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        assert_eq!(outcome.summary.items_touched, 4);
+        assert!(!derived_data.join("App-pkg/Build").exists());
+        assert!(!derived_data.join("App-plain").exists());
+        assert!(
+            derived_data
+                .join("App-pkg/SourcePackages/checkouts/Example/.git/HEAD")
+                .exists()
+        );
+        assert!(derived_data.join("App-pkg/info.plist").exists());
+        crate::ops::remove_test_path(root);
+    }
+
+    /// The checkouts are Git clones, so a finding naming the directory that
+    /// holds them is refused in any spelling, however it reached apply.
+    #[test]
+    fn apply_never_removes_the_package_checkouts() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "devtrim-xcode-packages-kept-{}",
+                std::process::id()
+            ));
+        crate::ops::remove_test_path(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let home = root.canonicalize().unwrap();
+        let folder = home.join("Library/Developer/Xcode/DerivedData/App-pkg");
+        package_folder(&folder);
+        let ctx = test_context(home.clone());
+
+        for name in ["SourcePackages", "sourcepackages"] {
+            let forged = Finding::new(
+                "forged package checkouts",
+                Some(folder.join(name)),
+                4,
+                "test",
+                9,
+                Action::Shred,
+            );
+            let outcome = Xcode
+                .apply_with_xcode_build_state(&[forged], &ctx, Some(Ok(false)))
+                .unwrap();
+            assert!(
+                outcome.summary.items_touched == 0
+                    && outcome
+                        .errors
+                        .iter()
+                        .any(|error| error.contains("SwiftPM package checkouts")),
+                "PV xcode/package-checkouts-kept: {name}: {outcome:?}"
+            );
+        }
+        assert!(
+            folder
+                .join("SourcePackages/checkouts/Example/.git/HEAD")
+                .exists()
         );
         crate::ops::remove_test_path(root);
     }

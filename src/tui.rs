@@ -19,6 +19,8 @@ use crate::theme::{Theme, Token, danger_token};
 
 const MIN_WIDTH: u16 = 64;
 const MIN_HEIGHT: u16 = 18;
+/// Rows PgUp and PgDn move, in every list and scrolling view.
+const PAGE_ROWS: u16 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
@@ -147,6 +149,8 @@ enum Screen {
     Menu,
     Loading,
     Results,
+    /// The highlighted results row whole, for when the pane cannot hold it.
+    Detail,
     Confirm,
     Outcome,
     Error,
@@ -209,6 +213,9 @@ struct App {
     theme: Theme,
     /// Whether the full keybinding reference is open over the current screen.
     help: bool,
+    /// The furthest the detail view can scroll, measured when it was last
+    /// drawn, so a key never scrolls past its content.
+    detail_limit: std::cell::Cell<u16>,
 }
 
 impl Default for App {
@@ -232,6 +239,7 @@ impl Default for App {
             failed: false,
             theme: Theme::from_env(),
             help: false,
+            detail_limit: std::cell::Cell::new(0),
         }
     }
 }
@@ -455,6 +463,7 @@ impl App {
         match self.screen {
             Screen::Menu => self.handle_menu_key(key.code),
             Screen::Results => self.handle_results_key(key.code),
+            Screen::Detail => self.handle_detail_key(key.code),
             Screen::Confirm => self.handle_confirm_key(key.code),
             Screen::Outcome | Screen::Error => match key.code {
                 KeyCode::Char('q') => Intent::Quit,
@@ -471,11 +480,11 @@ impl App {
                     Intent::None
                 }
                 KeyCode::PageUp => {
-                    self.scroll = self.scroll.saturating_sub(8);
+                    self.scroll = self.scroll.saturating_sub(PAGE_ROWS);
                     Intent::None
                 }
                 KeyCode::PageDown => {
-                    self.scroll = self.scroll.saturating_add(8);
+                    self.scroll = self.scroll.saturating_add(PAGE_ROWS);
                     Intent::None
                 }
                 _ => Intent::None,
@@ -531,11 +540,11 @@ impl App {
                 Intent::None
             }
             KeyCode::PageUp => {
-                self.move_cursor(self.cursor.saturating_sub(8));
+                self.move_cursor(self.cursor.saturating_sub(usize::from(PAGE_ROWS)));
                 Intent::None
             }
             KeyCode::PageDown => {
-                self.move_cursor(self.cursor.saturating_add(8));
+                self.move_cursor(self.cursor.saturating_add(usize::from(PAGE_ROWS)));
                 Intent::None
             }
             KeyCode::Home | KeyCode::Char('g') => {
@@ -570,8 +579,36 @@ impl App {
                 Intent::None
             }
             KeyCode::Char('r') => self.operation.map_or(Intent::None, Intent::Load),
+            KeyCode::Enter if self.row_count() > 0 => {
+                self.screen = Screen::Detail;
+                self.scroll = 0;
+                self.detail_limit.set(0);
+                Intent::None
+            }
             _ => Intent::None,
         }
+    }
+
+    /// The detail view only reads: it scrolls within its content and closes,
+    /// and no key here reaches the plan behind it.
+    fn handle_detail_key(&mut self, key: KeyCode) -> Intent {
+        let limit = self.detail_limit.get();
+        let scroll = self.scroll.min(limit);
+        self.scroll = match key {
+            KeyCode::Char('q') => return Intent::Quit,
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('b') => {
+                self.screen = Screen::Results;
+                0
+            }
+            KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => scroll.saturating_add(1).min(limit),
+            KeyCode::PageUp => scroll.saturating_sub(PAGE_ROWS),
+            KeyCode::PageDown => scroll.saturating_add(PAGE_ROWS).min(limit),
+            KeyCode::Home | KeyCode::Char('g') => 0,
+            KeyCode::End | KeyCode::Char('G') => limit,
+            _ => scroll,
+        };
+        Intent::None
     }
 
     fn handle_confirm_key(&mut self, key: KeyCode) -> Intent {
@@ -894,6 +931,7 @@ fn render(frame: &mut Frame, app: &App) {
         Screen::Menu => render_menu(frame, body, app),
         Screen::Loading => render_loading(frame, body, app),
         Screen::Results | Screen::Confirm => render_results(frame, body, app),
+        Screen::Detail => render_detail(frame, body, app),
         Screen::Outcome => render_outcome(frame, body, app),
         Screen::Error => render_error(frame, body, app),
     }
@@ -909,10 +947,7 @@ fn render(frame: &mut Frame, app: &App) {
 /// Complete keybinding reference, the second tier of progressive disclosure
 /// behind the footer's few contextual keys.
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines = vec![
-        Line::styled("Keys", app.theme.bold(Token::Accent)),
-        Line::raw(""),
-    ];
+    let mut lines = Vec::new();
     for (group, keys) in HELP_KEYS {
         lines.push(Line::styled(
             *group,
@@ -924,16 +959,15 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw(*description),
             ]));
         }
-        lines.push(Line::raw(""));
     }
     lines.push(Line::styled(
         "Nothing is applied without an explicit, separate approval.",
         app.theme.style(Token::Warning),
     ));
-    // Sized to its own content, not to the confirmation popup's fixed 16 rows:
-    // the reference is 17 logical lines and was being clipped from the last
-    // binding onward. A reference that hides the keys it advertises is worse
-    // than none, because the reader has no way to know it was truncated.
+    // Sized to its own content, and compact enough to fit whole at the
+    // minimum 64×18, where it has 14 rows of 44-column descriptions. A
+    // reference that hides the keys it advertises is worse than none, because
+    // the reader has no way to know it was truncated.
     let popup = centered_rect(area, 72, lines.len());
     frame.render_widget(Clear, popup);
     frame.render_widget(
@@ -958,35 +992,30 @@ pub(crate) fn centered_rect(area: Rect, max_width: u16, content: usize) -> Rect 
     )
 }
 
-/// Grouped by the layer an operator reaches for: universal movement first,
-/// then the actions that change what happens.
+/// Grouped by the layer an operator reaches for: getting around first, then
+/// the actions that change what happens.
 type HelpGroup = (&'static str, &'static [(&'static str, &'static str)]);
 const HELP_KEYS: &[HelpGroup] = &[
     (
-        "Move",
+        "Navigate",
         &[
             ("↑/↓, k/j", "navigate lists and scroll output"),
-            (
-                "PgUp/PgDn",
-                "move a page; g/G jump to the first or last row",
-            ),
-            ("Enter", "open the selected operation"),
-            ("b, Esc", "back to the menu"),
+            ("PgUp/PgDn", "move a page; g/G the first or last row"),
+            ("Enter", "open the operation, or the item in full"),
+            ("b, Esc", "back to the results, or the menu"),
+            ("?", "open or close this reference"),
+            ("q, Ctrl+C", "quit"),
         ],
     ),
     (
         "Act",
         &[
-            ("Space", "leave the highlighted item out, or add it back"),
+            ("Space", "leave the highlighted item out, or back in"),
             ("A", "select every item, or none"),
-            ("a", "apply the selected items of the previewed plan"),
+            ("a", "apply the selected items of the plan"),
             ("s", "toggle Trash-first and permanent deletion"),
             ("r", "rescan the current operation"),
         ],
-    ),
-    (
-        "Session",
-        &[("?", "open or close this reference"), ("q, Ctrl+C", "quit")],
     ),
 ];
 
@@ -1102,19 +1131,20 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
 
     // The detail pane is the only place a long path appears whole, so it grows
     // past its usual share to hold the highlighted row, leaving the list one
-    // row, and says how many lines a terminal too short for it still hides.
+    // row, and says how many lines a terminal too short for it still hides and
+    // that Enter shows them.
     let mut details = detail_lines(app, usize::from(area.width.saturating_sub(2)));
-    let usual = (area.height / 3).clamp(5, 10);
-    let most = area.height.saturating_sub(3).max(usual);
-    let wanted = u16::try_from(details.len()).map_or(u16::MAX, |rows| rows.saturating_add(2));
-    let detail_height = wanted.clamp(usual, most);
-    let room = usize::from(detail_height.saturating_sub(2));
-    if details.len() > room {
-        let shown = room.saturating_sub(1);
+    let pane_floor = (area.height / 3).clamp(5, 10);
+    let pane_ceiling = area.height.saturating_sub(3).max(pane_floor);
+    let pane_needed = u16::try_from(details.len()).map_or(u16::MAX, |rows| rows.saturating_add(2));
+    let detail_height = pane_needed.clamp(pane_floor, pane_ceiling);
+    let detail_rows = usize::from(detail_height.saturating_sub(2));
+    if details.len() > detail_rows {
+        let shown = detail_rows.saturating_sub(1);
         let hidden = details.len() - shown;
         details.truncate(shown);
         details.push(Line::styled(
-            format!("… {hidden} more line(s); enlarge the terminal"),
+            format!("… {hidden} more line(s); Enter shows all"),
             app.theme.style(Token::Warning),
         ));
     }
@@ -1149,6 +1179,32 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(Text::from(details)).block(Block::bordered().title(" Details ")),
         detail_area,
+    );
+}
+
+/// The highlighted results row whole, scrolled within its content: nothing
+/// about a finding is hidden here, however short the terminal.
+fn render_detail(frame: &mut Frame, area: Rect, app: &App) {
+    let lines = detail_lines(app, usize::from(area.width.saturating_sub(2)));
+    let visible = area.height.saturating_sub(2);
+    let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let limit = total.saturating_sub(visible);
+    app.detail_limit.set(limit);
+    let scroll = app.scroll.min(limit);
+    let title = if limit == 0 {
+        " Details ".to_string()
+    } else {
+        format!(
+            " Details · lines {}-{} of {total} ",
+            scroll + 1,
+            scroll.saturating_add(visible).min(total)
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .scroll((scroll, 0))
+            .block(Block::bordered().title(title)),
+        area,
     );
 }
 
@@ -1322,24 +1378,27 @@ fn wrap_columns(text: &str, max: usize) -> Vec<String> {
 }
 
 /// Keeps the end of `text`, where a path's distinguishing leaf is, within
-/// `max` terminal columns.
+/// `max` terminal columns. It walks graphemes, as `wrap_columns` does, so a
+/// flag or a decomposed accent is kept whole or not at all.
 fn truncate_left(text: &str, max: usize) -> String {
-    let width = |value: &str| Span::raw(value).width();
-    if width(text) <= max {
+    let span = Span::raw(text);
+    if span.width() <= max {
         return text.to_string();
     }
     if max == 0 {
         return String::new();
     }
+    let graphemes: Vec<_> = span.styled_graphemes(Style::default()).collect();
     let mut kept = 0;
     let mut start = text.len();
-    for (index, character) in text.char_indices().rev() {
-        let character_width = width(&text[index..index + character.len_utf8()]);
-        if kept + character_width + 1 > max {
+    for grapheme in graphemes.iter().rev() {
+        let columns = Span::raw(grapheme.symbol).width();
+        if kept + columns + 1 > max {
             break;
         }
-        kept += character_width;
-        start = index;
+        kept += columns;
+        // Each grapheme borrows `text`, so its address is its byte offset.
+        start = grapheme.symbol.as_ptr() as usize - text.as_ptr() as usize;
     }
     format!("…{}", &text[start..])
 }
@@ -1428,14 +1487,22 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 "Space select · A all · a apply · r rescan · b back · ? keys"
             }
         }
+        Screen::Detail => "↑/↓ or j/k scroll · Esc back to the results · ? keys",
         Screen::Confirm => "Esc cancel · type the exact requested acknowledgment",
         Screen::Outcome | Screen::Error => "↑/↓ or j/k scroll · b back to menu · ? keys",
         Screen::Loading => "Scanning and apply are synchronous; please wait",
     };
+    // The results status names keys that act on the plan; none of them works
+    // in the detail view, so it says so instead.
+    let status = if app.screen == Screen::Detail {
+        "Reading only: nothing here changes the plan."
+    } else {
+        app.status.as_str()
+    };
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(keys, app.theme.style(Token::AccentSecondary)),
-            Line::styled(app.status.as_str(), app.theme.style(Token::Warning)),
+            Line::styled(status, app.theme.style(Token::Warning)),
         ])
         .block(Block::bordered()),
         area,
@@ -1574,6 +1641,7 @@ mod tests {
             Screen::Menu,
             Screen::Loading,
             Screen::Results,
+            Screen::Detail,
             Screen::Confirm,
             Screen::Outcome,
             Screen::Error,
@@ -1754,6 +1822,37 @@ mod tests {
             frame.contains("Nothing is applied without an explicit"),
             "the overlay's final line must be visible, or bindings above it are hidden too"
         );
+    }
+
+    /// At the supported minimum size the reference must still show its last
+    /// line, or the bindings above it may be hidden with no sign they are.
+    #[test]
+    fn help_overlay_shows_every_binding_at_the_minimum_size() {
+        for screen in [Screen::Menu, Screen::Results, Screen::Detail] {
+            let mut app = cleanup(vec![Finding::new(
+                "node_modules",
+                Some(std::path::PathBuf::from("/tmp/x")),
+                1,
+                "stale",
+                5,
+                Action::Trash,
+            )]);
+            app.screen = screen;
+            app.handle_key(key(KeyCode::Char('?')));
+            let frame = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT).concat();
+            for (_, keys) in HELP_KEYS {
+                for (binding, _) in *keys {
+                    assert!(
+                        frame.contains(binding),
+                        "{screen:?}: the reference hides {binding} at the minimum size"
+                    );
+                }
+            }
+            assert!(
+                frame.contains("Nothing is applied without an explicit"),
+                "{screen:?}: the reference's last line is cut at the minimum size"
+            );
+        }
     }
 
     /// The overlay must fit its own content at the supported minimum size, not
@@ -2108,6 +2207,7 @@ mod tests {
 
         apply_operation(&mut app, &ctx, plan);
 
+        let screen = rendered(&app, 100, 30);
         assert!(
             device_support
                 .join("refused/Symbols/checkout/.git/HEAD")
@@ -2115,16 +2215,14 @@ mod tests {
         );
         assert!(
             !device_support.join("plain").exists(),
-            "the apply did not continue past the refusal: {:?}",
-            app.errors
+            "the apply did not continue past the refusal: {screen}"
         );
-        assert_eq!(app.errors.len(), 1, "{:?}", app.errors);
-        assert!(!app.status.contains("stopped"), "{}", app.status);
         assert!(
-            app.status.contains("finished with errors"),
-            "{}",
-            app.status
+            screen.contains("Errors") && screen.contains("refused"),
+            "the refusal is listed: {screen}"
         );
+        assert!(screen.contains("finished with errors"), "{screen}");
+        assert!(!screen.contains("stopped"), "{screen}");
         crate::ops::remove_test_path(root);
     }
 
@@ -2553,8 +2651,9 @@ mod tests {
     }
 
     /// At the minimum size a long path cannot fit, so the pane says how many
-    /// lines it hides instead of cutting them silently, and the selection
-    /// state comes before the path so it is never among them.
+    /// lines it hides and which key shows them, instead of cutting them
+    /// silently, and the selection state comes before the path so it is never
+    /// among them.
     #[test]
     fn a_terminal_too_short_for_the_details_says_how_many_lines_it_hides() {
         // Label, action, selection state, six path rows at 62 columns, and the
@@ -2576,13 +2675,124 @@ mod tests {
 
         assert!(pane.contains("Left out of this plan"), "{rows:#?}");
         assert!(
-            pane.contains("… 5 more line(s); enlarge the terminal"),
+            pane.contains("… 5 more line(s); Enter shows all"),
             "{rows:#?}"
         );
         assert!(
             rows.iter().any(|row| row.contains("› [ ]")),
             "the highlighted row stays listed: {rows:#?}"
         );
+    }
+
+    /// Enter shows the highlighted finding whole in a view of its own, which
+    /// scrolls within its content. Nothing typed there reaches the plan, and
+    /// Esc returns to the same results with the selection unchanged.
+    #[test]
+    fn enter_shows_the_highlighted_finding_whole_and_esc_returns_to_the_same_plan() {
+        let path = format!("/{}/distinctive-leaf", "x".repeat(371));
+        let finding = Finding::new(
+            "node_modules",
+            Some(std::path::PathBuf::from(&path)),
+            1,
+            "the-note-comes-last",
+            5,
+            Action::Trash,
+        );
+        let mut app = cleanup(vec![finding]);
+        app.handle_key(key(KeyCode::Char(' ')));
+        let view = |app: &App| {
+            let rows = screen_rows(app, MIN_WIDTH, MIN_HEIGHT);
+            (detail_pane_text(&rows).replace(' ', ""), rows)
+        };
+
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), Intent::None);
+        let (top, rows) = view(&app);
+        assert!(top.contains("Leftoutofthisplan"), "{rows:#?}");
+        assert!(!top.contains("distinctive-leaf"), "{rows:#?}");
+        for code in [
+            KeyCode::Char(' '),
+            KeyCode::Char('A'),
+            KeyCode::Char('s'),
+            KeyCode::Char('a'),
+            KeyCode::Char('r'),
+        ] {
+            assert_eq!(app.handle_key(key(code)), Intent::None, "{code:?}");
+        }
+        let (_, rows) = view(&app);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("Esc back to the results"))
+                && rows
+                    .iter()
+                    .any(|row| row.contains("nothing here changes the plan")),
+            "a plan key left the detail view: {rows:#?}"
+        );
+
+        app.handle_key(key(KeyCode::End));
+        let (end, rows) = view(&app);
+        assert!(
+            end.contains("distinctive-leaf") && end.contains("the-note-comes-last"),
+            "the end of the finding is reachable: {rows:#?}"
+        );
+        for _ in 0..5 {
+            app.handle_key(key(KeyCode::Char('j')));
+        }
+        assert_eq!(view(&app).0, end, "scrolling stops at the last line");
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_ne!(view(&app).0, end, "one line up moves at once from the end");
+        app.handle_key(key(KeyCode::Home));
+        assert_eq!(view(&app).0, top);
+
+        app.handle_key(key(KeyCode::Esc));
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        assert!(
+            rows.iter().any(|row| row.contains("› [ ]")),
+            "back on the same results, still left out: {rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("TRASH-FIRST")),
+            "{rows:#?}"
+        );
+        assert!(
+            detail_pane_text(&rows).contains("Enter shows all"),
+            "{rows:#?}"
+        );
+    }
+
+    /// A row keeps the end of a long path within its columns and never splits
+    /// a character the renderer draws as one: keeping only the second half of
+    /// a flag draws a lone letter, and an accent kept without the letter it
+    /// decomposes from lands on the ellipsis.
+    #[test]
+    fn a_row_keeps_whole_graphemes_at_the_end_of_a_path() {
+        assert_eq!(truncate_left("dir/🇧🇷", 2), "…");
+        assert_eq!(truncate_left("dir/🇧🇷", 3), "…🇧🇷", "positive control");
+        for text in [
+            "/Users/me/dev/café",
+            "/Users/me/dev/cafe\u{301}",
+            "/tmp/🇧🇷/👍🏽/漢字\u{301}",
+            "short",
+        ] {
+            let width = Span::raw(text).width();
+            let starts: Vec<usize> = Span::raw(text)
+                .styled_graphemes(Style::default())
+                .map(|grapheme| grapheme.symbol.as_ptr() as usize - text.as_ptr() as usize)
+                .collect();
+            for max in 0..=width + 1 {
+                let kept = truncate_left(text, max);
+                assert!(
+                    Span::raw(kept.as_str()).width() <= max,
+                    "{text:?} at {max}: {kept:?}"
+                );
+                let tail = kept.strip_prefix('…').unwrap_or(&kept);
+                assert!(text.ends_with(tail), "{text:?} at {max}: {kept:?}");
+                let offset = text.len() - tail.len();
+                assert!(
+                    offset == text.len() || starts.contains(&offset),
+                    "{text:?} at {max} split a grapheme: {kept:?}"
+                );
+            }
+        }
     }
 
     /// The graphemes the renderer draws for `text`, and the columns it gives

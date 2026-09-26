@@ -2,12 +2,13 @@
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::project::{
     ScanObservations, has_git_marker, is_directory_if_present, iso_days_ago, normalized_roots,
-    owning_repo, repo_has_active_build, repo_last_activity,
+    owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under,
 };
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size,
@@ -66,6 +67,8 @@ impl Op for Artifacts {
         let mut findings = Vec::new();
         let mut active = 0usize;
         let mut build_active = 0usize;
+        let mut tracked = 0usize;
+        let mut keypairs = 0usize;
         for (owner, candidates) in groups {
             if repo_has_active_build(&owner, observations.process_cwds()?) {
                 build_active = build_active.saturating_add(candidates.len());
@@ -77,6 +80,14 @@ impl Op for Artifacts {
                 continue;
             }
             for candidate in candidates {
+                if tracks_files_under(&owner, &candidate.path)? {
+                    tracked = tracked.saturating_add(1);
+                    continue;
+                }
+                if program_keypair_under(&candidate.path)?.is_some() {
+                    keypairs = keypairs.saturating_add(1);
+                    continue;
+                }
                 let size = dir_size(&candidate.path)?;
                 findings.push(
                     Finding::new(
@@ -105,6 +116,20 @@ impl Op for Artifacts {
                 "info",
                 format!(
                     "skipping {build_active} artifact directories because a build process is active"
+                ),
+            );
+        }
+        if tracked > 0 && !ctx.json {
+            ctx.diagnostic(
+                "info",
+                format!("skipping {tracked} artifact directories holding Git-tracked files"),
+            );
+        }
+        if keypairs > 0 && !ctx.json {
+            ctx.diagnostic(
+                "info",
+                format!(
+                    "skipping {keypairs} artifact directories holding a program keypair (*-keypair.json)"
                 ),
             );
         }
@@ -202,6 +227,19 @@ impl Artifacts {
                         path.display()
                     );
                 }
+                if tracks_files_under(&owner, path)? {
+                    anyhow::bail!(
+                        "refusing {}: its repository tracks files under it",
+                        path.display()
+                    );
+                }
+                if let Some(keypair) = program_keypair_under(path)? {
+                    anyhow::bail!(
+                        "refusing {}: it holds the program keypair {}",
+                        path.display(),
+                        keypair.display()
+                    );
+                }
                 Ok(())
             })();
             if let Err(error) = result {
@@ -222,6 +260,37 @@ impl Artifacts {
         }
         Ok(outcome)
     }
+}
+
+/// The first entry under `path` named like a Solana program keypair.
+///
+/// `cargo build-sbf`, which `anchor build` runs, writes `<program>-keypair.json`
+/// into its output directory — `target/deploy` unless `--sbf-out-dir` or
+/// `SBF_OUT_PATH` names another — and generates one only when none exists
+/// (cargo-build-sbf v4.4.0 `src/post_processing.rs:167-171,188,201`). Its
+/// public key is the program's address, so a rebuild after removal mints a
+/// different address. Git ignores `target`, so the key is untracked and only
+/// its name identifies it; Mole V1.56.0 refuses a purge target holding
+/// `*-keypair.json` for the same reason (`lib/clean/project.sh`). Names match
+/// ASCII-case-insensitively, and the walk follows no link.
+fn program_keypair_under(path: &Path) -> Result<Option<PathBuf>> {
+    for entry in walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .follow_root_links(false)
+    {
+        let entry = entry
+            .with_context(|| format!("cannot search {} for program keypairs", path.display()))?;
+        if is_program_keypair_name(entry.file_name()) {
+            return Ok(Some(entry.into_path()));
+        }
+    }
+    Ok(None)
+}
+
+fn is_program_keypair_name(name: &OsStr) -> bool {
+    const SUFFIX: &[u8] = b"-keypair.json";
+    let name = name.as_encoded_bytes();
+    name.len() >= SUFFIX.len() && name[name.len() - SUFFIX.len()..].eq_ignore_ascii_case(SUFFIX)
 }
 
 fn find_artifacts(root: &Path) -> Result<Vec<ArtifactCandidate>> {
@@ -365,7 +434,7 @@ fn cachedir_tag_matches(path: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::project::init_old_git_repo;
+    use crate::ops::project::{commit_old_git_fixture, init_old_git_repo};
     use std::os::unix::fs::symlink;
 
     fn temp(name: &str) -> PathBuf {
@@ -640,5 +709,214 @@ mod tests {
         );
         assert!(json_ctx.take_diagnostics().is_empty());
         crate::ops::remove_test_path(home);
+    }
+
+    /// A fixture root under this checkout's `target`, where the sink may delete.
+    fn deletable_root(name: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-artifacts-{name}-{}", std::process::id()));
+        crate::ops::remove_test_path(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let home = root.canonicalize().unwrap();
+        (root, home)
+    }
+
+    fn offered(findings: &[Finding]) -> Vec<&Path> {
+        findings.iter().filter_map(Finding::target).collect()
+    }
+
+    #[test]
+    fn a_tree_its_repository_tracks_is_never_offered_or_removed() {
+        let (root, home) = deletable_root("tracked");
+        let repo = home.join("app");
+        init_old_git_repo(&repo).unwrap();
+        // CocoaPods recommends committing `Pods`.
+        let pods = repo.join("Pods");
+        std::fs::create_dir_all(pods.join("Alamofire")).unwrap();
+        std::fs::write(repo.join("Podfile"), "platform :ios, '17.0'\n").unwrap();
+        let vendored = pods.join("Alamofire/Session.swift");
+        std::fs::write(&vendored, "// vendored\n").unwrap();
+        commit_old_git_fixture(&repo, &["Podfile", "Pods"]).unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::create_dir_all(repo.join("target")).unwrap();
+        std::fs::write(repo.join("target/out"), "x").unwrap();
+        let ctx = context(home.clone());
+
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+        let paths = offered(&findings);
+        assert!(
+            !paths.contains(&pods.as_path()),
+            "PV project/tracked-files: a committed Pods was offered: {paths:?}"
+        );
+        assert!(
+            paths.contains(&repo.join("target").as_path()),
+            "positive control: the untracked target was not offered: {paths:?}"
+        );
+
+        let forged = Finding::new(
+            "stale Pods artifacts",
+            Some(pods.clone()),
+            12,
+            "test",
+            9,
+            Action::Shred,
+        );
+        let outcome = Artifacts
+            .apply_with_process_cwds(&[forged], &ctx, Ok(Vec::new()))
+            .unwrap();
+        assert!(
+            outcome.summary.items_touched == 0
+                && vendored.exists()
+                && outcome
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("tracks files under it")),
+            "PV artifacts/tracked-apply: {outcome:?}"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    /// On a case-insensitive volume a directory renamed only in case goes
+    /// unnoticed by Git, which keeps the old spelling in its index. The files
+    /// under it are still tracked, so the tree is still never offered.
+    #[test]
+    fn a_tracked_tree_renamed_only_in_case_is_never_offered() {
+        let (root, home) = deletable_root("tracked-case");
+        let repo = home.join("app");
+        init_old_git_repo(&repo).unwrap();
+        std::fs::create_dir_all(repo.join("client/Pods/Alamofire")).unwrap();
+        std::fs::write(repo.join("client/Podfile"), "platform :ios, '17.0'\n").unwrap();
+        std::fs::write(
+            repo.join("client/Pods/Alamofire/Session.swift"),
+            "// vendored\n",
+        )
+        .unwrap();
+        commit_old_git_fixture(&repo, &["client"]).unwrap();
+        std::fs::rename(repo.join("client"), repo.join("renaming")).unwrap();
+        std::fs::rename(repo.join("renaming"), repo.join("Client")).unwrap();
+        let pods = repo.join("Client/Pods");
+        let ctx = context(home.clone());
+
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+
+        let paths = offered(&findings);
+        assert!(pods.is_dir(), "fixture: the renamed tree is there");
+        assert!(
+            !paths.contains(&pods.as_path()),
+            "PV project/tracked-case-rename: a tracked tree renamed only in case was offered: {paths:?}"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    /// Git folds only ASCII case, while the volume folds Unicode case too, so a
+    /// tracked directory renamed only in the case of a letter like `Ä` reads as
+    /// untracked to Git. The filesystem decides instead; an untracked sibling
+    /// with a non-ASCII name is the control that nothing else is refused.
+    #[test]
+    fn a_tracked_tree_renamed_only_in_unicode_case_is_never_offered() {
+        let (root, home) = deletable_root("tracked-unicode-case");
+        let repo = home.join("app");
+        init_old_git_repo(&repo).unwrap();
+        std::fs::create_dir_all(repo.join("\u{c4}pp/Pods/Alamofire")).unwrap();
+        std::fs::write(repo.join("\u{c4}pp/Podfile"), "platform :ios, '17.0'\n").unwrap();
+        std::fs::write(
+            repo.join("\u{c4}pp/Pods/Alamofire/Session.swift"),
+            "// vendored\n",
+        )
+        .unwrap();
+        commit_old_git_fixture(&repo, &["\u{c4}pp"]).unwrap();
+        std::fs::rename(repo.join("\u{c4}pp"), repo.join("renaming")).unwrap();
+        std::fs::rename(repo.join("renaming"), repo.join("\u{e4}pp")).unwrap();
+        std::fs::create_dir_all(repo.join("\u{3a9}mega/target")).unwrap();
+        std::fs::write(repo.join("\u{3a9}mega/Cargo.toml"), "[package]").unwrap();
+        std::fs::write(repo.join("\u{3a9}mega/target/out"), "x").unwrap();
+        let pods = repo.join("\u{e4}pp/Pods");
+        let ctx = context(home.clone());
+
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+
+        let paths = offered(&findings);
+        assert!(pods.is_dir(), "fixture: the renamed tree is there");
+        assert!(
+            !paths.contains(&pods.as_path()),
+            "PV project/tracked-unicode-case: a tracked tree renamed only in case was offered: {paths:?}"
+        );
+        assert!(
+            paths.contains(&repo.join("\u{3a9}mega/target").as_path()),
+            "positive control: the untracked non-ASCII target was not offered: {paths:?}"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn a_tree_holding_a_program_keypair_is_never_offered_or_removed() {
+        let (root, home) = deletable_root("keypair");
+        let program = home.join("program");
+        init_old_git_repo(&program).unwrap();
+        std::fs::write(program.join("Cargo.toml"), "[package]").unwrap();
+        let target = program.join("target");
+        std::fs::create_dir_all(target.join("deploy")).unwrap();
+        let keypair = target.join("deploy/program-keypair.json");
+        std::fs::write(&keypair, "[0]").unwrap();
+        let other = home.join("other");
+        init_old_git_repo(&other).unwrap();
+        std::fs::write(other.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::create_dir_all(other.join("target")).unwrap();
+        std::fs::write(other.join("target/out"), "x").unwrap();
+        let ctx = context(home.clone());
+
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+        let paths = offered(&findings);
+        assert!(
+            !paths.contains(&target.as_path()),
+            "PV artifacts/keypair-scan: a target holding a program keypair was offered: {paths:?}"
+        );
+        assert!(
+            paths.contains(&other.join("target").as_path()),
+            "positive control: the target without a keypair was not offered: {paths:?}"
+        );
+
+        let forged = Finding::new(
+            "stale target artifacts",
+            Some(target.clone()),
+            3,
+            "test",
+            9,
+            Action::Shred,
+        );
+        let outcome = Artifacts
+            .apply_with_process_cwds(&[forged], &ctx, Ok(Vec::new()))
+            .unwrap();
+        assert!(
+            outcome.summary.items_touched == 0
+                && keypair.exists()
+                && outcome
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("holds the program keypair")),
+            "PV artifacts/keypair-apply: {outcome:?}"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn program_keypair_names_match_the_solana_suffix_in_any_ascii_case() {
+        for name in [
+            "program-keypair.json",
+            "Program-KEYPAIR.Json",
+            "-keypair.json",
+        ] {
+            assert!(is_program_keypair_name(OsStr::new(name)), "{name}");
+        }
+        for name in [
+            "keypair.json",
+            "program-keypair.json.bak",
+            "program_keypair.json",
+            "program-keypair",
+        ] {
+            assert!(!is_program_keypair_name(OsStr::new(name)), "{name}");
+        }
     }
 }

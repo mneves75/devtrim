@@ -19,9 +19,10 @@ def script(path, body):
     path.write_text(f"#!/bin/sh\nset -eu\n{body}\n")
     path.chmod(0o755)
 
-# No build running; every repository was last touched in 2020.
+# No build running; every repository was last touched in 2020 and tracks
+# nothing under its build output.
 script(HOME / "bin" / "pgrep", "exit 1")
-script(HOME / "bin" / "git", "case \"$*\" in\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac")
+script(HOME / "bin" / "git", "case \"$*\" in\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac")
 
 def sparse(path, size):
     path.parent.mkdir(parents=True, exist_ok=True)

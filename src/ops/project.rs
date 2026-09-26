@@ -129,31 +129,50 @@ pub(crate) fn init_old_git_repo(repo: &Path) -> Result<()> {
     if !initialized.success() {
         anyhow::bail!("git init failed for old fixture {}", repo.display());
     }
-    let committed = Command::new("git")
-        .args([
-            "-c",
-            "user.name=devtrim-test",
-            "-c",
-            "user.email=devtrim@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "old fixture",
-        ])
-        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
-        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
-        .current_dir(repo)
-        .status()
-        .with_context(|| format!("cannot commit old Git fixture {}", repo.display()))?;
-    if !committed.success() {
-        anyhow::bail!("git commit failed for old fixture {}", repo.display());
+    commit_old_git_fixture(repo, &[])
+}
+
+/// Commits `tracked` (paths relative to `repo`) into an old fixture, dated like
+/// its first commit so the repository stays stale while tracking them. Ignore
+/// rules and the developer's own Git configuration play no part.
+#[cfg(test)]
+pub(crate) fn commit_old_git_fixture(repo: &Path, tracked: &[&str]) -> Result<()> {
+    let git = |arguments: &[&str]| -> Result<()> {
+        let status = Command::new("git")
+            .args(arguments)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+            .current_dir(repo)
+            .status()
+            .with_context(|| format!("cannot run git in old fixture {}", repo.display()))?;
+        if !status.success() {
+            anyhow::bail!(
+                "git {arguments:?} failed for old fixture {}",
+                repo.display()
+            );
+        }
+        Ok(())
+    };
+    if !tracked.is_empty() {
+        git(&[&["add", "-f", "--"], tracked].concat())?;
     }
-    Ok(())
+    git(&[
+        "-c",
+        "user.name=devtrim-test",
+        "-c",
+        "user.email=devtrim@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "--allow-empty",
+        "-q",
+        "-m",
+        "old fixture",
+    ])
 }
 
 /// The newest of HEAD's commit date and HEAD's newest reflog entry.
@@ -198,19 +217,24 @@ pub(crate) fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> 
     Ok(commit.max(iso_date(entry, root)?))
 }
 
-/// One `git log -1` against a repository that may be hostile.
-fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
-    // Neutralize repository-controlled config while inspecting an untrusted
-    // clone, and ambient repository-selection variables that would make git
-    // answer for a different repo than the one that owns the deletion target.
-    // Git cannot ignore repository config wholesale, so every path by which a
-    // date-only `log` spawns a configured program is closed explicitly:
-    // signature display runs `gpg.program`, and a promisor remote lazily
-    // fetches a missing commit through its configured `uploadpack`. A git too
-    // old to know `--no-lazy-fetch` fails, which refuses rather than trusts.
-    let output = Command::new(git)
-        // `format-local` dates render in this zone: UTC, as the cutoff is.
-        .env("TZ", "UTC0")
+/// `git -C <root>` against a repository that may be hostile, ready for its
+/// subcommand.
+///
+/// Neutralizes repository-controlled config while inspecting an untrusted
+/// clone, and ambient repository-selection variables that would make git
+/// answer for a different repo than the one that owns the deletion target.
+/// Git cannot ignore repository config wholesale, so every path by which these
+/// read-only queries could spawn a configured program is closed explicitly:
+/// hooks and fsmonitor here, plus a promisor remote that would lazily fetch a
+/// missing object through its configured `uploadpack`; `log` closes signature
+/// display (`gpg.program`) itself. A git too old to know `--no-lazy-fetch`
+/// fails, which refuses rather than trusts. Ambient pathspec settings are
+/// dropped too: `GIT_LITERAL_PATHSPECS` would turn the tracked-file query's
+/// magic into a literal name that matches nothing, and the others change what
+/// it matches or make Git refuse it.
+fn hardened_git(root: &Path, git: &str) -> Command {
+    let mut command = Command::new(git);
+    command
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
@@ -219,6 +243,10 @@ fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
         .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .env_remove("GIT_CEILING_DIRECTORIES")
         .env_remove("GIT_DISCOVERY_ACROSS_FILESYSTEM")
+        .env_remove("GIT_LITERAL_PATHSPECS")
+        .env_remove("GIT_GLOB_PATHSPECS")
+        .env_remove("GIT_NOGLOB_PATHSPECS")
+        .env_remove("GIT_ICASE_PATHSPECS")
         .arg("-C")
         .arg(root)
         .args([
@@ -226,23 +254,143 @@ fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
             "core.fsmonitor=false",
             "-c",
             "core.hooksPath=/dev/null",
-            "-c",
-            "log.showSignature=false",
             "--no-optional-locks",
             "--no-lazy-fetch",
             "--no-pager",
+        ]);
+    command
+}
+
+/// Whether the repository at `root` tracks any file under `target`, which lies
+/// inside it. A directory holding tracked files is part of the repository, not
+/// build output — CocoaPods recommends committing `Pods`, and Mole V1.56.0
+/// protects such a directory for the same reason (`lib/clean/project.sh`) — so
+/// it is never offered or removed. One query per target lets Git match the
+/// pathspec itself, Unicode precomposition included, so no path it prints is
+/// ever compared here: any output at all means tracked. The pathspec is
+/// literal, so a name like a glob matches only itself, and case-insensitive:
+/// on a case-insensitive volume a directory renamed only in case goes
+/// unnoticed by Git, whose index keeps the old spelling. On a case-sensitive
+/// volume that can only over-match, which refuses. A query that fails refuses
+/// rather than trusts.
+pub(crate) fn tracks_files_under(root: &Path, target: &Path) -> Result<bool> {
+    let relative = target.strip_prefix(root).with_context(|| {
+        format!(
+            "{} is not inside its repository {}",
+            target.display(),
+            root.display()
+        )
+    })?;
+    let mut pathspec = std::ffi::OsString::from(":(literal,icase)");
+    pathspec.push(relative);
+    let mut command = hardened_git(root, "git");
+    command.args(["ls-files", "-z", "--"]).arg(pathspec);
+    let listed = hardened_output(command, || {
+        format!("Git tracked-file check failed for {}", target.display())
+    })?;
+    if !listed.is_empty() {
+        return Ok(true);
+    }
+    // Git folds ASCII case only, and the volume folds Unicode case too, so a
+    // directory renamed only in the case of a letter like `Ä` still reads as
+    // untracked above.
+    if relative.as_os_str().is_ascii() {
+        return Ok(false);
+    }
+    tracked_through_filesystem(root, target, relative)
+}
+
+/// Whether any path Git tracks resolves, through the volume's own name
+/// matching, into `target`. It lists the index below the longest leading part
+/// of `relative` that is pure ASCII, where Git's case folding is exact, and
+/// compares each listed path's ancestor at the target's depth with the target
+/// by device and inode, so the filesystem decides which names are the same
+/// directory. It can only add a reason to refuse.
+fn tracked_through_filesystem(root: &Path, target: &Path, relative: &Path) -> Result<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+
+    let failure = || format!("Git tracked-file check failed for {}", target.display());
+    let depth = relative.components().count();
+    let ascii: PathBuf = relative
+        .components()
+        .take_while(|component| component.as_os_str().is_ascii())
+        .collect();
+    let mut command = hardened_git(root, "git");
+    command.args(["ls-files", "-z", "--"]);
+    if !ascii.as_os_str().is_empty() {
+        let mut pathspec = std::ffi::OsString::from(":(literal,icase)");
+        pathspec.push(&ascii);
+        command.arg(pathspec);
+    }
+    let listed = hardened_output(command, failure)?;
+    let wanted = std::fs::symlink_metadata(target)
+        .with_context(|| format!("cannot inspect {}", target.display()))?;
+    let mut seen = std::collections::HashSet::new();
+    for entry in listed.split(|byte| *byte == 0) {
+        let entry = Path::new(std::ffi::OsStr::from_bytes(entry));
+        if entry.components().count() <= depth {
+            continue;
+        }
+        let ancestor: PathBuf = entry.components().take(depth).collect();
+        if !seen.insert(ancestor.clone()) {
+            continue;
+        }
+        let metadata = match std::fs::symlink_metadata(root.join(&ancestor)) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "cannot inspect tracked path {}",
+                        root.join(&ancestor).display()
+                    )
+                });
+            }
+        };
+        if metadata.dev() == wanted.dev() && metadata.ino() == wanted.ino() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// One `git log -1` against a repository that may be hostile.
+fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
+    let mut command = hardened_git(root, git);
+    command
+        // `format-local` dates render in this zone: UTC, as the cutoff is.
+        .env("TZ", "UTC0")
+        // Signature display runs the repository's `gpg.program`.
+        .args([
+            "-c",
+            "log.showSignature=false",
             "log",
             "--no-show-signature",
             "-1",
         ])
-        .args(format)
-        .output()
-        .with_context(|| format!("cannot inspect Git activity for {}", root.display()))?;
-    if !output.status.success() {
-        anyhow::bail!("Git activity check failed for {}", root.display());
-    }
-    let text = String::from_utf8(output.stdout).context("Git returned a non-UTF-8 date")?;
+        .args(format);
+    let dates = hardened_output(command, || {
+        format!("Git activity check failed for {}", root.display())
+    })?;
+    let text = String::from_utf8(dates).context("Git returned a non-UTF-8 date")?;
     Ok(text.trim().to_string())
+}
+
+/// The stdout of a hardened query. A failure names what failed and Git's own
+/// first line of explanation, so a refusal it causes can be diagnosed.
+fn hardened_output(mut command: Command, failure: impl Fn() -> String) -> Result<Vec<u8>> {
+    let output = command
+        .output()
+        .with_context(|| format!("{}: cannot run Git", failure()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        match stderr.lines().map(str::trim).find(|line| !line.is_empty()) {
+            Some(reason) => anyhow::bail!("{}: {reason}", failure()),
+            None => anyhow::bail!("{}", failure()),
+        }
+    }
+    Ok(output.stdout)
 }
 
 fn iso_date(date: &str, root: &Path) -> Result<String> {
