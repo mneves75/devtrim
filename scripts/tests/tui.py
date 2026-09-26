@@ -164,6 +164,35 @@ def verify_type_ahead(binary):
             session.quit()
 
 
+def verify_selection(binary):
+    """Space leaves the highlighted cache out of the plan, so the approval covers
+    only the other one. The cache left out surviving is the proof that selection
+    narrowed the plan; the other cache disappearing is the positive control that
+    the same approval did apply."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        kept = home / ".cache" / "uv"
+        removed = home / ".cache" / "node"
+        for cache in (kept, removed):
+            cache.mkdir(parents=True)
+            (cache / "blob").write_bytes(b"x")
+        with Session(binary, home) as session:
+            session.wait_for("Scan everything")
+            session.send(b"2")
+            session.wait_for("Review every finding")
+            session.send(b" ")
+            # Ratatui redraws only changed cells, so the title's "2 of 2" turning
+            # into "1 of 2" emits one character; the detail line is drawn whole.
+            session.wait_for("Left out of this plan")
+            session.send(b"sa0\r")
+            session.wait_for("permanently deleted node core cache")
+            if not kept.exists():
+                raise AssertionError("a cache left out of the plan was deleted")
+            if removed.exists():
+                raise AssertionError("positive control: the selected cache was not deleted")
+            session.quit()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -172,10 +201,14 @@ def main():
     try:
         verify_menu(binary)
         verify_type_ahead(binary)
+        verify_selection(binary)
     except (AssertionError, OSError, termios.error) as error:
         print(f"tui: {error}", file=sys.stderr)
         return 1
-    print("tui: menu, help, cancel, quit, terminal restoration, and type-ahead discard passed")
+    print(
+        "tui: menu, help, cancel, quit, terminal restoration, type-ahead discard,"
+        " and selection passed"
+    )
     return 0
 
 

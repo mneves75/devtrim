@@ -171,8 +171,18 @@ pub(crate) fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> 
     if !has_git_marker(root)? {
         anyhow::bail!("not a Git repository: {}", root.display());
     }
-    let commit = iso_date(&hardened_git_log(root, git, &["--format=%cs"])?, root)?;
-    let reflog = hardened_git_log(root, git, &["-g", "--date=format:%Y-%m-%d", "--format=%gd"])?;
+    // Both dates are rendered in UTC, the clock `iso_days_ago` counts in.
+    // `%cs` and `--date=format:` use each entry's recorded offset instead, so
+    // west of Greenwich an evening's activity read as the previous day.
+    let commit = iso_date(
+        &hardened_git_log(root, git, &["--date=format-local:%Y-%m-%d", "--format=%cd"])?,
+        root,
+    )?;
+    let reflog = hardened_git_log(
+        root,
+        git,
+        &["-g", "--date=format-local:%Y-%m-%d", "--format=%gd"],
+    )?;
     if reflog.is_empty() {
         return Ok(commit);
     }
@@ -199,6 +209,8 @@ fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
     // fetches a missing commit through its configured `uploadpack`. A git too
     // old to know `--no-lazy-fetch` fails, which refuses rather than trusts.
     let output = Command::new(git)
+        // `format-local` dates render in this zone: UTC, as the cutoff is.
+        .env("TZ", "UTC0")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
@@ -553,6 +565,58 @@ mod tests {
             repo_last_activity(&repo).unwrap(),
             iso_days_ago(0),
             "PV git/head-commit: a fresh HEAD was judged by an older reflog entry"
+        );
+        crate::ops::remove_test_path(base);
+    }
+
+    /// The cutoff counts UTC days. Read in the commit's own zone, a commit made
+    /// at 23:30 at -03:00 — already the next day in UTC — landed a day early,
+    /// and the probe tests failed every evening west of Greenwich.
+    #[test]
+    fn activity_dates_are_read_in_utc_like_the_cutoff() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = temp("git-utc-dates");
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_in(&repo, &["init", "-q"]);
+        let committed = Command::new("git")
+            .args([
+                "-c",
+                "user.name=devtrim-test",
+                "-c",
+                "user.email=devtrim@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "late evening",
+            ])
+            .env("GIT_AUTHOR_DATE", "2020-01-01T23:30:00-0300")
+            .env("GIT_COMMITTER_DATE", "2020-01-01T23:30:00-0300")
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(committed.success());
+        crate::ops::remove_test_path(repo.join(".git/logs"));
+        // Stands in for a machine west of Greenwich whatever zone this one is
+        // in; only a probe that pins UTC itself escapes it.
+        let wrapper = base.join("git");
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\n[ \"$TZ\" = UTC0 ] || TZ=America/Sao_Paulo\nexport TZ\nexec git \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(
+            repo_last_activity_with(&repo, wrapper.to_str().unwrap()).unwrap(),
+            "2020-01-02",
+            "PV git/utc-dates: activity was read in a local zone, not the cutoff's UTC"
         );
         crate::ops::remove_test_path(base);
     }

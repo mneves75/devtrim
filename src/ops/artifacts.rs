@@ -15,7 +15,8 @@ use super::{
 };
 use crate::safety::{Ctx, build_process_cwds, escalate, is_git_metadata_name};
 
-const CACHEDIR_SIGNATURE: &[u8; 43] = b"Signature: 8a477f597d28d172789f06886806bc55";
+/// The fixed first line of a cache directory tag (<https://bford.info/cachedir/>).
+pub(crate) const CACHEDIR_SIGNATURE: &[u8; 43] = b"Signature: 8a477f597d28d172789f06886806bc55";
 const EXCLUDED_NAMES: &[&str] = &[
     "build",
     "dist",
@@ -77,17 +78,20 @@ impl Op for Artifacts {
             }
             for candidate in candidates {
                 let size = dir_size(&candidate.path)?;
-                findings.push(Finding::new(
-                    candidate.evidence.label,
-                    Some(candidate.path),
-                    size,
-                    format!(
-                        "repo last active {last_activity}; corroboration: {}",
-                        candidate.evidence.corroboration
-                    ),
-                    escalate(5, size),
-                    Action::Trash,
-                ));
+                findings.push(
+                    Finding::new(
+                        candidate.evidence.label,
+                        Some(candidate.path),
+                        size,
+                        format!(
+                            "repo last active {last_activity} UTC; corroboration: {}",
+                            candidate.evidence.corroboration
+                        ),
+                        escalate(5, size),
+                        Action::Trash,
+                    )
+                    .with_project(&owner),
+                );
             }
         }
         if active > 0 && !ctx.json {

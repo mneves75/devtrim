@@ -399,6 +399,56 @@ fn empty_json_scan_is_one_document() {
     assert_eq!(value["findings"].as_array().unwrap().len(), 0);
 }
 
+/// A real scan listed 830 findings, 780 of them one line each of agent
+/// history, so the handful that held the space were lost. The human report
+/// leads with one line per category and the command that acts on it, then
+/// lists the largest findings of each; `--all` restores the full listing and
+/// JSON is always complete.
+#[test]
+fn scan_leads_with_categories_and_lists_the_largest_until_all() {
+    let sandbox = Sandbox::new("scan-summary");
+    let dev = sandbox.path().join("dev");
+    for index in 0..12 {
+        let project = dev.join(format!("p{index:02}"));
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::create_dir_all(project.join("node_modules")).unwrap();
+        std::fs::write(
+            project.join("node_modules/file"),
+            vec![b'x'; 100 * (index + 1)],
+        )
+        .unwrap();
+    }
+    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
+    let root = dev.to_str().unwrap();
+
+    let output = run(&sandbox, &["scan", "--root", root]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let summary = stdout
+        .lines()
+        .find(|line| line.contains("node-modules") && line.contains("12"))
+        .unwrap_or_else(|| panic!("no node-modules summary line: {stdout}"));
+    assert!(
+        summary.contains("devtrim clean node-modules --apply"),
+        "{summary}"
+    );
+    assert_eq!(stdout.matches("stale node_modules").count(), 5, "{stdout}");
+    assert!(stdout.contains("7 more"), "{stdout}");
+    assert!(
+        stdout.contains("p11/node_modules"),
+        "largest listed first: {stdout}"
+    );
+    assert!(!stdout.contains("p00/node_modules"), "{stdout}");
+
+    let all = run(&sandbox, &["scan", "--root", root, "--all"]);
+    let all = String::from_utf8_lossy(&all.stdout);
+    assert_eq!(all.matches("stale node_modules").count(), 12, "{all}");
+
+    let json_scan = run(&sandbox, &["scan", "--root", root, "--json"]);
+    assert_eq!(json(&json_scan)["findings"].as_array().unwrap().len(), 12);
+}
+
 #[test]
 fn largest_json_is_one_read_only_document() {
     let sandbox = Sandbox::new("largest-json");
@@ -631,6 +681,128 @@ fn artifacts_target_scans_corroborated_stale_repo() {
     assert_eq!(value["operation"], "artifacts");
     assert_eq!(value["findings"].as_array().unwrap().len(), 1);
     assert_eq!(value["findings"][0]["label"], "stale target artifacts");
+}
+
+/// Two stale repositories: `small` with a `node_modules`, `large` with a Rust
+/// `target` and a `node_modules`. Returns the canonical dev root and both repos.
+fn purge_fixture(sandbox: &Sandbox) -> (PathBuf, PathBuf, PathBuf) {
+    let dev = sandbox.path().join("dev");
+    let small = dev.join("alpha");
+    let large = dev.join("beta");
+    for project in [&small, &large] {
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
+    }
+    std::fs::write(small.join("node_modules/pkg/index.js"), vec![b'x'; 100]).unwrap();
+    std::fs::write(large.join("Cargo.toml"), "[package]\nname = \"beta\"\n").unwrap();
+    std::fs::create_dir_all(large.join("target/debug")).unwrap();
+    std::fs::write(large.join("target/debug/out"), vec![b'x'; 5000]).unwrap();
+    std::fs::write(large.join("node_modules/pkg/index.js"), vec![b'x'; 1000]).unwrap();
+    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
+    let dev = dev.canonicalize().unwrap();
+    (dev.clone(), dev.join("alpha"), dev.join("beta"))
+}
+
+/// `purge` is `node-modules` and `artifacts` in one plan — the same closed
+/// authorities and staleness gate — ordered by project, largest project first.
+#[test]
+fn purge_previews_project_build_output_grouped_largest_project_first() {
+    let sandbox = Sandbox::new("purge-preview");
+    let (dev, small, large) = purge_fixture(&sandbox);
+
+    let output = run(
+        &sandbox,
+        &["purge", "--root", dev.to_str().unwrap(), "--json"],
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json(&output);
+    assert_eq!(value["operation"], "purge");
+    assert_eq!(value["applied"], false);
+    let rows: Vec<(&str, &str)> = value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|finding| {
+            (
+                finding["project"].as_str().unwrap(),
+                finding["path"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    let large_name = large.display().to_string();
+    let small_name = small.display().to_string();
+    let expected = [
+        (
+            large_name.clone(),
+            large.join("target").display().to_string(),
+        ),
+        (large_name, large.join("node_modules").display().to_string()),
+        (small_name, small.join("node_modules").display().to_string()),
+    ];
+    assert_eq!(
+        rows,
+        expected
+            .iter()
+            .map(|(project, path)| (project.as_str(), path.as_str()))
+            .collect::<Vec<_>>()
+    );
+
+    let human = run(&sandbox, &["purge", "--root", dev.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(human.status.success());
+    let beta = stdout.find(&format!("{} ·", large.display())).unwrap();
+    let alpha = stdout.find(&format!("{} ·", small.display())).unwrap();
+    assert!(beta < alpha, "largest project first: {stdout}");
+    assert!(stdout.contains("no changes made"), "{stdout}");
+    assert!(large.join("target/debug/out").exists());
+}
+
+#[test]
+fn purge_applies_each_finding_through_its_own_category() {
+    let sandbox = Sandbox::in_target("purge-apply");
+    let (dev, small, large) = purge_fixture(&sandbox);
+
+    let output = run(
+        &sandbox,
+        &[
+            "purge",
+            "--root",
+            dev.to_str().unwrap(),
+            "--apply",
+            "--shred",
+            "--yolo",
+            "--json",
+        ],
+    );
+
+    let value = json(&output);
+    assert!(output.status.success(), "{value}");
+    assert_eq!(value["operation"], "purge");
+    assert_eq!(value["applied"], true);
+    assert_eq!(value["summary"]["items_touched"], 3);
+    assert!(!large.join("target").exists());
+    assert!(!large.join("node_modules").exists());
+    assert!(!small.join("node_modules").exists());
+    assert!(large.join("Cargo.toml").exists());
+    let journal =
+        std::fs::read_to_string(sandbox.path().join(".local/state/devtrim/journal.jsonl")).unwrap();
+    assert!(journal.contains("\"node-modules\""), "{journal}");
+    assert!(journal.contains("\"artifacts\""), "{journal}");
+}
+
+#[test]
+fn purge_accepts_the_cleanup_flags_clean_accepts() {
+    let sandbox = Sandbox::new("purge-flags");
+    let output = run(&sandbox, &["purge", "--shred", "--json"]);
+    assert!(output.status.success());
+    let value = json(&output);
+    assert_eq!(value["operation"], "purge");
+    assert_eq!(value["applied"], false);
 }
 
 #[test]
@@ -1987,7 +2159,7 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
     assert_eq!(count("pgrep -a -x node|"), 1, "{spawns}");
     assert_eq!(count("lsof "), 1, "{spawns}");
     assert_eq!(
-        count(" log --no-show-signature -1 --format=%cs"),
+        count(" log --no-show-signature -1 --date=format-local:%Y-%m-%d --format=%cd"),
         1,
         "{spawns}"
     );
@@ -2032,7 +2204,9 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
         assert_eq!(
             spawns
                 .lines()
-                .filter(|line| line.contains(" log --no-show-signature -1 --format=%cs"))
+                .filter(|line| line.contains(
+                    " log --no-show-signature -1 --date=format-local:%Y-%m-%d --format=%cd"
+                ))
                 .count(),
             usize::from(failed_probe == "git"),
             "{spawns}"

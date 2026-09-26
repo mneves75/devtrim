@@ -48,7 +48,7 @@ cp target/release/devtrim /usr/local/bin/
 - **Untrusted repositories stay inert.** The Git activity probe disables every repository-configurable path by which `git log` runs a program — hooks, fsmonitor, signature verification through `gpg.program`, and lazy fetches through a promisor remote's `uploadpack` — so previewing a directory that arrived with a hostile `.git/config` runs nothing. A `git` too old for `--no-lazy-fetch` refuses the repository.
 - **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation.
 - **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while Xcode, `xcodebuild`, or the build services Xcode.app builds run through are running. A probe that cannot complete blocks instead of passing; a build tool that exited between the process list and the directory lookup is not mistaken for one.
-- **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle. Every directory action rejects foreign devices and Git repository/worktree markers at any depth before mutation. Permanent deletes additionally quarantine the verified leaf and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
+- **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle. Every directory action rejects foreign devices and Git repository/worktree markers at any depth before mutation; the one exception is the empty `.git` uv writes into its own source-distribution bucket, which Git itself rejects as an invalid gitfile, tolerated only in that exact shape under a tagged cache root. Permanent deletes additionally quarantine the verified leaf and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
 - **Write-ahead journal.** Every apply records an attempt before deletion and a result after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). Symlinked path components are refused, complete records are serialized and synced, and an unwritable journal blocks apply. Rotation (10 MiB, keep 3) cannot split an in-flight pair. `devtrim history` is read-only, waits for guarded applies before snapshotting, pairs legacy records across generations, reverse-scans only the bounded newest tail needed for the requested limit, and reports a genuinely unmatched attempt as interrupted.
 - **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
   - 1–8: y/N prompt (`-y` skips it); non-TTY apply needs `-y`/`--yolo`
@@ -82,8 +82,11 @@ bypasses macOS protections. Apple documents these controls under
 ```bash
 devtrim                                   # interactive TUI when stdin/stdout are terminals
 devtrim tui                               # explicit TUI launch
-devtrim scan                              # full read-only report
-devtrim scan --json                       # one machine-readable envelope
+devtrim scan                              # read-only report: categories first, then the largest findings
+devtrim scan --all                        # every finding of every category
+devtrim scan --json                       # one machine-readable envelope, always complete
+devtrim purge                             # stale node_modules + build artifacts, by project, largest first
+devtrim purge --apply                     # move that exact plan to Trash after confirmation
 devtrim clean caches --apply -y           # tool download caches (HF, uv, npm, brew, cargo, bun, gh, …)
 devtrim clean node-modules --apply -y     # exact paths in Git repos with no recent activity
 devtrim clean artifacts --apply -y        # corroborated build artifacts in stale Git repos
@@ -118,6 +121,19 @@ execute exact typed commands rather than filesystem deletion actions.
 `trash-empty` accepts apply/confirmation flags but rejects `--shred`: its
 preview is already permanent and its exact `--confirm=<gb>` acknowledgment
 remains mandatory.
+
+Moving to Trash frees nothing yet: the bytes stay on the same volume until the
+Trash is emptied. Apply summaries say so — "~17.8 GB moved to Trash; it is freed
+once the Trash is emptied (devtrim trash-empty)" — and `devtrim trash-empty`
+previews the exact `--confirm=<gb>` value it needs.
+
+`purge` is the project view of two existing categories, not a new authority:
+stale `node_modules` and corroborated build artifacts in one plan, ordered by
+project with the largest first. Each finding keeps its category's staleness and
+build-liveness gates and is applied by that category, which reasserts its exact
+shape. Unlike Mole's `mo purge`, it never matches ambiguous names such as
+`build`, `dist`, or `coverage`, never deletes permanently unless you pass
+`--shred`, and never touches a repository with recent Git activity.
 
 `clean artifacts` deletes a directory only when its name is on a closed list
 **and** its ecosystem corroborates it — `target` next to `Cargo.toml`, `.venv`
@@ -283,8 +299,14 @@ in Trash instead of blocking the other exact items.
 The TUI offers the same scanners and apply owners behind a keyboard interface:
 arrow keys or `j`/`k` navigate, `Enter` previews, `a` starts confirmation, `s`
 switches an already-previewed Trash action to permanent mode, and `Esc` cancels.
-Results and outcomes scroll with arrows or `j`/`k`, including retained scanner
-warnings and partial-apply errors. Risk labels are written as text as well as
+A preview lists one finding per line with a detail pane for the highlighted one.
+`Space` leaves the highlighted finding out of the plan or adds it back and `A`
+selects every finding or none; the confirmation then covers exactly the
+selected findings, so leaving out a critical item can lower a typed-size
+confirmation to y/N. Selection only narrows what was previewed, and changing it
+after confirming discards that confirmation. `p` opens the project purge view.
+Results show retained scanner warnings as rows after the findings; outcomes
+scroll with arrows or `j`/`k`, including partial-apply errors. Risk labels are written as text as well as
 color. Below 64×18, the interface blocks operation input and asks you to resize;
 only quit remains available. The interface requires an
 interactive stdin and stdout; bare `devtrim` prints help and exits nonzero when
@@ -342,7 +364,7 @@ JSON mode returns one envelope, including empty and failed results:
 }
 ```
 
-Applied commands additionally include `summary`. If a later target fails, the summary retains earlier successful work, `errors` explains the stop, and the process exits nonzero. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string.
+Applied commands additionally include `summary`. If a later target fails, the summary retains earlier successful work, `errors` explains the stop, and the process exits nonzero. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string. `summary.bytes_trashed_estimate` is the part of `bytes_freed_estimate` that was moved to Trash and is still on disk until the Trash is emptied. Findings from `node-modules`, `artifacts`, and `purge` carry `project`, the repository that owns the target — for grouping only, never deletion authority.
 
 `devtrim history --json` emits its own single document —
 `{"operation":"history","entries":[…],"errors":[…]}` — where each entry is a
@@ -377,13 +399,13 @@ output.
 | Category authority | Xcode and toolchain apply reassert exact direct-child targets; `node_modules` apply reasserts its scanner's leaf and ancestor rules |
 | Trash | recoverable by default; permanent mode is explicit |
 | Danger gate | maximum finding score plus aggregate estimated logical bytes |
-| TUI consent | approval capability must match the current preview and danger requirement |
+| TUI consent | approval capability must match the current preview, its selection, and the danger requirement of the selected findings; selection can only narrow the preview |
 | Target identity | exact internal `PathBuf` plus preview-time device/inode; display text is never parsed back into authority |
 | Anchored deletion | the sink verifies identity through an open parent-directory handle; permanent deletion continues through that handle and drift refuses |
 | Deletion sink | only `VerifiedTarget` reaches physical removal; action selects Trash vs. permanent mode |
 | Command execution | serialized action and private closed authority must match the operation and its validated arguments |
 | Physical path | literal and resolved parent must agree; deny-only resolution |
-| Directory preflight | foreign devices and nested Git repository/worktree markers are refused before Trash or permanent mutation |
+| Directory preflight | foreign devices and nested Git repository/worktree markers are refused before Trash or permanent mutation; only uv's own empty `.git` in `sdists-v<N>` under a `CACHEDIR.TAG` root is tolerated |
 | Activity | unknown Git/toolchain ownership is ineligible |
 | Liveness | a repo owning a running build process, or DerivedData under a running `xcodebuild`, is refused; probe failure blocks |
 | Protect config | user-listed `protect` paths are refused at the deletion sink and filtered from previews |

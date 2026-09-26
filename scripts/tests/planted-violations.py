@@ -232,6 +232,83 @@ CASES = (
         tests=("ops::xcode::tests::apply_refuses_a_non_directory_xcode_support_child",),
         marker="PV xcode/non-directory-target",
     ),
+    # uv's own empty `.git` is the one nested Git marker the sink tolerates.
+    # Each condition of that exception is broken on its own, and the matching
+    # shape must then be refused by name; a mutant that tolerated a real
+    # worktree pointer, a case variant, an untagged root, or a marker at the
+    # wrong depth or in the wrong bucket would otherwise pass unnoticed.
+    Case(
+        name="sink/uv-marker-empty",
+        relative_path="src/ops/mod.rs",
+        before="            && metadata.st_size == 0,\n",
+        after="            && metadata.st_size >= 0,\n",
+        tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
+        marker="PV sink/uv-marker-nonempty",
+    ),
+    Case(
+        name="sink/uv-marker-spelling",
+        relative_path="src/ops/mod.rs",
+        before='    if name.as_bytes() != b".git" {\n',
+        after="    if !is_git_metadata_name(name) {\n",
+        tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
+        marker="PV sink/uv-marker-case",
+    ),
+    Case(
+        name="sink/uv-marker-tag",
+        relative_path="src/ops/mod.rs",
+        before="    let tagged_root = has_cachedir_tag(dir);\n",
+        after="    let tagged_root = true;\n",
+        tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
+        marker="PV sink/uv-marker-untagged",
+    ),
+    Case(
+        name="sink/uv-marker-depth",
+        relative_path="src/ops/mod.rs",
+        before="    if tagged_root && depth == 1 && uv_bucket {\n",
+        after="    if tagged_root && depth >= 1 && uv_bucket {\n",
+        tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
+        marker="PV sink/uv-marker-depth",
+    ),
+    Case(
+        name="sink/uv-marker-bucket",
+        relative_path="src/ops/mod.rs",
+        before="    if tagged_root && depth == 1 && uv_bucket {\n",
+        after="    if tagged_root && depth == 1 && (uv_bucket || !uv_bucket) {\n",
+        tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
+        marker="PV sink/uv-marker-other-bucket",
+    ),
+    Case(
+        name="caches/uv-lock",
+        relative_path="src/ops/caches.rs",
+        before="                    .filter(|target| *target == ctx.home.join(UV_CACHE))\n",
+        after="                    .filter(|_| false)\n",
+        tests=("ops::caches::tests::uv_cache_is_refused_while_a_uv_process_holds_its_lock",),
+        marker="PV caches/uv-lock",
+    ),
+    Case(
+        name="trash/continue-past-refusal",
+        relative_path="src/ops/mod.rs",
+        before="            outcome.fail(error);\n            continue;\n        }\n        outcome.record(finding, format!(\"permanently deleted {}\", finding.label));\n",
+        after="            outcome.fail(error);\n            break;\n        }\n        outcome.record(finding, format!(\"permanently deleted {}\", finding.label));\n",
+        tests=("ops::tests::a_refused_trash_item_does_not_block_the_rest_of_the_purge",),
+        marker="PV trash/continue-past-refusal",
+    ),
+    Case(
+        name="tui/selection-plan",
+        relative_path="src/tui.rs",
+        before="            .filter(|(index, _)| !self.excluded.contains(index))\n",
+        after="            .filter(|(index, _)| !self.excluded.contains(index) || true)\n",
+        tests=("tui::tests::deselected_findings_never_reach_the_approved_plan",),
+        marker="PV tui/selection-plan",
+    ),
+    Case(
+        name="git/utc-dates",
+        relative_path="src/ops/project.rs",
+        before='        .env("TZ", "UTC0")\n',
+        after="",
+        tests=("ops::project::tests::activity_dates_are_read_in_utc_like_the_cutoff",),
+        marker="PV git/utc-dates",
+    ),
 )
 
 

@@ -74,7 +74,7 @@ pub fn main_impl() -> ExitCode {
 fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
     let (operation, allow_apply, allow_yes, allow_yolo, allow_shred) = match cli.command.as_ref() {
         None | Some(cli::Command::Tui) => ("tui", false, false, false, false),
-        Some(cli::Command::Scan) => ("scan", false, false, false, true),
+        Some(cli::Command::Scan { .. }) => ("scan", false, false, false, true),
         Some(cli::Command::Clean { target }) if *target == cli::Target::Leftovers => {
             ("leftovers", false, false, false, false)
         }
@@ -84,6 +84,7 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
             (target.as_str(), true, true, true, false)
         }
         Some(cli::Command::Clean { target }) => (target.as_str(), true, true, true, true),
+        Some(cli::Command::Purge) => ("purge", true, true, true, true),
         Some(cli::Command::Optimize { .. }) => ("optimize", true, true, true, false),
         Some(cli::Command::TrashEmpty { .. }) => ("trash-empty", true, true, true, false),
         Some(cli::Command::Status { .. }) => ("status", false, false, false, false),
@@ -171,6 +172,7 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
         Some("manpage") => "manpage",
         Some("icloud") => "icloud",
         Some("trash-empty") => "trash-empty",
+        Some("purge") => "purge",
         _ => "unknown",
     }
 }
@@ -315,13 +317,13 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
 
     match command {
         cli::Command::Tui => tui::run(&ctx),
-        cli::Command::Scan => {
+        cli::Command::Scan { all } => {
             let mut scan = ops::scan_all(&ctx);
             report::effective_actions(&mut scan.findings, cli.shred);
             if ctx.json {
                 report::print_json("scan", false, &scan.findings, None, &scan.errors)?;
             } else {
-                report::print_human(&scan.findings)?;
+                report::print_scan_human(&scan.findings, &scan.sections, all)?;
                 for error in &scan.errors {
                     eprintln!("{} {}", "warn".yellow(), report::terminal_safe(error));
                 }
@@ -358,6 +360,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             run_op(&operation, &cli, &ctx)
         }
         cli::Command::Clean { target } => clean(target, &cli, &ctx),
+        cli::Command::Purge => run_op(&ops::purge::Purge, &cli, &ctx),
         #[allow(
             clippy::unreachable,
             reason = "context-free commands return earlier in run(), so no configuration failure can reach this arm"
@@ -544,10 +547,9 @@ fn print_non_success_summary(summary: &report::Summary) -> std::io::Result<()> {
         ("!".yellow().bold(), "partial".yellow().bold())
     };
     report::print_line(&format!(
-        "\n{marker} {} {status}: {} item(s), ~{} reclaimed estimate",
+        "\n{marker} {} {status}: {}",
         report::terminal_safe(&summary.op),
-        summary.items_touched,
-        report::gb(summary.bytes_freed_estimate)
+        report::summary_counts(summary)
     ))
 }
 

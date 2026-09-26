@@ -205,6 +205,10 @@ pub struct Finding {
     /// 1-10
     pub danger: u8,
     pub action: Action,
+    /// Repository that owns the target, for grouping a plan by project.
+    /// Display only: never parsed back into deletion authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     #[serde(skip)]
     target: Option<PathBuf>,
     #[serde(skip)]
@@ -239,6 +243,7 @@ impl Finding {
             note: note.into(),
             danger,
             action,
+            project: None,
             target: path,
             identity,
             authority: TargetAuthority::Standard,
@@ -274,6 +279,11 @@ impl Finding {
 
     pub(crate) fn identity(&self) -> Option<FileIdentity> {
         self.identity
+    }
+
+    pub(crate) fn with_project(mut self, project: &Path) -> Self {
+        self.project = Some(project.display().to_string());
+        self
     }
 
     pub(crate) fn with_authority(mut self, authority: TargetAuthority) -> Self {
@@ -318,7 +328,38 @@ pub struct Summary {
     pub op: String,
     pub items_touched: usize,
     pub bytes_freed_estimate: u64,
+    /// The part of `bytes_freed_estimate` that was moved to Trash. It stays on
+    /// the same volume until the Trash is emptied, so it is not free space yet.
+    pub bytes_trashed_estimate: u64,
     pub notes: Vec<String>,
+}
+
+/// What an apply did, in words that never call Trash moves freed space:
+/// `op: N item(s), ~X reclaimed estimate` for permanent work, and the Trash
+/// part named as such with the command that actually frees it.
+pub fn summary_headline(summary: &Summary) -> String {
+    format!("{}: {}", summary.op, summary_counts(summary))
+}
+
+pub fn summary_counts(summary: &Summary) -> String {
+    let trashed = summary
+        .bytes_trashed_estimate
+        .min(summary.bytes_freed_estimate);
+    let reclaimed = summary.bytes_freed_estimate - trashed;
+    let items = format!("{} item(s)", summary.items_touched);
+    let trash = "the Trash part is freed once the Trash is emptied (devtrim trash-empty)";
+    match (reclaimed, trashed) {
+        (_, 0) => format!("{items}, ~{} reclaimed estimate", gb(reclaimed)),
+        (0, _) => format!(
+            "{items}, ~{} moved to Trash; it is freed once the Trash is emptied (devtrim trash-empty)",
+            gb(trashed)
+        ),
+        _ => format!(
+            "{items}, ~{} reclaimed estimate and ~{} moved to Trash; {trash}",
+            gb(reclaimed),
+            gb(trashed)
+        ),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -372,14 +413,133 @@ pub fn actionable_bytes(findings: &[Finding]) -> u64 {
         .fold(0, |total, finding| total.saturating_add(finding.size_bytes))
 }
 
-fn human_action_display(action: &Action) -> String {
+pub(crate) fn human_action_display(action: &Action) -> String {
     terminal_safe(&action.display())
 }
 
 pub fn print_human(findings: &[Finding]) -> std::io::Result<()> {
-    let total = actionable_bytes(findings);
+    write_stdout(human_text(findings).as_bytes())
+}
+
+/// Consecutive findings that share a project, with their combined size.
+pub fn project_runs(findings: &[Finding]) -> Vec<(Option<&str>, std::ops::Range<usize>, u64)> {
+    let mut runs: Vec<(Option<&str>, std::ops::Range<usize>, u64)> = Vec::new();
+    for (index, finding) in findings.iter().enumerate() {
+        let project = finding.project.as_deref();
+        match runs.last_mut() {
+            Some((current, range, total)) if *current == project => {
+                range.end = index + 1;
+                *total = total.saturating_add(finding.size_bytes);
+            }
+            _ => runs.push((project, index..index + 1, finding.size_bytes)),
+        }
+    }
+    runs
+}
+
+/// A category listing this long or shorter is shown whole in a scan.
+const SCAN_FULL_LISTING: usize = 8;
+/// How many of a longer category's largest findings a scan lists.
+const SCAN_LARGEST: usize = 5;
+
+/// The scan report: one line per category with its size and the command that
+/// acts on it, largest first, then each category's largest findings.
+pub fn print_scan_human(
+    findings: &[Finding],
+    sections: &[(&'static str, std::ops::Range<usize>)],
+    all: bool,
+) -> std::io::Result<()> {
+    write_stdout(scan_text(findings, sections, all).as_bytes())
+}
+
+fn scan_text(
+    findings: &[Finding],
+    sections: &[(&'static str, std::ops::Range<usize>)],
+    all: bool,
+) -> String {
+    let mut ordered: Vec<(&str, &[Finding])> = sections
+        .iter()
+        .filter_map(|(name, range)| findings.get(range.clone()).map(|part| (*name, part)))
+        .filter(|(_, part)| !part.is_empty())
+        .collect();
+    ordered.sort_by_key(|(_, part)| std::cmp::Reverse(actionable_bytes(part)));
+
     let mut output = String::new();
-    for finding in findings {
+    if !ordered.is_empty() {
+        output.push_str(&format!("{}\n", "Categories".bold()));
+    }
+    for (name, part) in &ordered {
+        let next = if part.iter().any(|finding| finding.action.is_actionable()) {
+            format!("devtrim clean {name} --apply").cyan()
+        } else {
+            "report only".dimmed()
+        };
+        output.push_str(&format!(
+            "  {name:<13} {:>9}  {:>5} finding(s)   {next}\n",
+            gb(actionable_bytes(part)),
+            part.len()
+        ));
+    }
+    for (name, part) in &ordered {
+        output.push_str(&format!("\n{}\n", name.bold()));
+        if all || part.len() <= SCAN_FULL_LISTING {
+            output.push_str(&findings_text(part));
+            continue;
+        }
+        let mut largest: Vec<Finding> = part.to_vec();
+        largest.sort_by_key(|finding| std::cmp::Reverse(finding.size_bytes));
+        let rest = largest.split_off(SCAN_LARGEST);
+        output.push_str(&findings_text(&largest));
+        output.push_str(&format!(
+            "           … {} more ({}); `devtrim clean {name}` lists them, `devtrim scan --all` lists everything\n",
+            rest.len(),
+            gb(rest
+                .iter()
+                .fold(0, |total: u64, finding| total.saturating_add(finding.size_bytes)))
+        ));
+    }
+    output.push_str(&format!(
+        "\n{} actionable across {} finding(s)\n",
+        gb(actionable_bytes(findings)).bold(),
+        findings.len()
+    ));
+    if !ordered.is_empty() {
+        output.push_str(&format!(
+            "Pick items one by one in the interactive view: {}. Project build output together: {}.\n",
+            "devtrim".cyan(),
+            "devtrim purge".cyan()
+        ));
+    }
+    output
+}
+
+fn human_text(findings: &[Finding]) -> String {
+    let mut output = findings_text(findings);
+    output.push_str(&format!(
+        "\n{} actionable across {} finding(s)\n",
+        gb(actionable_bytes(findings)).bold(),
+        findings.len()
+    ));
+    output
+}
+
+/// One entry per finding, with a header wherever a new project begins.
+fn findings_text(findings: &[Finding]) -> String {
+    let mut output = String::new();
+    let mut headers = project_runs(findings)
+        .into_iter()
+        .filter_map(|(project, range, bytes)| {
+            project.map(|project| (range.start, project, range.len(), bytes))
+        })
+        .peekable();
+    for (index, finding) in findings.iter().enumerate() {
+        if let Some((_, project, count, bytes)) = headers.next_if(|(start, ..)| *start == index) {
+            output.push_str(&format!(
+                "\n{} · {} in {count} item(s)\n",
+                terminal_safe(project).bold(),
+                gb(bytes)
+            ));
+        }
         let path = finding.path.as_deref().unwrap_or("-");
         output.push_str(&format!(
             "{:>9}  {}  {}  {}\n           └─ {}; action: {}\n",
@@ -391,12 +551,7 @@ pub fn print_human(findings: &[Finding]) -> std::io::Result<()> {
             human_action_display(&finding.action)
         ));
     }
-    output.push_str(&format!(
-        "\n{} actionable across {} finding(s)\n",
-        gb(total).bold(),
-        findings.len()
-    ));
-    write_stdout(output.as_bytes())
+    output
 }
 
 pub fn print_summary(summary: &Summary) -> std::io::Result<()> {
@@ -405,11 +560,9 @@ pub fn print_summary(summary: &Summary) -> std::io::Result<()> {
         output.push_str(&format!("  {}\n", terminal_safe(note)));
     }
     output.push_str(&format!(
-        "\n{} {}: {} item(s), ~{} reclaimed estimate\n",
+        "\n{} {}\n",
         "✓".green().bold(),
-        summary.op,
-        summary.items_touched,
-        gb(summary.bytes_freed_estimate)
+        terminal_safe_text(&summary_headline(summary))
     ));
     write_stdout(output.as_bytes())
 }
@@ -484,6 +637,77 @@ mod tests {
         assert_eq!(serialized["path"], "/tmp/line\nnext\u{202e}");
         assert!(serialized.get("identity").is_none());
         assert_eq!(terminal_safe(&finding.label), "cache\\u{1b}[2Jé");
+    }
+
+    /// Trash keeps every byte on the same volume until it is emptied, so a
+    /// summary that called those bytes "reclaimed" read as freed space while
+    /// free space had not moved (observed: 25 GB "reclaimed", `df` unchanged).
+    #[test]
+    fn summary_headline_never_calls_trashed_bytes_reclaimed() {
+        let gib = 1024 * 1024 * 1024;
+        let summary = |freed, trashed| Summary {
+            op: "caches".into(),
+            items_touched: 2,
+            bytes_freed_estimate: freed,
+            bytes_trashed_estimate: trashed,
+            notes: Vec::new(),
+        };
+
+        let trashed = summary_headline(&summary(5 * gib, 5 * gib));
+        assert!(trashed.contains("~5.0 GB moved to Trash"), "{trashed}");
+        assert!(trashed.contains("devtrim trash-empty"), "{trashed}");
+        assert!(!trashed.contains("reclaimed"), "{trashed}");
+
+        let permanent = summary_headline(&summary(5 * gib, 0));
+        assert!(permanent.contains("~5.0 GB reclaimed"), "{permanent}");
+        assert!(!permanent.contains("Trash"), "{permanent}");
+
+        let mixed = summary_headline(&summary(5 * gib, 2 * gib));
+        assert!(mixed.contains("~3.0 GB reclaimed"), "{mixed}");
+        assert!(mixed.contains("~2.0 GB moved to Trash"), "{mixed}");
+    }
+
+    /// A plan spanning many repositories reads as one flat list otherwise; each
+    /// project gets one header with its own total, in plan order.
+    #[test]
+    fn human_plan_groups_consecutive_findings_by_project() {
+        let finding = |path: &str, size, project: &str| {
+            let mut finding = Finding::new(
+                "stale node_modules",
+                Some(PathBuf::from(path)),
+                size,
+                "test",
+                5,
+                Action::Trash,
+            );
+            finding.project = Some(project.into());
+            finding
+        };
+        let plan = [
+            finding("/dev/alpha/target", 3000, "/dev/alpha"),
+            finding("/dev/alpha/node_modules", 1000, "/dev/alpha"),
+            finding("/dev/beta/node_modules", 2000, "/dev/beta"),
+        ];
+
+        let text = human_text(&plan)
+            .split('\u{1b}')
+            .enumerate()
+            .map(|(index, part)| {
+                if index == 0 {
+                    part
+                } else {
+                    part.split_once('m').map_or("", |(_, rest)| rest)
+                }
+            })
+            .collect::<String>();
+
+        assert_eq!(text.matches("/dev/alpha ·").count(), 1, "{text}");
+        assert_eq!(text.matches("/dev/beta ·").count(), 1, "{text}");
+        assert!(text.contains("/dev/alpha · 4 KB in 2 item(s)"), "{text}");
+        assert!(
+            text.find("/dev/alpha ·") < text.find("/dev/beta ·"),
+            "project headers must follow plan order: {text}"
+        );
     }
 
     #[test]

@@ -45,7 +45,11 @@ pub enum Command {
     /// Open the interactive terminal interface
     Tui,
     /// Read-only report of every reclaimable category with sizes and risk
-    Scan,
+    Scan {
+        /// List every finding instead of the largest few in each category
+        #[arg(long)]
+        all: bool,
+    },
     /// Read-only machine vitals: load, memory, disk, battery, thermals, processes
     Status {
         /// Refresh continuously in a live dashboard until you press q
@@ -74,6 +78,8 @@ pub enum Command {
         #[arg(long = "task")]
         tasks: Vec<String>,
     },
+    /// Move stale node_modules and build artifacts to Trash across projects, largest first
+    Purge,
     /// Clean one category
     Clean {
         /// caches | node-modules | artifacts | simulators | xcode | docker | toolchains | installers | agents | leftovers

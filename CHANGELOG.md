@@ -4,6 +4,29 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+Found by using devtrim to free space on a Mac at 97% full. Its scan listed 830
+findings, the uv cache failed on every run, and a 25 GB apply reported space
+"reclaimed" while free space did not move. The purge and selection work
+follows a study of Mole V1.56.0 (`239c90d`): its ergonomics are ported, its
+matching is not.
+
+### Added
+- `devtrim purge` puts stale `node_modules` and corroborated build artifacts in one plan, ordered by project with the largest first and a header per project. It adds no authority: every finding comes from the `node-modules` or `artifacts` scanner, with that category's staleness and build-liveness gates, and is applied by the same category, which reasserts its exact target shape, so a finding routed to the wrong one is refused. Ambiguous names such as `build`, `dist` or `coverage` stay unmatched. Mole's `mo purge` preselects exactly those names without a manifest or Git and deletes permanently; in a sandboxed dry run it queued a `target` folder holding a tax PDF
+- The interactive view can leave items out of a plan. Space leaves out the highlighted item or adds it back, `A` selects every item or none, and the confirmation is recomputed for the selected items, so leaving out a critical item can lower a typed-size confirmation to y/N. Selection only narrows: the approved plan is always a subset of the displayed preview, and changing the selection invalidates an earlier approval. The interactive view also gains a Project purge entry (`p`)
+- Findings from `node-modules` and `artifacts` carry the repository that owns them, as a `project` field in JSON and a header per project in human output
+
+### Changed
+- `scan` leads with one line per category giving its size and the command that acts on it, largest first, then lists the five largest findings of any category with more than eight. `scan --all` lists every finding; `--json` is unchanged and always complete. On the machine that prompted this, the report went from about 1,660 lines to 53
+- The interactive results screen shows one line per finding, with its selection mark, danger, size and action, and a detail pane that shows the highlighted finding in full: label, path, note, project, and whether it is left out
+- An apply that moves items to Trash no longer calls those bytes reclaimed. The summary says how much moved to Trash and that it is freed once the Trash is emptied (`devtrim trash-empty`); JSON summaries gain `bytes_trashed_estimate`, the part of `bytes_freed_estimate` that is still on disk
+- Activity dates are compared in UTC, the clock the cutoff already used, and shown as `repo last active <date> UTC`
+
+### Fixed
+- The uv cache could never be removed. uv writes an empty `.git` into its `sdists-v<N>` bucket every time it initialises a cache (uv 0.9.24 `crates/uv-cache/src/lib.rs:439-449`), so builds there never read Git metadata from an enclosing repository, and the nested-repository refusal blocked the whole cache on every run, in `clean caches` and again in `trash-empty`. Git rejects an empty gitfile as an invalid format, so that file marks no repository. The sink now tolerates it in exactly that shape: an empty regular file spelled `.git`, in a bucket named `sdists-v<digits>` directly under a deletion root carrying a valid `CACHEDIR.TAG`. A worktree pointer, a case variant, a directory, a symlink, an untagged root, a marker at another depth and one in another bucket all still refuse
+- Removing the uv cache now honours uv's own lock. Every running uv holds a shared `flock` on `<cache>/.lock` and `uv cache clean` takes it exclusively; devtrim takes it the same way without waiting, so the cache is refused while any uv process uses it instead of being moved out from under a running `uv sync`
+- `trash-empty` stopped at the first item it refused, so one trashed project that still held its repository kept every item after it. It now continues and records each refusal, reporting a nonzero status
+- Git activity dates were read in each entry's recorded time zone while the cutoff counted UTC days, so west of Greenwich an evening's activity landed a day early, and three activity-probe tests failed every evening in UTC−3
+
 ## [0.9.8] - 2026-09-23
 
 ### Fixed

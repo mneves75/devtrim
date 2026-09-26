@@ -40,7 +40,7 @@ Non-negotiable boundaries:
 - Artifact discovery never traverses an ASCII-case variant of `node_modules`, and artifact apply independently refuses any target below such an ancestor before corroboration or deletion.
 - Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
 - Literal and physically resolved parents must agree; symlinked ancestors fail closed. Any ASCII-case variant of a `.git` path component is refused.
-- `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children.
+- `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children. An item the sink refuses at apply — a trashed project that still holds its repository — is recorded and skipped; the purge continues with the other exact items and reports nonzero.
 - System roots and descendants (including ASCII case variants), the user home
   root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
   Only named managed Library subpaths are eligible. The `~/Library/Caches`
@@ -93,11 +93,29 @@ Non-negotiable boundaries:
   passes `--no-show-signature`, `--no-lazy-fetch`, and `--no-pager`, and clears
   repository-selection variables; a `git` that cannot honor those refuses the
   repository. Activity is the newer of HEAD's commit date and HEAD's newest
-  reflog entry, so a clone or checkout of old history is active.
+  reflog entry, so a clone or checkout of old history is active. Both dates are
+  rendered in UTC, the clock the staleness cutoff counts in; the probe pins
+  `TZ=UTC0` for `git` alone.
 - Every directory deletion preflights foreign filesystem devices and Git
   repository/worktree markers at any depth before either Trash or permanent
   mutation. Git metadata matching is ASCII-case-insensitive, and permanent
-  recursion repeats those checks through open handles.
+  recursion repeats those checks through open handles. One marker is tolerated:
+  the empty `.git` uv writes into its source-distribution bucket so that builds
+  there never read an enclosing repository (uv 0.9.24
+  `crates/uv-cache/src/lib.rs:439-449`). Git rejects an empty gitfile as an
+  invalid format, so it marks no repository. It must be an empty regular file
+  spelled exactly `.git`, examined without following links, in a directory named
+  `sdists-v<digits>` that is a direct child of the deletion root, and the root
+  must carry a valid `CACHEDIR.TAG` opened no-follow and non-blocking. A
+  worktree pointer, a case variant, a directory or symlink, an untagged root, a
+  marker at another depth, and one in another bucket all still refuse, each
+  proven by a planted case on both the Trash and the permanent path.
+- The uv cache is removed only while holding uv's own cache lock exclusively.
+  Every running uv holds a shared `flock` on `<cache>/.lock`, as `uv cache
+  clean` expects; devtrim takes the lock without waiting and refuses the cache
+  while any uv process holds it, then keeps it until the cache has moved so a
+  new uv process cannot start inside the tree. The lock file is opened
+  without following links or blocking and is created when missing, as uv does.
 - A repo owning the working directory of a running build/package process, and
   DerivedData while Xcode, `xcodebuild`, `SWBBuildService`, or `XCBBuildService`
   runs, are refused. A working-directory name that `lsof` escapes ambiguously
@@ -147,6 +165,8 @@ Non-negotiable boundaries:
 - Mutation flags are capability-scoped and rejected when the selected command cannot honor them; confirmation bypasses never add operations.
 - Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level, `trash-empty` included; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
 - The TUI accepts no CLI confirmation bypass, and discards keys typed while a scan or apply blocked it, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
+- TUI selection can only narrow a plan. The approved plan is the displayed findings minus those the operator left out; danger and the typed confirmation are computed over that subset, and a selection change invalidates an earlier approval. Read-only results and non-actionable rows cannot be selected.
+- `purge` adds no deletion authority. It is the `node-modules` and `artifacts` scanners in one plan, and each finding is applied by its own category, which reasserts its exact target shape, staleness and build liveness; a finding routed to the other category is refused.
 - Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
 - Hugging Face cleanup is limited to `~/.cache/huggingface/hub`. Its parent contains authentication and other state and is never an authorized built-in cache target. A real-binary regression requires model data to be removed while synthetic tokens and settings survive.
 - Complete human-facing actions, findings, errors, outcome notes, and command-line parse errors (which quote argv) escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values and JSON retains its original data.

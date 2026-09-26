@@ -9,6 +9,8 @@ use crate::safety::{Ctx, DeletionEntry, escalate};
 
 pub struct Caches;
 
+const UV_CACHE: &str = ".cache/uv";
+
 /// Exact paths relative to `$HOME`, each owned by one tool that re-creates it.
 ///
 /// These are the tools that keep their cache outside `~/Library/Caches` on
@@ -25,10 +27,14 @@ const CACHES: &[DeletionEntry] = &[
     },
     DeletionEntry {
         label: "uv package cache",
-        relative: ".cache/uv",
-        evidence: "uv's package cache, refilled on the next resolve. A source \
-                   distribution here can carry its own `.git`, which the \
-                   repository-root refusal then blocks — expected, not a bug.",
+        relative: UV_CACHE,
+        evidence: "uv documents `$HOME/.cache/uv` as its Unix cache and \
+                   `uv cache clean` as removing every entry; uv refills it on \
+                   the next resolve. Apply takes uv's own cache lock first, \
+                   as `uv cache clean` does. uv writes an empty `.git` into \
+                   its `sdists-v<N>` bucket (uv 0.9.24 \
+                   `crates/uv-cache/src/lib.rs:439-449`), which the sink \
+                   tolerates in exactly that shape.",
     },
     DeletionEntry {
         label: "node core cache",
@@ -138,15 +144,20 @@ impl Op for Caches {
             }
             let result = (|| -> Result<()> {
                 authorize_cache_finding(finding, &ctx.home)?;
+                // Held until the cache has moved, then released on drop.
+                let _uv_lock = finding
+                    .target()
+                    .filter(|target| *target == ctx.home.join(UV_CACHE))
+                    .map(lock_uv_cache)
+                    .transpose()?;
                 apply_filesystem_finding(self.name(), finding, ctx)
             })()
             .with_context(|| format!("failed to remove {}", finding.label));
             // One refused cache must not abandon the rest of the previewed plan.
-            // The list spans unrelated tools, and a single entry can be
-            // permanently unremovable — a `uv` source distribution checked out
-            // with its own `.git` trips the repository-root refusal on every
-            // run — which would otherwise block every cache listed after it.
-            // Each failure is still recorded, so the run reports nonzero.
+            // The list spans unrelated tools, and one entry can be refused for a
+            // reason of its own — uv busy with its cache, a nested repository —
+            // which would otherwise block every cache listed after it. Each
+            // failure is still recorded, so the run reports nonzero.
             if let Err(error) = result {
                 outcome.fail(error);
                 continue;
@@ -154,6 +165,49 @@ impl Op for Caches {
             outcome.record(finding, removal_note(finding, &finding.label));
         }
         Ok(outcome)
+    }
+}
+
+/// Every uv process holds a shared `flock` on `<cache>/.lock` while it uses
+/// the cache, and `uv cache clean` takes it exclusively (uv 0.9.24
+/// `crates/uv-cache/src/lib.rs:205-263,460`; `crates/uv-fs/src/locked_file.rs`
+/// locks through std `File::lock`, which is `flock(2)` on macOS). Taking the
+/// same lock without waiting refuses removal while uv runs, and holding it
+/// until the move completes keeps a new uv process from starting in the tree.
+/// Like uv, this creates the lock file when it is missing.
+fn lock_uv_cache(root: &Path) -> Result<std::fs::File> {
+    use rustix::fs::{FlockOperation, Mode, OFlags};
+
+    let lock = root.join(".lock");
+    let directory = rustix::fs::open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("cannot open uv cache {}", root.display()))?;
+    let fd = rustix::fs::openat(
+        &directory,
+        ".lock",
+        OFlags::RDONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o644),
+    )
+    .with_context(|| format!("cannot open uv's cache lock {}", lock.display()))?;
+    let file = std::fs::File::from(fd);
+    if !file
+        .metadata()
+        .with_context(|| format!("cannot inspect uv's cache lock {}", lock.display()))?
+        .file_type()
+        .is_file()
+    {
+        anyhow::bail!("uv's cache lock is not a regular file: {}", lock.display());
+    }
+    match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(file),
+        Err(rustix::io::Errno::WOULDBLOCK) => anyhow::bail!(
+            "uv is using its cache (a uv process holds {}); retry after it exits",
+            lock.display()
+        ),
+        Err(error) => Err(error).with_context(|| format!("cannot lock {}", lock.display())),
     }
 }
 
@@ -382,10 +436,10 @@ mod tests {
         }
     }
 
-    /// One unremovable cache must not abandon the rest of the previewed plan.
-    /// Observed for real: a `uv` source distribution checked out with its own
-    /// `.git` trips the repository-root refusal on every run, and while apply
-    /// stopped at the first failure it blocked every cache listed after it.
+    /// One refused cache must not abandon the rest of the previewed plan. Here a
+    /// real worktree gitfile at the cache root trips the repository refusal;
+    /// while apply stopped at the first failure, a refusal like this blocked
+    /// every cache listed after it.
     #[test]
     fn a_refused_cache_does_not_block_the_rest_of_the_plan() {
         let home = std::env::current_dir()
@@ -413,10 +467,13 @@ mod tests {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
         };
-        let findings = vec![
+        let mut findings = vec![
             cache_finding("uv package cache", home.join(".cache/uv"), 4, 3),
             cache_finding("node core cache", home.join(".cache/node"), 4, 3),
         ];
+        // Permanent, not Trash: a Trash move goes to the real user's Trash
+        // whatever this test's home is, and left a directory there every run.
+        crate::report::effective_actions(&mut findings, true);
 
         let outcome = Caches.apply(&findings, &ctx).unwrap();
 
@@ -431,6 +488,76 @@ mod tests {
         );
         assert!(home.join(".cache/uv/.git").exists());
         assert!(!home.join(".cache/node").exists());
+        crate::ops::remove_test_path(home);
+    }
+
+    /// Every running uv holds a shared lock on `<cache>/.lock`, and `uv cache
+    /// clean` waits for it. Removal must honour the same lock rather than move
+    /// the cache out from under a `uv sync` another session is running.
+    #[test]
+    fn uv_cache_is_refused_while_a_uv_process_holds_its_lock() {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-uv-lock-{}", std::process::id()));
+        crate::ops::remove_test_path(&home);
+        std::fs::create_dir_all(home.join(".cache/uv/sdists-v9")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let uv = home.join(".cache/uv");
+        std::fs::write(
+            uv.join("CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n",
+        )
+        .unwrap();
+        std::fs::write(uv.join("sdists-v9/.git"), "").unwrap();
+        std::fs::write(uv.join("entry"), "cached").unwrap();
+        let running_uv = std::fs::File::create(uv.join(".lock")).unwrap();
+        rustix::fs::flock(&running_uv, rustix::fs::FlockOperation::LockShared).unwrap();
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            active_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
+            home: home.clone(),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
+        let plan = || {
+            let mut findings = vec![cache_finding("uv package cache", uv.clone(), 6, 3)];
+            crate::report::effective_actions(&mut findings, true);
+            findings
+        };
+
+        let refused = Caches.apply(&plan(), &ctx).unwrap();
+
+        assert_eq!(
+            refused.summary.items_touched, 0,
+            "PV caches/uv-lock: the uv cache was removed while a uv process held its lock"
+        );
+        assert!(
+            refused
+                .errors
+                .iter()
+                .any(|error| error.contains("uv is using its cache")),
+            "{:?}",
+            refused.errors
+        );
+        assert!(uv.join("entry").exists());
+
+        // Unlock rather than just close: a child another test forks in parallel
+        // shares this descriptor until it execs, and a `flock` lives as long as
+        // any descriptor for it does.
+        rustix::fs::flock(&running_uv, rustix::fs::FlockOperation::Unlock).unwrap();
+        drop(running_uv);
+        let removed = Caches.apply(&plan(), &ctx).unwrap();
+
+        assert!(removed.errors.is_empty(), "{:?}", removed.errors);
+        assert!(!uv.exists(), "with uv idle the cache must be removed");
         crate::ops::remove_test_path(home);
     }
 

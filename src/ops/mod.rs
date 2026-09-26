@@ -10,6 +10,9 @@ pub mod leftovers;
 pub mod node_modules;
 pub mod optimize;
 pub(crate) mod project;
+/// Composite of `node-modules` and `artifacts`; outside [`all`] so a scan never
+/// lists the same target twice.
+pub mod purge;
 pub mod simulators;
 pub mod toolchains;
 pub mod xcode;
@@ -133,6 +136,7 @@ impl ApplyOutcome {
                 op: operation.into(),
                 items_touched: 0,
                 bytes_freed_estimate: 0,
+                bytes_trashed_estimate: 0,
                 notes: Vec::new(),
             },
             errors: Vec::new(),
@@ -145,7 +149,33 @@ impl ApplyOutcome {
             .summary
             .bytes_freed_estimate
             .saturating_add(finding.size_bytes);
+        if finding.action == Action::Trash {
+            self.summary.bytes_trashed_estimate = self
+                .summary
+                .bytes_trashed_estimate
+                .saturating_add(finding.size_bytes);
+        }
         self.summary.notes.push(note);
+    }
+
+    /// Folds another category's outcome into this one, keeping every note and
+    /// error; used by commands that apply through more than one category.
+    pub(crate) fn merge(&mut self, other: Self) {
+        let summary = other.summary;
+        self.summary.items_touched = self
+            .summary
+            .items_touched
+            .saturating_add(summary.items_touched);
+        self.summary.bytes_freed_estimate = self
+            .summary
+            .bytes_freed_estimate
+            .saturating_add(summary.bytes_freed_estimate);
+        self.summary.bytes_trashed_estimate = self
+            .summary
+            .bytes_trashed_estimate
+            .saturating_add(summary.bytes_trashed_estimate);
+        self.summary.notes.extend(summary.notes);
+        self.errors.extend(other.errors);
     }
 
     pub fn fail(&mut self, error: anyhow::Error) {
@@ -154,6 +184,8 @@ impl ApplyOutcome {
 }
 pub struct ScanResult {
     pub findings: Vec<Finding>,
+    /// Each category's contiguous slice of `findings`, in registry order.
+    pub sections: Vec<(&'static str, std::ops::Range<usize>)>,
     pub errors: Vec<String>,
 }
 
@@ -191,6 +223,7 @@ pub fn scan_all(ctx: &Ctx) -> ScanResult {
     let operations = all();
     let observations = project::ScanObservations::default();
     let mut findings = Vec::new();
+    let mut sections = Vec::new();
     let mut errors = Vec::new();
     // Scans may overlap, but apply remains serial so journal attempt/result pairs cannot interleave.
     std::thread::scope(|scope| {
@@ -212,14 +245,20 @@ pub fn scan_all(ctx: &Ctx) -> ScanResult {
                             .filter_map(Finding::scan_error)
                             .map(|error| format!("{name}: {error}")),
                     );
+                    let start = findings.len();
                     findings.append(&mut operation_findings);
+                    sections.push((name, start..findings.len()));
                 }
                 Ok(Err(error)) => errors.push(format!("{name}: {error:#}")),
                 Err(_) => errors.push(format!("{name}: scan thread terminated abnormally")),
             }
         }
     });
-    ScanResult { findings, errors }
+    ScanResult {
+        findings,
+        sections,
+        errors,
+    }
 }
 
 pub fn filter_protected_findings(findings: &mut Vec<Finding>, ctx: &Ctx) {
@@ -376,6 +415,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                 identity: FileIdentity,
                 names: Vec<std::ffi::OsString>,
                 next: usize,
+                scope: GitMarkerScope,
             }
             enum RemovalStep {
                 Continue,
@@ -390,16 +430,25 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                 )
             })?;
             ensure_same_device(root_identity, deletion_device, &quarantine_path)?;
+            let tagged_root = has_cachedir_tag(&target_dir);
             let names = directory_entry_names(&target_dir, &quarantine_path)?;
-            refuse_git_repository_root_names(&names, &quarantine_path)?;
+            refuse_git_repository_root_names(
+                &target_dir,
+                &names,
+                &quarantine_path,
+                GitMarkerScope::Strict,
+            )?;
             let mut frames = vec![RemovalFrame {
                 dir: target_dir,
                 path: quarantine_path.clone(),
                 identity: root_identity,
                 names,
                 next: 0,
+                scope: GitMarkerScope::Strict,
             }];
             loop {
+                // A child of the last frame sits one level below it.
+                let child_depth = frames.len();
                 let step = {
                     let Some(frame) = frames.last_mut() else {
                         break;
@@ -435,13 +484,15 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                                 );
                             }
                             let names = directory_entry_names(&child, &child_path)?;
-                            refuse_git_repository_root_names(&names, &child_path)?;
+                            let scope = git_marker_scope(tagged_root, child_depth, &name);
+                            refuse_git_repository_root_names(&child, &names, &child_path, scope)?;
                             RemovalStep::Descend(RemovalFrame {
                                 dir: child,
                                 path: child_path,
                                 identity: opened_identity,
                                 names,
                                 next: 0,
+                                scope,
                             })
                         } else {
                             let current_identity = file_identity_at(&frame.dir, Path::new(&name))
@@ -462,7 +513,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                             RemovalStep::Continue
                         }
                     } else {
-                        refuse_git_repository_root_handle(&frame.dir, &frame.path)?;
+                        refuse_git_repository_root_handle(&frame.dir, &frame.path, frame.scope)?;
                         let final_identity =
                             file_identity_for_dir(&frame.dir).with_context(|| {
                                 format!("cannot recheck open directory: {}", frame.path.display())
@@ -554,13 +605,92 @@ fn ensure_same_device(identity: FileIdentity, expected_device: u64, path: &Path)
     Ok(())
 }
 
-fn refuse_git_repository_root_handle(dir: &cap_std::fs::Dir, path: &Path) -> Result<()> {
-    let names = directory_entry_names(dir, path)?;
-    refuse_git_repository_root_names(&names, path)
+/// Which Git markers a directory's own entries may carry.
+///
+/// uv writes an empty `.git` into its source-distribution bucket every time it
+/// initialises a cache, so that packages built there never read Git metadata
+/// from an enclosing repository (uv 0.9.24 `crates/uv-cache/src/lib.rs:439-449`).
+/// Git rejects an empty gitfile as an invalid format, so that file marks no
+/// repository or worktree — yet while it refused, no uv cache could ever be
+/// removed. It is tolerated in exactly that shape and nowhere else: an empty
+/// regular file spelled `.git`, in a bucket named `sdists-v<digits>` that is a
+/// direct child of a deletion root carrying a valid `CACHEDIR.TAG`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GitMarkerScope {
+    Strict,
+    UvSourceDistributionBucket,
 }
 
-fn refuse_git_repository_root_names(names: &[std::ffi::OsString], path: &Path) -> Result<()> {
-    if names.iter().any(|name| is_git_metadata_name(name)) {
+fn git_marker_scope(tagged_root: bool, depth: usize, name: &OsStr) -> GitMarkerScope {
+    let uv_bucket = name
+        .as_bytes()
+        .strip_prefix(b"sdists-v")
+        .is_some_and(|version| !version.is_empty() && version.iter().all(u8::is_ascii_digit));
+    if tagged_root && depth == 1 && uv_bucket {
+        GitMarkerScope::UvSourceDistributionBucket
+    } else {
+        GitMarkerScope::Strict
+    }
+}
+
+/// Whether the deletion root is a cache directory by the CACHEDIR.TAG
+/// convention. Opened without following links and without blocking, so a FIFO
+/// or a symlink at the tag's name is simply not a tag. Every directory deletion
+/// asks, so any failure to read the tag means "not tagged": that can only
+/// withhold uv's marker exception, never refuse a target that had no use for it.
+fn has_cachedir_tag(dir: &cap_std::fs::Dir) -> bool {
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read;
+
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let Ok(fd) = rustix::fs::openat(dir, "CACHEDIR.TAG", flags, Mode::empty()) else {
+        return false;
+    };
+    let mut file = std::fs::File::from(fd);
+    if !file
+        .metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_file())
+    {
+        return false;
+    }
+    let mut prefix = [0u8; artifacts::CACHEDIR_SIGNATURE.len()];
+    file.read_exact(&mut prefix).is_ok() && &prefix == artifacts::CACHEDIR_SIGNATURE
+}
+
+fn is_uv_source_distribution_marker(dir: &cap_std::fs::Dir, name: &OsStr) -> Result<bool> {
+    if name.as_bytes() != b".git" {
+        return Ok(false);
+    }
+    let metadata = rustix::fs::statat(dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
+    Ok(
+        rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::RegularFile
+            && metadata.st_size == 0,
+    )
+}
+
+fn refuse_git_repository_root_handle(
+    dir: &cap_std::fs::Dir,
+    path: &Path,
+    scope: GitMarkerScope,
+) -> Result<()> {
+    let names = directory_entry_names(dir, path)?;
+    refuse_git_repository_root_names(dir, &names, path, scope)
+}
+
+fn refuse_git_repository_root_names(
+    dir: &cap_std::fs::Dir,
+    names: &[std::ffi::OsString],
+    path: &Path,
+    scope: GitMarkerScope,
+) -> Result<()> {
+    for name in names.iter().filter(|name| is_git_metadata_name(name)) {
+        if scope == GitMarkerScope::UvSourceDistributionBucket
+            && is_uv_source_distribution_marker(dir, name).with_context(|| {
+                format!("cannot inspect Git marker: {}", path.join(name).display())
+            })?
+        {
+            continue;
+        }
         anyhow::bail!("refusing Git repository/worktree root: {}", path.display());
     }
     Ok(())
@@ -582,11 +712,30 @@ fn preflight_same_device_tree(
     expected_device: u64,
     path: &Path,
 ) -> Result<()> {
+    let tagged_root = has_cachedir_tag(dir);
+    preflight_tree(
+        dir,
+        expected_device,
+        path,
+        tagged_root,
+        0,
+        GitMarkerScope::Strict,
+    )
+}
+
+fn preflight_tree(
+    dir: &cap_std::fs::Dir,
+    expected_device: u64,
+    path: &Path,
+    tagged_root: bool,
+    depth: usize,
+    scope: GitMarkerScope,
+) -> Result<()> {
     let root_identity = file_identity_for_dir(dir)
         .with_context(|| format!("cannot inspect open directory: {}", path.display()))?;
     ensure_same_device(root_identity, expected_device, path)?;
     let names = directory_entry_names(dir, path)?;
-    refuse_git_repository_root_names(&names, path)?;
+    refuse_git_repository_root_names(dir, &names, path, scope)?;
 
     for name in names {
         let child_path = path.join(&name);
@@ -610,7 +759,15 @@ fn preflight_same_device_tree(
                     child_path.display()
                 );
             }
-            preflight_same_device_tree(&child, expected_device, &child_path)?;
+            let child_depth = depth.saturating_add(1);
+            preflight_tree(
+                &child,
+                expected_device,
+                &child_path,
+                tagged_root,
+                child_depth,
+                git_marker_scope(tagged_root, child_depth, &name),
+            )?;
         }
     }
     Ok(())
@@ -780,9 +937,12 @@ pub fn purge_trash(findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
             }
             apply_filesystem_finding("trash-empty", finding, ctx)
         })();
+        // Trash items are unrelated to one another. One the sink refuses — a
+        // trashed project that still holds its repository — must not keep every
+        // item after it; each failure is recorded, so the run reports nonzero.
         if let Err(error) = result {
             outcome.fail(error);
-            break;
+            continue;
         }
         outcome.record(finding, format!("permanently deleted {}", finding.label));
     }
@@ -980,6 +1140,192 @@ mod tests {
                 .starts_with(".devtrim-quarantine-")
         }));
         remove_test_path(home);
+    }
+
+    const UV_CACHEDIR_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n\
+        # This file is a cache directory tag created by uv.\n\
+        # For information about cache directory tags see https://bford.info/cachedir/\n";
+
+    /// A cache laid out the way uv 0.9.24 initialises one: `CACHEDIR.TAG` at the
+    /// root and an empty `.git` in the source-distribution bucket
+    /// (`crates/uv-cache/src/lib.rs:439-449`), beside ordinary cache content.
+    fn uv_cache_fixture(root: &Path) {
+        std::fs::create_dir_all(root.join("sdists-v9/pypi/example/1.0.0")).unwrap();
+        std::fs::create_dir_all(root.join("archive-v0/abc123")).unwrap();
+        std::fs::write(root.join("CACHEDIR.TAG"), UV_CACHEDIR_TAG).unwrap();
+        std::fs::write(root.join(".gitignore"), "*\n").unwrap();
+        std::fs::write(root.join("sdists-v9/.gitignore"), "").unwrap();
+        std::fs::write(root.join("sdists-v9/.git"), "").unwrap();
+        std::fs::write(
+            root.join("sdists-v9/pypi/example/1.0.0/setup.py"),
+            "setup()\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("archive-v0/abc123/module.py"), "pass\n").unwrap();
+    }
+
+    fn sink_test_home(name: &str) -> PathBuf {
+        let home = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-{name}-{}", std::process::id()));
+        remove_test_path(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        home.canonicalize().unwrap()
+    }
+
+    fn trash_preflight(target: &Path) -> Result<()> {
+        let dir = cap_std::fs::Dir::open_ambient_dir(target, cap_std::ambient_authority())?;
+        let device = file_identity_for_dir(&dir)?.dev;
+        preflight_same_device_tree(&dir, device, target)
+    }
+
+    fn shred(home: &Path, target: &Path) -> Result<()> {
+        let finding = Finding::new(
+            "cache",
+            Some(target.to_path_buf()),
+            0,
+            "test",
+            9,
+            Action::Shred,
+        );
+        let expected = finding
+            .identity()
+            .ok_or_else(|| anyhow::anyhow!("fixture has no identity"))?;
+        let verified = crate::safety::validate_path_for_deletion(target, home, &[])?;
+        remove_path(verified, true, expected)
+    }
+
+    /// uv writes that empty `.git` on every cache initialisation, so while every
+    /// nested `.git` refused, no uv cache could ever be removed — neither by
+    /// `clean caches` nor by a later `trash-empty` of the same tree.
+    #[test]
+    fn deletion_accepts_the_empty_git_marker_uv_writes_into_its_cache() {
+        let home = sink_test_home("uv-marker-accepted");
+        let target = home.join("uv");
+        uv_cache_fixture(&target);
+
+        trash_preflight(&target).expect("Trash preflight must accept uv's own marker");
+        shred(&home, &target).expect("permanent deletion must accept uv's own marker");
+
+        assert!(!target.exists());
+        remove_test_path(home);
+    }
+
+    /// The tag is read for every directory deletion, so a tag that cannot be
+    /// read may only withhold uv's exception — never refuse an ordinary target
+    /// that had no reason to consult it.
+    #[test]
+    fn an_unreadable_cachedir_tag_only_withholds_the_uv_exception() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = sink_test_home("uv-tag-unreadable");
+        let plain = home.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("CACHEDIR.TAG"), UV_CACHEDIR_TAG).unwrap();
+        std::fs::write(plain.join("entry"), "x").unwrap();
+        let uv = home.join("uv");
+        uv_cache_fixture(&uv);
+        for root in [&plain, &uv] {
+            std::fs::set_permissions(
+                root.join("CACHEDIR.TAG"),
+                std::fs::Permissions::from_mode(0o000),
+            )
+            .unwrap();
+        }
+
+        trash_preflight(&plain).expect("an unreadable tag must not refuse an ordinary target");
+        shred(&home, &plain).expect("an unreadable tag must not refuse an ordinary target");
+        assert!(!plain.exists());
+        let refused = shred(&home, &uv).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("Git repository/worktree root"),
+            "{refused:#}"
+        );
+        std::fs::set_permissions(
+            uv.join("CACHEDIR.TAG"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        remove_test_path(home);
+    }
+
+    /// Everything short of uv's exact shape is still a repository marker, on both
+    /// the Trash preflight and the permanent removal walk.
+    #[test]
+    fn only_the_exact_uv_marker_shape_is_tolerated() {
+        type Plant = fn(&Path);
+        let cases: &[(&str, Plant)] = &[
+            ("PV sink/uv-marker-nonempty", |root| {
+                std::fs::write(
+                    root.join("sdists-v9/.git"),
+                    "gitdir: ../repository/.git/worktrees/example\n",
+                )
+                .unwrap();
+            }),
+            ("PV sink/uv-marker-case", |root| {
+                std::fs::remove_file(root.join("sdists-v9/.git")).unwrap();
+                std::fs::write(root.join("sdists-v9/.GIT"), "").unwrap();
+            }),
+            ("PV sink/uv-marker-directory", |root| {
+                std::fs::remove_file(root.join("sdists-v9/.git")).unwrap();
+                std::fs::create_dir(root.join("sdists-v9/.git")).unwrap();
+            }),
+            ("PV sink/uv-marker-symlink", |root| {
+                std::fs::remove_file(root.join("sdists-v9/.git")).unwrap();
+                std::fs::write(root.join("sdists-v9/empty"), "").unwrap();
+                symlink("empty", root.join("sdists-v9/.git")).unwrap();
+            }),
+            ("PV sink/uv-marker-untagged", |root| {
+                std::fs::remove_file(root.join("CACHEDIR.TAG")).unwrap();
+            }),
+            ("PV sink/uv-marker-bad-tag", |root| {
+                std::fs::write(
+                    root.join("CACHEDIR.TAG"),
+                    "Signature: 00000000000000000000000000000000\n",
+                )
+                .unwrap();
+            }),
+            // Named like the bucket but a level too deep: only the depth check
+            // tells it apart from the one uv writes.
+            ("PV sink/uv-marker-depth", |root| {
+                std::fs::create_dir_all(root.join("sdists-v9/pypi/sdists-v1")).unwrap();
+                std::fs::write(root.join("sdists-v9/pypi/sdists-v1/.git"), "").unwrap();
+            }),
+            ("PV sink/uv-marker-other-bucket", |root| {
+                std::fs::write(root.join("archive-v0/.git"), "").unwrap();
+            }),
+            ("PV sink/uv-marker-bucket-spelling", |root| {
+                std::fs::rename(root.join("sdists-v9"), root.join("sdists-vX")).unwrap();
+            }),
+        ];
+        for (marker, plant) in cases {
+            let home = sink_test_home("uv-marker-refused");
+            let target = home.join("uv");
+            uv_cache_fixture(&target);
+            plant(&target);
+            let sentinel = target.join("archive-v0/abc123/module.py");
+
+            let trash = trash_preflight(&target);
+            let shredded = shred(&home, &target);
+
+            for (path, result) in [
+                ("Trash preflight", &trash),
+                ("permanent deletion", &shredded),
+            ] {
+                assert!(
+                    result.as_ref().is_err_and(
+                        |error| format!("{error:#}").contains("Git repository/worktree root")
+                    ),
+                    "{marker}: {path} accepted a marker outside uv's exact shape: {result:?}"
+                );
+            }
+            assert!(
+                sentinel.exists(),
+                "{marker}: cache content was removed despite the refusal"
+            );
+            remove_test_path(home);
+        }
     }
 
     #[test]
@@ -1522,6 +1868,64 @@ mod tests {
         assert_eq!(outcome.summary.items_touched, 2);
         assert!(home.join(".Trash/.GIT/HEAD").exists());
         assert!(!home.join(".Trash/git").exists());
+        assert!(!home.join(".Trash/z-later").exists());
+        remove_test_path(root);
+    }
+
+    #[test]
+    fn apply_outcome_counts_trashed_bytes_apart_from_freed_ones() {
+        let mut outcome = ApplyOutcome::new("test");
+        outcome.record(
+            &Finding::new("a", None, 3, "test", 1, Action::Trash),
+            "trashed a".into(),
+        );
+        outcome.record(
+            &Finding::new("b", None, 4, "test", 1, Action::Shred),
+            "permanently deleted b".into(),
+        );
+
+        assert_eq!(outcome.summary.bytes_freed_estimate, 7);
+        assert_eq!(outcome.summary.bytes_trashed_estimate, 3);
+    }
+
+    /// A Trash item the sink refuses — a trashed project that still holds its
+    /// repository — must not stop the purge of the unrelated items after it.
+    #[test]
+    fn a_refused_trash_item_does_not_block_the_rest_of_the_purge() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-trash-continue-{}", std::process::id()));
+        remove_test_path(&root);
+        std::fs::create_dir_all(root.join(".Trash/a-project/.git")).unwrap();
+        std::fs::write(
+            root.join(".Trash/a-project/.git/HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".Trash/z-later"), "delete").unwrap();
+        let home = root.canonicalize().unwrap();
+        let ctx = context(home.clone());
+        let findings = trash_findings(&ctx).unwrap();
+        assert_eq!(findings.len(), 2);
+
+        let outcome = purge_trash(&findings, &ctx).unwrap();
+
+        assert_eq!(
+            outcome.errors.len(),
+            1,
+            "the refusal must still be reported"
+        );
+        assert!(
+            outcome.errors[0].contains("Git repository/worktree root"),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(
+            outcome.summary.items_touched, 1,
+            "PV trash/continue-past-refusal: the item after the refused one was not purged"
+        );
+        assert!(home.join(".Trash/a-project/.git/HEAD").exists());
         assert!(!home.join(".Trash/z-later").exists());
         remove_test_path(root);
     }

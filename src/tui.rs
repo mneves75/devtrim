@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap}
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::cli::Target;
-use crate::ops::{self, Action, ApplyOutcome, Finding};
+use crate::ops::{self, Action, ApplyOutcome, Finding, Op};
 use crate::report::{self, Summary};
 use crate::safety::{self, ConfirmationRequirement, Ctx};
 use crate::theme::{Theme, Token, danger_token};
@@ -24,6 +24,7 @@ const MIN_HEIGHT: u16 = 18;
 enum Operation {
     ScanAll,
     Clean(Target),
+    Purge,
     Icloud,
     TrashEmpty,
 }
@@ -33,6 +34,7 @@ impl Operation {
         match self {
             Self::ScanAll => "scan",
             Self::Clean(target) => target.as_str(),
+            Self::Purge => "purge",
             Self::Icloud => "icloud",
             Self::TrashEmpty => "trash-empty",
         }
@@ -77,6 +79,12 @@ const MENU: &[MenuItem] = &[
         label: "Build artifacts",
         description: "Regenerable outputs in conclusively stale Git repositories.",
         operation: Operation::Clean(Target::Artifacts),
+    },
+    MenuItem {
+        key: "p",
+        label: "Project purge",
+        description: "node_modules and build artifacts together, grouped by project, largest first.",
+        operation: Operation::Purge,
     },
     MenuItem {
         key: "5",
@@ -178,6 +186,15 @@ struct App {
     selected: usize,
     operation: Option<Operation>,
     findings: Vec<Finding>,
+    /// Highlighted row of the results list: a finding, then scan errors, then
+    /// warnings, in that order.
+    cursor: usize,
+    /// Findings left out of the plan. Selection can only narrow a preview: the
+    /// approved plan is always a subset of what was displayed.
+    excluded: std::collections::BTreeSet<usize>,
+    /// First visible results row, kept across frames so the list scrolls only
+    /// as far as the cursor needs.
+    list_offset: std::cell::Cell<usize>,
     errors: Vec<String>,
     warnings: Vec<String>,
     summary: Option<Summary>,
@@ -201,6 +218,9 @@ impl Default for App {
             selected: 0,
             operation: None,
             findings: Vec::new(),
+            cursor: 0,
+            excluded: std::collections::BTreeSet::new(),
+            list_offset: std::cell::Cell::new(0),
             errors: Vec::new(),
             warnings: Vec::new(),
             summary: None,
@@ -217,29 +237,85 @@ impl Default for App {
 }
 
 impl App {
+    /// The previewed findings still in the plan, in display order.
+    fn selected_findings(&self) -> Vec<Finding> {
+        self.findings
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !self.excluded.contains(index))
+            .map(|(_, finding)| finding.clone())
+            .collect()
+    }
+
     fn effective_findings(&self) -> Vec<Finding> {
-        let mut findings = self.findings.clone();
+        let mut findings = self.selected_findings();
         report::effective_actions(&mut findings, self.shred);
         findings
     }
 
     fn has_actionable_findings(&self) -> bool {
-        self.findings
+        self.selected_findings()
             .iter()
             .any(|finding| finding.action.is_actionable())
     }
 
     fn can_toggle_shred(&self) -> bool {
-        matches!(self.operation, Some(Operation::Clean(_)))
+        matches!(self.operation, Some(Operation::Clean(_) | Operation::Purge))
             && self
-                .findings
+                .selected_findings()
                 .iter()
                 .any(|finding| finding.action == Action::Trash)
+    }
+
+    /// Whether the finding at `index` is a choice the operator can make: only
+    /// an actionable finding of an operation that can apply.
+    fn is_selectable(&self, index: usize) -> bool {
+        self.operation
+            .is_some_and(|operation| !operation.read_only())
+            && self
+                .findings
+                .get(index)
+                .is_some_and(|finding| finding.action.is_actionable())
+    }
+
+    fn row_count(&self) -> usize {
+        self.findings.len() + self.errors.len() + self.warnings.len()
+    }
+
+    fn move_cursor(&mut self, to: usize) {
+        self.cursor = to.min(self.row_count().saturating_sub(1));
+    }
+
+    fn toggle_selected(&mut self) {
+        if !self.is_selectable(self.cursor) {
+            return;
+        }
+        if !self.excluded.remove(&self.cursor) {
+            self.excluded.insert(self.cursor);
+        }
+    }
+
+    /// Everything back in when anything is out; otherwise every choice out.
+    fn toggle_all(&mut self) {
+        if self.excluded.is_empty() {
+            self.excluded = (0..self.findings.len())
+                .filter(|index| self.is_selectable(*index))
+                .collect();
+        } else {
+            self.excluded.clear();
+        }
+    }
+
+    fn reset_selection(&mut self) {
+        self.cursor = 0;
+        self.excluded.clear();
+        self.list_offset.set(0);
     }
 
     fn begin_load(&mut self, operation: Operation) {
         self.screen = Screen::Loading;
         self.operation = Some(operation);
+        self.reset_selection();
         self.findings.clear();
         self.errors.clear();
         self.warnings.clear();
@@ -259,6 +335,7 @@ impl App {
         warnings: Vec<String>,
     ) {
         self.operation = Some(operation);
+        self.reset_selection();
         self.findings = findings;
         self.errors = errors;
         self.warnings = warnings;
@@ -272,7 +349,7 @@ impl App {
         } else if operation.read_only() {
             "Read-only result. No apply action is available.".into()
         } else {
-            "Review every finding. Press a only when the exact plan is acceptable.".into()
+            "Review every finding. Space leaves one out; a applies the rest.".into()
         };
     }
 
@@ -288,8 +365,21 @@ impl App {
         let Some(operation) = self.operation else {
             return;
         };
-        if operation.read_only() || !self.has_actionable_findings() {
+        if operation.read_only() {
             self.status = "This result has no actionable findings.".into();
+            return;
+        }
+        if !self.has_actionable_findings() {
+            self.status = if self
+                .findings
+                .iter()
+                .any(|finding| finding.action.is_actionable())
+            {
+                "Nothing is selected. Space adds the highlighted item; A selects every item."
+            } else {
+                "This result has no actionable findings."
+            }
+            .into();
             return;
         }
         let findings = self.effective_findings();
@@ -316,6 +406,7 @@ impl App {
     fn back_to_menu(&mut self) {
         self.screen = Screen::Menu;
         self.operation = None;
+        self.reset_selection();
         self.findings.clear();
         self.errors.clear();
         self.warnings.clear();
@@ -425,11 +516,35 @@ impl App {
                 Intent::None
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                self.scroll = self.scroll.saturating_sub(1);
+                self.move_cursor(self.cursor.saturating_sub(1));
                 Intent::None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.scroll = self.scroll.saturating_add(1);
+                self.move_cursor(self.cursor.saturating_add(1));
+                Intent::None
+            }
+            KeyCode::PageUp => {
+                self.move_cursor(self.cursor.saturating_sub(8));
+                Intent::None
+            }
+            KeyCode::PageDown => {
+                self.move_cursor(self.cursor.saturating_add(8));
+                Intent::None
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.move_cursor(0);
+                Intent::None
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.move_cursor(usize::MAX);
+                Intent::None
+            }
+            KeyCode::Char(' ') => {
+                self.toggle_selected();
+                Intent::None
+            }
+            KeyCode::Char('A') if self.operation.is_some_and(|op| !op.read_only()) => {
+                self.toggle_all();
                 Intent::None
             }
             KeyCode::Char('s') if self.can_toggle_shred() => {
@@ -607,6 +722,19 @@ fn load_operation(app: &mut App, operation: Operation, ctx: &Ctx) {
                 }
             }
         }
+        Operation::Purge => {
+            match ops::purge::Purge.scan(ctx, &ops::project::ScanObservations::default()) {
+                Ok(mut findings) => {
+                    ops::filter_protected_findings(&mut findings, ctx);
+                    let warnings = ctx.take_diagnostics();
+                    app.finish_results(operation, findings, Vec::new(), warnings);
+                }
+                Err(error) => {
+                    app.fail(error);
+                    app.warnings = ctx.take_diagnostics();
+                }
+            }
+        }
         Operation::Icloud => match ops::icloud_status(ctx) {
             Ok(findings) => {
                 let warnings = ctx.take_diagnostics();
@@ -686,6 +814,7 @@ fn apply_operation(app: &mut App, ctx: &Ctx, plan: ApprovedPlan) {
 
     let result = match operation {
         Operation::Clean(target) => ops::for_target(target).apply(&findings, ctx),
+        Operation::Purge => ops::purge::Purge.apply(&findings, ctx),
         Operation::TrashEmpty => apply_trash(ctx, &findings, approval),
         Operation::ScanAll | Operation::Icloud => {
             Err(anyhow::anyhow!("refusing to apply a read-only operation"))
@@ -827,6 +956,10 @@ const HELP_KEYS: &[HelpGroup] = &[
         "Move",
         &[
             ("↑/↓, k/j", "navigate lists and scroll output"),
+            (
+                "PgUp/PgDn",
+                "move a page; g/G jump to the first or last row",
+            ),
             ("Enter", "open the selected operation"),
             ("b, Esc", "back to the menu"),
         ],
@@ -834,7 +967,9 @@ const HELP_KEYS: &[HelpGroup] = &[
     (
         "Act",
         &[
-            ("a", "apply the exact previewed plan"),
+            ("Space", "leave the highlighted item out, or add it back"),
+            ("A", "select every item, or none"),
+            ("a", "apply the selected items of the previewed plan"),
             ("s", "toggle Trash-first and permanent deletion"),
             ("r", "rescan the current operation"),
         ],
@@ -930,87 +1065,219 @@ fn render_loading(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_results(frame: &mut Frame, area: Rect, app: &App) {
-    let findings = app.effective_findings();
-    let total = report::actionable_bytes(&findings);
-    let danger = safety::plan_danger(&findings);
+    let plan = app.effective_findings();
+    let total = report::actionable_bytes(&plan);
+    let danger = safety::plan_danger(&plan);
     let mode = if app.shred {
         "PERMANENT"
     } else {
         "TRASH-FIRST"
     };
-    let title = format!(
-        " Preview · {} finding(s) · {} actionable · danger-{danger} · {mode} ",
-        findings.len(),
-        report::gb(total),
-    );
-    let mut lines = Vec::new();
-    if findings.is_empty() {
+    let choices = (0..app.findings.len())
+        .filter(|index| app.is_selectable(*index))
+        .count();
+    let title = if choices > 0 {
+        // Short enough that the mode — a safety signal — survives the minimum width.
+        format!(
+            " Preview · {}/{choices} selected · {} · danger-{danger} · {mode} ",
+            choices.saturating_sub(app.excluded.len()),
+            report::gb(total),
+        )
+    } else {
+        format!(
+            " Preview · {} finding(s) · {} actionable · danger-{danger} · {mode} ",
+            app.findings.len(),
+            report::gb(total),
+        )
+    };
+
+    let detail_height = (area.height / 3).clamp(5, 10);
+    let [list_area, detail_area] =
+        Layout::vertical([Constraint::Min(3), Constraint::Length(detail_height)]).areas(area);
+    let visible = usize::from(list_area.height.saturating_sub(2)).max(1);
+    let rows = app.row_count();
+    let mut offset = app.list_offset.get();
+    if app.cursor < offset {
+        offset = app.cursor;
+    } else if app.cursor >= offset.saturating_add(visible) {
+        offset = app.cursor + 1 - visible;
+    }
+    offset = offset.min(rows.saturating_sub(visible));
+    app.list_offset.set(offset);
+
+    let width = usize::from(list_area.width.saturating_sub(2));
+    let mut lines = Vec::with_capacity(visible);
+    if rows == 0 {
         lines.push(Line::styled(
             "No findings.",
             app.theme.style(Token::Success),
         ));
     }
-    for (index, finding) in findings.iter().enumerate() {
-        let action = action_label(&finding.action);
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{:>2}. danger-{}  ", index + 1, finding.danger),
-                // `style`, not `bold`: adding BOLD to every level collapses the
-                // monochrome ladder, because moderate carries no modifier and
-                // high carries BOLD. The theme's own test cannot see this — it
-                // exercises `style()` — so the distinction has to be preserved
-                // at the call site.
-                app.theme.style(danger_token(finding.danger)),
-            ),
-            Span::styled(
-                report::terminal_safe(&finding.label),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("  {}  {action}", report::gb(finding.size_bytes)),
-                app.theme.style(Token::AccentSecondary),
-            ),
-        ]));
-        lines.push(Line::raw(report::terminal_safe(
-            finding.path.as_deref().unwrap_or("command action"),
-        )));
-        lines.push(Line::styled(
-            report::terminal_safe(&finding.note),
-            app.theme.style(Token::Muted),
-        ));
-        lines.push(Line::raw(""));
-    }
-    if !app.errors.is_empty() {
-        lines.push(Line::styled("Scan errors", app.theme.bold(Token::Warning)));
-        for error in &app.errors {
-            lines.push(Line::raw(format!("• {}", report::terminal_safe(error))));
-        }
-    }
-    if !app.warnings.is_empty() {
-        lines.push(Line::styled("Warnings", app.theme.bold(Token::Warning)));
-        for warning in &app.warnings {
-            lines.push(Line::raw(format!("• {}", report::terminal_safe(warning))));
-        }
+    for row in offset..rows.min(offset.saturating_add(visible)) {
+        lines.push(result_row(app, row, width));
     }
     frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .scroll((app.scroll, 0))
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(title)),
-        area,
+        Paragraph::new(Text::from(lines)).block(Block::bordered().title(title)),
+        list_area,
     );
+    frame.render_widget(
+        Paragraph::new(Text::from(detail_lines(app)))
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(" Details ")),
+        detail_area,
+    );
+}
+
+/// One results row: a finding with its selection mark, or a scan error or
+/// warning. Rows are clipped to one line; the detail pane shows the
+/// highlighted row in full.
+fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
+    let marker = if row == app.cursor {
+        Span::styled("› ", app.theme.bold(Token::Accent))
+    } else {
+        Span::raw("  ")
+    };
+    let Some(finding) = app.findings.get(row) else {
+        let index = row - app.findings.len();
+        let (text, token) = match app.errors.get(index) {
+            Some(error) => (format!("error: {error}"), Token::Critical),
+            None => (
+                app.warnings
+                    .get(index - app.errors.len())
+                    .cloned()
+                    .unwrap_or_default(),
+                Token::Warning,
+            ),
+        };
+        return Line::from(vec![
+            marker,
+            Span::styled(report::terminal_safe(&text), app.theme.style(token)),
+        ]);
+    };
+    let check = match (app.is_selectable(row), app.excluded.contains(&row)) {
+        (false, _) => "    ",
+        (true, true) => "[ ] ",
+        (true, false) => "[x] ",
+    };
+    // `style`, not `bold`: adding BOLD to every level collapses the monochrome
+    // ladder, because moderate carries no modifier and high carries BOLD. The
+    // theme's own test cannot see this — it exercises `style()` — so the
+    // distinction has to be preserved at the call site.
+    let danger = format!("{:>3}. danger-{} ", row + 1, finding.danger);
+    let size = format!(
+        "{:>8}  {:<8} ",
+        report::gb(finding.size_bytes),
+        action_label(&effective_action(app, finding))
+    );
+    let label = report::terminal_safe(&finding.label);
+    let used = 2 + check.len() + danger.len() + size.len() + Span::raw(label.as_str()).width() + 2;
+    let path = report::terminal_safe(finding.path.as_deref().unwrap_or("command action"));
+    Line::from(vec![
+        marker,
+        Span::raw(check),
+        Span::styled(danger, app.theme.style(danger_token(finding.danger))),
+        Span::styled(size, app.theme.style(Token::AccentSecondary)),
+        Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("  {}", truncate_left(&path, width.saturating_sub(used))),
+            app.theme.style(Token::Muted),
+        ),
+    ])
+}
+
+/// The action a row will take once the Trash/permanent mode is applied.
+fn effective_action(app: &App, finding: &Finding) -> Action {
+    if app.shred && finding.action == Action::Trash {
+        Action::Shred
+    } else {
+        finding.action.clone()
+    }
+}
+
+/// Everything about the highlighted row, unclipped.
+fn detail_lines(app: &App) -> Vec<Line<'static>> {
+    if let Some(finding) = app.findings.get(app.cursor) {
+        let action = effective_action(app, finding);
+        let mut lines = vec![
+            Line::styled(
+                report::terminal_safe(&finding.label),
+                app.theme.bold(Token::Accent),
+            ),
+            Line::raw(format!(
+                "{} · danger-{} · {}",
+                report::gb(finding.size_bytes),
+                finding.danger,
+                report::human_action_display(&action)
+            )),
+            Line::raw(report::terminal_safe(
+                finding.path.as_deref().unwrap_or("command action"),
+            )),
+            Line::styled(
+                report::terminal_safe(&finding.note),
+                app.theme.style(Token::Muted),
+            ),
+        ];
+        if let Some(project) = &finding.project {
+            lines.push(Line::raw(format!(
+                "project: {}",
+                report::terminal_safe(project)
+            )));
+        }
+        if app.excluded.contains(&app.cursor) {
+            lines.push(Line::styled(
+                "Left out of this plan; Space adds it back.",
+                app.theme.style(Token::Warning),
+            ));
+        }
+        return lines;
+    }
+    let index = app.cursor.saturating_sub(app.findings.len());
+    let diagnostic = app
+        .errors
+        .get(index)
+        .map(|error| format!("error: {error}"))
+        .or_else(|| {
+            app.warnings
+                .get(index.saturating_sub(app.errors.len()))
+                .cloned()
+        });
+    match diagnostic {
+        Some(text) => vec![Line::raw(report::terminal_safe(&text))],
+        None => vec![Line::styled(
+            "No findings.",
+            app.theme.style(Token::Success),
+        )],
+    }
+}
+
+/// Keeps the end of `text`, where a path's distinguishing leaf is, within
+/// `max` terminal columns.
+fn truncate_left(text: &str, max: usize) -> String {
+    let width = |value: &str| Span::raw(value).width();
+    if width(text) <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut kept = 0;
+    let mut start = text.len();
+    for (index, character) in text.char_indices().rev() {
+        let character_width = width(&text[index..index + character.len_utf8()]);
+        if kept + character_width + 1 > max {
+            break;
+        }
+        kept += character_width;
+        start = index;
+    }
+    format!("…{}", &text[start..])
 }
 
 fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = Vec::new();
     if let Some(summary) = &app.summary {
         lines.push(Line::styled(
-            format!(
-                "{} · {} item(s) · ~{} reclaimed estimate",
-                summary.op,
-                summary.items_touched,
-                report::gb(summary.bytes_freed_estimate)
-            ),
+            report::terminal_safe(&report::summary_headline(summary)),
             app.theme
                 .bold(match (app.errors.is_empty(), summary.items_touched) {
                     (true, _) => Token::Success,
@@ -1074,9 +1341,14 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         Screen::Menu => "↑/↓ navigate · Enter select · ? keys · q quit",
         Screen::Results => {
             if app.can_toggle_shred() {
-                "a apply · s Trash/permanent · r rescan · b back · ? keys"
+                "Space select · A all · a apply · s permanent · b back · ? keys"
+            } else if app
+                .operation
+                .is_some_and(|operation| !operation.read_only())
+            {
+                "Space select · A all · a apply · r rescan · b back · ? keys"
             } else {
-                "a apply when available · r rescan · b back · ? keys"
+                "↑/↓ move · r rescan · b back · ? keys"
             }
         }
         Screen::Confirm => "Esc cancel · type the exact requested acknowledgment",
@@ -1862,6 +2134,7 @@ mod tests {
                 op: "test".into(),
                 items_touched: 25,
                 bytes_freed_estimate: 25,
+                bytes_trashed_estimate: 0,
                 notes: (0..25).map(|index| format!("completed {index}")).collect(),
             }),
             errors: vec!["partial apply failure".into()],
@@ -1875,6 +2148,167 @@ mod tests {
 
         assert_eq!(app.scroll, 24);
         assert!(output.contains("partial apply failure"));
+    }
+
+    fn trash(label: &str, size: u64, danger: u8) -> Finding {
+        Finding::new(
+            label,
+            Some(std::path::PathBuf::from(format!("/tmp/{label}"))),
+            size,
+            "test",
+            danger,
+            Action::Trash,
+        )
+    }
+
+    fn cleanup(findings: Vec<Finding>) -> App {
+        let mut app = App::default();
+        app.finish_results(
+            Operation::Clean(Target::Caches),
+            findings,
+            Vec::new(),
+            Vec::new(),
+        );
+        app
+    }
+
+    #[test]
+    fn project_purge_is_reachable_from_the_menu() {
+        assert!(
+            MENU.iter()
+                .any(|item| item.operation == Operation::Purge && item.key == "p")
+        );
+        assert!(!Operation::Purge.read_only());
+    }
+
+    /// Deselecting only narrows: a finding left out must never reach the plan
+    /// the confirmation approves.
+    #[test]
+    fn deselected_findings_never_reach_the_approved_plan() {
+        let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+
+        assert_eq!(app.handle_key(key(KeyCode::Char(' '))), Intent::None);
+        app.begin_confirmation();
+        let Intent::Apply(plan) = app.handle_key(key(KeyCode::Char('y'))) else {
+            panic!("expected an approved plan");
+        };
+
+        let labels: Vec<_> = plan
+            .findings
+            .iter()
+            .map(|finding| finding.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            ["second"],
+            "PV tui/selection-plan: a deselected finding reached the approved plan"
+        );
+    }
+
+    #[test]
+    fn changing_the_selection_invalidates_an_earlier_approval() {
+        let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        let Intent::Apply(plan) = app.approve(Approval::Yes) else {
+            panic!("expected an approved plan");
+        };
+        assert!(approved_plan_matches(&app, &plan));
+
+        app.handle_key(key(KeyCode::Char(' ')));
+
+        assert!(!approved_plan_matches(&app, &plan));
+    }
+
+    #[test]
+    fn confirmation_strength_is_recomputed_for_the_selected_subset() {
+        let mut app = cleanup(vec![trash("critical", 1, 9), trash("routine", 1, 2)]);
+        app.begin_confirmation();
+        assert!(matches!(
+            app.confirmation,
+            Some(ConfirmationKind::Critical { .. })
+        ));
+        app.handle_key(key(KeyCode::Esc));
+
+        app.handle_key(key(KeyCode::Char(' ')));
+        app.begin_confirmation();
+
+        assert_eq!(
+            app.confirmation,
+            Some(ConfirmationKind::YesNo { danger: 2 })
+        );
+    }
+
+    #[test]
+    fn read_only_and_non_actionable_rows_cannot_be_deselected() {
+        let mut scan = App::default();
+        scan.finish_results(
+            Operation::ScanAll,
+            vec![trash("reported", 1, 2)],
+            Vec::new(),
+            Vec::new(),
+        );
+        scan.handle_key(key(KeyCode::Char(' ')));
+        assert!(scan.excluded.is_empty());
+
+        let mut app = cleanup(vec![
+            Finding::new("disclosure", None, 1, "test", 0, Action::None),
+            trash("deletable", 1, 2),
+        ]);
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert!(
+            app.excluded.is_empty(),
+            "an excluded disclosure is not a choice"
+        );
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.excluded, std::collections::BTreeSet::from([1]));
+    }
+
+    #[test]
+    fn select_all_toggles_between_every_actionable_row_and_none() {
+        let mut app = cleanup(vec![trash("a", 1, 2), trash("b", 1, 2), trash("c", 1, 2)]);
+
+        app.handle_key(key(KeyCode::Char('A')));
+        assert_eq!(app.excluded.len(), 3);
+        app.begin_confirmation();
+        assert_eq!(
+            app.screen,
+            Screen::Results,
+            "an empty plan cannot be confirmed"
+        );
+        assert!(app.status.contains("Nothing is selected"), "{}", app.status);
+
+        app.handle_key(key(KeyCode::Char('A')));
+        assert!(app.excluded.is_empty());
+    }
+
+    #[test]
+    fn results_show_selection_marks_and_the_highlighted_details() {
+        let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        app.handle_key(key(KeyCode::Char(' ')));
+
+        let output = rendered(&app, 100, 30);
+
+        assert!(output.contains("[ ]"), "{output}");
+        assert!(output.contains("[x]"), "{output}");
+        assert!(output.contains("1/2 selected"), "{output}");
+        assert!(output.contains("Left out of this plan"), "{output}");
+        assert!(output.contains("/tmp/first"), "{output}");
+    }
+
+    #[test]
+    fn the_list_follows_the_cursor_past_the_first_page() {
+        let mut app = cleanup(
+            (0..60)
+                .map(|index| trash(&format!("item-{index}"), 1, 2))
+                .collect(),
+        );
+        app.handle_key(key(KeyCode::End));
+        assert_eq!(app.cursor, 59);
+
+        let output = rendered(&app, 100, 30);
+
+        assert!(output.contains("60. danger-2"), "{output}");
+        assert!(!output.contains("  1. danger-2"), "{output}");
     }
 
     #[test]
