@@ -254,15 +254,13 @@ CASES = (
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
         marker="PV sink/uv-marker-case",
     ),
-    # The Trash preflight and the permanent path each read the tag once; each
-    # reading is broken on its own, and the failure must name its own path.
     # Both deletion paths build their marker rules through `MarkerRules::new`,
-    # so one reading of the tag serves them both.
+    # so one reading of the tag serves them both, and one case breaks it.
     Case(
         name="sink/uv-marker-tag",
         relative_path="src/ops/mod.rs",
-        before="            uv: markers.uv() && has_cachedir_tag(dir),\n",
-        after="            uv: markers.uv(),\n",
+        before="            uv_exception: markers.uv() && has_cachedir_tag(dir),\n",
+        after="            uv_exception: markers.uv(),\n",
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
         marker="PV sink/uv-marker-untagged: Trash preflight",
     ),
@@ -279,24 +277,24 @@ CASES = (
     Case(
         name="sink/uv-marker-depth",
         relative_path="src/ops/mod.rs",
-        before="    if rules.uv && depth == 1 && uv_bucket {\n",
-        after="    if rules.uv && depth >= 1 && uv_bucket {\n",
+        before="    if rules.uv_exception && depth == 1 && uv_bucket {\n",
+        after="    if rules.uv_exception && depth >= 1 && uv_bucket {\n",
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
         marker="PV sink/uv-marker-depth",
     ),
     Case(
         name="sink/uv-marker-bucket",
         relative_path="src/ops/mod.rs",
-        before="    if rules.uv && depth == 1 && uv_bucket {\n",
-        after="    if rules.uv && depth == 1 && (uv_bucket || !uv_bucket) {\n",
+        before="    if rules.uv_exception && depth == 1 && uv_bucket {\n",
+        after="    if rules.uv_exception && depth == 1 && (uv_bucket || !uv_bucket) {\n",
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
         marker="PV sink/uv-marker-other-bucket",
     ),
     Case(
         name="sink/uv-marker-grant",
         relative_path="src/ops/mod.rs",
-        before="            uv: markers.uv() && has_cachedir_tag(dir),\n",
-        after="            uv: has_cachedir_tag(dir),\n",
+        before="            uv_exception: markers.uv() && has_cachedir_tag(dir),\n",
+        after="            uv_exception: has_cachedir_tag(dir),\n",
         tests=("ops::tests::a_uv_cache_without_uv_s_lock_keeps_its_marker_refused",),
         marker="PV sink/uv-marker-grant",
     ),
@@ -373,8 +371,8 @@ CASES = (
     Case(
         name="project/tracked-files",
         relative_path="src/ops/project.rs",
-        before="    if !listed.is_empty() {\n        return Ok(true);\n    }\n",
-        after="    if false && !listed.is_empty() {\n        return Ok(true);\n    }\n",
+        before="    if !tracked_paths(root, relative, target)?.is_empty() {\n",
+        after="    if false && !tracked_paths(root, relative, target)?.is_empty() {\n",
         tests=(
             "ops::artifacts::tests::a_tree_its_repository_tracks_is_never_offered_or_removed",
             "ops::node_modules::tests::a_committed_node_modules_is_never_offered_or_removed",
@@ -386,8 +384,8 @@ CASES = (
     Case(
         name="project/tracked-files-case",
         relative_path="src/ops/project.rs",
-        before='    let mut pathspec = std::ffi::OsString::from(":(literal,icase)");\n    pathspec.push(relative);\n',
-        after='    let mut pathspec = std::ffi::OsString::from(":(literal)");\n    pathspec.push(relative);\n',
+        before='        let mut pathspec = std::ffi::OsString::from(":(literal,icase)");\n',
+        after='        let mut pathspec = std::ffi::OsString::from(":(literal)");\n',
         tests=("ops::artifacts::tests::a_tracked_tree_renamed_only_in_case_is_never_offered",),
         marker="PV project/tracked-case-rename",
     ),
@@ -420,18 +418,53 @@ CASES = (
     Case(
         name="artifacts/keypair-scan",
         relative_path="src/ops/artifacts.rs",
-        before="                if program_keypair_under(&candidate.path)?.is_some() {\n",
-        after="                if false && program_keypair_under(&candidate.path)?.is_some() {\n",
+        before="                        keypairs = keypairs.saturating_add(1);\n                        continue;\n",
+        after="                        keypairs = keypairs.saturating_add(1);\n",
         tests=("ops::artifacts::tests::a_tree_holding_a_program_keypair_is_never_offered_or_removed",),
         marker="PV artifacts/keypair-scan",
     ),
     Case(
         name="artifacts/keypair-apply",
         relative_path="src/ops/artifacts.rs",
-        before="                if let Some(keypair) = program_keypair_under(path)? {\n",
-        after="                if let Some(keypair) = program_keypair_under(path)?.filter(|_| false) {\n",
+        before="                    Some(Authored::ProgramKeypair(keypair)) => anyhow::bail!(\n",
+        after="                    Some(Authored::ProgramKeypair(keypair)) if false => anyhow::bail!(\n",
         tests=("ops::artifacts::tests::a_tree_holding_a_program_keypair_is_never_offered_or_removed",),
         marker="PV artifacts/keypair-apply",
+    ),
+    # Mole also refuses a purge target holding a `.git` anywhere inside; the
+    # scan skips such a tree and the apply preflight refuses it.
+    Case(
+        name="artifacts/nested-repository-scan",
+        relative_path="src/ops/artifacts.rs",
+        before="                        repositories = repositories.saturating_add(1);\n                        continue;\n",
+        after="                        repositories = repositories.saturating_add(1);\n",
+        tests=("ops::artifacts::tests::a_tree_holding_a_git_repository_is_never_offered_or_removed",),
+        marker="PV artifacts/nested-repository-scan",
+    ),
+    Case(
+        name="artifacts/nested-repository-apply",
+        relative_path="src/ops/artifacts.rs",
+        before="                    Some(Authored::Repository(marker)) => anyhow::bail!(\n",
+        after="                    Some(Authored::Repository(marker)) if false => anyhow::bail!(\n",
+        tests=("ops::artifacts::tests::a_tree_holding_a_git_repository_is_never_offered_or_removed",),
+        marker="PV artifacts/nested-repository-apply",
+    ),
+    # A finding the sink refuses after preflight costs only itself.
+    Case(
+        name="artifacts/continue-past-refusal",
+        relative_path="src/ops/artifacts.rs",
+        before="                Err(error) => outcome.fail(error),\n",
+        after="                Err(error) => {\n                    outcome.fail(error);\n                    break;\n                }\n",
+        tests=("ops::artifacts::tests::a_refused_artifact_does_not_block_the_rest_of_the_plan",),
+        marker="PV artifacts/continue-past-refusal",
+    ),
+    Case(
+        name="node_modules/continue-past-refusal",
+        relative_path="src/ops/node_modules.rs",
+        before="                Err(error) => outcome.fail(error),\n",
+        after="                Err(error) => {\n                    outcome.fail(error);\n                    break;\n                }\n",
+        tests=("ops::node_modules::tests::a_refused_node_modules_does_not_block_the_rest_of_the_plan",),
+        marker="PV node_modules/continue-past-refusal",
     ),
     Case(
         name="sink/trash-grant-root",
@@ -454,8 +487,8 @@ CASES = (
     Case(
         name="xcode/package-checkouts-kept",
         relative_path="src/ops/xcode.rs",
-        before="    if path.file_name().is_some_and(is_source_packages) {\n",
-        after="    if false && path.file_name().is_some_and(is_source_packages) {\n",
+        before="    if in_folder && path.file_name().is_some_and(is_source_packages) {\n",
+        after="    if false && in_folder && path.file_name().is_some_and(is_source_packages) {\n",
         tests=("ops::xcode::tests::apply_never_removes_the_package_checkouts",),
         marker="PV xcode/package-checkouts-kept",
     ),

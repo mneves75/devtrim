@@ -813,6 +813,33 @@ fn clean_xcode_cleans_derived_data_around_package_checkouts() {
     assert!(checkout.join(".git/HEAD").exists(), "{value}");
 }
 
+/// A tracked-file query that fails is no evidence either way, so the category
+/// refuses rather than offer what it could not check, and says why in Git's
+/// own words.
+#[test]
+fn a_failing_tracked_file_check_refuses_rather_than_trusts() {
+    let sandbox = Sandbox::new("tracked-check-fails");
+    let (dev, _small, _large) = purge_fixture(&sandbox);
+    sandbox.script(
+        "git",
+        "case \"$*\" in\n  *ls-files*) echo 'fatal: index file corrupt' >&2; exit 128 ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+    );
+
+    let output = run(
+        &sandbox,
+        &["purge", "--root", dev.to_str().unwrap(), "--json"],
+    );
+
+    assert!(!output.status.success());
+    let value = json(&output);
+    assert!(value["findings"].as_array().unwrap().is_empty(), "{value}");
+    let errors = value["errors"].to_string();
+    assert!(
+        errors.contains("Git tracked-file check failed") && errors.contains("index file corrupt"),
+        "{value}"
+    );
+}
+
 fn finding_paths(value: &Value) -> Vec<String> {
     value["findings"]
         .as_array()
@@ -881,7 +908,7 @@ fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() 
     std::fs::write(project.join("target/debug/out"), vec![b'x'; 4096]).unwrap();
     for args in [
         vec!["init", "-q"],
-        vec!["add", "--", "Podfile", "Pods", "Cargo.toml"],
+        vec!["add", "-f", "--", "Podfile", "Pods", "Cargo.toml"],
         vec![
             "-c",
             "user.name=devtrim-test",
@@ -898,6 +925,8 @@ fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() 
         let status = Command::new(git.trim())
             .args(&args)
             .current_dir(&project)
+            .env("HOME", sandbox.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
@@ -2399,7 +2428,7 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
     );
     assert_eq!(count(" log --no-show-signature -1 -g "), 1, "{spawns}");
     // The tracked-file check runs once per offered candidate, never per file.
-    assert_eq!(count(" ls-files -z -- :(literal,icase)"), 2, "{spawns}");
+    assert_eq!(count(" ls-files "), 2, "{spawns}");
 
     for failed_probe in ["liveness", "git"] {
         std::fs::write(&log, "").unwrap();

@@ -43,10 +43,10 @@ cp target/release/devtrim /usr/local/bin/
 ## Principles
 
 - **Preview by default.** Every mutation, including `trash-empty`, requires `--apply`.
-- **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets. Xcode and Swift toolchain apply reassert exact direct-child authority; `node_modules` apply reasserts a real authorized directory leaf and rejects symlinks plus `.git`, nested dependency-tree, and non-normal ancestors.
+- **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets. Xcode and Swift toolchain apply reassert exact direct-child authority — for a DerivedData folder holding Swift package checkouts, its directories but `SourcePackages`; `node_modules` apply reasserts a real authorized directory leaf and rejects symlinks plus `.git`, nested dependency-tree, and non-normal ancestors.
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
 - **Untrusted repositories stay inert.** devtrim's two Git queries — the activity probe and the tracked-file check — disable every repository-configurable path by which they could run a program: hooks, fsmonitor, signature verification through `gpg.program`, and lazy fetches through a promisor remote's `uploadpack`. Previewing a directory that arrived with a hostile `.git/config` runs nothing. A `git` too old for `--no-lazy-fetch` refuses the repository.
-- **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation.
+- **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation. A repository whose Git query fails blocks its whole category's preview, not only its own directories, so one broken `.git` under a scan root empties `purge` until it is fixed or left out of the roots; the error names it.
 - **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while Xcode, `xcodebuild`, or the build services Xcode.app builds run through are running. A probe that cannot complete blocks instead of passing; a build tool that exited between the process list and the directory lookup is not mistaken for one.
 - **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle. Every directory action rejects foreign devices and Git repository/worktree markers at any depth before mutation; the one exception is the empty `.git` uv writes into its own source-distribution bucket, which Git itself rejects as an invalid gitfile, tolerated only in that exact shape under a tagged cache root that `clean caches` holds uv's lock on or `trash-empty` finds in the Trash. Permanent deletes additionally quarantine the verified leaf and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
 - **Write-ahead journal.** Every apply records an attempt before deletion and a result after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). Symlinked path components are refused, complete records are serialized and synced, and an unwritable journal blocks apply. Rotation (10 MiB, keep 3) cannot split an in-flight pair. `devtrim history` is read-only, waits for guarded applies before snapshotting, pairs legacy records across generations, reverse-scans only the bounded newest tail needed for the requested limit, and reports a genuinely unmatched attempt as interrupted.
@@ -132,7 +132,8 @@ stale `node_modules` and corroborated build artifacts in one plan, ordered by
 project with the largest first. Each finding keeps its category's staleness and
 build-liveness gates and is applied by that category, which reasserts its exact
 shape. Like Mole's `mo purge`, it skips a directory holding files its
-repository tracks or a Solana program keypair. Unlike `mo purge`, it never
+repository tracks, and a build directory holding a Solana program keypair or a
+nested Git repository. Unlike `mo purge`, it never
 matches ambiguous names such as `build`, `dist`, or `coverage`, never deletes
 permanently unless you pass `--shred`, and never touches a repository with
 recent Git activity.
@@ -147,7 +148,9 @@ scanner/apply owner refuse artifacts below every ASCII-case variant of
 `node_modules`. A directory holding any file its repository tracks is part of
 the repository, not build output — CocoaPods recommends committing `Pods` — so
 neither `artifacts` nor `node-modules` offers one. `artifacts` also never offers
-a tree holding an entry named `*-keypair.json`: `cargo build-sbf`, which
+a tree holding a Git repository anywhere below its root — a SwiftPM `.build`
+keeps its dependencies as Git clones — nor one holding an entry named
+`*-keypair.json`: `cargo build-sbf`, which
 `anchor build` runs, writes a Solana program's keypair into `target/deploy`
 once, and a rebuild after removal mints a different program address. Both
 checks run again at apply.
@@ -408,7 +411,7 @@ output.
 |---|---|
 | Preview | `--apply` is mandatory for every mutation |
 | Candidate set | apply uses exact previewed findings |
-| Category authority | Xcode and toolchain apply reassert exact direct-child targets; `node_modules` apply reasserts its scanner's leaf and ancestor rules |
+| Category authority | Xcode and toolchain apply reassert exact direct-child targets, and a DerivedData folder holding Swift package checkouts only its directories but `SourcePackages`; `node_modules` apply reasserts its scanner's leaf and ancestor rules |
 | Trash | recoverable by default; permanent mode is explicit |
 | Danger gate | maximum finding score plus aggregate estimated logical bytes |
 | TUI consent | approval capability must match the current preview, its selection, and the danger requirement of the selected findings; selection can only narrow the preview |

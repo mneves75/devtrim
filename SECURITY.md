@@ -35,10 +35,10 @@ Non-negotiable boundaries:
 
 - Every mutation requires `--apply`.
 - Apply uses only exact previewed findings and preserves their exact non-lossy path identity.
-- Xcode and Swift toolchain apply reassert that every target still has the exact direct-child category shape its scanner authorized before the shared deletion sink can consume it.
+- Xcode and Swift toolchain apply reassert that every target still has the exact direct-child category shape its scanner authorized before the shared deletion sink can consume it. The one deeper Xcode shape is a directory of a DerivedData folder that still holds Swift package checkouts, never its `SourcePackages`.
 - `node_modules` apply reasserts that each target is a real `node_modules` directory leaf inside its owning repository and rejects symlinks, ASCII-case-insensitive `.git` and outer `node_modules` ancestors, and non-normal paths before the shared deletion sink can consume it.
 - Artifact discovery never traverses an ASCII-case variant of `node_modules`, and artifact apply independently refuses any target below such an ancestor before corroboration or deletion.
-- `artifacts` and `node_modules` never offer or apply a directory holding a file its repository tracks, asked of Git with one literal, case-insensitive pathspec per target so Git does its own matching, Unicode precomposition included, and a directory renamed only in case still matches the spelling Git's index kept. Git folds ASCII case only, so for a path with non-ASCII names that query is followed by the filesystem's own matching: any tracked path whose ancestor at the target's depth is the target itself, by device and inode, refuses it. `artifacts` never offers or applies a tree holding an entry named `*-keypair.json` (ASCII-case-insensitive, links not followed): `cargo build-sbf` writes a Solana program's keypair there once, and no rebuild restores it. Both checks run at preview and again at apply, and a query or walk that fails refuses.
+- `artifacts` and `node_modules` never offer or apply a directory holding a file its repository tracks, asked of Git with one literal, case-insensitive pathspec per target so Git does its own matching, Unicode precomposition included, and a directory renamed only in case still matches the spelling Git's index kept. Git folds ASCII case only, so for a path with non-ASCII names that query is followed by the filesystem's own matching: any tracked path whose ancestor at the target's depth is the target itself, by device and inode, refuses it. `artifacts` never offers or applies a tree holding an entry named `*-keypair.json` (ASCII-case-insensitive, links not followed): `cargo build-sbf` writes a Solana program's keypair there once, and no rebuild restores it. Nor does it offer or apply a tree holding a Git metadata name anywhere below its root, which the sink would refuse anyway. These checks run at preview and again at apply, and a query or walk that fails refuses. `artifacts` and `node_modules` preflight every finding before changing anything; a finding the sink then refuses costs only itself.
 - Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
 - Literal and physically resolved parents must agree; symlinked ancestors fail closed. Any ASCII-case variant of a `.git` path component is refused.
 - `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children. An item the sink refuses at apply — a trashed project that still holds its repository — is recorded and skipped; the purge continues with the other exact items and reports nonzero.
@@ -124,7 +124,7 @@ Non-negotiable boundaries:
   repetition is defense in depth rather than a proven boundary. A real Git
   repository is never removed: a DerivedData folder holding SwiftPM's package
   checkouts, each a Git clone, is cleaned around them instead, and
-  `SourcePackages` is refused at apply in any spelling.
+  `SourcePackages` is refused at apply in any ASCII case.
 - The uv cache is removed only while holding uv's own cache lock exclusively.
   A running uv holds a shared `flock` on `<cache>/.lock` where the filesystem
   supports shared locks, as APFS does, and `uv cache clean` expects it;

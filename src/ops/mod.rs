@@ -292,12 +292,14 @@ pub fn apply_filesystem_finding(op: &str, finding: &Finding, ctx: &Ctx) -> Resul
 /// source-distribution marker, so no other path can remove a uv cache that a
 /// running uv holds.
 pub(crate) fn apply_uv_cache_finding(
-    op: &str,
+    operation: &str,
     finding: &Finding,
     ctx: &Ctx,
     lock: &crate::safety::UvCacheLock,
 ) -> Result<()> {
-    apply_verified_finding(op, finding, ctx, |verified| verified.grant_uv_marker(lock))
+    apply_verified_finding(operation, finding, ctx, |verified| {
+        verified.grant_uv_marker(lock)
+    })
 }
 
 /// Applies an item directly in the Trash, which may be a uv cache `clean
@@ -309,7 +311,7 @@ fn apply_trashed_finding(finding: &Finding, ctx: &Ctx, trash: &Path) -> Result<(
 }
 
 fn apply_verified_finding(
-    op: &str,
+    operation: &str,
     finding: &Finding,
     ctx: &Ctx,
     grant: impl FnOnce(VerifiedTarget) -> Result<VerifiedTarget>,
@@ -324,7 +326,12 @@ fn apply_verified_finding(
         .ok_or_else(|| anyhow::anyhow!("filesystem finding missing internal target"))?;
     let attempt = crate::journal::begin(
         ctx,
-        crate::journal::JournalRecord::filesystem_attempt(op, action, target, finding.size_bytes),
+        crate::journal::JournalRecord::filesystem_attempt(
+            operation,
+            action,
+            target,
+            finding.size_bytes,
+        ),
     )
     .with_context(|| format!("cannot write apply journal: {}", ctx.journal_path.display()))?;
     let result = crate::safety::validate_path_for_deletion(target, &ctx.home, &ctx.protect)
@@ -654,8 +661,9 @@ fn ensure_same_device(identity: FileIdentity, expected_device: u64, path: &Path)
 /// The Git-marker exceptions one deletion was granted, fixed for its tree.
 #[derive(Clone, Copy, Debug)]
 struct MarkerRules {
-    /// uv's marker: granted, and the root carries a valid `CACHEDIR.TAG`.
-    uv: bool,
+    /// uv's marker applies: it was granted, and the root carries a valid
+    /// `CACHEDIR.TAG`.
+    uv_exception: bool,
 }
 
 impl MarkerRules {
@@ -663,7 +671,7 @@ impl MarkerRules {
     /// read.
     fn new(markers: &MarkerGrant, dir: &cap_std::fs::Dir) -> Self {
         Self {
-            uv: markers.uv() && has_cachedir_tag(dir),
+            uv_exception: markers.uv() && has_cachedir_tag(dir),
         }
     }
 }
@@ -691,7 +699,7 @@ fn git_marker_scope(rules: MarkerRules, depth: usize, name: &OsStr) -> GitMarker
         .as_bytes()
         .strip_prefix(b"sdists-v")
         .is_some_and(|version| !version.is_empty() && version.iter().all(u8::is_ascii_digit));
-    if rules.uv && depth == 1 && uv_bucket {
+    if rules.uv_exception && depth == 1 && uv_bucket {
         GitMarkerScope::UvSourceDistributionBucket
     } else {
         GitMarkerScope::Strict
@@ -2202,7 +2210,13 @@ mod tests {
 
         assert!(!home.join(".Trash/uv").exists(), "{:?}", outcome.errors);
         assert!(home.join(".Trash/a-project/.git/HEAD").exists());
-        assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
+        assert!(
+            outcome.errors.len() == 1
+                && outcome.errors[0].contains("a-project")
+                && outcome.errors[0].contains("Git repository/worktree root"),
+            "{:?}",
+            outcome.errors
+        );
         remove_test_path(root);
     }
 

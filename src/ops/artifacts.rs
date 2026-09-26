@@ -69,6 +69,7 @@ impl Op for Artifacts {
         let mut build_active = 0usize;
         let mut tracked = 0usize;
         let mut keypairs = 0usize;
+        let mut repositories = 0usize;
         for (owner, candidates) in groups {
             if repo_has_active_build(&owner, observations.process_cwds()?) {
                 build_active = build_active.saturating_add(candidates.len());
@@ -84,9 +85,16 @@ impl Op for Artifacts {
                     tracked = tracked.saturating_add(1);
                     continue;
                 }
-                if program_keypair_under(&candidate.path)?.is_some() {
-                    keypairs = keypairs.saturating_add(1);
-                    continue;
+                match authored_entry_under(&candidate.path)? {
+                    Some(Authored::ProgramKeypair(_)) => {
+                        keypairs = keypairs.saturating_add(1);
+                        continue;
+                    }
+                    Some(Authored::Repository(_)) => {
+                        repositories = repositories.saturating_add(1);
+                        continue;
+                    }
+                    _ => {}
                 }
                 let size = dir_size(&candidate.path)?;
                 findings.push(
@@ -131,6 +139,12 @@ impl Op for Artifacts {
                 format!(
                     "skipping {keypairs} artifact directories holding a program keypair (*-keypair.json)"
                 ),
+            );
+        }
+        if repositories > 0 && !ctx.json {
+            ctx.diagnostic(
+                "info",
+                format!("skipping {repositories} artifact directories holding a Git repository"),
             );
         }
         Ok(findings)
@@ -233,12 +247,18 @@ impl Artifacts {
                         path.display()
                     );
                 }
-                if let Some(keypair) = program_keypair_under(path)? {
-                    anyhow::bail!(
+                match authored_entry_under(path)? {
+                    Some(Authored::ProgramKeypair(keypair)) => anyhow::bail!(
                         "refusing {}: it holds the program keypair {}",
                         path.display(),
                         keypair.display()
-                    );
+                    ),
+                    Some(Authored::Repository(marker)) => anyhow::bail!(
+                        "refusing {}: it holds the Git repository marked by {}",
+                        path.display(),
+                        marker.display()
+                    ),
+                    _ => {}
                 }
                 Ok(())
             })();
@@ -249,20 +269,29 @@ impl Artifacts {
             ready.push((finding, path));
         }
 
+        // Every finding passed its preflight; one the sink still refuses costs
+        // only itself. Each failure is recorded, so the run reports nonzero.
         for (finding, path) in ready {
             match apply_filesystem_finding(self.name(), finding, ctx) {
                 Ok(()) => outcome.record(finding, removal_note(finding, path.display())),
-                Err(error) => {
-                    outcome.fail(error);
-                    break;
-                }
+                Err(error) => outcome.fail(error),
             }
         }
         Ok(outcome)
     }
 }
 
-/// The first entry under `path` named like a Solana program keypair.
+/// Something inside a build-output tree that no rebuild restores.
+enum Authored {
+    /// A Solana program keypair.
+    ProgramKeypair(PathBuf),
+    /// The marker of a Git repository or worktree below the tree's root.
+    Repository(PathBuf),
+}
+
+/// The first entry under `path` that no rebuild restores, as Mole V1.56.0
+/// looks for it before a purge (`lib/clean/project.sh`: `find` for `.git` or
+/// `*-keypair.json`).
 ///
 /// `cargo build-sbf`, which `anchor build` runs, writes `<program>-keypair.json`
 /// into its output directory — `target/deploy` unless `--sbf-out-dir` or
@@ -270,18 +299,27 @@ impl Artifacts {
 /// (cargo-build-sbf v4.4.0 `src/post_processing.rs:167-171,188,201`). Its
 /// public key is the program's address, so a rebuild after removal mints a
 /// different address. Git ignores `target`, so the key is untracked and only
-/// its name identifies it; Mole V1.56.0 refuses a purge target holding
-/// `*-keypair.json` for the same reason (`lib/clean/project.sh`). Names match
-/// ASCII-case-insensitively, and the walk follows no link.
-fn program_keypair_under(path: &Path) -> Result<Option<PathBuf>> {
+/// its name identifies it. A repository nested anywhere below the root — a
+/// SwiftPM `.build` keeps its dependencies as Git clones in `checkouts`, a
+/// `.venv` holds an editable install's — is someone's history, which the sink
+/// would refuse at apply anyway. Names match ASCII-case-insensitively, and the
+/// walk follows no link.
+fn authored_entry_under(path: &Path) -> Result<Option<Authored>> {
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
         .follow_root_links(false)
     {
-        let entry = entry
-            .with_context(|| format!("cannot search {} for program keypairs", path.display()))?;
+        let entry = entry.with_context(|| {
+            format!(
+                "cannot search {} for a program keypair or a Git repository",
+                path.display()
+            )
+        })?;
         if is_program_keypair_name(entry.file_name()) {
-            return Ok(Some(entry.into_path()));
+            return Ok(Some(Authored::ProgramKeypair(entry.into_path())));
+        }
+        if entry.depth() > 0 && is_git_metadata_name(entry.file_name()) {
+            return Ok(Some(Authored::Repository(entry.into_path())));
         }
     }
     Ok(None)
@@ -898,6 +936,118 @@ mod tests {
                     .any(|error| error.contains("holds the program keypair")),
             "PV artifacts/keypair-apply: {outcome:?}"
         );
+        crate::ops::remove_test_path(root);
+    }
+
+    /// Mole refuses a purge target holding a `.git` anywhere inside, not only
+    /// at its top: a SwiftPM `.build` keeps its dependencies as Git clones in
+    /// `checkouts`, and a `.venv` holds an editable install's repository. The
+    /// sink would refuse either at apply, so the scan must not offer them.
+    #[test]
+    fn a_tree_holding_a_git_repository_is_never_offered_or_removed() {
+        let (root, home) = deletable_root("nested-repository");
+        let package = home.join("package");
+        init_old_git_repo(&package).unwrap();
+        std::fs::write(
+            package.join("Package.swift"),
+            "// swift-tools-version:5.9\n",
+        )
+        .unwrap();
+        let build = package.join(".build");
+        let clone = build.join("checkouts/swift-argument-parser/.git");
+        std::fs::create_dir_all(&clone).unwrap();
+        std::fs::write(clone.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let other = home.join("other");
+        init_old_git_repo(&other).unwrap();
+        std::fs::write(other.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::create_dir_all(other.join("target")).unwrap();
+        std::fs::write(other.join("target/out"), "x").unwrap();
+        let ctx = context(home.clone());
+
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+        let paths = offered(&findings);
+        assert!(
+            !paths.contains(&build.as_path()),
+            "PV artifacts/nested-repository-scan: a tree holding a repository was offered: {paths:?}"
+        );
+        assert!(
+            paths.contains(&other.join("target").as_path()),
+            "positive control: the target without a repository was not offered: {paths:?}"
+        );
+
+        let forged = Finding::new(
+            "stale .build artifacts",
+            Some(build.clone()),
+            3,
+            "test",
+            9,
+            Action::Shred,
+        );
+        let outcome = Artifacts
+            .apply_with_process_cwds(&[forged], &ctx, Ok(Vec::new()))
+            .unwrap();
+        assert!(
+            outcome.summary.items_touched == 0
+                && clone.join("HEAD").exists()
+                && outcome
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("holds the Git repository")),
+            "PV artifacts/nested-repository-apply: {outcome:?}"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    /// A finding the sink refuses costs only itself: here a configured
+    /// `protect` entry, which only the sink consults, and the plan continues.
+    #[test]
+    fn a_refused_artifact_does_not_block_the_rest_of_the_plan() {
+        let (root, home) = deletable_root("artifacts-continue");
+        for name in ["first", "second"] {
+            let repo = home.join(name);
+            init_old_git_repo(&repo).unwrap();
+            std::fs::write(repo.join("Cargo.toml"), "[package]").unwrap();
+            std::fs::create_dir_all(repo.join("target")).unwrap();
+            std::fs::write(repo.join("target/out"), "x").unwrap();
+        }
+        let mut ctx = context(home.clone());
+        ctx.protect = vec![home.join("first/target")];
+        let mut findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+        crate::report::effective_actions(&mut findings, true);
+
+        let outcome = Artifacts
+            .apply_with_process_cwds(&findings, &ctx, Ok(Vec::new()))
+            .unwrap();
+
+        assert!(home.join("first/target/out").exists());
+        assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
+        assert!(
+            !home.join("second/target").exists(),
+            "PV artifacts/continue-past-refusal: the refusal stranded the next finding: {outcome:?}"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    /// A tree the scan cannot read through is not known to be free of keys or
+    /// repositories, so the category refuses rather than offer it.
+    #[test]
+    fn an_unreadable_tree_refuses_rather_than_offers() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (root, home) = deletable_root("unreadable-tree");
+        let repo = home.join("app");
+        init_old_git_repo(&repo).unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[package]").unwrap();
+        let locked = repo.join("target/locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let ctx = context(home.clone());
+
+        let refused = Artifacts.scan_with_process_cwds(&ctx, &[]);
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = format!("{:#}", refused.unwrap_err());
+        assert!(error.contains("cannot search"), "{error}");
         crate::ops::remove_test_path(root);
     }
 

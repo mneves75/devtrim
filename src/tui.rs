@@ -2218,7 +2218,10 @@ mod tests {
             "the apply did not continue past the refusal: {screen}"
         );
         assert!(
-            screen.contains("Errors") && screen.contains("refused"),
+            screen.contains("Errors")
+                && screen
+                    .replace([' ', '│'], "")
+                    .contains("refusingGitrepository/worktreeroot"),
             "the refusal is listed: {screen}"
         );
         assert!(screen.contains("finished with errors"), "{screen}");

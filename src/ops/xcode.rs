@@ -28,10 +28,6 @@ const TARGETS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// The note on a directory of a DerivedData folder whose package checkouts
-/// stay behind.
-const PACKAGE_FOLDER_NOTE: &str = "build output; rebuilt on next build. The folder's SwiftPM package checkouts are Git clones and stay";
-
 impl Op for Xcode {
     fn name(&self) -> &'static str {
         "xcode"
@@ -110,6 +106,9 @@ impl Xcode {
                 let path = entry.path();
                 if *label == "DerivedData" && holds_package_checkouts(&path)? {
                     let folder = path.file_name().unwrap_or_default().to_string_lossy();
+                    let package_note = format!(
+                        "{note}. The folder's SwiftPM package checkouts are Git clones and stay"
+                    );
                     for child in package_folder_children(&path)? {
                         let size = dir_size(&child)?;
                         findings.push(Finding::new(
@@ -119,7 +118,7 @@ impl Xcode {
                             ),
                             Some(child),
                             size,
-                            PACKAGE_FOLDER_NOTE,
+                            package_note.clone(),
                             escalate(4, size),
                             Action::Trash,
                         ));
@@ -261,9 +260,24 @@ fn is_source_packages(name: &OsStr) -> bool {
         .eq_ignore_ascii_case(b"SourcePackages")
 }
 
+/// Refuses `SourcePackages` in a DerivedData folder: its checkouts are Git
+/// clones, which devtrim never deletes, however the finding reached apply.
+fn refuse_package_checkouts(path: &Path, derived_data: &Path) -> Result<()> {
+    let in_folder = path
+        .parent()
+        .is_some_and(|folder| folder.parent() == Some(derived_data));
+    if in_folder && path.file_name().is_some_and(is_source_packages) {
+        anyhow::bail!(
+            "refusing the SwiftPM package checkouts at {}: they are Git clones",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Whether `path` is a directory a scan offers inside a DerivedData folder
-/// holding package checkouts: a direct child of such a folder, and never
-/// `SourcePackages`.
+/// holding package checkouts: a direct child of a real folder that still
+/// holds them.
 fn is_package_folder_child(path: &Path, derived_data: &Path) -> Result<bool> {
     let Some(folder) = path
         .parent()
@@ -271,12 +285,6 @@ fn is_package_folder_child(path: &Path, derived_data: &Path) -> Result<bool> {
     else {
         return Ok(false);
     };
-    if path.file_name().is_some_and(is_source_packages) {
-        anyhow::bail!(
-            "refusing the SwiftPM package checkouts in {}: they are Git clones",
-            folder.display()
-        );
-    }
     let folder_is_directory = std::fs::symlink_metadata(folder)
         .with_context(|| format!("cannot inspect DerivedData folder {}", folder.display()))?
         .file_type()
@@ -287,6 +295,7 @@ fn is_package_folder_child(path: &Path, derived_data: &Path) -> Result<bool> {
 fn authorize_xcode_target(path: &Path, home: &Path) -> Result<XcodeTargetKind> {
     let device_support = home.join("Library/Developer/Xcode/iOS DeviceSupport");
     let derived_data = home.join("Library/Developer/Xcode/DerivedData");
+    refuse_package_checkouts(path, &derived_data)?;
     let kind = if path.parent() == Some(device_support.as_path()) {
         XcodeTargetKind::DeviceSupport
     } else if path.parent() == Some(derived_data.as_path())

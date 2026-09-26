@@ -1,5 +1,14 @@
 # Project Memory
 
+## Unreleased (0.10.2)
+
+`main` carries 0.10.2, committed and pushed but not tagged or released; the
+owner asked for commit and push only. Production stays 0.10.1 and the landing
+page still advertises it. The change set, its reviews and its lessons are in
+`memory/2026-09-26.md` under "0.10.2". Its independent verifier could not run
+the two `--shred` applies (C3, C4) because the host's dcg guard matches that
+flag; everything else passed black-box.
+
 ## Current state (0.10.1)
 
 Production is verified. `v0.10.1-beta2` and `v0.10.1` both point at `0a1a9c2`;

@@ -281,14 +281,7 @@ pub(crate) fn tracks_files_under(root: &Path, target: &Path) -> Result<bool> {
             root.display()
         )
     })?;
-    let mut pathspec = std::ffi::OsString::from(":(literal,icase)");
-    pathspec.push(relative);
-    let mut command = hardened_git(root, "git");
-    command.args(["ls-files", "-z", "--"]).arg(pathspec);
-    let listed = hardened_output(command, || {
-        format!("Git tracked-file check failed for {}", target.display())
-    })?;
-    if !listed.is_empty() {
+    if !tracked_paths(root, relative, target)?.is_empty() {
         return Ok(true);
     }
     // Git folds ASCII case only, and the volume folds Unicode case too, so a
@@ -298,6 +291,22 @@ pub(crate) fn tracks_files_under(root: &Path, target: &Path) -> Result<bool> {
         return Ok(false);
     }
     tracked_through_filesystem(root, target, relative)
+}
+
+/// Everything Git tracks below `below`, relative to `root`, NUL-separated, by
+/// a literal and case-insensitive pathspec; an empty `below` lists the whole
+/// index. A failure names `target`, the directory being checked.
+fn tracked_paths(root: &Path, below: &Path, target: &Path) -> Result<Vec<u8>> {
+    let mut command = hardened_git(root, "git");
+    command.args(["ls-files", "-z", "--"]);
+    if !below.as_os_str().is_empty() {
+        let mut pathspec = std::ffi::OsString::from(":(literal,icase)");
+        pathspec.push(below);
+        command.arg(pathspec);
+    }
+    hardened_output(command, || {
+        format!("Git tracked-file check failed for {}", target.display())
+    })
 }
 
 /// Whether any path Git tracks resolves, through the volume's own name
@@ -310,20 +319,12 @@ fn tracked_through_filesystem(root: &Path, target: &Path, relative: &Path) -> Re
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
 
-    let failure = || format!("Git tracked-file check failed for {}", target.display());
     let depth = relative.components().count();
     let ascii: PathBuf = relative
         .components()
         .take_while(|component| component.as_os_str().is_ascii())
         .collect();
-    let mut command = hardened_git(root, "git");
-    command.args(["ls-files", "-z", "--"]);
-    if !ascii.as_os_str().is_empty() {
-        let mut pathspec = std::ffi::OsString::from(":(literal,icase)");
-        pathspec.push(&ascii);
-        command.arg(pathspec);
-    }
-    let listed = hardened_output(command, failure)?;
+    let listed = tracked_paths(root, &ascii, target)?;
     let wanted = std::fs::symlink_metadata(target)
         .with_context(|| format!("cannot inspect {}", target.display()))?;
     let mut seen = std::collections::HashSet::new();
@@ -581,6 +582,25 @@ mod tests {
             .args(["log", "-1", "--format=%cs"])
             .output()
             .unwrap();
+    }
+
+    /// A failed Git query says why, in Git's own words, so a refusal it causes
+    /// can be diagnosed; here the marker is an empty directory Git rejects.
+    #[test]
+    fn a_failed_git_query_names_gits_reason() {
+        let base = temp("git-reason");
+        let repo = base.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("target")).unwrap();
+
+        for error in [
+            repo_last_activity(&repo).unwrap_err(),
+            tracks_files_under(&repo, &repo.join("target")).unwrap_err(),
+        ] {
+            let message = format!("{error:#}");
+            assert!(message.contains("not a git repository"), "{message}");
+        }
+        crate::ops::remove_test_path(base);
     }
 
     #[test]

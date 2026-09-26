@@ -213,8 +213,9 @@ exactly four:
   shape.
 - `command_path` in `src/ops/caches.rs` — `"npm"` or `"brew"` from its two
   callers, trusted only inside that owner's cache namespace.
-- `hardened_git_log` in `src/ops/project.rs` — `"git"` from
-  `repo_last_activity`, its only production caller.
+- `hardened_git` in `src/ops/project.rs` — `"git"`, from `repo_last_activity`
+  through `hardened_git_log` and as a literal from `tracked_paths`, its only
+  production callers.
 
 The only other variable programs in the tree are inside `#[cfg(test)] mod
 tests`: `std::env::current_exe()` re-invoking the test binary in
