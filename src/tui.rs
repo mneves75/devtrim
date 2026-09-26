@@ -1279,15 +1279,15 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Splits `text` into rows of at most `max` terminal columns, breaking only
-/// where the next grapheme would pass the edge. It walks graphemes as the
-/// renderer draws and measures them, so a character with its presentation
-/// selector or joined sequence is never split or undercounted, and every
-/// grapheme, a space included, keeps a visible cell: nothing is left past the
-/// edge for the renderer to clip, and the rows concatenate back to `text`
-/// exactly, so a wrapped path reads as it is. Prose may break mid-word; this
-/// pane is where a path has to be exact. Only a single grapheme wider than
-/// `max` overflows its row.
+/// Splits `text` into rows of at most `max` terminal columns, breaking where
+/// the next grapheme would pass the edge, or before a space that would take a
+/// row's last cell. It walks graphemes as the renderer draws and measures
+/// them, so a character with its presentation selector or joined sequence is
+/// never split or undercounted, and every grapheme, a space included, keeps a
+/// cell of its own: nothing is left past the edge for the renderer to clip,
+/// and the rows concatenate back to `text` exactly, so a wrapped path reads as
+/// it is. Prose may break mid-word; this pane is where a path has to be exact.
+/// Only a single grapheme wider than `max` overflows its row.
 fn wrap_columns(text: &str, max: usize) -> Vec<String> {
     if max == 0 {
         return Vec::new();
@@ -1296,12 +1296,18 @@ fn wrap_columns(text: &str, max: usize) -> Vec<String> {
     let mut rows = Vec::new();
     let mut start = 0;
     let mut used = 0;
-    for grapheme in span.styled_graphemes(Style::default()) {
+    let mut graphemes = span.styled_graphemes(Style::default()).peekable();
+    while let Some(grapheme) = graphemes.next() {
         // Each grapheme borrows `text`, so its address is its byte offset; the
         // iterator skips control characters, so a running total could drift.
         let index = grapheme.symbol.as_ptr() as usize - text.as_ptr() as usize;
         let columns = Span::raw(grapheme.symbol).width();
-        if used + columns > max && index > start {
+        // A space in a row's last cell reads as padding and joins the names on
+        // either side, so when something follows it opens the next row, where
+        // its indent shows.
+        let edge_space =
+            grapheme.symbol == " " && used + columns == max && graphemes.peek().is_some();
+        if (used + columns > max || edge_space) && index > start {
             rows.push(text[start..index].to_string());
             start = index;
             used = 0;
@@ -2609,10 +2615,48 @@ mod tests {
         assert!(detail_pane_cells(&rows).contains(&path), "{rows:#?}");
     }
 
+    /// A space in a row's last cell reads as padding and joins the names on
+    /// either side, so it opens the next row, where its indent shows.
+    #[test]
+    fn a_space_in_a_rows_last_column_moves_to_the_next_row() {
+        // 61 columns, then a space that would take column 62 of 62.
+        let path = format!("/{} {}", "a".repeat(60), "b".repeat(10));
+        let finding = Finding::new(
+            "node_modules",
+            Some(std::path::PathBuf::from(&path)),
+            1,
+            "stale",
+            5,
+            Action::Trash,
+        );
+        let app = cleanup(vec![finding]);
+
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+
+        // The list row keeps the path's tail too, so read the pane alone.
+        let pane = rows
+            .iter()
+            .position(|row| row.contains(" Details "))
+            .expect("the results screen has a detail pane");
+        let continued = rows[pane + 1..]
+            .iter()
+            .map(|row| row.chars().skip(1).collect::<String>())
+            .find(|row| row.contains("bbbbbbbbbb"))
+            .expect("the path's second row is in the pane");
+        assert!(continued.starts_with(" bbbbbbbbbb"), "{rows:#?}");
+        // The first row now ends a cell early, so its padding is not part of
+        // the path: trimming each row's right edge reads the path back exactly.
+        assert!(detail_pane_text(&rows).contains(&path), "{rows:#?}");
+    }
+
     #[test]
     fn wrapping_breaks_only_where_the_next_grapheme_would_pass_the_edge() {
         assert_eq!(wrap_columns("abcd efgh", 4), ["abcd", " efg", "h"]);
-        assert_eq!(wrap_columns("one two three", 8), ["one two ", "three"]);
+        assert_eq!(wrap_columns("abc defg", 4), ["abc", " def", "g"]);
+        assert_eq!(wrap_columns("one two three", 8), ["one two", " three"]);
+        // Nothing follows a trailing space, so it stays rather than opening a
+        // blank row.
+        assert_eq!(wrap_columns("abc ", 4), ["abc "]);
         assert_eq!(wrap_columns("abcdefghij", 4), ["abcd", "efgh", "ij"]);
         assert_eq!(wrap_columns("日本語", 3), ["日", "本", "語"]);
         assert!(wrap_columns("no room", 0).is_empty());

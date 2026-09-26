@@ -756,6 +756,12 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
     },
 ];
 
+/// Managed caches their owner does not rebuild on next use, with the command
+/// that brings each back, so a finding can say what removing it costs. Every
+/// name is a [`MANAGED_LIBRARY_CACHES`] entry.
+pub(crate) const REBUILT_BY_COMMAND: &[(&str, &str)] =
+    &[("ms-playwright", "npx playwright install")];
+
 fn is_managed_library_subpath(relative: &Path) -> bool {
     const MANAGED: &[&str] = &[
         "Developer/Toolchains",

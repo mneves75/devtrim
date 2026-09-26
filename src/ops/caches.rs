@@ -224,17 +224,34 @@ fn lock_uv_cache(root: &Path) -> Result<std::fs::File> {
 }
 
 fn cache_finding(label: &str, path: PathBuf, size: u64, danger: u8) -> Finding {
+    let note = cache_note(&path);
     Finding::new(
         label,
         Some(path),
         size,
-        // Not every entry is a download: an editor index or a compiler cache is
-        // rebuilt locally, and saying "re-downloads" would misdescribe the cost
-        // of removing one.
-        "regenerated automatically on next use; a large cache costs bandwidth or rebuild time",
+        note,
         escalate(danger, size),
         Action::Trash,
     )
+}
+
+/// What removing one cache costs. Not every entry is a download: an editor
+/// index or a compiler cache is rebuilt locally, so the default note does not
+/// say "re-downloads". A few owners rebuild only when a command is run, and the
+/// note names that command rather than promising a rebuild that never comes.
+fn cache_note(path: &Path) -> String {
+    match crate::safety::REBUILT_BY_COMMAND
+        .iter()
+        .find(|(relative, _)| path.ends_with(Path::new("Library/Caches").join(relative)))
+    {
+        Some((_, command)) => format!(
+            "not rebuilt by its next use: `{command}` downloads it again; a large cache costs bandwidth"
+        ),
+        None => {
+            "regenerated automatically on next use; a large cache costs bandwidth or rebuild time"
+                .to_string()
+        }
+    }
 }
 
 fn authorize_cache_finding(finding: &Finding, home: &Path) -> Result<()> {
@@ -425,6 +442,50 @@ mod tests {
                 entry.relative
             );
         }
+    }
+
+    /// The command table can never name a cache the carve-out does not list.
+    #[test]
+    fn every_command_rebuilt_cache_is_a_managed_library_cache() {
+        for (relative, _) in crate::safety::REBUILT_BY_COMMAND {
+            assert!(
+                crate::safety::MANAGED_LIBRARY_CACHES
+                    .iter()
+                    .any(|entry| entry.relative == *relative),
+                "{relative}"
+            );
+        }
+    }
+
+    /// A note must not promise what the owner does not do: Playwright's
+    /// browsers come back only through `npx playwright install`, while pip
+    /// refills its cache on the next install.
+    #[test]
+    fn a_cache_its_owner_rebuilds_only_by_command_names_the_command() {
+        let home = Path::new("/Users/example");
+        let playwright = cache_finding(
+            "Playwright browser cache",
+            home.join("Library/Caches/ms-playwright"),
+            1,
+            3,
+        );
+        assert!(
+            playwright.note.contains("npx playwright install"),
+            "{}",
+            playwright.note
+        );
+        assert!(
+            !playwright.note.contains("automatically"),
+            "{}",
+            playwright.note
+        );
+
+        let pip = cache_finding("pip package cache", home.join("Library/Caches/pip"), 1, 3);
+        assert!(
+            pip.note.contains("regenerated automatically on next use"),
+            "{}",
+            pip.note
+        );
     }
 
     #[test]

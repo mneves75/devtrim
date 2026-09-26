@@ -333,6 +333,14 @@ CASES = (
         marker="PV trash/continue-past-refusal",
     ),
     Case(
+        name="xcode/continue-past-refusal",
+        relative_path="src/ops/xcode.rs",
+        before="                Err(error) => outcome.fail(error),\n",
+        after="                Err(error) => {\n                    outcome.fail(error);\n                    break;\n                }\n",
+        tests=("ops::xcode::tests::a_refused_derived_data_folder_does_not_block_the_rest_of_the_plan",),
+        marker="PV xcode/continue-past-refusal",
+    ),
+    Case(
         name="tui/selection-plan",
         relative_path="src/tui.rs",
         before="            .filter(|(index, _)| !self.excluded.contains(index))\n",

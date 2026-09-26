@@ -176,12 +176,13 @@ impl Xcode {
                 apply_filesystem_finding(self.name(), finding, ctx)?;
                 Ok(removal_note(finding, path.display()))
             })();
+            // A refusal costs only its own finding: DerivedData holding
+            // SwiftPM checkouts carries nested Git markers the sink always
+            // refuses, and stopping there would strand every build tree after
+            // it. Each failure is recorded, so the run still reports nonzero.
             match result {
                 Ok(note) => outcome.record(finding, note),
-                Err(error) => {
-                    outcome.fail(error);
-                    break;
-                }
+                Err(error) => outcome.fail(error),
             }
         }
         Ok(outcome)
@@ -479,6 +480,61 @@ mod tests {
         assert!(outcome.errors.is_empty());
         assert_eq!(outcome.summary.items_touched, 1);
         assert!(!target.exists());
+        crate::ops::remove_test_path(root);
+    }
+
+    /// DerivedData that holds SwiftPM checkouts carries nested Git markers the
+    /// sink always refuses. That refusal must cost only its own folder, not
+    /// every build tree after it in the plan.
+    #[test]
+    fn a_refused_derived_data_folder_does_not_block_the_rest_of_the_plan() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("devtrim-xcode-continue-{}", std::process::id()));
+        crate::ops::remove_test_path(&root);
+        let derived_data = root.join("Library/Developer/Xcode/DerivedData");
+        let checkout = derived_data.join("WithPackages/SourcePackages/checkouts/package/.git");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(checkout.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(derived_data.join("Plain/Build")).unwrap();
+        std::fs::write(derived_data.join("Plain/Build/output"), "remove").unwrap();
+        let home = root.canonicalize().unwrap();
+        let derived_data = home.join("Library/Developer/Xcode/DerivedData");
+        let finding = |name: &str| {
+            Finding::new(
+                format!("DerivedData: {name}"),
+                Some(derived_data.join(name)),
+                4,
+                "test",
+                9,
+                Action::Shred,
+            )
+        };
+
+        let outcome = Xcode
+            .apply_with_xcode_build_state(
+                &[finding("WithPackages"), finding("Plain")],
+                &test_context(home.clone()),
+                Some(Ok(false)),
+            )
+            .unwrap();
+
+        assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
+        assert!(
+            derived_data
+                .join("WithPackages/SourcePackages/checkouts/package/.git/HEAD")
+                .exists()
+        );
+        assert_eq!(
+            outcome.summary.items_touched, 1,
+            "PV xcode/continue-past-refusal: {:?}",
+            outcome.errors
+        );
+        assert!(
+            !derived_data.join("Plain").exists(),
+            "PV xcode/continue-past-refusal: a refused folder blocked the DerivedData after it"
+        );
         crate::ops::remove_test_path(root);
     }
 

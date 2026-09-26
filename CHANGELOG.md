@@ -2,7 +2,14 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.10.1] - 2026-09-26
+
+Found by using 0.10.0 to free space on the machine it was released from.
+
+### Fixed
+- `xcode` apply continues past a refused finding, as `caches` and `agents` already did. A DerivedData folder holding SwiftPM checkouts carries nested Git markers that the deletion sink always refuses, and until now that one refusal stopped every build tree after it in the plan. Each refusal is still recorded, so the run reports nonzero
+- The Playwright browser cache no longer claims it is "regenerated automatically on next use": its browsers come back only through `npx playwright install`, and the finding now names that command. Every other cache keeps the automatic note
+- In the TUI detail pane, a space that would land in a row's last cell now opens the next row, where its indent shows. Before, it read as padding, so two names in a path looked joined
 
 ## [0.10.0] - 2026-09-26
 
