@@ -1097,7 +1097,24 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
         )
     };
 
-    let detail_height = (area.height / 3).clamp(5, 10);
+    // The detail pane is the only place a long path appears whole, so it grows
+    // past its usual share to hold the highlighted row, leaving the list one
+    // row, and says how many lines a terminal too short for it still hides.
+    let mut details = detail_lines(app, usize::from(area.width.saturating_sub(2)));
+    let usual = (area.height / 3).clamp(5, 10);
+    let most = area.height.saturating_sub(3).max(usual);
+    let wanted = u16::try_from(details.len()).map_or(u16::MAX, |rows| rows.saturating_add(2));
+    let detail_height = wanted.clamp(usual, most);
+    let room = usize::from(detail_height.saturating_sub(2));
+    if details.len() > room {
+        let shown = room.saturating_sub(1);
+        let hidden = details.len() - shown;
+        details.truncate(shown);
+        details.push(Line::styled(
+            format!("… {hidden} more line(s); enlarge the terminal"),
+            app.theme.style(Token::Warning),
+        ));
+    }
     let [list_area, detail_area] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(detail_height)]).areas(area);
     let visible = usize::from(list_area.height.saturating_sub(2)).max(1);
@@ -1127,16 +1144,14 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
         list_area,
     );
     frame.render_widget(
-        Paragraph::new(Text::from(detail_lines(app)))
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Details ")),
+        Paragraph::new(Text::from(details)).block(Block::bordered().title(" Details ")),
         detail_area,
     );
 }
 
 /// One results row: a finding with its selection mark, or a scan error or
 /// warning. Rows are clipped to one line; the detail pane shows the
-/// highlighted row in full.
+/// highlighted row whole, or says how much of it a short terminal hides.
 fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     let marker = if row == app.cursor {
         Span::styled("› ", app.theme.bold(Token::Accent))
@@ -1207,53 +1222,97 @@ fn diagnostic_at(app: &App, row: usize) -> Option<(String, Token)> {
     }
 }
 
-/// Everything about the highlighted row, unclipped.
-fn detail_lines(app: &App) -> Vec<Line<'static>> {
+/// Everything about the highlighted row, wrapped to `width` columns. The
+/// selection state precedes the path, the part most likely to run long.
+fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     if let Some(finding) = app
         .findings
         .get(app.cursor)
         .map(|finding| effective_finding(app, finding))
     {
-        let mut lines = vec![
-            Line::styled(
-                report::terminal_safe(&finding.label),
-                app.theme.bold(Token::Accent),
-            ),
-            Line::raw(format!(
+        lines.push((
+            report::terminal_safe(&finding.label),
+            app.theme.bold(Token::Accent),
+        ));
+        lines.push((
+            format!(
                 "{} · danger-{} · {}",
                 report::gb(finding.size_bytes),
                 finding.danger,
                 report::human_action_display(&finding.action)
-            )),
-            Line::raw(report::terminal_safe(
-                finding.path.as_deref().unwrap_or("command action"),
-            )),
-            Line::styled(
-                report::terminal_safe(&finding.note),
-                app.theme.style(Token::Muted),
             ),
-        ];
-        if let Some(project) = &finding.project {
-            lines.push(Line::raw(format!(
-                "project: {}",
-                report::terminal_safe(project)
-            )));
-        }
+            Style::default(),
+        ));
         if app.excluded.contains(&app.cursor) {
-            lines.push(Line::styled(
-                "Left out of this plan; Space adds it back.",
+            lines.push((
+                "Left out of this plan; Space adds it back.".to_string(),
                 app.theme.style(Token::Warning),
             ));
         }
-        return lines;
+        lines.push((
+            report::terminal_safe(finding.path.as_deref().unwrap_or("command action")),
+            Style::default(),
+        ));
+        lines.push((
+            report::terminal_safe(&finding.note),
+            app.theme.style(Token::Muted),
+        ));
+        if let Some(project) = &finding.project {
+            lines.push((
+                format!("project: {}", report::terminal_safe(project)),
+                Style::default(),
+            ));
+        }
+    } else if let Some((text, _)) = diagnostic_at(app, app.cursor) {
+        lines.push((report::terminal_safe(&text), Style::default()));
+    } else {
+        lines.push(("No findings.".to_string(), app.theme.style(Token::Success)));
     }
-    match diagnostic_at(app, app.cursor) {
-        Some((text, _)) => vec![Line::raw(report::terminal_safe(&text))],
-        None => vec![Line::styled(
-            "No findings.",
-            app.theme.style(Token::Success),
-        )],
+    lines
+        .into_iter()
+        .flat_map(|(text, style)| {
+            wrap_columns(&text, width)
+                .into_iter()
+                .map(move |row| Line::styled(row, style))
+        })
+        .collect()
+}
+
+/// Splits `text` into rows of at most `max` terminal columns, breaking after
+/// the last space that fits and anywhere inside a longer run such as a path.
+/// The rows concatenate back to `text` exactly, so a wrapped path is never
+/// altered. A space past the edge hangs at the end of its row, where clipping
+/// hides nothing, rather than opening a blank row; only a single character
+/// wider than `max` otherwise overflows.
+fn wrap_columns(text: &str, max: usize) -> Vec<String> {
+    if max == 0 {
+        return Vec::new();
     }
+    let width = |value: &str| Span::raw(value).width();
+    let mut rows = Vec::new();
+    let mut start = 0;
+    let mut used = 0;
+    let mut after_space = None;
+    for (index, character) in text.char_indices() {
+        if character == ' ' {
+            if used < max {
+                used += 1;
+            }
+            after_space = Some(index + 1);
+            continue;
+        }
+        let character_width = width(&text[index..index + character.len_utf8()]);
+        while used + character_width > max && index > start {
+            let end = after_space.take().unwrap_or(index);
+            rows.push(text[start..end].to_string());
+            used = width(&text[end..index]);
+            start = end;
+        }
+        used += character_width;
+    }
+    rows.push(text[start..].to_string());
+    rows
 }
 
 /// Keeps the end of `text`, where a path's distinguishing leaf is, within
@@ -2317,6 +2376,180 @@ mod tests {
         assert!(output.contains("1/2 selected"), "{output}");
         assert!(output.contains("Left out of this plan"), "{output}");
         assert!(output.contains("/tmp/first"), "{output}");
+    }
+
+    /// The rendered screen, one string per terminal row.
+    fn screen_rows(app: &App, width: u16, height: u16) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
+    /// The detail pane's rows without borders or padding, joined, so a path
+    /// wrapped across rows reads back whole.
+    fn detail_pane_text(rows: &[String]) -> String {
+        let top = rows
+            .iter()
+            .position(|row| row.contains(" Details "))
+            .expect("the results screen has a detail pane");
+        rows[top + 1..]
+            .iter()
+            .take_while(|row| !row.starts_with('└'))
+            .map(|row| {
+                row.chars()
+                    .skip(1)
+                    .collect::<String>()
+                    .trim_end_matches(['│', ' '])
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The detail pane is the one place a long path is shown whole, so it
+    /// grows past its usual share to hold the highlighted finding.
+    #[test]
+    fn the_detail_pane_grows_to_show_the_highlighted_finding_whole() {
+        let project = format!(
+            "/Users/someone/dev/{}",
+            "a-directory-name-long-enough-to-wrap".repeat(4)
+        );
+        let path = format!("{project}/node_modules");
+        let note = "repo last active 2020-01-01 UTC; no running build uses it";
+        let finding = Finding::new(
+            "node_modules",
+            Some(std::path::PathBuf::from(&path)),
+            1,
+            note,
+            5,
+            Action::Trash,
+        )
+        .with_project(std::path::Path::new(&project));
+        let mut app = cleanup(vec![finding, trash("other", 1, 2)]);
+        app.handle_key(key(KeyCode::Char(' ')));
+
+        let rows = screen_rows(&app, 100, 30);
+        // A row's trailing space is indistinguishable from padding, so compare
+        // without spaces; the lines broken after one still read back whole.
+        let pane = detail_pane_text(&rows).replace(' ', "");
+
+        let project_line = format!("project: {project}");
+        for expected in [
+            path.as_str(),
+            note,
+            "Left out of this plan",
+            project_line.as_str(),
+        ] {
+            assert!(
+                pane.contains(&expected.replace(' ', "")),
+                "missing {expected:?}: {rows:#?}"
+            );
+        }
+        assert!(!pane.contains("moreline(s)"), "{rows:#?}");
+    }
+
+    /// At the minimum size a long path cannot fit, so the pane says how many
+    /// lines it hides instead of cutting them silently, and the selection
+    /// state comes before the path so it is never among them.
+    #[test]
+    fn a_terminal_too_short_for_the_details_says_how_many_lines_it_hides() {
+        // Label, action, selection state, six path rows at 62 columns, and the
+        // note: ten rows for a pane with room for six.
+        let path = format!("/{}", "x".repeat(371));
+        let finding = Finding::new(
+            "node_modules",
+            Some(std::path::PathBuf::from(&path)),
+            1,
+            "stale",
+            5,
+            Action::Trash,
+        );
+        let mut app = cleanup(vec![finding]);
+        app.handle_key(key(KeyCode::Char(' ')));
+
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let pane = detail_pane_text(&rows);
+
+        assert!(pane.contains("Left out of this plan"), "{rows:#?}");
+        assert!(
+            pane.contains("… 5 more line(s); enlarge the terminal"),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("› [ ]")),
+            "the highlighted row stays listed: {rows:#?}"
+        );
+    }
+
+    /// A wrapped path must read back exactly, and no row may show more than
+    /// the pane holds, or the renderer clips it: multi-byte, double-width and
+    /// zero-width characters included. Only trailing spaces may hang past the
+    /// edge, where clipping them hides nothing. No row may be blank, or it
+    /// spends a pane row on nothing.
+    #[test]
+    fn wrapping_is_lossless_and_keeps_every_row_within_the_width() {
+        for (text, max) in [
+            ("/Users/someone/dev/a-very-long-project/node_modules", 10),
+            (
+                "repo last active 2020-01-01 UTC; no running build uses it",
+                12,
+            ),
+            ("naïve/café/日本語/パス/node_modules", 7),
+            ("e\u{301}e\u{301}e\u{301}", 1),
+            ("exactly-eleven", 14),
+            ("word  spaced   apart", 4),
+            ("", 5),
+        ] {
+            let rows = wrap_columns(text, max);
+            assert_eq!(rows.concat(), text, "{rows:?}");
+            assert!(!rows.is_empty(), "every line keeps a row");
+            for row in &rows {
+                assert!(
+                    Span::raw(row.trim_end_matches(' ')).width() <= max,
+                    "{row:?} is wider than {max}: {rows:?}"
+                );
+                assert!(
+                    text.is_empty() || !row.trim().is_empty(),
+                    "blank row: {rows:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wrapping_breaks_prose_after_a_space_and_a_long_word_anywhere() {
+        assert_eq!(wrap_columns("one two three", 8), ["one two ", "three"]);
+        // A space falling exactly at the edge hangs there instead of opening
+        // a row of its own.
+        assert_eq!(wrap_columns("abcd efgh", 4), ["abcd ", "efgh"]);
+        assert_eq!(wrap_columns("abcdefghij", 4), ["abcd", "efgh", "ij"]);
+        assert_eq!(wrap_columns("日本語", 3), ["日", "本", "語"]);
+        assert!(wrap_columns("no room", 0).is_empty());
+    }
+
+    /// Positive control for the growth: a finding that fits keeps the pane at
+    /// its usual share, so the list keeps its rows.
+    #[test]
+    fn a_finding_that_fits_leaves_the_list_its_rows() {
+        let app = cleanup(
+            (0..30)
+                .map(|index| trash(&format!("item-{index}"), 1, 2))
+                .collect(),
+        );
+
+        let rows = screen_rows(&app, 100, 30);
+
+        assert!(rows.iter().any(|row| row.contains("item-13")), "{rows:#?}");
+        assert!(
+            !detail_pane_text(&rows).contains("more line(s)"),
+            "{rows:#?}"
+        );
     }
 
     #[test]

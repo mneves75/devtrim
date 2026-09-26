@@ -299,7 +299,8 @@ in Trash instead of blocking the other exact items.
 The TUI offers the same scanners and apply owners behind a keyboard interface:
 arrow keys or `j`/`k` navigate, `Enter` previews, `a` starts confirmation, `s`
 switches an already-previewed Trash action to permanent mode, and `Esc` cancels.
-A preview lists one finding per line with a detail pane for the highlighted one.
+A preview lists one finding per line with a detail pane that grows to show the
+highlighted one whole; a terminal too short to hold it says how many lines it hides.
 `Space` leaves the highlighted finding out of the plan or adds it back and `A`
 selects every finding or none; the confirmation then covers exactly the
 selected findings and says how many that is and how many were left out, so

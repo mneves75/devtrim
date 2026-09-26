@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Exercise the real TUI in an isolated, sized PTY.
 
-Four flows: menu/help/quit with terminal restoration; the type-ahead
+Five flows: menu/help/quit with terminal restoration; the type-ahead
 boundary — keys typed before a plan is displayed must never approve it;
-selection narrowing a plan; and the project purge view applying through the
-real node-modules and artifacts owners.
+selection narrowing a plan; the project purge view applying through the
+real node-modules and artifacts owners; and the detail pane at the minimum
+size, where a long path cannot fit and the pane must say what it hides.
 """
 
 import argparse
@@ -23,10 +24,63 @@ import termios
 import time
 
 
+ESCAPE = re.compile(
+    r"\x1b\[([0-?]*)[ -/]*([@-~])"  # CSI: parameters and final byte
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC
+    r"|\x1b[ -/]*[0-~]"  # any other escape
+)
+
+
+def render_screen(output, rows, columns):
+    """The visible grid rebuilt from the cursor moves, clears and text the
+    crossterm backend emits, one string per row. Ratatui repaints only the
+    cells that changed, so the byte stream alone cannot say what is on screen.
+    Every character takes one cell; the fixtures are ASCII and box drawing."""
+    grid = [[" "] * columns for _ in range(rows)]
+    row = column = 0
+
+    def put(text):
+        nonlocal row, column
+        for character in text:
+            if character == "\r":
+                column = 0
+            elif character == "\n":
+                row = min(row + 1, rows - 1)
+            elif character >= " ":
+                if row < rows and column < columns:
+                    grid[row][column] = character
+                column += 1
+
+    text = bytes(output).decode("utf-8", errors="replace")
+    position = 0
+    for match in ESCAPE.finditer(text):
+        put(text[position:match.start()])
+        position = match.end()
+        parameters, final = match.group(1), match.group(2)
+        if final in ("H", "f"):
+            numbers = [int(value) if value else 1 for value in parameters.split(";")]
+            row = numbers[0] - 1
+            column = numbers[1] - 1 if len(numbers) > 1 else 0
+        elif final == "J" and parameters in ("2", "3"):
+            grid = [[" "] * columns for _ in range(rows)]
+        elif final in ("J", "K") and parameters in ("", "0") and 0 <= row < rows:
+            grid[row][column:] = [" "] * max(columns - column, 0)
+            if final == "J":
+                grid[row + 1:] = [[" "] * columns for _ in range(rows - row - 1)]
+    put(text[position:])
+    return ["".join(cells) for cells in grid]
+
+
+def screen_text(lines):
+    """Rows joined without their border cells and padding, so a path wrapped
+    across rows of a bordered pane reads back whole."""
+    return "".join(line[1:-1].rstrip() for line in lines)
+
+
 class Session:
     """One devtrim TUI process attached to its own PTY and disposable home."""
 
-    def __init__(self, binary, home):
+    def __init__(self, binary, home, rows=40, columns=120):
         for name in ("bin", "config", "state", "cache"):
             (home / name).mkdir(exist_ok=True)
         self.environment = {
@@ -40,13 +94,17 @@ class Session:
         }
         self.binary = binary
         self.home = home
+        self.rows = rows
+        self.columns = columns
         self.output = bytearray()
         self.process = None
         self.deadline = time.monotonic() + 15
 
     def __enter__(self):
         self.master, self.slave = pty.openpty()
-        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+        fcntl.ioctl(
+            self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", self.rows, self.columns, 0, 0)
+        )
         self.original = termios.tcgetattr(self.slave)
         slave = self.slave
 
@@ -102,6 +160,21 @@ class Session:
                 return
             if self.process.poll() is not None:
                 raise AssertionError(f"TUI exited before rendering {text!r}")
+
+    def wait_for_screen(self, *texts):
+        """Waits until every text is visible at once on the rebuilt screen,
+        unlike `wait_for`, which matches text drawn after the call."""
+        while True:
+            try:
+                self.read_output()
+            except AssertionError as error:
+                screen = "\n".join(render_screen(self.output, self.rows, self.columns))
+                raise AssertionError(f"waiting for {texts!r} on screen: {error}\n{screen}") from error
+            visible = screen_text(render_screen(self.output, self.rows, self.columns))
+            if all(text in visible for text in texts):
+                return
+            if self.process.poll() is not None:
+                raise AssertionError(f"TUI exited before showing {texts!r}")
 
     def settle(self, seconds):
         end = time.monotonic() + seconds
@@ -200,36 +273,45 @@ def write_script(path, body):
     path.chmod(0o755)
 
 
+def stale_project(home):
+    """A stale repository offering a `target` and a `node_modules`, under a
+    directory name long enough that its paths wrap in the detail pane."""
+    (home / "bin").mkdir()
+    # No build process is running, and the repository's history is old.
+    write_script(home / "bin" / "pgrep", "exit 1")
+    write_script(
+        home / "bin" / "git",
+        "case \"$*\" in\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n"
+        "  *) printf '2020-01-01\\n' ;;\nesac",
+    )
+    project = home / "dev" / "-".join(["a-project-whose-directory-name-wraps"] * 4)
+    (project / ".git").mkdir(parents=True)
+    (project / "Cargo.toml").write_text('[package]\nname = "fixture"\n')
+    (project / "target" / "debug").mkdir(parents=True)
+    (project / "target" / "debug" / "out").write_bytes(b"x" * 4096)
+    (project / "node_modules" / "pkg").mkdir(parents=True)
+    (project / "node_modules" / "pkg" / "index.js").write_bytes(b"x")
+    return project
+
+
 def verify_purge(binary):
     """The project purge view runs the real node-modules and artifacts owners.
     A stale repository offers its `target` and its `node_modules`; leaving the
     second out with Space must remove only the first. The surviving
     `node_modules` proves the selection held through both categories' apply;
-    the removed `target` is the positive control that the approval applied."""
+    the removed `target` is the positive control that the approval applied.
+    The detail pane grows to show the highlighted path whole, which the row,
+    keeping only its end, cannot."""
     with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
         home = Path(directory).resolve()
-        (home / "bin").mkdir()
-        # No build process is running, and the repository's history is old.
-        write_script(home / "bin" / "pgrep", "exit 1")
-        write_script(
-            home / "bin" / "git",
-            "case \"$*\" in\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n"
-            "  *) printf '2020-01-01\\n' ;;\nesac",
-        )
-        project = home / "dev" / "project"
-        (project / ".git").mkdir(parents=True)
-        (project / "Cargo.toml").write_text('[package]\nname = "fixture"\n')
-        (project / "target" / "debug").mkdir(parents=True)
-        (project / "target" / "debug" / "out").write_bytes(b"x" * 4096)
-        (project / "node_modules" / "pkg").mkdir(parents=True)
-        (project / "node_modules" / "pkg" / "index.js").write_bytes(b"x")
+        project = stale_project(home)
         with Session(binary, home) as session:
             session.wait_for("Scan everything")
             session.send(b"p")
             session.wait_for("Review every finding")
             # The larger `target` is first; move to `node_modules` and leave it out.
             session.send(b"j ")
-            session.wait_for("Left out of this plan")
+            session.wait_for_screen("Left out of this plan", str(project / "node_modules"))
             session.send(b"sa0\r")
             # The note names the full path, which can wrap; the headline cannot.
             session.wait_for("purge: 1 item(s)")
@@ -237,6 +319,22 @@ def verify_purge(binary):
                 raise AssertionError("positive control: the selected target was not removed")
             if not (project / "node_modules" / "pkg" / "index.js").exists():
                 raise AssertionError("a node_modules left out of the plan was removed")
+            session.quit()
+
+
+def verify_minimum_size(binary):
+    """At the minimum 64×18 the same long path cannot fit in the detail pane.
+    The pane must still show the selection state and say how many lines it
+    hides, never cut them silently."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        stale_project(home)
+        with Session(binary, home, rows=18, columns=64) as session:
+            session.wait_for("Scan everything")
+            session.send(b"p")
+            session.wait_for("Review every finding")
+            session.send(b"j ")
+            session.wait_for_screen("Left out of this plan", "more line(s); enlarge the terminal")
             session.quit()
 
 
@@ -250,12 +348,13 @@ def main():
         verify_type_ahead(binary)
         verify_selection(binary)
         verify_purge(binary)
+        verify_minimum_size(binary)
     except (AssertionError, OSError, termios.error) as error:
         print(f"tui: {error}", file=sys.stderr)
         return 1
     print(
         "tui: menu, help, cancel, quit, terminal restoration, type-ahead discard,"
-        " selection, and project purge passed"
+        " selection, project purge, and the minimum-size detail pane passed"
     )
     return 0
 

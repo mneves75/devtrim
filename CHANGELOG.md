@@ -17,7 +17,7 @@ matching is not.
 
 ### Changed
 - `scan` leads with one line per category giving its size and the command that acts on it, largest first, then lists the five largest findings of any category with more than eight. `scan --all` lists every finding; `--json` is unchanged and always complete. On the machine that prompted this, the report went from about 1,660 lines to 53
-- The interactive results screen shows one line per finding, with its selection mark, danger, size and action, and a detail pane that shows the highlighted finding in full: label, path, note, project, and whether it is left out
+- The interactive results screen shows one line per finding, with its selection mark, danger, size and action, and a detail pane that grows to show the highlighted finding whole: label, action, whether it is left out, path, note and project. It is the one place a long path appears in full, so a terminal too short to hold it says how many lines it hides instead of cutting them
 - An apply that moves items to Trash no longer calls those bytes reclaimed. The summary says how much moved to Trash and that it is freed once the Trash is emptied (`devtrim trash-empty`); JSON summaries gain `bytes_trashed_estimate`, the part of `bytes_freed_estimate` that is still on disk
 - Activity dates are compared in UTC, the clock the cutoff already used, and shown as `repo last active <date> UTC`
 
