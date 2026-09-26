@@ -1281,35 +1281,46 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
 
 /// Splits `text` into rows of at most `max` terminal columns, breaking after
 /// the last space that fits and anywhere inside a longer run such as a path.
-/// The rows concatenate back to `text` exactly, so a wrapped path is never
-/// altered. A space past the edge hangs at the end of its row, where clipping
-/// hides nothing, rather than opening a blank row; only a single character
-/// wider than `max` otherwise overflows.
+/// It walks graphemes as the renderer draws and measures them, so a character
+/// with its presentation selector or joined sequence is never split or
+/// undercounted. The rows concatenate back to `text` exactly, so a wrapped
+/// path is never altered. A space past the edge hangs at the end of its row,
+/// where clipping hides nothing, rather than opening a blank row; only a
+/// single grapheme wider than `max` otherwise overflows.
 fn wrap_columns(text: &str, max: usize) -> Vec<String> {
     if max == 0 {
         return Vec::new();
     }
-    let width = |value: &str| Span::raw(value).width();
+    let span = Span::raw(text);
     let mut rows = Vec::new();
     let mut start = 0;
     let mut used = 0;
+    let mut since_space = 0;
     let mut after_space = None;
-    for (index, character) in text.char_indices() {
-        if character == ' ' {
+    for grapheme in span.styled_graphemes(Style::default()) {
+        // Each grapheme borrows `text`, so its address is its byte offset; the
+        // iterator skips control characters, so a running total could drift.
+        let index = grapheme.symbol.as_ptr() as usize - text.as_ptr() as usize;
+        if grapheme.symbol == " " {
             if used < max {
                 used += 1;
             }
+            since_space = 0;
             after_space = Some(index + 1);
             continue;
         }
-        let character_width = width(&text[index..index + character.len_utf8()]);
-        while used + character_width > max && index > start {
+        let columns = Span::raw(grapheme.symbol).width();
+        while used + columns > max && index > start {
             let end = after_space.take().unwrap_or(index);
             rows.push(text[start..end].to_string());
-            used = width(&text[end..index]);
+            if end == index {
+                since_space = 0;
+            }
+            used = since_space;
             start = end;
         }
-        used += character_width;
+        used += columns;
+        since_space += columns;
     }
     rows.push(text[start..].to_string());
     rows
@@ -2487,11 +2498,23 @@ mod tests {
         );
     }
 
+    /// The graphemes the renderer draws for `text`, and the columns it gives
+    /// them.
+    fn grapheme_columns(text: &str) -> (usize, usize) {
+        Span::raw(text)
+            .styled_graphemes(Style::default())
+            .fold((0, 0), |(count, columns), grapheme| {
+                (count + 1, columns + Span::raw(grapheme.symbol).width())
+            })
+    }
+
     /// A wrapped path must read back exactly, and no row may show more than
     /// the pane holds, or the renderer clips it: multi-byte, double-width and
-    /// zero-width characters included. Only trailing spaces may hang past the
-    /// edge, where clipping them hides nothing. No row may be blank, or it
-    /// spends a pane row on nothing.
+    /// zero-width characters included, measured per grapheme as the renderer
+    /// measures them. A grapheme — a character with its presentation selector
+    /// or joined sequence — is never divided between rows. Only trailing
+    /// spaces may hang past the edge, where clipping them hides nothing. No
+    /// row may be blank, or it spends a pane row on nothing.
     #[test]
     fn wrapping_is_lossless_and_keeps_every_row_within_the_width() {
         for (text, max) in [
@@ -2502,6 +2525,11 @@ mod tests {
             ),
             ("naïve/café/日本語/パス/node_modules", 7),
             ("e\u{301}e\u{301}e\u{301}", 1),
+            ("☺\u{FE0F}☺\u{FE0F}☺\u{FE0F}", 3),
+            ("👨\u{200D}👩\u{200D}👧/family", 4),
+            ("/a🇧🇷/b👍🏽", 3),
+            // The renderer skips control characters; offsets must not drift.
+            ("ab\u{1b}cdé\u{7}fg", 2),
             ("exactly-eleven", 14),
             ("word  spaced   apart", 4),
             ("", 5),
@@ -2509,9 +2537,15 @@ mod tests {
             let rows = wrap_columns(text, max);
             assert_eq!(rows.concat(), text, "{rows:?}");
             assert!(!rows.is_empty(), "every line keeps a row");
+            let graphemes: usize = rows.iter().map(|row| grapheme_columns(row).0).sum();
+            assert_eq!(
+                graphemes,
+                grapheme_columns(text).0,
+                "a grapheme split: {rows:?}"
+            );
             for row in &rows {
                 assert!(
-                    Span::raw(row.trim_end_matches(' ')).width() <= max,
+                    grapheme_columns(row.trim_end_matches(' ')).1 <= max,
                     "{row:?} is wider than {max}: {rows:?}"
                 );
                 assert!(
@@ -2520,6 +2554,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Selectors and joiners are escaped before display, but a flag or a
+    /// skin-tone emoji reaches the pane as one grapheme of two characters. At
+    /// the edge it moves to the next row whole rather than splitting there.
+    #[test]
+    fn a_grapheme_at_the_edge_moves_to_the_next_row_whole() {
+        // 61 columns, then a flag at an inner width of 62: one regional
+        // indicator fits, the pair does not.
+        let path = format!("/{}🇧🇷{}", "a".repeat(60), "b".repeat(10));
+        let finding = Finding::new(
+            "node_modules",
+            Some(std::path::PathBuf::from(&path)),
+            1,
+            "stale",
+            5,
+            Action::Trash,
+        );
+        let app = cleanup(vec![finding]);
+
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+
+        assert!(rows.iter().any(|row| row.contains("🇧🇷")), "{rows:#?}");
+        assert!(
+            detail_pane_text(&rows).replace(' ', "").contains(&path),
+            "{rows:#?}"
+        );
     }
 
     #[test]
