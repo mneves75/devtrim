@@ -714,7 +714,7 @@ fn purge_never_offers_a_build_directory_holding_tracked_files() {
     let (dev, _small, large) = purge_fixture(&sandbox);
     sandbox.script(
         "git",
-        "case \"$*\" in\n  *ls-files*target*) printf 'target/committed.txt\\0' ;;\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+        "case \"$*\" in\n  *ls-files*) printf 'target/committed.txt\\0' ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
     );
 
     let output = run(

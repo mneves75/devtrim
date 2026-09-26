@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use super::project::has_git_marker;
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, escalate, xcode_build_running};
 
@@ -104,7 +105,7 @@ impl Xcode {
                     continue;
                 }
                 let path = entry.path();
-                if *label == "DerivedData" && holds_package_checkouts(&path)? {
+                if *label == "DerivedData" && is_package_folder(&path)? {
                     let folder = path.file_name().unwrap_or_default().to_string_lossy();
                     let package_note =
                         format!("{note}. SwiftPM package checkouts here are Git clones and stay");
@@ -211,9 +212,16 @@ impl Xcode {
     }
 }
 
-/// Whether a DerivedData folder holds SwiftPM package checkouts. Each is a Git
-/// clone of the package, which the deletion sink never removes, so such a
-/// folder is offered directory by directory with `SourcePackages` kept.
+/// Whether a DerivedData folder is offered directory by directory: it holds
+/// SwiftPM package checkouts — Git clones, which the deletion sink never
+/// removes — and is not itself a Git repository or worktree. A repository's
+/// directories are its worktree, which splitting would hand to the sink one by
+/// one past the marker that makes it refuse the whole folder.
+fn is_package_folder(folder: &Path) -> Result<bool> {
+    Ok(holds_package_checkouts(folder)? && !has_git_marker(folder)?)
+}
+
+/// Whether a DerivedData folder holds SwiftPM package checkouts.
 fn holds_package_checkouts(folder: &Path) -> Result<bool> {
     let checkouts = folder.join("SourcePackages/checkouts");
     match std::fs::symlink_metadata(&checkouts) {
@@ -276,7 +284,7 @@ fn refuse_package_checkouts(path: &Path, derived_data: &Path) -> Result<()> {
 
 /// Whether `path` is a directory a scan offers inside a DerivedData folder
 /// holding package checkouts: a direct child of a real folder that still
-/// holds them.
+/// holds them and is still no repository.
 fn is_package_folder_child(path: &Path, derived_data: &Path) -> Result<bool> {
     let Some(folder) = path
         .parent()
@@ -288,7 +296,7 @@ fn is_package_folder_child(path: &Path, derived_data: &Path) -> Result<bool> {
         .with_context(|| format!("cannot inspect DerivedData folder {}", folder.display()))?
         .file_type()
         .is_dir();
-    Ok(folder_is_directory && holds_package_checkouts(folder)?)
+    Ok(folder_is_directory && is_package_folder(folder)?)
 }
 
 fn authorize_xcode_target(path: &Path, home: &Path) -> Result<XcodeTargetKind> {
@@ -716,6 +724,57 @@ mod tests {
                 .exists()
         );
         assert!(derived_data.join("App-pkg/info.plist").exists());
+        crate::ops::remove_test_path(root);
+    }
+
+    /// A DerivedData folder that is itself a Git repository is never split:
+    /// its directories are that repository's worktree, which a whole-folder
+    /// deletion would refuse. Apply refuses a forged directory of it too.
+    #[test]
+    fn a_derived_data_folder_that_is_a_repository_is_never_split() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "devtrim-xcode-repository-folder-{}",
+                std::process::id()
+            ));
+        crate::ops::remove_test_path(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let home = root.canonicalize().unwrap();
+        let folder = home.join("Library/Developer/Xcode/DerivedData/App-repo");
+        package_folder(&folder);
+        std::fs::create_dir_all(folder.join(".git")).unwrap();
+        std::fs::write(folder.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let ctx = test_context(home.clone());
+
+        let findings = Xcode.scan_with_xcode_build_state(&ctx, Ok(false)).unwrap();
+
+        let split: Vec<_> = findings
+            .iter()
+            .filter_map(Finding::target)
+            .filter(|path| path.parent() == Some(folder.as_path()))
+            .collect();
+        assert!(
+            split.is_empty(),
+            "PV xcode/repository-folder-scan: a repository's directories were offered: {split:?}"
+        );
+        let forged = Finding::new(
+            "forged directory of a repository",
+            Some(folder.join("Build")),
+            4,
+            "test",
+            9,
+            Action::Shred,
+        );
+        let outcome = Xcode
+            .apply_with_xcode_build_state(&[forged], &ctx, Some(Ok(false)))
+            .unwrap();
+        assert!(
+            outcome.summary.items_touched == 0
+                && folder.join("Build/Products/Debug/output").exists(),
+            "PV xcode/repository-folder-apply: {outcome:?}"
+        );
         crate::ops::remove_test_path(root);
     }
 

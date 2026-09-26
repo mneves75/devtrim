@@ -7,8 +7,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::project::{
-    ScanObservations, has_git_marker, is_directory_if_present, iso_days_ago, normalized_roots,
-    owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under,
+    ScanObservations, TrackedIndex, has_git_marker, is_directory_if_present, iso_days_ago,
+    normalized_roots, owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under,
 };
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size,
@@ -80,8 +80,9 @@ impl Op for Artifacts {
                 active = active.saturating_add(candidates.len());
                 continue;
             }
+            let mut index = TrackedIndex::list(&owner)?;
             for candidate in candidates {
-                if tracks_files_under(&owner, &candidate.path)? {
+                if index.holds_tracked_files(&candidate.path)? {
                     tracked = tracked.saturating_add(1);
                     continue;
                 }
@@ -884,6 +885,38 @@ mod tests {
         assert!(
             paths.contains(&repo.join("\u{3a9}mega/target").as_path()),
             "positive control: the untracked non-ASCII target was not offered: {paths:?}"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    /// The volume folds Unicode case fully: `STRASSE` names a directory
+    /// created as `Stra\u{df}e`. An all-ASCII spelling can therefore alias a
+    /// tracked non-ASCII one, and only the volume can say they are the same.
+    #[test]
+    fn a_tracked_tree_renamed_to_an_ascii_alias_is_never_offered() {
+        let (root, home) = deletable_root("tracked-ascii-alias");
+        let repo = home.join("app");
+        init_old_git_repo(&repo).unwrap();
+        std::fs::create_dir_all(repo.join("Stra\u{df}e/Pods/Alamofire")).unwrap();
+        std::fs::write(repo.join("Stra\u{df}e/Podfile"), "platform :ios, '17.0'\n").unwrap();
+        std::fs::write(
+            repo.join("Stra\u{df}e/Pods/Alamofire/Session.swift"),
+            "// vendored\n",
+        )
+        .unwrap();
+        commit_old_git_fixture(&repo, &["Stra\u{df}e"]).unwrap();
+        std::fs::rename(repo.join("Stra\u{df}e"), repo.join("renaming")).unwrap();
+        std::fs::rename(repo.join("renaming"), repo.join("STRASSE")).unwrap();
+        let pods = repo.join("STRASSE/Pods");
+        let ctx = context(home.clone());
+
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+
+        let paths = offered(&findings);
+        assert!(pods.is_dir(), "fixture: the renamed tree is there");
+        assert!(
+            !paths.contains(&pods.as_path()),
+            "PV project/tracked-ascii-alias: a tracked tree renamed to an ASCII alias was offered: {paths:?}"
         );
         crate::ops::remove_test_path(root);
     }

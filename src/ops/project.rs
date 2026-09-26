@@ -229,9 +229,7 @@ pub(crate) fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> 
 /// missing object through its configured `uploadpack`; `log` closes signature
 /// display (`gpg.program`) itself. A git too old to know `--no-lazy-fetch`
 /// fails, which refuses rather than trusts. Ambient pathspec settings are
-/// dropped too: `GIT_LITERAL_PATHSPECS` would turn the tracked-file query's
-/// magic into a literal name that matches nothing, and the others change what
-/// it matches or make Git refuse it.
+/// dropped too, so no query's matching depends on the caller's environment.
 fn hardened_git(root: &Path, git: &str) -> Command {
     let mut command = Command::new(git);
     command
@@ -262,98 +260,101 @@ fn hardened_git(root: &Path, git: &str) -> Command {
 }
 
 /// Whether the repository at `root` tracks any file under `target`, which lies
-/// inside it. A directory holding tracked files is part of the repository, not
-/// build output — CocoaPods recommends committing `Pods`, and Mole V1.56.0
-/// protects such a directory for the same reason (`lib/clean/project.sh`) — so
-/// it is never offered or removed. One query per target lets Git match the
-/// pathspec itself, Unicode precomposition included, so no path it prints is
-/// ever compared here: any output at all means tracked. The pathspec is
-/// literal, so a name like a glob matches only itself, and case-insensitive:
-/// on a case-insensitive volume a directory renamed only in case goes
-/// unnoticed by Git, whose index keeps the old spelling. On a case-sensitive
-/// volume that can only over-match, which refuses. A query that fails refuses
-/// rather than trusts.
+/// inside it: one directory, checked against a fresh listing of the index.
 pub(crate) fn tracks_files_under(root: &Path, target: &Path) -> Result<bool> {
-    let relative = target.strip_prefix(root).with_context(|| {
-        format!(
-            "{} is not inside its repository {}",
-            target.display(),
-            root.display()
-        )
-    })?;
-    if !tracked_paths(root, relative, target)?.is_empty() {
-        return Ok(true);
-    }
-    // Git folds ASCII case only, and the volume folds Unicode case too, so a
-    // directory renamed only in the case of a letter like `Ä` still reads as
-    // untracked above.
-    if relative.as_os_str().is_ascii() {
-        return Ok(false);
-    }
-    tracked_through_filesystem(root, target, relative)
+    TrackedIndex::list(root)?.holds_tracked_files(target)
 }
 
-/// Everything Git tracks below `below`, relative to `root`, NUL-separated, by
-/// a literal and case-insensitive pathspec; an empty `below` lists the whole
-/// index. A failure names `target`, the directory being checked.
-fn tracked_paths(root: &Path, below: &Path, target: &Path) -> Result<Vec<u8>> {
-    let mut command = hardened_git(root, "git");
-    command.args(["ls-files", "-z", "--"]);
-    if !below.as_os_str().is_empty() {
-        let mut pathspec = std::ffi::OsString::from(":(literal,icase)");
-        pathspec.push(below);
-        command.arg(pathspec);
-    }
-    hardened_output(command, || {
-        format!("Git tracked-file check failed for {}", target.display())
-    })
+/// What one repository's index tracks, listed once and resolved through the
+/// volume to the directories that hold it.
+///
+/// A directory holding tracked files is part of the repository, not build
+/// output — CocoaPods recommends committing `Pods`, and Mole V1.56.0 protects
+/// such a directory for the same reason (`lib/clean/project.sh`) — so it is
+/// never offered or removed. Git cannot say which tracked path names a given
+/// directory: it compares spellings, while the volume compares names
+/// case-insensitively, normalization-insensitively and with full Unicode case
+/// folding (`STRASSE` names a directory created as `Straße`, and `kit` one
+/// spelled with a Kelvin sign). So each tracked path's ancestor at the
+/// directory's depth is looked up on the volume and compared with the
+/// directory by device and inode; a case-sensitive volume keeps different
+/// spellings apart. A listing that fails refuses rather than trusts.
+pub(crate) struct TrackedIndex {
+    root: PathBuf,
+    listed: Vec<u8>,
+    /// The tracked ancestors at each depth asked about, by device and inode.
+    resolved: std::collections::HashMap<usize, std::collections::HashSet<(u64, u64)>>,
 }
 
-/// Whether any path Git tracks resolves, through the volume's own name
-/// matching, into `target`. It lists the index below the longest leading part
-/// of `relative` that is pure ASCII, where Git's case folding is exact, and
-/// compares each listed path's ancestor at the target's depth with the target
-/// by device and inode, so the filesystem decides which names are the same
-/// directory. It can only add a reason to refuse.
-fn tracked_through_filesystem(root: &Path, target: &Path, relative: &Path) -> Result<bool> {
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
+impl TrackedIndex {
+    pub(crate) fn list(root: &Path) -> Result<Self> {
+        let mut command = hardened_git(root, "git");
+        command.args(["ls-files", "-z"]);
+        let listed = hardened_output(command, || {
+            format!("Git tracked-file check failed for {}", root.display())
+        })?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            listed,
+            resolved: std::collections::HashMap::new(),
+        })
+    }
 
-    let depth = relative.components().count();
-    let ascii: PathBuf = relative
-        .components()
-        .take_while(|component| component.as_os_str().is_ascii())
-        .collect();
-    let listed = tracked_paths(root, &ascii, target)?;
-    let wanted = std::fs::symlink_metadata(target)
-        .with_context(|| format!("cannot inspect {}", target.display()))?;
-    let mut seen = std::collections::HashSet::new();
-    for entry in listed.split(|byte| *byte == 0) {
-        let entry = Path::new(std::ffi::OsStr::from_bytes(entry));
-        if entry.components().count() <= depth {
-            continue;
+    /// Whether any tracked path lies inside `target`, a directory inside the
+    /// repository.
+    pub(crate) fn holds_tracked_files(&mut self, target: &Path) -> Result<bool> {
+        use std::os::unix::fs::MetadataExt;
+
+        let relative = target.strip_prefix(&self.root).with_context(|| {
+            format!(
+                "{} is not inside its repository {}",
+                target.display(),
+                self.root.display()
+            )
+        })?;
+        let depth = relative.components().count();
+        let wanted = std::fs::symlink_metadata(target)
+            .with_context(|| format!("cannot inspect {}", target.display()))?;
+        if !self.resolved.contains_key(&depth) {
+            let identities = self.resolve(depth)?;
+            self.resolved.insert(depth, identities);
         }
-        let ancestor: PathBuf = entry.components().take(depth).collect();
-        if !seen.insert(ancestor.clone()) {
-            continue;
-        }
-        let metadata = match std::fs::symlink_metadata(root.join(&ancestor)) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "cannot inspect tracked path {}",
-                        root.join(&ancestor).display()
-                    )
-                });
+        Ok(self
+            .resolved
+            .get(&depth)
+            .is_some_and(|identities| identities.contains(&(wanted.dev(), wanted.ino()))))
+    }
+
+    /// The device and inode of every tracked path's ancestor `depth`
+    /// components below the root, as the volume resolves its spelling.
+    fn resolve(&self, depth: usize) -> Result<std::collections::HashSet<(u64, u64)>> {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
+
+        let mut ancestors = std::collections::HashSet::new();
+        for entry in self.listed.split(|byte| *byte == 0) {
+            let entry = Path::new(std::ffi::OsStr::from_bytes(entry));
+            if entry.components().count() > depth {
+                ancestors.insert(entry.components().take(depth).collect::<PathBuf>());
             }
-        };
-        if metadata.dev() == wanted.dev() && metadata.ino() == wanted.ino() {
-            return Ok(true);
         }
+        let mut identities = std::collections::HashSet::new();
+        for ancestor in ancestors {
+            let path = self.root.join(&ancestor);
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => {
+                    identities.insert((metadata.dev(), metadata.ino()));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("cannot inspect tracked path {}", path.display())
+                    });
+                }
+            }
+        }
+        Ok(identities)
     }
-    Ok(false)
 }
 
 /// One `git log -1` against a repository that may be hostile.

@@ -371,33 +371,40 @@ CASES = (
     Case(
         name="project/tracked-files",
         relative_path="src/ops/project.rs",
-        before="    if !tracked_paths(root, relative, target)?.is_empty() {\n",
-        after="    if false && !tracked_paths(root, relative, target)?.is_empty() {\n",
+        before="            .is_some_and(|identities| identities.contains(&(wanted.dev(), wanted.ino()))))\n",
+        after="            .is_some_and(|_| false))\n",
         tests=(
             "ops::artifacts::tests::a_tree_its_repository_tracks_is_never_offered_or_removed",
             "ops::node_modules::tests::a_committed_node_modules_is_never_offered_or_removed",
         ),
         marker="PV project/tracked-files",
     ),
-    # On a case-insensitive volume Git keeps a tracked directory's old spelling
-    # after a case-only rename, so the query must match case-insensitively.
+    # Trackedness is decided by the volume's identity of each tracked path's
+    # ancestor, not by its spelling: comparing spellings instead must lose a
+    # case-only rename, a Unicode case rename, and an ASCII alias alike.
     Case(
-        name="project/tracked-files-case",
+        name="project/tracked-case-spelling",
         relative_path="src/ops/project.rs",
-        before='        let mut pathspec = std::ffi::OsString::from(":(literal,icase)");\n',
-        after='        let mut pathspec = std::ffi::OsString::from(":(literal)");\n',
+        before="            .is_some_and(|identities| identities.contains(&(wanted.dev(), wanted.ino()))))\n",
+        after="            .is_some_and(|_| self.listed.split(|byte| *byte == 0).any(|entry| std::path::Path::new(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(entry)).starts_with(relative))))\n",
         tests=("ops::artifacts::tests::a_tracked_tree_renamed_only_in_case_is_never_offered",),
         marker="PV project/tracked-case-rename",
     ),
-    # Git folds ASCII case only; the volume folds Unicode case too, so a
-    # non-ASCII case-only rename is settled by the filesystem's own matching.
     Case(
-        name="project/tracked-unicode-case",
+        name="project/tracked-unicode-spelling",
         relative_path="src/ops/project.rs",
-        before="    if relative.as_os_str().is_ascii() {\n",
-        after="    if true || relative.as_os_str().is_ascii() {\n",
+        before="            .is_some_and(|identities| identities.contains(&(wanted.dev(), wanted.ino()))))\n",
+        after="            .is_some_and(|_| self.listed.split(|byte| *byte == 0).any(|entry| std::path::Path::new(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(entry)).starts_with(relative))))\n",
         tests=("ops::artifacts::tests::a_tracked_tree_renamed_only_in_unicode_case_is_never_offered",),
         marker="PV project/tracked-unicode-case",
+    ),
+    Case(
+        name="project/tracked-alias-spelling",
+        relative_path="src/ops/project.rs",
+        before="            .is_some_and(|identities| identities.contains(&(wanted.dev(), wanted.ino()))))\n",
+        after="            .is_some_and(|_| self.listed.split(|byte| *byte == 0).any(|entry| std::path::Path::new(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(entry)).starts_with(relative))))\n",
+        tests=("ops::artifacts::tests::a_tracked_tree_renamed_to_an_ascii_alias_is_never_offered",),
+        marker="PV project/tracked-ascii-alias",
     ),
     Case(
         name="artifacts/tracked-apply",
@@ -491,6 +498,24 @@ CASES = (
         after="    if false && in_folder && path.file_name().is_some_and(is_source_packages) {\n",
         tests=("ops::xcode::tests::apply_never_removes_the_package_checkouts",),
         marker="PV xcode/package-checkouts-kept",
+    ),
+    # A DerivedData folder that is itself a repository is never split: its
+    # directories are that repository's worktree.
+    Case(
+        name="xcode/repository-folder-scan",
+        relative_path="src/ops/xcode.rs",
+        before="    Ok(holds_package_checkouts(folder)? && !has_git_marker(folder)?)\n",
+        after="    Ok(holds_package_checkouts(folder)?)\n",
+        tests=("ops::xcode::tests::a_derived_data_folder_that_is_a_repository_is_never_split",),
+        marker="PV xcode/repository-folder-scan",
+    ),
+    Case(
+        name="xcode/repository-folder-apply",
+        relative_path="src/ops/xcode.rs",
+        before="    Ok(folder_is_directory && is_package_folder(folder)?)\n",
+        after="    Ok(folder_is_directory && holds_package_checkouts(folder)?)\n",
+        tests=("ops::xcode::tests::a_derived_data_folder_that_is_a_repository_is_never_split",),
+        marker="PV xcode/repository-folder-apply",
     ),
 )
 
