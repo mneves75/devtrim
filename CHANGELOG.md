@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [Unreleased]
+
 ## [0.10.0] - 2026-09-26
 
 Found by using devtrim to free space on a Mac at 97% full. Its scan listed 830

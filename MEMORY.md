@@ -1,6 +1,23 @@
 # Project Memory
 
-## Current state (0.9.6)
+## Current state (0.10.0)
+
+Production is verified. `v0.10.0-beta2` and `v0.10.0` both point at `acc53f9`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`45bb0b41a9537a905300f5b1ae69c3f3ec9a0c1955705f9a418b25297e2f615f`) and is
+immutable. The downloaded beta passed checksum, attestation (source `acc53f9`,
+the beta tag, a GitHub-hosted runner), the five PTY TUI flows run from its own
+138-character download directory, and read-only views. Homebrew installs and
+tests 0.10.0 as the sole visible `devtrim`.
+
+`v0.10.0-beta1` (`a8a8104`) is superseded: its detail pane cut long paths
+silently. One accepted review residual remains: a space in a full row's last
+cell reads as padding. The next-patch fix is to break before a space that would
+take the last column. Releases 0.9.7 and 0.9.8 are recorded in `CHANGELOG.md`
+and `memory/2026-09-23.md`. The story and the lesson of this release are in
+`memory/2026-09-26.md`.
+
+## Previous state (0.9.6)
 
 Production is verified. `v0.9.6-beta1` and `v0.9.6` both point at `2d00795`;
 production reused the beta archive byte for byte (ZIP SHA-256
