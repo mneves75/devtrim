@@ -272,7 +272,7 @@ fn default_roots(home: &Path) -> ResolvedRoots {
                 // A folder linked to the home folder or above it would turn a
                 // default into the whole home or disk, which only an explicit
                 // `--root` or `roots` may ask for.
-                if home.starts_with(&root) {
+                if holds_home(&root, home) {
                     anyhow::bail!(
                         "{} resolves to {}, which is the home folder or contains it; name it with --root to scan it",
                         candidate.display(),
@@ -307,6 +307,37 @@ fn default_roots(home: &Path) -> ResolvedRoots {
         origin: RootsOrigin::Default,
         warnings,
     }
+}
+
+/// Whether `root` is the home folder or holds it, judged by the volume's
+/// identity as well as by spelling. macOS reaches one folder by more than one
+/// path — `/Users/<name>` and the data-volume firmlink
+/// `/System/Volumes/Data/Users/<name>`, `/var` and `/private/var` — and
+/// realpath keeps the spelling it was given, so each tail of the home path is
+/// looked for under `root` by device and inode. When home's own identity cannot
+/// be read the answer is yes: a default that might be the whole home is refused.
+pub(crate) fn holds_home(root: &Path, home: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if home.starts_with(root) {
+        return true;
+    }
+    let Ok(metadata) = std::fs::metadata(home) else {
+        return true;
+    };
+    let identity = (metadata.dev(), metadata.ino());
+    let names = home
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    (0..=names.len()).any(|start| {
+        let tail = names[start..].iter().collect::<PathBuf>();
+        std::fs::metadata(root.join(tail))
+            .is_ok_and(|candidate| (candidate.dev(), candidate.ino()) == identity)
+    })
 }
 
 /// One line naming the scan roots and how to change them.
@@ -1783,6 +1814,34 @@ mod tests {
         assert_eq!(configured.warnings.len(), 1);
         assert!(configured.warnings[0].contains("missing"));
         crate::ops::remove_test_path(home);
+    }
+
+    /// A folder can hold the home folder under a spelling that shares no text
+    /// prefix with it: `/var` and `/private/var` here, the data-volume firmlink
+    /// `/System/Volumes/Data/Users/<name>` on a real Mac. Only the volume's
+    /// identity can tell, so the textual check alone must not decide.
+    #[test]
+    fn the_home_folder_is_recognized_under_any_spelling() {
+        let base = temp("home-alias");
+        let home = base.join("home");
+        std::fs::create_dir_all(home.join("dev")).unwrap();
+        std::fs::create_dir_all(base.join("elsewhere")).unwrap();
+        let resolved = base.canonicalize().unwrap();
+        assert!(
+            !home.starts_with(&resolved),
+            "the fixture needs two spellings: {} and {}",
+            home.display(),
+            resolved.display()
+        );
+
+        assert!(
+            holds_home(&resolved, &home),
+            "PV roots/default-home-identity: a respelled ancestor of home was not recognized"
+        );
+        assert!(holds_home(&resolved.join("home"), &home));
+        assert!(!holds_home(&resolved.join("elsewhere"), &home));
+        assert!(!holds_home(&resolved.join("home/dev"), &home));
+        crate::ops::remove_test_path(base);
     }
 
     /// An empty preview must never read as a clean machine when the scan only

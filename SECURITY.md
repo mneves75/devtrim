@@ -200,7 +200,8 @@ Non-negotiable boundaries:
    A scan root, including the default project folders used when none is
    configured, only says where to look and grants nothing; a default folder
    linked into another root is scanned once, one linked to the home folder or
-   above it is refused so a default never becomes the whole home or disk, and
+   above it — by any spelling, judged by device and inode — is refused so a
+   default never becomes the whole home or disk, and
    one that cannot be read is skipped with a warning instead of failing every
    project command.
 4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.

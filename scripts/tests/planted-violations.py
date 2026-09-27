@@ -523,10 +523,18 @@ CASES = (
     Case(
         name="roots/default-home-link",
         relative_path="src/safety.rs",
-        before="                if home.starts_with(&root) {\n",
-        after="                if false && home.starts_with(&root) {\n",
+        before="                if holds_home(&root, home) {\n",
+        after="                if false && holds_home(&root, home) {\n",
         tests=("safety::tests::default_roots_are_the_conventional_project_folders_that_exist",),
         marker="PV roots/default-home-link",
+    ),
+    Case(
+        name="roots/default-home-identity",
+        relative_path="src/safety.rs",
+        before="            .is_ok_and(|candidate| (candidate.dev(), candidate.ino()) == identity)\n",
+        after="            .is_ok_and(|candidate| false && (candidate.dev(), candidate.ino()) == identity)\n",
+        tests=("safety::tests::the_home_folder_is_recognized_under_any_spelling",),
+        marker="PV roots/default-home-identity",
     ),
     Case(
         name="sink/trash-grant-root",
