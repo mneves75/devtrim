@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.10.2.
+This source tree and its packaged documentation describe devtrim v0.10.3.
 
 ## Install
 
@@ -137,6 +137,32 @@ nested Git repository. Unlike `mo purge`, it never
 matches ambiguous names such as `build`, `dist`, or `coverage`, never deletes
 permanently unless you pass `--shred`, and never touches a repository with
 recent Git activity.
+
+`purge`, `clean node-modules`, `clean artifacts`, `clean leftovers`, `largest`,
+and the project half of `scan` look only under the scan roots, never the whole
+disk or the whole home folder. Without configured roots those are the
+conventional project folders that exist: `~/dev`, `~/Developer`,
+`~/Development`, `~/Projects`, `~/Code`, `~/GitHub`, `~/Repos`, `~/Workspace`,
+and `~/www` — Mole's `mo purge` defaults plus the folder Finder marks as
+`Developer`. `--root` or `roots` in the config replaces them. A root only says
+where to look; every finding still needs its category's corroborated name, Git
+owner, and staleness. Folders macOS guards with a privacy prompt (Desktop,
+Documents, Downloads), cloud storage, and `~/Library` stay out unless you name
+them. Every human preview of these commands begins with an `info scan roots:`
+line naming the roots, where they came from, and how to change them, so an empty
+result never reads as a clean machine when devtrim looked in one place. The skip
+notes name what is holding findings back: the activity window, and the
+repositories where a build process is running.
+
+A `node_modules` inside a repository's own build output — Next.js
+`output: 'standalone'` copies one into `.next/standalone` — belongs to that
+output, which is offered or kept whole; it is never a finding of its own, so one
+plan never counts the same bytes twice, and apply refuses one. When that output
+is kept — it holds a tracked file, a keypair, or a repository — the
+`node_modules` inside stays with it. The walk never enters build output below a
+scan root, which also keeps a stale repository left inside a Cargo `target` out
+of the plan; like the roots themselves, that bounds where devtrim looks rather
+than what apply may remove.
 
 `clean artifacts` deletes a directory only when its name is on a closed list
 **and** its ecosystem corroborates it — `target` next to `Cargo.toml`, `.venv`
@@ -342,7 +368,7 @@ was absent from the preview.
 ## Config — `~/.config/devtrim.toml`
 
 ```toml
-roots = ["~/dev"]                 # scan roots
+roots = ["~/dev", "~/sandbox"]    # scan roots (default: the project folders above that exist)
 active_days = 30                  # newer Git activity makes a repo active (0 means 1)
 protect = ["~/dev/keep"]          # never delete these paths or their children
 ```
@@ -361,10 +387,14 @@ inside the window. The reflog is what a clone, checkout, or pull writes, so an
 old project cloned today — whose dependencies were just installed — is not
 offered; a repository with reflogs disabled is judged by its commit date.
 
-Explicit `--root` flags replace config/default roots. Existing roots are resolved
-before preview; an explicit root that does not exist is warned about instead of
-silently scanning nothing. An unreadable, malformed, or unknown config field is an error; devtrim never
-silently falls back to another root.
+Explicit `--root` flags replace configured roots, which replace the default
+project folders. Existing roots are resolved before preview; an explicit root
+that does not exist is warned about instead of silently scanning nothing, a
+default folder that is absent is simply not scanned, and one that cannot be
+resolved or read, or that links to the home folder or above it, is skipped with
+a warning. Two names for one folder are
+scanned once. An unreadable, malformed, or unknown config field is an error;
+devtrim never silently falls back to another root.
 
 ## JSON contract
 

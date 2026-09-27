@@ -48,6 +48,7 @@ pub struct Ctx {
     pub yolo: bool,
     pub json: bool,
     pub roots: Vec<PathBuf>,
+    pub roots_origin: RootsOrigin,
     pub active_days: u32,
     pub home: PathBuf,
     pub protect: Vec<PathBuf>,
@@ -75,40 +76,11 @@ impl Ctx {
         let active_days = file_cfg.active_days.unwrap_or(30).max(1);
         let (protect, protect_warnings) =
             configured_protect(file_cfg.protect.unwrap_or_default(), &home)?;
-        let explicit_roots = !cli.roots.is_empty() || !cfg_roots.is_empty();
-        let roots = if !cli.roots.is_empty() {
-            cli.roots
-                .iter()
-                .map(|root| PathBuf::from(shellexpand(root, &home)))
-                .collect()
-        } else if !cfg_roots.is_empty() {
-            cfg_roots
-                .iter()
-                .map(|root| PathBuf::from(shellexpand(root, &home)))
-                .collect()
-        } else {
-            vec![home.join("dev")]
-        };
-        // A mistyped root would otherwise scan nothing and report a clean
-        // machine; the absent default `~/dev` is not a mistake worth a warning.
-        let mut root_warnings = Vec::new();
-        let roots = roots
-            .into_iter()
-            .map(|root| {
-                if root.exists() {
-                    root.canonicalize()
-                        .with_context(|| format!("cannot resolve scan root: {}", root.display()))
-                } else {
-                    if explicit_roots {
-                        root_warnings.push(format!(
-                            "scan root does not exist and was skipped: {}",
-                            root.display()
-                        ));
-                    }
-                    Ok(root)
-                }
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let ResolvedRoots {
+            roots,
+            origin: roots_origin,
+            warnings: root_warnings,
+        } = resolve_roots(&cli.roots, &cfg_roots, &home)?;
         let journal_path = journal_path(&home);
         let journal_warnings = match crate::journal::rotate_if_needed(&journal_path) {
             Ok(warnings) => warnings,
@@ -119,6 +91,7 @@ impl Ctx {
             yolo: cli.yolo,
             json: cli.json,
             roots,
+            roots_origin,
             active_days,
             protect,
             journal_path,
@@ -165,6 +138,12 @@ impl Ctx {
         }
     }
 
+    /// The scan roots, their origin, and how to change them, for previews of
+    /// the categories that walk project folders.
+    pub fn roots_note(&self) -> String {
+        roots_note(&self.roots, self.roots_origin, &self.home)
+    }
+
     pub fn take_diagnostics(&self) -> Vec<String> {
         std::mem::take(
             &mut *self
@@ -188,6 +167,172 @@ impl Ctx {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
+    }
+}
+
+/// Where the project-folder scan roots came from. Previews name the roots and
+/// their origin, so an empty result is never mistaken for a clean machine when
+/// devtrim looked in only one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RootsOrigin {
+    /// Neither `--root` nor a configured `roots`: the conventional folders.
+    #[default]
+    Default,
+    /// `roots` in `~/.config/devtrim.toml`.
+    Config,
+    /// One or more `--root` flags.
+    Flag,
+}
+
+/// Home-relative project folders scanned when neither `--root` nor `roots`
+/// names any. Mole V1.56.0 searches the same conventional names by default
+/// (`MOLE_PURGE_DEFAULT_SEARCH_PATHS` in `lib/clean/purge_shared.sh`); devtrim
+/// adds `Developer`, the folder Finder marks with its developer icon, and
+/// leaves out Mole's `Library/CloudStorage` (cloud-backed files inside the
+/// protected `~/Library`) and its agent worktree containers. A root says only
+/// where to look: every finding still needs its category's corroborated name,
+/// Git owner, and staleness, so a wider default adds no deletion authority.
+pub(crate) const DEFAULT_PROJECT_ROOTS: [&str; 9] = [
+    "dev",
+    "Developer",
+    "Development",
+    "Projects",
+    "Code",
+    "GitHub",
+    "Repos",
+    "Workspace",
+    "www",
+];
+
+pub(crate) struct ResolvedRoots {
+    pub(crate) roots: Vec<PathBuf>,
+    pub(crate) origin: RootsOrigin,
+    pub(crate) warnings: Vec<String>,
+}
+
+/// `--root` flags replace configured roots, which replace the defaults.
+/// A named root that does not exist is warned about, because a mistyped root
+/// would otherwise scan nothing and report a clean machine; an absent default
+/// folder is simply not one of this machine's project folders.
+pub(crate) fn resolve_roots(
+    flagged: &[String],
+    configured: &[String],
+    home: &Path,
+) -> Result<ResolvedRoots> {
+    let (named, origin) = if !flagged.is_empty() {
+        (flagged, RootsOrigin::Flag)
+    } else if !configured.is_empty() {
+        (configured, RootsOrigin::Config)
+    } else {
+        return Ok(default_roots(home));
+    };
+    let mut warnings = Vec::new();
+    let roots = named
+        .iter()
+        .map(|root| PathBuf::from(shellexpand(root, home)))
+        .map(|root| {
+            if root.exists() {
+                root.canonicalize()
+                    .with_context(|| format!("cannot resolve scan root: {}", root.display()))
+            } else {
+                warnings.push(format!(
+                    "scan root does not exist and was skipped: {}",
+                    root.display()
+                ));
+                Ok(root)
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ResolvedRoots {
+        roots,
+        origin,
+        warnings,
+    })
+}
+
+/// The conventional project folders that exist as readable directories, each
+/// scanned once: a folder linked into another default root is already walked
+/// through it. A default folder that cannot be resolved or read is skipped
+/// with a warning rather than failing every project command: nobody asked
+/// devtrim to look there, and before these defaults existed only `~/dev` could
+/// fail a scan that way.
+fn default_roots(home: &Path) -> ResolvedRoots {
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut warnings = Vec::new();
+    for name in DEFAULT_PROJECT_ROOTS {
+        let candidate = home.join(name);
+        let resolved =
+            crate::ops::project::is_directory_if_present(&candidate).and_then(|present| {
+                if !present {
+                    return Ok(None);
+                }
+                let root = candidate.canonicalize().with_context(|| {
+                    format!("cannot resolve scan root: {}", candidate.display())
+                })?;
+                // A folder linked to the home folder or above it would turn a
+                // default into the whole home or disk, which only an explicit
+                // `--root` or `roots` may ask for.
+                if home.starts_with(&root) {
+                    anyhow::bail!(
+                        "{} resolves to {}, which is the home folder or contains it; name it with --root to scan it",
+                        candidate.display(),
+                        root.display()
+                    );
+                }
+                std::fs::read_dir(&root)
+                    .with_context(|| format!("cannot read scan root: {}", candidate.display()))?;
+                Ok(Some(root))
+            });
+        match resolved {
+            Ok(Some(root)) => found.push(root),
+            Ok(None) => {}
+            Err(error) => warnings.push(format!("default project folder skipped: {error:#}")),
+        }
+    }
+    let roots = found
+        .iter()
+        .filter(|root| {
+            !found
+                .iter()
+                .any(|other| other != *root && root.starts_with(other))
+        })
+        .fold(Vec::new(), |mut roots, root| {
+            if !roots.contains(root) {
+                roots.push(root.clone());
+            }
+            roots
+        });
+    ResolvedRoots {
+        roots,
+        origin: RootsOrigin::Default,
+        warnings,
+    }
+}
+
+/// One line naming the scan roots and how to change them.
+pub(crate) fn roots_note(roots: &[PathBuf], origin: RootsOrigin, home: &Path) -> String {
+    let shown = |path: &Path| match path.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    };
+    let list = roots
+        .iter()
+        .map(|root| shown(root))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match origin {
+        RootsOrigin::Default if roots.is_empty() => format!(
+            "scan roots: none; no default project folder exists (~/{}); pass --root or set `roots` in ~/.config/devtrim.toml",
+            DEFAULT_PROJECT_ROOTS.join(", ~/")
+        ),
+        RootsOrigin::Default => format!(
+            "scan roots: {list} (default project folders; --root or `roots` in ~/.config/devtrim.toml replaces them)"
+        ),
+        RootsOrigin::Config => format!(
+            "scan roots: {list} (from `roots` in ~/.config/devtrim.toml; --root replaces them)"
+        ),
+        RootsOrigin::Flag => format!("scan roots: {list} (from --root)"),
     }
 }
 
@@ -1507,12 +1652,8 @@ mod tests {
         fn validation_preserves_arbitrary_non_utf8_leaf_identity(
             raw in proptest::collection::vec(any::<u8>(), 0..24),
         ) {
-            let home = std::env::current_dir()
-                .unwrap()
-                .canonicalize()
-                .unwrap()
-                .join("target")
-                .join(format!("devtrim-nonutf8-{}", std::process::id()));
+            let fixture = crate::ops::TestFixture::new("devtrim-nonutf8");
+            let home = fixture.path().to_path_buf();
             std::fs::create_dir_all(&home).unwrap();
             let mut bytes = vec![0xff];
             bytes.extend(raw.into_iter().map(|byte| match byte {
@@ -1565,24 +1706,110 @@ mod tests {
 
     #[test]
     fn configured_protect_existing_entry_warns_nothing() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-protect-exists-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-protect-exists");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("dev/keep")).unwrap();
         let (_, warnings) = configured_protect(vec!["~/dev/keep".into()], &home).unwrap();
         assert!(warnings.is_empty());
         crate::ops::remove_test_path(home);
     }
 
+    /// Without configured roots devtrim scans every conventional project
+    /// folder that exists, not only `~/dev`; a folder that is absent, not a
+    /// directory, or a broken link is left out, and two names for one folder
+    /// are scanned once.
+    #[test]
+    fn default_roots_are_the_conventional_project_folders_that_exist() {
+        let home = temp("default-roots").canonicalize().unwrap();
+        std::fs::create_dir_all(home.join("dev")).unwrap();
+        std::fs::create_dir_all(home.join("Projects")).unwrap();
+        std::fs::write(home.join("Code"), "not a folder").unwrap();
+        symlink(home.join("dev"), home.join("Repos")).unwrap();
+        symlink(home.join("missing"), home.join("GitHub")).unwrap();
+        // A folder linked into another root is already scanned through it.
+        std::fs::create_dir_all(home.join("dev/inner")).unwrap();
+        symlink(home.join("dev/inner"), home.join("Development")).unwrap();
+        // One unreadable default folder must not fail every project command.
+        let unreadable = home.join("Workspace");
+        std::fs::create_dir_all(&unreadable).unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // A link to the home folder would make the whole home a default root,
+        // and would swallow every narrower folder beside it.
+        symlink(&home, home.join("www")).unwrap();
+
+        let resolved = resolve_roots(&[], &[], &home);
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let resolved = resolved.unwrap();
+
+        assert_eq!(resolved.origin, RootsOrigin::Default);
+        assert_eq!(
+            resolved.roots,
+            vec![home.join("dev"), home.join("Projects")],
+            "PV roots/default-home-link: a default folder widened the scan"
+        );
+        assert_eq!(resolved.warnings.len(), 3, "{:?}", resolved.warnings);
+        assert!(resolved.warnings[0].contains("GitHub"));
+        assert!(resolved.warnings[1].contains("Workspace"));
+        assert!(
+            resolved.warnings[2].contains("www") && resolved.warnings[2].contains("home folder"),
+            "{:?}",
+            resolved.warnings
+        );
+
+        let empty = temp("default-roots-empty").canonicalize().unwrap();
+        let resolved = resolve_roots(&[], &[], &empty).unwrap();
+        assert!(resolved.roots.is_empty());
+        assert!(resolved.warnings.is_empty());
+        crate::ops::remove_test_path(home);
+        crate::ops::remove_test_path(empty);
+    }
+
+    #[test]
+    fn explicit_roots_replace_the_defaults() {
+        let home = temp("explicit-roots").canonicalize().unwrap();
+        std::fs::create_dir_all(home.join("dev")).unwrap();
+        std::fs::create_dir_all(home.join("Projects")).unwrap();
+
+        let flagged = resolve_roots(&["~/Projects".into()], &["~/dev".into()], &home).unwrap();
+        assert_eq!(flagged.origin, RootsOrigin::Flag);
+        assert_eq!(flagged.roots, vec![home.join("Projects")]);
+
+        let configured = resolve_roots(&[], &["~/dev".into(), "~/missing".into()], &home).unwrap();
+        assert_eq!(configured.origin, RootsOrigin::Config);
+        assert_eq!(
+            configured.roots,
+            vec![home.join("dev"), home.join("missing")]
+        );
+        assert_eq!(configured.warnings.len(), 1);
+        assert!(configured.warnings[0].contains("missing"));
+        crate::ops::remove_test_path(home);
+    }
+
+    /// An empty preview must never read as a clean machine when the scan only
+    /// looked in one place: the note names the roots and how to change them.
+    #[test]
+    fn the_roots_note_says_where_the_roots_came_from() {
+        let home = Path::new("/Users/someone");
+        let roots = [home.join("dev"), PathBuf::from("/Volumes/work")];
+
+        let note = roots_note(&roots, RootsOrigin::Default, home);
+        assert!(note.contains("~/dev, /Volumes/work"), "{note}");
+        assert!(note.contains("default project folders"), "{note}");
+        assert!(note.contains("--root"), "{note}");
+        assert!(note.contains("~/.config/devtrim.toml"), "{note}");
+
+        let none = roots_note(&[], RootsOrigin::Default, home);
+        assert!(none.contains("no default project folder exists"), "{none}");
+        assert!(none.contains("~/Projects"), "{none}");
+
+        assert!(roots_note(&roots, RootsOrigin::Config, home).contains("from `roots` in"));
+        assert!(roots_note(&roots, RootsOrigin::Flag, home).contains("from --root"));
+    }
+
     #[test]
     fn deletion_validation_refuses_git_repository_and_worktree_roots() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-git-roots-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-git-roots");
+        let home = fixture.path().to_path_buf();
         let repository = home.join("dev/repository");
         let worktree = home.join("dev/worktree");
         std::fs::create_dir_all(repository.join(".git")).unwrap();
@@ -1604,11 +1831,8 @@ mod tests {
 
     #[test]
     fn deletion_validation_refuses_git_metadata_case_variants() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-git-case-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-git-case");
+        let home = fixture.path().to_path_buf();
         let repository = home.join("dev/repository");
         let metadata_target = home.join("dev/repository/.GIT/objects/target");
         let normal_target = home.join("dev/repository/git/objects/target");
@@ -1636,11 +1860,8 @@ mod tests {
 
     #[test]
     fn deletion_validation_fails_closed_when_protect_alias_drifts() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-protect-drift-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-protect-drift");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("dev/protected-original")).unwrap();
         std::fs::create_dir_all(home.join("dev/protected-replacement")).unwrap();
         std::fs::create_dir_all(home.join("dev/deletable")).unwrap();
@@ -1690,11 +1911,8 @@ mod tests {
 
     #[test]
     fn configured_protect_refuses_ancestors_and_matches_symlinked_entries() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-protect-intersect-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-protect-intersect");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("dev/repo/target/important")).unwrap();
         std::fs::create_dir_all(home.join("dev/repo/other")).unwrap();
         let home = home.canonicalize().unwrap();
@@ -1750,11 +1968,8 @@ mod tests {
             std::ffi::OsStr::new(nfc)
         ));
 
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-protect-nfc-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-protect-nfc");
+        let home = fixture.path().to_path_buf();
         let on_disk = home.join("dev").join(nfd).join("node_modules");
         std::fs::create_dir_all(&on_disk).unwrap();
         let home = home.canonicalize().unwrap();
@@ -1769,11 +1984,8 @@ mod tests {
 
     #[test]
     fn configured_protect_refuses_literal_case_variant_and_children() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-configured-protect-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-configured-protect");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
         let home = home.canonicalize().unwrap();
         let target = home.join("dev/Protected");
@@ -1868,13 +2080,8 @@ mod tests {
 
     #[test]
     fn rejects_symlinked_ancestor() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .canonicalize()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-ancestor-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-ancestor");
+        let home = fixture.path().to_path_buf();
         let safe = home.join("dev");
         let protected = home.join("Library");
         std::fs::create_dir_all(protected.join("node_modules")).unwrap();
@@ -1940,6 +2147,7 @@ mod tests {
             yolo: false,
             json: true,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: PathBuf::from("/tmp/devtrim-test-journal.jsonl"),

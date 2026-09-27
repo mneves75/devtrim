@@ -333,6 +333,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -376,11 +377,8 @@ mod tests {
 
     #[test]
     fn scan_offers_only_real_directories_as_xcode_support_children() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-xcode-shape-scan-{}", std::process::id()));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-shape-scan");
+        let root = fixture.path().to_path_buf();
         let device_support = root.join("Library/Developer/Xcode/iOS DeviceSupport");
         let derived_data = root.join("Library/Developer/Xcode/DerivedData");
         std::fs::create_dir_all(device_support.join("iPhone18,2 27.0 (24A437)")).unwrap();
@@ -416,11 +414,8 @@ mod tests {
 
     #[test]
     fn apply_refuses_a_non_directory_xcode_support_child() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-xcode-shape-apply-{}", std::process::id()));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-shape-apply");
+        let root = fixture.path().to_path_buf();
         let device_support = root.join("Library/Developer/Xcode/iOS DeviceSupport");
         std::fs::create_dir_all(device_support.join("real-build")).unwrap();
         std::fs::create_dir_all(root.join("elsewhere")).unwrap();
@@ -499,6 +494,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -520,11 +516,8 @@ mod tests {
 
     #[test]
     fn forged_actionable_archive_is_rejected() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-xcode-forged-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-forged");
+        let home = fixture.path().to_path_buf();
         let archive = home.join("Library/Developer/Xcode/Archives/release.xcarchive");
         std::fs::create_dir_all(&archive).unwrap();
         let home = home.canonicalize().unwrap();
@@ -544,6 +537,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -564,11 +558,8 @@ mod tests {
 
     #[test]
     fn direct_device_support_child_can_be_applied() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-xcode-direct-{}", std::process::id()));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-direct");
+        let root = fixture.path().to_path_buf();
         let target = root.join("Library/Developer/Xcode/iOS DeviceSupport/device");
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(target.join("sentinel"), "remove").unwrap();
@@ -599,11 +590,8 @@ mod tests {
     /// every build tree after it in the plan.
     #[test]
     fn a_refused_derived_data_folder_does_not_block_the_rest_of_the_plan() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-xcode-continue-{}", std::process::id()));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-continue");
+        let root = fixture.path().to_path_buf();
         let derived_data = root.join("Library/Developer/Xcode/DerivedData");
         let checkout = derived_data.join("WithPackages/SourcePackages/checkouts/package/.git");
         std::fs::create_dir_all(&checkout).unwrap();
@@ -675,11 +663,8 @@ mod tests {
     /// directory but `SourcePackages` — and apply removes exactly that.
     #[test]
     fn a_derived_data_folder_holding_package_checkouts_is_cleaned_around_them() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-xcode-packages-{}", std::process::id()));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-packages");
+        let root = fixture.path().to_path_buf();
         std::fs::create_dir_all(&root).unwrap();
         let home = root.canonicalize().unwrap();
         let derived_data = home.join("Library/Developer/Xcode/DerivedData");
@@ -732,14 +717,8 @@ mod tests {
     /// deletion would refuse. Apply refuses a forged directory of it too.
     #[test]
     fn a_derived_data_folder_that_is_a_repository_is_never_split() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!(
-                "devtrim-xcode-repository-folder-{}",
-                std::process::id()
-            ));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-repository-folder");
+        let root = fixture.path().to_path_buf();
         std::fs::create_dir_all(&root).unwrap();
         let home = root.canonicalize().unwrap();
         let folder = home.join("Library/Developer/Xcode/DerivedData/App-repo");
@@ -782,14 +761,8 @@ mod tests {
     /// holds them is refused in any spelling, however it reached apply.
     #[test]
     fn apply_never_removes_the_package_checkouts() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!(
-                "devtrim-xcode-packages-kept-{}",
-                std::process::id()
-            ));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-packages-kept");
+        let root = fixture.path().to_path_buf();
         std::fs::create_dir_all(&root).unwrap();
         let home = root.canonicalize().unwrap();
         let folder = home.join("Library/Developer/Xcode/DerivedData/App-pkg");
@@ -827,11 +800,8 @@ mod tests {
 
     #[test]
     fn forged_nested_derived_data_target_is_rejected_before_liveness() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-xcode-nested-{}", std::process::id()));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-nested");
+        let root = fixture.path().to_path_buf();
         let target = root.join("Library/Developer/Xcode/DerivedData/project/nested");
         std::fs::create_dir_all(&target).unwrap();
         let sentinel = target.join("sentinel");
@@ -879,6 +849,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),

@@ -7,8 +7,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::project::{
-    ScanObservations, TrackedIndex, has_git_marker, is_directory_if_present, iso_days_ago,
-    normalized_roots, owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under,
+    ScanObservations, TrackedIndex, activity_window, busy_repositories, has_git_marker,
+    is_directory_if_present, iso_days_ago, normalized_roots, owning_repo, repo_has_active_build,
+    repo_last_activity, tracks_files_under,
 };
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size,
@@ -49,6 +50,10 @@ impl Op for Artifacts {
         "artifacts"
     }
 
+    fn scans_roots(&self) -> bool {
+        true
+    }
+
     fn scan(&self, ctx: &Ctx, observations: &ScanObservations) -> Result<Vec<Finding>> {
         observations.process_cwds()?;
         let cutoff = iso_days_ago(ctx.active_days);
@@ -67,12 +72,14 @@ impl Op for Artifacts {
         let mut findings = Vec::new();
         let mut active = 0usize;
         let mut build_active = 0usize;
+        let mut busy = Vec::new();
         let mut tracked = 0usize;
         let mut keypairs = 0usize;
         let mut repositories = 0usize;
         for (owner, candidates) in groups {
             if repo_has_active_build(&owner, observations.process_cwds()?) {
                 build_active = build_active.saturating_add(candidates.len());
+                busy.push(owner);
                 continue;
             }
             let last_activity = observations.last_activity(&owner)?;
@@ -117,14 +124,18 @@ impl Op for Artifacts {
         if active > 0 && !ctx.json {
             ctx.diagnostic(
                 "info",
-                format!("skipping {active} artifact directories in active repos"),
+                format!(
+                    "skipping {active} artifact directories in repos active in {}",
+                    activity_window(ctx.active_days)
+                ),
             );
         }
         if build_active > 0 && !ctx.json {
             ctx.diagnostic(
                 "info",
                 format!(
-                    "skipping {build_active} artifact directories because a build process is active"
+                    "skipping {build_active} artifact directories because a build process is active in {}",
+                    busy_repositories(&busy)
                 ),
             );
         }
@@ -380,6 +391,31 @@ fn find_artifacts(root: &Path) -> Result<Vec<ArtifactCandidate>> {
     Ok(found)
 }
 
+/// Whether `path` is build output this category would offer, by the same
+/// name, corroboration and `CACHEDIR.TAG` evidence, whatever its staleness.
+pub(super) fn is_build_output(path: &Path) -> Result<bool> {
+    Ok(artifact_evidence(path)?.is_some())
+}
+
+/// The build output of `owner` that holds `path`: a directory strictly
+/// between the repository and `path` that this category would offer.
+/// Everything below it belongs to that output, so whether it goes is decided
+/// by the output's own finding and gates, never by a finding nested inside
+/// it. Ancestors above the repository are the repository's surroundings, not
+/// its output.
+pub(super) fn build_output_between(owner: &Path, path: &Path) -> Result<Option<PathBuf>> {
+    for ancestor in path
+        .ancestors()
+        .skip(1)
+        .take_while(|ancestor| *ancestor != owner && ancestor.starts_with(owner))
+    {
+        if is_build_output(ancestor)? {
+            return Ok(Some(ancestor.to_path_buf()));
+        }
+    }
+    Ok(None)
+}
+
 fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -472,13 +508,34 @@ fn regular_file(path: &Path) -> Result<bool> {
     }
 }
 
+/// Opened once, without following a link and without blocking, as the uv tag
+/// is read (`ops::has_cachedir_tag`): a symlink, FIFO or directory at the name
+/// is not a tag, and nothing can replace the file between a check and the
+/// read. Every directory the project walks visit is probed, so this is also
+/// the cheaper path. A failure other than absence still fails the scan.
 fn cachedir_tag_matches(path: &Path) -> Result<bool> {
+    use rustix::fs::{Mode, OFlags};
+    use rustix::io::Errno;
+
     let tag = path.join("CACHEDIR.TAG");
-    if !regular_file(&tag)? {
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let descriptor = match rustix::fs::open(&tag, flags, Mode::empty()) {
+        Ok(descriptor) => descriptor,
+        Err(Errno::NOENT | Errno::LOOP) => return Ok(false),
+        Err(error) => {
+            return Err(std::io::Error::from(error))
+                .with_context(|| format!("cannot inspect artifact evidence {}", tag.display()));
+        }
+    };
+    let mut file = std::fs::File::from(descriptor);
+    let is_file = file
+        .metadata()
+        .with_context(|| format!("cannot inspect artifact evidence {}", tag.display()))?
+        .file_type()
+        .is_file();
+    if !is_file {
         return Ok(false);
     }
-    let mut file = std::fs::File::open(&tag)
-        .with_context(|| format!("cannot read artifact marker {}", tag.display()))?;
     let mut prefix = [0u8; CACHEDIR_SIGNATURE.len()];
     match file.read_exact(&mut prefix) {
         Ok(()) => Ok(&prefix == CACHEDIR_SIGNATURE),
@@ -509,6 +566,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: vec![home.clone()],
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -620,14 +678,8 @@ mod tests {
 
     #[test]
     fn apply_rejects_artifact_under_case_variant_node_modules_ancestor() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!(
-                "devtrim-artifact-case-ancestor-{}",
-                std::process::id()
-            ));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-artifact-case-ancestor");
+        let root = fixture.path().to_path_buf();
         std::fs::create_dir_all(&root).unwrap();
         let home = root.canonicalize().unwrap();
         let repo = home.join("repo");
@@ -770,15 +822,38 @@ mod tests {
     }
 
     /// A fixture root under this checkout's `target`, where the sink may delete.
-    fn deletable_root(name: &str) -> (PathBuf, PathBuf) {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-artifacts-{name}-{}", std::process::id()));
-        crate::ops::remove_test_path(&root);
+    fn deletable_root(name: &str) -> (crate::ops::TestFixture, PathBuf, PathBuf) {
+        let fixture = crate::ops::TestFixture::new(&format!("devtrim-artifacts-{name}"));
+        let root = fixture.path().to_path_buf();
         std::fs::create_dir_all(&root).unwrap();
         let home = root.canonicalize().unwrap();
-        (root, home)
+        (fixture, root, home)
+    }
+
+    /// Only a regular file at the name is a tag. A FIFO there must not block
+    /// the walk (no writer ever opens it) and a link must not lend its target's
+    /// signature; the regular tag beside them is the positive control.
+    #[test]
+    fn only_a_regular_cachedir_tag_marks_build_output() {
+        let base = temp("cachedir-shapes");
+        let tagged = base.join("tagged");
+        let linked = base.join("linked");
+        let fifo = base.join("fifo");
+        for dir in [&tagged, &linked, &fifo] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(tagged.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).unwrap();
+        symlink(tagged.join("CACHEDIR.TAG"), linked.join("CACHEDIR.TAG")).unwrap();
+        let status = std::process::Command::new("/usr/bin/mkfifo")
+            .arg(fifo.join("CACHEDIR.TAG"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        assert!(is_build_output(&tagged).unwrap());
+        assert!(!is_build_output(&linked).unwrap());
+        assert!(!is_build_output(&fifo).unwrap());
+        crate::ops::remove_test_path(base);
     }
 
     fn offered(findings: &[Finding]) -> Vec<&Path> {
@@ -787,7 +862,7 @@ mod tests {
 
     #[test]
     fn a_tree_its_repository_tracks_is_never_offered_or_removed() {
-        let (root, home) = deletable_root("tracked");
+        let (_fixture, root, home) = deletable_root("tracked");
         let repo = home.join("app");
         init_old_git_repo(&repo).unwrap();
         // CocoaPods recommends committing `Pods`.
@@ -841,7 +916,7 @@ mod tests {
     /// under it are still tracked, so the tree is still never offered.
     #[test]
     fn a_tracked_tree_renamed_only_in_case_is_never_offered() {
-        let (root, home) = deletable_root("tracked-case");
+        let (_fixture, root, home) = deletable_root("tracked-case");
         let repo = home.join("app");
         init_old_git_repo(&repo).unwrap();
         std::fs::create_dir_all(repo.join("client/Pods/Alamofire")).unwrap();
@@ -874,7 +949,7 @@ mod tests {
     /// with a non-ASCII name is the control that nothing else is refused.
     #[test]
     fn a_tracked_tree_renamed_only_in_unicode_case_is_never_offered() {
-        let (root, home) = deletable_root("tracked-unicode-case");
+        let (_fixture, root, home) = deletable_root("tracked-unicode-case");
         let repo = home.join("app");
         init_old_git_repo(&repo).unwrap();
         std::fs::create_dir_all(repo.join("\u{c4}pp/Pods/Alamofire")).unwrap();
@@ -913,7 +988,7 @@ mod tests {
     /// tracked non-ASCII one, and only the volume can say they are the same.
     #[test]
     fn a_tracked_tree_renamed_to_an_ascii_alias_is_never_offered() {
-        let (root, home) = deletable_root("tracked-ascii-alias");
+        let (_fixture, root, home) = deletable_root("tracked-ascii-alias");
         let repo = home.join("app");
         init_old_git_repo(&repo).unwrap();
         std::fs::create_dir_all(repo.join("Stra\u{df}e/Pods/Alamofire")).unwrap();
@@ -942,7 +1017,7 @@ mod tests {
 
     #[test]
     fn a_tree_holding_a_program_keypair_is_never_offered_or_removed() {
-        let (root, home) = deletable_root("keypair");
+        let (_fixture, root, home) = deletable_root("keypair");
         let program = home.join("program");
         init_old_git_repo(&program).unwrap();
         std::fs::write(program.join("Cargo.toml"), "[package]").unwrap();
@@ -997,7 +1072,7 @@ mod tests {
     /// sink would refuse either at apply, so the scan must not offer them.
     #[test]
     fn a_tree_holding_a_git_repository_is_never_offered_or_removed() {
-        let (root, home) = deletable_root("nested-repository");
+        let (_fixture, root, home) = deletable_root("nested-repository");
         let package = home.join("package");
         init_old_git_repo(&package).unwrap();
         std::fs::write(
@@ -1054,7 +1129,7 @@ mod tests {
     /// `protect` entry, which only the sink consults, and the plan continues.
     #[test]
     fn a_refused_artifact_does_not_block_the_rest_of_the_plan() {
-        let (root, home) = deletable_root("artifacts-continue");
+        let (_fixture, root, home) = deletable_root("artifacts-continue");
         for name in ["first", "second"] {
             let repo = home.join(name);
             init_old_git_repo(&repo).unwrap();
@@ -1086,7 +1161,7 @@ mod tests {
     fn an_unreadable_tree_refuses_rather_than_offers() {
         use std::os::unix::fs::PermissionsExt;
 
-        let (root, home) = deletable_root("unreadable-tree");
+        let (_fixture, root, home) = deletable_root("unreadable-tree");
         let repo = home.join("app");
         init_old_git_repo(&repo).unwrap();
         std::fs::write(repo.join("Cargo.toml"), "[package]").unwrap();

@@ -154,6 +154,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: PathBuf::from("/tmp/devtrim-optimize-test-journal.jsonl"),

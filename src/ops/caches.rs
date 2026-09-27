@@ -336,11 +336,8 @@ mod tests {
     }
     #[test]
     fn apply_reasserts_owner_namespace_and_preserves_sentinel() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-cache-auth-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-cache-auth");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join(".aws")).unwrap();
         let home = home.canonicalize().unwrap();
         let sentinel = home.join(".aws/sentinel");
@@ -359,6 +356,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -434,11 +432,8 @@ mod tests {
     /// every cache listed after it.
     #[test]
     fn a_refused_cache_does_not_block_the_rest_of_the_plan() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-cache-continue-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-cache-continue");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join(".cache/uv")).unwrap();
         std::fs::create_dir_all(home.join(".cache/node")).unwrap();
         let home = home.canonicalize().unwrap();
@@ -450,6 +445,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -488,11 +484,8 @@ mod tests {
     /// the cache out from under a `uv sync` another session is running.
     #[test]
     fn uv_cache_is_refused_while_a_uv_process_holds_its_lock() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-uv-lock-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-uv-lock");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join(".cache/uv/sdists-v9")).unwrap();
         let home = home.canonicalize().unwrap();
         let uv = home.join(".cache/uv");
@@ -510,6 +503,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -557,11 +551,8 @@ mod tests {
     /// follow a symlinked ancestor and create a file in the directory behind it.
     #[test]
     fn uv_lock_is_never_created_through_a_symlinked_ancestor() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-uv-lock-link-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-uv-lock-link");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("elsewhere/uv")).unwrap();
         let home = home.canonicalize().unwrap();
         std::fs::write(home.join("elsewhere/uv/entry"), "cached").unwrap();
@@ -571,6 +562,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -623,11 +615,8 @@ mod tests {
 
     #[test]
     fn standard_authority_rejects_forged_cache_subpath() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-cache-standard-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-cache-standard");
+        let home = fixture.path().to_path_buf();
         let forged = home.join(".cache/uv/nested");
         std::fs::create_dir_all(&forged).unwrap();
         let home = home.canonicalize().unwrap();
@@ -647,6 +636,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),

@@ -491,6 +491,43 @@ CASES = (
         tests=("ops::node_modules::tests::a_refused_node_modules_does_not_block_the_rest_of_the_plan",),
         marker="PV node_modules/continue-past-refusal",
     ),
+    # A node_modules inside build output (`.next/standalone`, a repository
+    # left in a Cargo `target`) belongs to that output: the walk never enters
+    # it, the scan refuses one its root lies in, and apply rechecks.
+    Case(
+        name="node_modules/build-output-walk",
+        relative_path="src/ops/node_modules.rs",
+        before="        if entry.depth() > 0\n",
+        after="        if false && entry.depth() > 0\n",
+        tests=("ops::node_modules::tests::a_node_modules_inside_build_output_belongs_to_that_output",),
+        marker="PV node_modules/build-output-walk",
+    ),
+    Case(
+        name="node_modules/build-output-scan",
+        relative_path="src/ops/node_modules.rs",
+        before="                        if build_output_between(&owner, &path)?.is_some() {\n",
+        after="                        if false && build_output_between(&owner, &path)?.is_some() {\n",
+        tests=("ops::node_modules::tests::a_node_modules_inside_build_output_belongs_to_that_output",),
+        marker="PV node_modules/build-output-scan",
+    ),
+    Case(
+        name="node_modules/build-output-apply",
+        relative_path="src/ops/node_modules.rs",
+        before="                if let Some(output) = build_output_between(&owner, path)? {\n",
+        after="                if let Some(output) = build_output_between(&owner, path)?.filter(|_| false) {\n",
+        tests=("ops::node_modules::tests::a_node_modules_inside_build_output_belongs_to_that_output",),
+        marker="PV node_modules/build-output-apply",
+    ),
+    # A default project folder linked to the home folder or above it would make
+    # the whole home or disk a scan root nobody named.
+    Case(
+        name="roots/default-home-link",
+        relative_path="src/safety.rs",
+        before="                if home.starts_with(&root) {\n",
+        after="                if false && home.starts_with(&root) {\n",
+        tests=("safety::tests::default_roots_are_the_conventional_project_folders_that_exist",),
+        marker="PV roots/default-home-link",
+    ),
     Case(
         name="sink/trash-grant-root",
         relative_path="src/safety.rs",

@@ -119,6 +119,11 @@ pub(crate) fn blocks_bytes(metadata: &std::fs::Metadata, path: &Path) -> Result<
 
 pub trait Op: Sync {
     fn name(&self) -> &'static str;
+    /// Whether the scan walks the configured project roots (`--root`, `roots`,
+    /// or the default project folders); previews then name those roots.
+    fn scans_roots(&self) -> bool {
+        false
+    }
     fn scan(&self, ctx: &Ctx, observations: &project::ScanObservations) -> Result<Vec<Finding>>;
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome>;
 }
@@ -1049,6 +1054,36 @@ pub fn purge_trash(findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
     Ok(outcome)
 }
 
+/// A test fixture under this checkout's `target/`, where apply tests can
+/// mutate outside the protected system temporary directory. It is removed
+/// when dropped, so a failing assertion unwinding through the test cannot
+/// leave a stale repository behind for a later `purge` to find.
+#[cfg(test)]
+pub(crate) struct TestFixture(PathBuf);
+
+#[cfg(test)]
+impl TestFixture {
+    pub(crate) fn new(name: &str) -> Self {
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("{name}-{}", std::process::id()));
+        remove_test_path(&path);
+        Self(path)
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestFixture {
+    fn drop(&mut self) {
+        remove_test_path(&self.0);
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn remove_test_path(path: impl AsRef<Path>) {
     let path = path.as_ref();
@@ -1066,6 +1101,32 @@ pub(crate) fn remove_test_path(path: impl AsRef<Path>) {
 mod tests {
     use super::*;
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
+
+    /// A fixture outlives a failing test only as clutter a later `purge` of
+    /// this checkout would find, so the guard must clean up while unwinding.
+    #[test]
+    fn a_fixture_is_removed_even_when_its_test_panics() {
+        let mut created = None;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let fixture = TestFixture::new("devtrim-fixture-guard");
+            std::fs::create_dir_all(fixture.path().join("repo/node_modules")).unwrap();
+            created = Some(fixture.path().to_path_buf());
+            panic!("a failing assertion inside a fixture test");
+        }));
+
+        assert!(result.is_err());
+        let created = created.unwrap();
+        assert!(
+            created.starts_with(std::env::current_dir().unwrap().join("target")),
+            "fixtures stay under this checkout's target directory: {}",
+            created.display()
+        );
+        assert!(
+            !created.exists(),
+            "a panicking test left its fixture {}",
+            created.display()
+        );
+    }
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1076,6 +1137,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: vec![],
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -1089,11 +1151,8 @@ mod tests {
 
     #[test]
     fn permanent_sink_quarantines_and_deletes_a_verified_normal_path() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-normal-{}", std::process::id()));
-        std::fs::remove_dir_all(&home).ok();
+        let fixture = crate::ops::TestFixture::new("devtrim-normal");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("dev/node_modules/nested")).unwrap();
         std::fs::write(home.join("dev/node_modules/nested/payload"), "delete").unwrap();
         std::fs::create_dir_all(home.join("dev/outside")).unwrap();
@@ -1134,11 +1193,8 @@ mod tests {
 
     #[test]
     fn permanent_sink_rechecks_git_marker_after_validation() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-git-recheck-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-git-recheck");
+        let home = fixture.path().to_path_buf();
         let target = home.join("dev/cache");
         std::fs::create_dir_all(&target).unwrap();
         let home = home.canonicalize().unwrap();
@@ -1167,11 +1223,8 @@ mod tests {
 
     #[test]
     fn trash_sink_refuses_nested_git_worktree_before_mutation() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-trash-nested-git-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-trash-nested-git");
+        let home = fixture.path().to_path_buf();
         let target = home.join("dev/cache");
         let nested = target.join("nested");
         std::fs::create_dir_all(&nested).unwrap();
@@ -1202,11 +1255,8 @@ mod tests {
 
     #[test]
     fn permanent_sink_refuses_nested_git_worktree_before_deletion() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-nested-git-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-nested-git");
+        let home = fixture.path().to_path_buf();
         let target = home.join("dev/cache");
         let nested = target.join("nested");
         std::fs::create_dir_all(&nested).unwrap();
@@ -1248,11 +1298,8 @@ mod tests {
     /// nowhere.
     #[test]
     fn a_restored_permanent_refusal_names_the_original_target() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-restored-name-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-restored-name");
+        let home = fixture.path().to_path_buf();
         let target = home.join("dev/cache");
         std::fs::create_dir_all(target.join("nested/.git")).unwrap();
         std::fs::write(target.join("nested/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
@@ -1296,14 +1343,12 @@ mod tests {
         std::fs::write(root.join("archive-v0/abc123/module.py"), "pass\n").unwrap();
     }
 
-    fn sink_test_home(name: &str) -> PathBuf {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-{name}-{}", std::process::id()));
-        remove_test_path(&home);
+    fn sink_test_home(name: &str) -> (TestFixture, PathBuf) {
+        let fixture = crate::ops::TestFixture::new(&format!("devtrim-{name}"));
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
-        home.canonicalize().unwrap()
+        let home = home.canonicalize().unwrap();
+        (fixture, home)
     }
 
     /// The Trash preflight of a target no category granted a marker.
@@ -1368,7 +1413,7 @@ mod tests {
     /// `clean caches` nor by a later `trash-empty` of the same tree.
     #[test]
     fn deletion_accepts_the_empty_git_marker_uv_writes_into_its_cache() {
-        let home = sink_test_home("uv-marker-accepted");
+        let (_fixture, home) = sink_test_home("uv-marker-accepted");
         let target = home.join("uv");
         uv_cache_fixture(&target);
 
@@ -1385,7 +1430,7 @@ mod tests {
     /// can remove a uv cache under a running uv.
     #[test]
     fn a_uv_cache_without_uv_s_lock_keeps_its_marker_refused() {
-        let home = sink_test_home("uv-marker-ungranted");
+        let (_fixture, home) = sink_test_home("uv-marker-ungranted");
         let target = home.join("dev/project/.uv-cache");
         uv_cache_fixture(&target);
 
@@ -1406,7 +1451,7 @@ mod tests {
     /// bound to the exact root the lock was taken on.
     #[test]
     fn a_uv_lock_grants_only_its_own_root() {
-        let home = sink_test_home("uv-grant-root");
+        let (_fixture, home) = sink_test_home("uv-grant-root");
         let locked = home.join("uv");
         let other = home.join("other-uv");
         uv_cache_fixture(&locked);
@@ -1432,7 +1477,7 @@ mod tests {
     fn an_unreadable_cachedir_tag_only_withholds_the_uv_exception() {
         use std::os::unix::fs::PermissionsExt;
 
-        let home = sink_test_home("uv-tag-unreadable");
+        let (_fixture, home) = sink_test_home("uv-tag-unreadable");
         let plain = home.join("plain");
         std::fs::create_dir_all(&plain).unwrap();
         std::fs::write(plain.join("CACHEDIR.TAG"), UV_CACHEDIR_TAG).unwrap();
@@ -1526,7 +1571,7 @@ mod tests {
             }),
         ];
         for (marker, plant) in cases {
-            let home = sink_test_home("uv-marker-refused");
+            let (_fixture, home) = sink_test_home("uv-marker-refused");
             let target = home.join("uv");
             uv_cache_fixture(&target);
             plant(&target);
@@ -1559,7 +1604,7 @@ mod tests {
     /// `trash-empty` previewed, and to nothing else.
     #[test]
     fn the_trash_grant_covers_only_items_directly_in_the_trash() {
-        let home = sink_test_home("trash-grant-root");
+        let (_fixture, home) = sink_test_home("trash-grant-root");
         let trash = home.join(".Trash");
         for elsewhere in [home.join("dev/uv"), trash.join("folder/uv")] {
             uv_cache_fixture(&elsewhere);
@@ -1577,11 +1622,8 @@ mod tests {
 
     #[test]
     fn same_device_preflight_refuses_a_foreign_directory_before_deletion() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-foreign-device-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-foreign-device");
+        let home = fixture.path().to_path_buf();
         let target = home.join("cache");
         std::fs::create_dir_all(&target).unwrap();
         let sentinel = target.join("sentinel");
@@ -1608,11 +1650,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn preview_and_handle_relative_identity_include_the_same_generation() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-generation-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-generation");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
         let target = home.join("cache");
         std::fs::write(&target, "content").unwrap();
@@ -1632,11 +1671,8 @@ mod tests {
 
     #[test]
     fn quarantine_identity_mismatch_restores_the_original_name() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-quarantine-restore-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-quarantine-restore");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("dev")).unwrap();
         let home = home.canonicalize().unwrap();
         let parent = home.join("dev");
@@ -1671,11 +1707,8 @@ mod tests {
 
     #[test]
     fn quarantine_rename_never_replaces_an_occupied_name() {
-        let base = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-rename-no-replace-{}", std::process::id()));
-        remove_test_path(&base);
+        let fixture = crate::ops::TestFixture::new("devtrim-rename-no-replace");
+        let base = fixture.path().to_path_buf();
         std::fs::create_dir_all(&base).unwrap();
         std::fs::write(base.join("quarantined"), "quarantined").unwrap();
         std::fs::write(base.join("recreated"), "recreated after the check").unwrap();
@@ -1708,11 +1741,8 @@ mod tests {
 
     #[test]
     fn quarantine_restore_failure_preserves_both_names_and_reports_quarantine_path() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-quarantine-held-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-quarantine-held");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("dev")).unwrap();
         let home = home.canonicalize().unwrap();
         let parent = home.join("dev");
@@ -1755,13 +1785,8 @@ mod tests {
 
     #[test]
     fn shared_sink_uses_exact_non_utf8_target_identity() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .canonicalize()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-exact-{}", std::process::id()));
-        std::fs::remove_dir_all(&home).ok();
+        let fixture = crate::ops::TestFixture::new("devtrim-exact");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
         let target = home.join(std::ffi::OsString::from_vec(vec![b'c', 0xff]));
         assert!(target.to_str().is_none());
@@ -1795,11 +1820,8 @@ mod tests {
 
     #[test]
     fn shared_sink_refuses_directory_identity_swap() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-dir-swap-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-dir-swap");
+        let home = fixture.path().to_path_buf();
         let target = home.join("dev/cache");
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(target.join("original"), "keep original").unwrap();
@@ -1828,11 +1850,8 @@ mod tests {
 
     #[test]
     fn shared_sink_refuses_file_swap_to_symlink() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-file-swap-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-file-swap");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("dev")).unwrap();
         std::fs::create_dir_all(home.join("Library")).unwrap();
         let target = home.join("dev/cache-file");
@@ -1871,14 +1890,8 @@ mod tests {
 
     #[test]
     fn concurrent_namespace_mutation_never_destroys_a_bystander() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!(
-                "devtrim-concurrent-namespace-{}",
-                std::process::id()
-            ));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-concurrent-namespace");
+        let home = fixture.path().to_path_buf();
         let target = home.join("dev/cache");
         let bystander = home.join("dev/bystander");
         std::fs::create_dir_all(&target).unwrap();
@@ -1980,11 +1993,8 @@ mod tests {
 
     #[test]
     fn shared_sink_refuses_finding_without_preview_identity() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-missing-identity-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-missing-identity");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("dev")).unwrap();
         let home = home.canonicalize().unwrap();
         let target = home.join("dev/missing");
@@ -1998,13 +2008,8 @@ mod tests {
 
     #[test]
     fn shared_sink_rejects_missing_targets_and_non_filesystem_actions() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .canonicalize()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-reject-{}", std::process::id()));
-        std::fs::remove_dir_all(&home).ok();
+        let fixture = crate::ops::TestFixture::new("devtrim-reject");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
         let target = home.join("sentinel");
         std::fs::write(&target, "keep").unwrap();
@@ -2057,11 +2062,8 @@ mod tests {
 
     #[test]
     fn purge_trash_consumes_only_exact_previewed_children() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-trash-plan-{}", std::process::id()));
-        std::fs::remove_dir_all(&home).ok();
+        let fixture = crate::ops::TestFixture::new("devtrim-trash-plan");
+        let home = fixture.path().to_path_buf();
         let trash = home.join(".Trash");
         std::fs::create_dir_all(&trash).unwrap();
         let home = home.canonicalize().unwrap();
@@ -2083,11 +2085,8 @@ mod tests {
 
     #[test]
     fn trash_preview_skips_git_metadata_item_without_blocking_other_items() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-trash-git-item-{}", std::process::id()));
-        remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-trash-git-item");
+        let root = fixture.path().to_path_buf();
         std::fs::create_dir_all(root.join(".Trash/.GIT")).unwrap();
         std::fs::write(root.join(".Trash/.GIT/HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::write(root.join(".Trash/git"), "ordinary").unwrap();
@@ -2144,11 +2143,8 @@ mod tests {
     /// repository — must not stop the purge of the unrelated items after it.
     #[test]
     fn a_refused_trash_item_does_not_block_the_rest_of_the_purge() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-trash-continue-{}", std::process::id()));
-        remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-trash-continue");
+        let root = fixture.path().to_path_buf();
         std::fs::create_dir_all(root.join(".Trash/a-project/.git")).unwrap();
         std::fs::write(
             root.join(".Trash/a-project/.git/HEAD"),
@@ -2189,11 +2185,8 @@ mod tests {
     /// repository is still refused.
     #[test]
     fn trash_empty_purges_a_trashed_uv_cache_but_not_a_trashed_repository() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-trash-markers-{}", std::process::id()));
-        remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-trash-markers");
+        let root = fixture.path().to_path_buf();
         std::fs::create_dir_all(root.join(".Trash")).unwrap();
         let home = root.canonicalize().unwrap();
         uv_cache_fixture(&home.join(".Trash/uv"));
@@ -2222,11 +2215,8 @@ mod tests {
 
     #[test]
     fn permanent_trash_purge_deletes_a_fifo() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-trash-fifo-{}", std::process::id()));
-        remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-trash-fifo");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join(".Trash")).unwrap();
         let home = home.canonicalize().unwrap();
         let fifo = home.join(".Trash/pipe");
@@ -2245,11 +2235,8 @@ mod tests {
 
     #[test]
     fn purge_trash_rejects_a_forged_target_outside_trash() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-trash-forged-{}", std::process::id()));
-        std::fs::remove_dir_all(&home).ok();
+        let fixture = crate::ops::TestFixture::new("devtrim-trash-forged");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join(".Trash")).unwrap();
         let home = home.canonicalize().unwrap();
         let sentinel = home.join("sentinel");
@@ -2285,11 +2272,8 @@ mod tests {
 
     #[test]
     fn journal_records_successful_trash_attempt_and_result() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-journal-trash-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-journal-trash");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("cache")).unwrap();
         let home = home.canonicalize().unwrap();
         let target = home.join("cache");
@@ -2323,11 +2307,8 @@ mod tests {
 
     #[test]
     fn journal_records_refused_deletion_as_error() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-journal-refused-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-journal-refused");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("protected/child")).unwrap();
         let home = home.canonicalize().unwrap();
         let target = home.join("protected/child");
@@ -2362,11 +2343,8 @@ mod tests {
 
     #[test]
     fn journal_write_failure_aborts_before_deletion() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-journal-unwritable-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-journal-unwritable");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("target")).unwrap();
         std::fs::write(home.join("journal-parent"), "not a directory").unwrap();
         let home = home.canonicalize().unwrap();
@@ -2387,11 +2365,8 @@ mod tests {
 
     #[test]
     fn preview_filter_drops_only_protected_actionable_findings() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-filter-protected-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-filter-protected");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join("protected")).unwrap();
         let home = home.canonicalize().unwrap();
         let target = home.join("protected");

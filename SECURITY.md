@@ -197,6 +197,12 @@ Non-negotiable boundaries:
 3. **Immutable candidates and category authority** — existing scan roots are
    canonicalized before preview, apply does not rediscover filesystem targets,
    and Xcode, toolchain, and `node_modules` owners reassert each target's exact scanner shape.
+   A scan root, including the default project folders used when none is
+   configured, only says where to look and grants nothing; a default folder
+   linked into another root is scanned once, one linked to the home folder or
+   above it is refused so a default never becomes the whole home or disk, and
+   one that cannot be read is skipped with a warning instead of failing every
+   project command.
 4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.
 5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission; any ASCII-case variant of a `.git` component is refused.
 5b. **Anchored identity verification** — the sink re-reads the target's

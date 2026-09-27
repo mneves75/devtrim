@@ -443,6 +443,30 @@ pub(crate) fn iso_from_epoch_days(days: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+/// "the last N days", as the activity window reads in skip notes.
+pub(crate) fn activity_window(days: u32) -> String {
+    if days == 1 {
+        "the last day".to_owned()
+    } else {
+        format!("the last {days} days")
+    }
+}
+
+/// The repositories a running build kept, so the operator knows what to stop:
+/// the first three by path, then how many more.
+pub(crate) fn busy_repositories(repos: &[PathBuf]) -> String {
+    let mut named = repos
+        .iter()
+        .take(3)
+        .map(|repo| repo.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if repos.len() > 3 {
+        named.push_str(&format!(" and {} more", repos.len() - 3));
+    }
+    named
+}
+
 pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf]) -> bool {
     process_cwds.iter().any(|cwd| cwd.starts_with(repo))
 }

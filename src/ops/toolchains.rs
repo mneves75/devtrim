@@ -212,14 +212,11 @@ mod tests {
         path
     }
 
-    fn target_temp(name: &str) -> PathBuf {
-        let path = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-toolchains-{name}-{}", std::process::id()));
-        crate::ops::remove_test_path(&path);
+    fn target_temp(name: &str) -> (crate::ops::TestFixture, PathBuf) {
+        let fixture = crate::ops::TestFixture::new(&format!("devtrim-toolchains-{name}"));
+        let path = fixture.path().to_path_buf();
         std::fs::create_dir_all(&path).unwrap();
-        path
+        (fixture, path)
     }
 
     fn test_context(home: PathBuf) -> Ctx {
@@ -228,6 +225,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -273,7 +271,7 @@ mod tests {
 
     #[test]
     fn apply_accepts_only_direct_unreferenced_toolchain_directories() {
-        let root = target_temp("apply-direct");
+        let (_fixture, root) = target_temp("apply-direct");
         let home = root.canonicalize().unwrap();
         let directory = home.join("Library/Developer/Toolchains");
         let preserved = directory.join("swift-2.xctoolchain");
@@ -306,7 +304,7 @@ mod tests {
 
     #[test]
     fn apply_rejects_forged_nested_toolchain_target() {
-        let root = target_temp("apply-nested");
+        let (_fixture, root) = target_temp("apply-nested");
         let home = root.canonicalize().unwrap();
         let directory = home.join("Library/Developer/Toolchains");
         let preserved = directory.join("swift-2.xctoolchain");

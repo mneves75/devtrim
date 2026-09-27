@@ -318,6 +318,9 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
     match command {
         cli::Command::Tui => tui::run(&ctx),
         cli::Command::Scan { all } => {
+            if !ctx.json {
+                ctx.diagnostic("info", ctx.roots_note());
+            }
             let mut scan = ops::scan_all(&ctx);
             report::effective_actions(&mut scan.findings, cli.shred);
             if ctx.json {
@@ -338,6 +341,9 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
         cli::Command::Uninstall { ref app } => uninstall::run(&ctx, app),
         cli::Command::Analyze { ref path } => analyze::run(&ctx, path.as_deref()),
         cli::Command::Largest { top } => {
+            if !ctx.json {
+                ctx.diagnostic("info", ctx.roots_note());
+            }
             let result = largest::scan(&ctx, top);
             if ctx.json {
                 report::print_json("largest", false, &result.findings, None, &result.errors)?;
@@ -428,6 +434,9 @@ fn clean(target: cli::Target, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitC
 fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitCode> {
     if !ctx.json {
         eprintln!("{} scanning '{}'…", "devtrim".bold(), operation.name());
+        if operation.scans_roots() {
+            ctx.diagnostic("info", ctx.roots_note());
+        }
     }
     let mut findings = match operation.scan(ctx, &ops::project::ScanObservations::default()) {
         Ok(findings) => findings,

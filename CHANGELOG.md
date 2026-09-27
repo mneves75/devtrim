@@ -2,7 +2,22 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.10.3] - 2026-09-27
+
+Found by running `purge --apply` for real. It trashed 43 items, all under
+`~/dev`, 40 of them one-byte fixtures devtrim's own tests had left behind, and
+nothing said that `~/dev` was the only place it had looked.
+
+### Changed
+- Without `--root` or configured `roots`, the project commands (`purge`, `clean node-modules`, `clean artifacts`, `clean leftovers`, `largest`, and the project half of `scan`) now look in every conventional project folder that exists — `~/dev`, `~/Developer`, `~/Development`, `~/Projects`, `~/Code`, `~/GitHub`, `~/Repos`, `~/Workspace`, and `~/www` — instead of `~/dev` alone. These are Mole V1.56.0's `mo purge` defaults plus the folder Finder marks as `Developer`. They still never walk the whole disk or home folder: Desktop, Documents and Downloads sit behind macOS privacy prompts, cloud storage holds synced and dataless files, and outside a project folder there is no Git owner to judge staleness by. A root only says where to look, so no finding gains authority. `--root` and `roots` replace the defaults as before
+- Human previews of those commands open with `info scan roots:`, naming the roots, whether they are the defaults, the config, or `--root`, and how to change them. When no default folder exists, it says so and lists the folders it looked for. JSON output is unchanged
+- Skip notes say what holds findings back: "in repos active in the last 30 days" instead of "in active repos", and the repositories where a build process is running, three by name and a count of the rest
+
+### Fixed
+- A stale Next.js project built with `output: 'standalone'` was offered twice in one `purge` plan: its `.next` and the `node_modules` Next.js copies into `.next/standalone`, so the plan counted those bytes twice. A `node_modules` inside a repository's own build output is now part of that output, never a finding of its own, and apply refuses one. The `node_modules` walk no longer enters build output below a scan root, as the `artifacts` walk already did, which also keeps a stale repository left inside a Cargo `target` out of the plan and skips the largest trees on the disk
+- A default project folder that cannot be read, or that links to the home folder or above it, is skipped with a warning — a link like `~/www -> ~` would otherwise have made the whole home a default root — and one that links into another default folder is scanned once through it
+- `CACHEDIR.TAG` is read in one open that follows no link and never blocks, as uv's tag already was, rather than checked and then reopened; every directory the project walks visit is probed, so a FIFO swapped in between the two could stall a scan
+- A devtrim test that failed left its fixture repository under `target/`, where a later `purge` of the checkout found it as a stale project from 2000. Fixtures are now removed while a failing test unwinds
 
 ## [0.10.2] - 2026-09-26
 

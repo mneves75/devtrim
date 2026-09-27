@@ -25,6 +25,10 @@ impl Op for Purge {
         "purge"
     }
 
+    fn scans_roots(&self) -> bool {
+        true
+    }
+
     fn scan(&self, ctx: &Ctx, observations: &ScanObservations) -> Result<Vec<Finding>> {
         let mut findings = NodeModules.scan(ctx, observations)?;
         findings.extend(Artifacts.scan(ctx, observations)?);
@@ -134,6 +138,49 @@ mod tests {
         );
     }
 
+    /// One plan never lists a target inside another: a Next.js standalone
+    /// build copies a `node_modules` into `.next`, and counting both would
+    /// overstate what the purge frees.
+    #[test]
+    fn a_purge_plan_never_counts_the_same_bytes_twice() {
+        let fixture = crate::ops::TestFixture::new("devtrim-purge-nested");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        let web = root.join("web");
+        crate::ops::project::init_old_git_repo(&web).unwrap();
+        std::fs::write(web.join("package.json"), "{}").unwrap();
+        for tree in ["node_modules/pkg", ".next/standalone/node_modules/pkg"] {
+            std::fs::create_dir_all(web.join(tree)).unwrap();
+            std::fs::write(web.join(tree).join("index.js"), "x").unwrap();
+        }
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: vec![root.clone()],
+            roots_origin: crate::safety::RootsOrigin::Default,
+            active_days: 30,
+            protect: Vec::new(),
+            journal_path: root.join("journal.jsonl"),
+            home: root.clone(),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
+
+        let findings = Purge
+            .scan(&ctx, &ScanObservations::with_process_cwds(Vec::new()))
+            .unwrap();
+
+        let mut paths = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        paths.sort();
+        assert_eq!(paths, vec![web.join(".next"), web.join("node_modules")]);
+    }
+
     /// Routing trusts nothing but the leaf name, and each category reasserts its
     /// own shape at apply; a finding sent to the wrong one must come back as a
     /// refusal with the target intact. The repository is genuinely stale, so
@@ -141,11 +188,8 @@ mod tests {
     /// and deletion — no later staleness refusal can stand in for it.
     #[test]
     fn a_misrouted_finding_is_refused_by_the_category_that_receives_it() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-purge-route-{}", std::process::id()));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-purge-route");
+        let root = fixture.path().to_path_buf();
         crate::ops::project::init_old_git_repo(&root.join("dev/project")).unwrap();
         // Without reflogs the repository is judged by its commit from 2000.
         crate::ops::remove_test_path(root.join("dev/project/.git/logs"));
@@ -159,6 +203,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: vec![root.join("dev")],
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: root.join("journal.jsonl"),

@@ -1029,6 +1029,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -1277,11 +1278,8 @@ mod tests {
 
     #[test]
     fn busy_codex_installer_refuses_only_release_apply() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-codex-busy-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-codex-busy");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
         let old = write_codex_release(&home, "0.155.1");
         let current = write_codex_release(&home, "0.156.1");
@@ -1362,11 +1360,8 @@ mod tests {
 
     #[test]
     fn codex_release_apply_refuses_a_version_promoted_after_preview() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-codex-promoted-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-codex-promoted");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
         let old = write_codex_release(&home, "0.154.0");
         let promoted = write_codex_release(&home, "0.155.1");
@@ -1420,19 +1415,16 @@ mod tests {
     }
 
     /// A standalone home with `0.155.1` obsolete beside a `0.156.1` current.
-    fn codex_home(prefix: &str) -> (PathBuf, PathBuf) {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-codex-{prefix}-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+    fn codex_home(prefix: &str) -> (crate::ops::TestFixture, PathBuf, PathBuf) {
+        let fixture = crate::ops::TestFixture::new(&format!("devtrim-codex-{prefix}"));
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
         let old = write_codex_release(&home, "0.155.1");
         let current = write_codex_release(&home, "0.156.1");
         let standalone = home.join(CODEX_STANDALONE);
         std::fs::write(standalone.join("install.lock"), "").unwrap();
         symlink(&current, standalone.join("current")).unwrap();
-        (home, old)
+        (fixture, home, old)
     }
 
     /// Idles when re-invoked from inside a fixture release; see `execute_from`.
@@ -1477,7 +1469,7 @@ mod tests {
 
     #[test]
     fn a_release_a_process_still_executes_is_neither_offered_nor_removed() {
-        let (home, old) = codex_home("running");
+        let (_fixture, home, old) = codex_home("running");
         let mut ctx = test_ctx(home.clone());
         ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
         let offered = |ctx: &Ctx| {
@@ -1537,7 +1529,7 @@ mod tests {
 
     #[test]
     fn apply_rechecks_liveness_at_each_release_not_once_per_plan() {
-        let (home, old) = codex_home("late-start");
+        let (_fixture, home, old) = codex_home("late-start");
         let ctx = test_ctx(home.clone());
         // Opened while nothing runs from the release, as apply opens it before
         // working through earlier findings.
@@ -1566,7 +1558,7 @@ mod tests {
 
     #[test]
     fn a_fifo_at_a_vendor_file_name_refuses_instead_of_hanging() {
-        let (home, old) = codex_home("fifo");
+        let (_fixture, home, old) = codex_home("fifo");
         let runtime = old.join("codex-resources/voice/runtime.json");
         std::fs::remove_file(&runtime).unwrap();
         let status = std::process::Command::new("mkfifo")
@@ -1601,7 +1593,7 @@ mod tests {
 
     #[test]
     fn a_tampered_main_executable_is_not_a_vendor_package() {
-        let (home, old) = codex_home("tampered");
+        let (_fixture, home, old) = codex_home("tampered");
         let tampered = write_codex_release(&home, "0.154.0");
         std::fs::write(tampered.join("bin/codex"), "not the vendor binary").unwrap();
 
@@ -1968,11 +1960,8 @@ mod tests {
     /// takes every later finding with it.
     #[test]
     fn a_resumed_session_does_not_block_the_rest_of_the_plan() {
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-agents-partial-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-agents-partial");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
         let home = home.canonicalize().unwrap();
         let session = "24bb0c93-fbb9-49b7-99b0-7a97be87baeb";
@@ -2026,11 +2015,8 @@ mod tests {
     fn apply_refuses_forged_targets_and_preserves_them() {
         // The deletion sink refuses anything under `/private/var`, so the
         // positive control needs a home the global protection list allows.
-        let home = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-agents-forged-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
+        let fixture = crate::ops::TestFixture::new("devtrim-agents-forged");
+        let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(&home).unwrap();
         let home = home.canonicalize().unwrap();
         write_aged(&home.join(".ssh/id_ed25519"), "PRIVATE KEY", 400);

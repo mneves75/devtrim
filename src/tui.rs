@@ -746,6 +746,14 @@ fn run_loop(terminal: &mut DefaultTerminal, ctx: &Ctx) -> Result<ExitCode> {
 
 fn load_operation(app: &mut App, operation: Operation, ctx: &Ctx) {
     ctx.take_diagnostics();
+    let walks_roots = match operation {
+        Operation::ScanAll | Operation::Purge => true,
+        Operation::Clean(target) => ops::for_target(target).scans_roots(),
+        Operation::Icloud | Operation::TrashEmpty => false,
+    };
+    if walks_roots {
+        ctx.diagnostic("info", ctx.roots_note());
+    }
     match operation {
         Operation::ScanAll => {
             let result = ops::scan_all(ctx);
@@ -1994,11 +2002,8 @@ mod tests {
 
     #[test]
     fn trash_preview_filters_protected_items_before_approval() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-tui-trash-protect-{}", std::process::id()));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-tui-trash-protect");
+        let root = fixture.path().to_path_buf();
         let trash = root.join(".Trash");
         std::fs::create_dir_all(&trash).unwrap();
         let ordinary = trash.join("ordinary");
@@ -2012,6 +2017,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: vec![protected.clone()],
             journal_path: home.join("journal.jsonl"),
@@ -2039,6 +2045,53 @@ mod tests {
             Some(ConfirmationKind::TrashPurge { expected_gb: 0 })
         );
         crate::ops::remove_test_path(root);
+    }
+
+    /// The interactive view is the default entry point, so its project views
+    /// name the roots too; an empty purge there must not read as a clean disk.
+    #[test]
+    fn project_views_name_their_scan_roots() {
+        let fixture = crate::ops::TestFixture::new("devtrim-tui-roots");
+        let root = fixture.path().to_path_buf();
+        std::fs::create_dir_all(root.join("Projects")).unwrap();
+        let home = root.canonicalize().unwrap();
+        let ctx = Ctx {
+            yes: false,
+            yolo: false,
+            json: false,
+            roots: vec![home.join("Projects")],
+            roots_origin: crate::safety::RootsOrigin::Default,
+            active_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
+            home: home.clone(),
+            interactive: true,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
+
+        for operation in [Operation::Purge, Operation::Clean(Target::NodeModules)] {
+            let mut app = App::default();
+            load_operation(&mut app, operation, &ctx);
+            assert!(
+                app.warnings
+                    .iter()
+                    .any(|warning| warning.contains("scan roots: ~/Projects (default")),
+                "{}: {:?}",
+                operation.name(),
+                app.warnings
+            );
+        }
+        let mut app = App::default();
+        load_operation(&mut app, Operation::TrashEmpty, &ctx);
+        assert!(
+            !app.warnings
+                .iter()
+                .any(|warning| warning.contains("scan roots")),
+            "the Trash is not under a scan root: {:?}",
+            app.warnings
+        );
     }
 
     #[test]
@@ -2135,6 +2188,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: std::path::PathBuf::from("/tmp/devtrim-tui-test-journal.jsonl"),
@@ -2157,11 +2211,8 @@ mod tests {
     /// it is still removed.
     #[test]
     fn a_partial_apply_does_not_claim_it_stopped_when_it_continued() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!("devtrim-tui-partial-{}", std::process::id()));
-        crate::ops::remove_test_path(&root);
+        let fixture = crate::ops::TestFixture::new("devtrim-tui-partial");
+        let root = fixture.path().to_path_buf();
         let device_support = root.join("Library/Developer/Xcode/iOS DeviceSupport");
         let marker = device_support.join("refused/Symbols/checkout/.git");
         std::fs::create_dir_all(&marker).unwrap();
@@ -2195,6 +2246,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
@@ -2367,6 +2419,7 @@ mod tests {
             yolo: false,
             json: false,
             roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
             protect: Vec::new(),
             journal_path: std::path::PathBuf::from("/tmp/devtrim-tui-test-journal.jsonl"),

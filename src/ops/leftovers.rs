@@ -26,6 +26,10 @@ impl Op for Leftovers {
         "leftovers"
     }
 
+    fn scans_roots(&self) -> bool {
+        true
+    }
+
     fn scan(
         &self,
         ctx: &Ctx,

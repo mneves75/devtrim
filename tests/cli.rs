@@ -705,6 +705,54 @@ fn purge_fixture(sandbox: &Sandbox) -> (PathBuf, PathBuf, PathBuf) {
     (dev.clone(), dev.join("alpha"), dev.join("beta"))
 }
 
+/// Without `--root` or configured roots every conventional project folder that
+/// exists is scanned, and the human preview says which folders those were;
+/// JSON stays exactly one document with no note in it.
+#[test]
+fn purge_scans_the_default_project_folders_and_names_them() {
+    let sandbox = Sandbox::new("purge-default-roots");
+    let (_dev, small, _large) = purge_fixture(&sandbox);
+    let gamma = sandbox.path().join("Projects/gamma");
+    std::fs::create_dir_all(gamma.join(".git")).unwrap();
+    std::fs::create_dir_all(gamma.join("node_modules/pkg")).unwrap();
+    std::fs::write(gamma.join("node_modules/pkg/index.js"), "x").unwrap();
+    let gamma = gamma.canonicalize().unwrap();
+
+    let human = run(&sandbox, &["purge"]);
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stderr.contains("info scan roots: ~/dev, ~/Projects (default project folders"),
+        "{stderr}"
+    );
+    assert!(
+        stdout.contains(&gamma.join("node_modules").display().to_string()),
+        "a default folder beside ~/dev was not scanned: {stdout}"
+    );
+    assert!(stdout.contains(&small.join("node_modules").display().to_string()));
+
+    let machine = run(&sandbox, &["purge", "--json"]);
+    assert!(machine.status.success());
+    let value = json(&machine);
+    assert!(
+        value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["project"] == gamma.display().to_string())
+    );
+    assert!(!String::from_utf8_lossy(&machine.stderr).contains("scan roots"));
+
+    let flagged = run(&sandbox, &["largest", "--root", gamma.to_str().unwrap()]);
+    assert!(
+        String::from_utf8_lossy(&flagged.stderr)
+            .contains("scan roots: ~/Projects/gamma (from --root)"),
+        "{}",
+        String::from_utf8_lossy(&flagged.stderr)
+    );
+}
+
 /// A build directory holding a file its repository tracks is part of the
 /// repository, not build output, so neither `purge` half offers it. The
 /// untracked `node_modules` beside it is the positive control.

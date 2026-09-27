@@ -414,7 +414,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.10.2</span>
+    <span class="chip g">v0.10.3</span>
     <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
@@ -649,9 +649,10 @@ only the exact children from the displayed preview are eligible</code></pre>
 <section id="config" aria-labelledby="h-config">
   <h2 id="h-config"><span class="num">07</span> Configuration</h2>
   <p>Optional file at <code>~/.config/devtrim.toml</code>:</p>
-  <pre data-copy="none" tabindex="0"><code>roots = ["~/dev", "~/sandbox"]   # scan roots (default: ~/dev)
+  <pre data-copy="none" tabindex="0"><code>roots = ["~/dev", "~/sandbox"]   # scan roots (default: the project folders below that exist)
 active_days = 30                 # Git activity recency defining "active" repos (0 means 1)
 protect = ["~/dev/keep"]         # never delete these paths or their children</code></pre>
+  <p>Without <code>roots</code>, the project commands (<code>purge</code>, <code>clean node-modules</code>, <code>clean artifacts</code>, <code>clean leftovers</code>, <code>largest</code>, and the project half of <code>scan</code>) look in the conventional project folders that exist: <code>~/dev</code>, <code>~/Developer</code>, <code>~/Development</code>, <code>~/Projects</code>, <code>~/Code</code>, <code>~/GitHub</code>, <code>~/Repos</code>, <code>~/Workspace</code>, and <code>~/www</code>. They never walk the whole disk or home folder; Desktop, Documents, Downloads, cloud storage, and <code>~/Library</code> stay out unless you name them. A root only says where to look: every finding still needs its category&rsquo;s corroborated name, Git owner, and staleness. Each human preview opens with an <code>info scan roots:</code> line naming the roots and where they came from.</p>
   <p>CLI <code>--root</code> flags override config roots entirely, and an explicit root that does not exist is warned about rather than silently scanning nothing. Unknown keys are rejected so a misspelled safety setting cannot appear active. <code>protect</code> entries expand <code>~</code>, must be absolute, and are enforced deny-only at the deletion sink; a relative or malformed entry is an error.</p>
 </section>
 
@@ -732,7 +733,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
   </details>
 
   <details class="card"><summary><span class="cmd-name">skipping … because a build process is active</span></summary>
-    <div class="card-body"><p>A running build or package process has its working directory inside that repo, or Xcode, <code>xcodebuild</code>, or an Xcode build service is running. Finish the build (or quit Xcode) and re-run. If the probe itself fails, devtrim blocks instead of guessing — that is the guard working.</p></div>
+    <div class="card-body"><p>A running build or package process (<code>node</code>, <code>cargo</code>, <code>python3</code>, <code>go</code>, and the like) has its working directory inside that repo, or Xcode, <code>xcodebuild</code>, or an Xcode build service is running. The note names the first repositories held; a dev server or watcher left running there counts. Finish the build (or quit Xcode) and re-run. If the probe itself fails, devtrim blocks instead of guessing — that is the guard working.</p></div>
   </details>
 
   <details class="card"><summary><span class="cmd-name">refusing protected path</span></summary>
@@ -749,7 +750,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
 </section>
 
 <footer>
-  <span>devtrim <b>v0.10.2</b></span>
+  <span>devtrim <b>v0.10.3</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>
