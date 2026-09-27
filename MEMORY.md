@@ -1,6 +1,22 @@
 # Project Memory
 
-## Current state (0.10.2)
+## Current state (0.10.3)
+
+Production is verified. `v0.10.3-beta1` and `v0.10.3` both point at `f642f8a`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`ba9d3cbeba536d5c6856f4fc9a15216bbdb8a35ed28f435cbd550097c5d7e512`) and is
+immutable. The downloaded beta passed checksum, attestation (source `f642f8a`;
+a wrong source digest fails), the PTY TUI suite, read-only views, and the
+black-box roots/build-output script. Homebrew installs and tests 0.10.3 as the
+sole visible `devtrim` (tap `d1a9508`).
+
+0.10.3 scans the existing conventional project folders by default and names
+the roots in every human preview, keeps a `node_modules` inside its repository's
+build output with that output, and stops test fixtures leaking under `target/`.
+The story, reviews, and the open owner decision (agent worktree containers as
+default roots) are in `memory/2026-09-27.md`.
+
+## Previous state (0.10.2)
 
 Production is verified. `v0.10.2-beta1` and `v0.10.2` both point at `43c0438`;
 production reused the beta archive byte for byte (ZIP SHA-256

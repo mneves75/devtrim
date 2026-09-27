@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [Unreleased]
+
 ## [0.10.3] - 2026-09-27
 
 Found by running `purge --apply` for real. It trashed 43 items, all under
