@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [Unreleased]
+
 ## [0.10.2] - 2026-09-26
 
 A second review of 0.10.0 and 0.10.1, checked again against Mole V1.56.0's

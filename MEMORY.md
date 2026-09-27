@@ -1,15 +1,22 @@
 # Project Memory
 
-## Unreleased (0.10.2)
+## Current state (0.10.2)
 
-`main` carries 0.10.2, committed and pushed but not tagged or released; the
-owner asked for commit and push only. Production stays 0.10.1 and the landing
-page still advertises it. The change set, its reviews and its lessons are in
-`memory/2026-09-26.md` under "0.10.2". Its independent verifier could not run
-the two `--shred` applies (C3, C4) because the host's dcg guard matches that
-flag; everything else passed black-box.
+Production is verified. `v0.10.2-beta1` and `v0.10.2` both point at `43c0438`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`ea305f1f336691786c7c7d83d207ea9264acfb4e49e9be725b38b41ba0b08360`) and is
+immutable. The downloaded beta passed checksum, attestation (source `43c0438`,
+the beta tag, a GitHub-hosted runner; a wrong source digest fails), the PTY TUI
+suite run from its own 143-character download directory, read-only views, and
+black-box fixture checks of the new purge and DerivedData protections. Homebrew
+installs and tests 0.10.2 as the sole visible `devtrim` (tap `9d505e5`).
 
-## Current state (0.10.1)
+The change set, its reviews, the release evidence and the open owner decisions
+are in `memory/2026-09-26.md` under "0.10.2". Its independent verifier could not
+run the two `--shred` applies because the host's dcg guard matches that flag;
+the Rust suite and the hosted release gates exercise those paths.
+
+## Previous state (0.10.1)
 
 Production is verified. `v0.10.1-beta2` and `v0.10.1` both point at `0a1a9c2`;
 production reused the beta archive byte for byte (ZIP SHA-256
