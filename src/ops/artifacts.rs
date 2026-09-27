@@ -303,8 +303,8 @@ enum Authored {
 /// its name identifies it. A repository nested anywhere below the root — a
 /// SwiftPM `.build` keeps its dependencies as Git clones in `checkouts`, a
 /// `.venv` holds an editable install's — is someone's history, which the sink
-/// would refuse at apply anyway. Names match ASCII-case-insensitively, and the
-/// walk follows no link.
+/// would refuse at apply anyway. A keypair's name matches as the volume folds
+/// it, a Git marker's in any ASCII case, and the walk follows no link.
 fn authored_entry_under(path: &Path) -> Result<Option<Authored>> {
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
@@ -326,10 +326,29 @@ fn authored_entry_under(path: &Path) -> Result<Option<Authored>> {
     Ok(None)
 }
 
+/// Whether `name` ends in `-keypair.json` as the volume compares names: in any
+/// case, with the two non-ASCII letters APFS folds onto ASCII ones folded too —
+/// the Kelvin sign onto `k` and the long s onto `s` (Unicode `CaseFolding.txt`)
+/// — so a key under such a spelling, which still opens by its usual name, is
+/// still recognized. A name that is not UTF-8 compares its bytes.
 fn is_program_keypair_name(name: &OsStr) -> bool {
-    const SUFFIX: &[u8] = b"-keypair.json";
-    let name = name.as_encoded_bytes();
-    name.len() >= SUFFIX.len() && name[name.len() - SUFFIX.len()..].eq_ignore_ascii_case(SUFFIX)
+    const SUFFIX: &str = "-keypair.json";
+    match name.to_str() {
+        Some(name) => name
+            .chars()
+            .map(|character| match character {
+                '\u{212a}' => 'k',
+                '\u{17f}' => 's',
+                other => other.to_ascii_lowercase(),
+            })
+            .collect::<String>()
+            .ends_with(SUFFIX),
+        None => {
+            let name = name.as_encoded_bytes();
+            name.len() >= SUFFIX.len()
+                && name[name.len() - SUFFIX.len()..].eq_ignore_ascii_case(SUFFIX.as_bytes())
+        }
+    }
 }
 
 fn find_artifacts(root: &Path) -> Result<Vec<ArtifactCandidate>> {
@@ -1084,14 +1103,23 @@ mod tests {
         crate::ops::remove_test_path(root);
     }
 
+    /// The name is matched as the volume matches it: in any case, including the
+    /// two non-ASCII letters APFS folds onto ASCII ones, the Kelvin sign onto
+    /// `k` and the long s onto `s`, so a key under such a spelling, which still
+    /// opens by its usual name, is still recognized.
     #[test]
-    fn program_keypair_names_match_the_solana_suffix_in_any_ascii_case() {
+    fn program_keypair_names_match_the_solana_suffix_as_the_volume_does() {
         for name in [
             "program-keypair.json",
             "Program-KEYPAIR.Json",
             "-keypair.json",
+            "program-\u{212a}eypair.json",
+            "program-keypair.j\u{17f}on",
         ] {
-            assert!(is_program_keypair_name(OsStr::new(name)), "{name}");
+            assert!(
+                is_program_keypair_name(OsStr::new(name)),
+                "PV artifacts/keypair-alias: {name}"
+            );
         }
         for name in [
             "keypair.json",

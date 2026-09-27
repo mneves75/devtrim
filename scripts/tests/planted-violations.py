@@ -438,6 +438,24 @@ CASES = (
         tests=("ops::artifacts::tests::a_tree_holding_a_program_keypair_is_never_offered_or_removed",),
         marker="PV artifacts/keypair-apply",
     ),
+    # The keypair name matches as APFS folds it: a key under a spelling with
+    # the Kelvin sign or the long s still opens by its usual name.
+    Case(
+        name="artifacts/keypair-alias-kelvin",
+        relative_path="src/ops/artifacts.rs",
+        before="                '\\u{212a}' => 'k',\n",
+        after="",
+        tests=("ops::artifacts::tests::program_keypair_names_match_the_solana_suffix_as_the_volume_does",),
+        marker="PV artifacts/keypair-alias",
+    ),
+    Case(
+        name="artifacts/keypair-alias-long-s",
+        relative_path="src/ops/artifacts.rs",
+        before="                '\\u{17f}' => 's',\n",
+        after="",
+        tests=("ops::artifacts::tests::program_keypair_names_match_the_solana_suffix_as_the_volume_does",),
+        marker="PV artifacts/keypair-alias",
+    ),
     # Mole also refuses a purge target holding a `.git` anywhere inside; the
     # scan skips such a tree and the apply preflight refuses it.
     Case(
