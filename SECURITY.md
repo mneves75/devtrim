@@ -55,7 +55,7 @@ Non-negotiable boundaries:
   candidates. Its regenerable tier is a closed list of exact `$HOME`-relative
   cache paths; its history tier offers only children at exactly the configured
   depth below a configured root, and only once the newest regular file in the
-  subtree is older than the active window. Apply re-reads that age from disk,
+  subtree is older than the retention window (`retain_days`). Apply re-reads that age from disk,
   so a session resumed after preview is refused rather than deleted.
 - Codex standalone cleanup considers only installer-shaped direct children of
   `packages/standalone/releases` whose major/minor/patch version is strictly

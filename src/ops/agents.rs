@@ -10,7 +10,7 @@
 //!   preview says so rather than leaving the user to infer it.
 //! * A *history* entry is a session transcript or a shell snapshot. Nothing
 //!   regenerates it. It is therefore offered only after the
-//!   configured active window has passed over the whole subtree, and its note
+//!   configured retention window (`retain_days`) has passed over the whole subtree, and its note
 //!   says plainly that the content does not come back.
 //! * An older Codex standalone package is reinstallable only after its
 //!   installer-owned shape, lock, and current selection are verified.
@@ -677,7 +677,7 @@ const HISTORY: &[HistoryRoot] = &[
         depth: 3,
         evidence: "Rollout transcripts nested `<year>/<month>/<day>`, confirmed on \
                    disk and in openai/codex#24948. Conversation history, not \
-                   cache: offered only past the active window, and the note \
+                   cache: offered only past the retention window, and the note \
                    says it does not come back.",
     },
     HistoryRoot {
@@ -792,7 +792,7 @@ impl Op for Agents {
             collect_at_depth(&base, root.depth, &mut candidates)?;
             candidates.sort();
             for path in candidates {
-                let Some((age, size)) = history_details(&path, &ctx.home, ctx.active_days)? else {
+                let Some((age, size)) = history_details(&path, &ctx.home, ctx.retain_days)? else {
                     continue;
                 };
                 if size == 0 {
@@ -902,7 +902,7 @@ fn authorize(target: &Path, ctx: &Ctx, releases: Option<&CodexReleases>) -> Resu
             target.display()
         );
     }
-    if history_details(target, &ctx.home, ctx.active_days)?.is_some() {
+    if history_details(target, &ctx.home, ctx.retain_days)?.is_some() {
         return Ok(());
     }
     anyhow::bail!(
@@ -923,8 +923,8 @@ fn is_regenerable_target(path: &Path, home: &Path) -> bool {
 
 /// Age in days and logical size for an eligible history child, or `None` when
 /// the path is not a direct child of a configured root at its configured depth,
-/// is a symlink, has the wrong file type, or is still inside the active window.
-fn history_details(path: &Path, home: &Path, active_days: u32) -> Result<Option<(u64, u64)>> {
+/// is a symlink, has the wrong file type, or is still inside the retention window.
+fn history_details(path: &Path, home: &Path, retain_days: u32) -> Result<Option<(u64, u64)>> {
     if !is_history_child(path, home) {
         return Ok(None);
     }
@@ -956,7 +956,7 @@ fn history_details(path: &Path, home: &Path, active_days: u32) -> Result<Option<
         return Ok(None);
     };
     let age = elapsed.as_secs() / DAY;
-    Ok((age >= u64::from(active_days)).then_some((age, size)))
+    Ok((age >= u64::from(retain_days)).then_some((age, size)))
 }
 
 /// Whether this path is a child of a configured root at exactly that root's depth.
@@ -1031,6 +1031,7 @@ mod tests {
             roots: Vec::new(),
             roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
+            retain_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
             home,
@@ -1755,6 +1756,40 @@ mod tests {
             findings
                 .iter()
                 .any(|finding| finding.note.contains("not regenerable"))
+        );
+    }
+
+    /// History is not regenerable, so the project window never decides it: a
+    /// one-day `active_days` with the default retention keeps a five-day-old
+    /// transcript, and only `retain_days` offers it.
+    #[test]
+    fn history_follows_the_retention_window_not_the_project_window() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-agents-retention")
+            .tempdir()
+            .unwrap();
+        let home = home.path();
+        let transcript = home.join(".codex/archived_sessions/five-days.jsonl");
+        write_aged(&transcript, "recent history", 5);
+        let mut ctx = test_ctx(home.to_path_buf());
+        ctx.active_days = 1;
+        ctx.retain_days = 30;
+
+        let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.target() == Some(transcript.as_path())),
+            "PV agents/retention-window: a short project window exposed history"
+        );
+
+        ctx.retain_days = 3;
+        let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.target() == Some(transcript.as_path())),
+            "positive control: history older than retain_days is offered"
         );
     }
 

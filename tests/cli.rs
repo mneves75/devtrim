@@ -753,6 +753,46 @@ fn purge_scans_the_default_project_folders_and_names_them() {
     );
 }
 
+/// Codex creates its managed worktrees in `~/.codex/worktrees/<id>/<project>`,
+/// each a linked worktree whose `.git` is a file. The dependencies an agent
+/// installed there are found without configuration; the worktree stays.
+#[test]
+fn purge_finds_dependencies_in_codex_worktrees() {
+    let sandbox = Sandbox::new("purge-codex-worktrees");
+    let worktree = sandbox.path().join(".codex/worktrees/a1b2/project");
+    std::fs::create_dir_all(worktree.join("node_modules/pkg")).unwrap();
+    std::fs::write(worktree.join("node_modules/pkg/index.js"), "x").unwrap();
+    // The repository the worktree belongs to lives elsewhere, as it does for
+    // Codex; a worktree whose repository is gone is covered separately.
+    let gitdir = sandbox.path().join("main/.git/worktrees/project");
+    std::fs::create_dir_all(&gitdir).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!("gitdir: {}\n", gitdir.display()),
+    )
+    .unwrap();
+    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
+    let worktree = worktree.canonicalize().unwrap();
+
+    let output = run(&sandbox, &["purge"]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("scan roots: ~/.codex/worktrees (default project folders"),
+        "{stderr}"
+    );
+    assert!(
+        stdout.contains(&worktree.join("node_modules").display().to_string()),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains(&format!("{}\n", worktree.display())),
+        "the worktree itself is never a finding: {stdout}"
+    );
+}
+
 /// A build directory holding a file its repository tracks is part of the
 /// repository, not build output, so neither `purge` half offers it. The
 /// untracked `node_modules` beside it is the positive control.

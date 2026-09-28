@@ -536,6 +536,24 @@ CASES = (
         tests=("safety::tests::the_home_folder_is_recognized_under_any_spelling",),
         marker="PV roots/default-home-identity",
     ),
+    # Irreplaceable files follow `retain_days`, never the project window, so
+    # lowering `active_days` to free build output cannot expose them.
+    Case(
+        name="agents/retention-window",
+        relative_path="src/ops/agents.rs",
+        before="history_details(&path, &ctx.home, ctx.retain_days)",
+        after="history_details(&path, &ctx.home, ctx.active_days)",
+        tests=("ops::agents::tests::history_follows_the_retention_window_not_the_project_window",),
+        marker="PV agents/retention-window",
+    ),
+    Case(
+        name="installers/retention-window",
+        relative_path="src/ops/installers.rs",
+        before="installer_details(&path, &ctx.home, ctx.retain_days)",
+        after="installer_details(&path, &ctx.home, ctx.active_days)",
+        tests=("ops::installers::tests::installers_follow_the_retention_window_not_the_project_window",),
+        marker="PV installers/retention-window",
+    ),
     Case(
         name="sink/trash-grant-root",
         relative_path="src/safety.rs",

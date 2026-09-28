@@ -413,6 +413,7 @@ mod tests {
             roots: Vec::new(),
             roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
+            retain_days: 30,
             protect: Vec::new(),
             journal_path: PathBuf::from("/tmp/devtrim-docker-test-journal.jsonl"),
             home: PathBuf::from("/tmp"),

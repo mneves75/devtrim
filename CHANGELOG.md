@@ -2,7 +2,21 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.10.4] - 2026-09-28
+
+Asked after 0.10.3: "why 10 days? can be less?" Measured on the owner's `~/dev`,
+10 or 7 days offered 1.2 GB, 3 days 4.5 GB and 1 day 36 GB, and answering the
+question showed that one setting was deciding two different things.
+
+### Added
+- `retain_days` in `~/.config/devtrim.toml` decides when files nothing can regenerate — agent session history and installer archives — are offered. Until now `active_days` decided that too, so lowering it to free build output sooner also offered history and installers that much sooner. Unset, `retain_days` is `active_days` or 30, whichever is longer, so a short project window never shortens how long those are kept; a config that set only `active_days` below 30 now keeps history and installers longer than before, never shorter
+- `~/.codex/worktrees`, where Codex creates its managed worktrees, is one of the default project folders, so the dependencies an agent installed in a worktree it left behind are found; the worktree itself is a repository devtrim never removes. `~/.claude/worktrees`, which Mole also lists, is not: Claude Code creates its worktrees inside the repository, under `.claude/worktrees/`, which the repository's own root already covers
+
+### Changed
+- The "repos active in the last N days" skip notes name where that window is set, `active_days` in `~/.config/devtrim.toml`, and the README and manual explain what a shorter window costs: a reinstall or rebuild when you return to a project, and it cannot see edits you have not committed
+
+### Fixed
+- A linked worktree whose repository was deleted made every Git query fail, and one such worktree emptied the whole `node-modules`, `artifacts` and `purge` preview. It is now left out and named in a skip note; nothing in it is offered, because its activity cannot be read
 
 ## [0.10.3] - 2026-09-27
 

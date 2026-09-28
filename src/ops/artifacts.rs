@@ -7,9 +7,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::project::{
-    ScanObservations, TrackedIndex, activity_window, busy_repositories, has_git_marker,
-    is_directory_if_present, iso_days_ago, normalized_roots, owning_repo, repo_has_active_build,
-    repo_last_activity, tracks_files_under,
+    ScanObservations, TrackedIndex, activity_window, has_git_marker, is_directory_if_present,
+    iso_days_ago, listed_repositories, normalized_roots, orphaned_worktree, owning_repo,
+    repo_has_active_build, repo_last_activity, tracks_files_under,
 };
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size,
@@ -76,7 +76,14 @@ impl Op for Artifacts {
         let mut tracked = 0usize;
         let mut keypairs = 0usize;
         let mut repositories = 0usize;
+        let mut orphaned = 0usize;
+        let mut orphans = Vec::new();
         for (owner, candidates) in groups {
+            if orphaned_worktree(&owner)? {
+                orphaned = orphaned.saturating_add(candidates.len());
+                orphans.push(owner);
+                continue;
+            }
             if repo_has_active_build(&owner, observations.process_cwds()?) {
                 build_active = build_active.saturating_add(candidates.len());
                 busy.push(owner);
@@ -121,6 +128,15 @@ impl Op for Artifacts {
                 );
             }
         }
+        if orphaned > 0 && !ctx.json {
+            ctx.diagnostic(
+                "info",
+                format!(
+                    "skipping {orphaned} artifact directories in a worktree whose repository is gone, so its activity cannot be read: {}; delete such a worktree yourself once you no longer need it",
+                    listed_repositories(&orphans)
+                ),
+            );
+        }
         if active > 0 && !ctx.json {
             ctx.diagnostic(
                 "info",
@@ -135,7 +151,7 @@ impl Op for Artifacts {
                 "info",
                 format!(
                     "skipping {build_active} artifact directories because a build process is active in {}",
-                    busy_repositories(&busy)
+                    listed_repositories(&busy)
                 ),
             );
         }
@@ -568,6 +584,7 @@ mod tests {
             roots: vec![home.clone()],
             roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
+            retain_days: 30,
             protect: Vec::new(),
             journal_path: home.join("journal.jsonl"),
             home,

@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -443,18 +444,23 @@ pub(crate) fn iso_from_epoch_days(days: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-/// "the last N days", as the activity window reads in skip notes.
+/// "the last N days", as the activity window reads in skip notes, with where
+/// to change it: a window nobody can see reads as an arbitrary refusal.
 pub(crate) fn activity_window(days: u32) -> String {
-    if days == 1 {
+    let window = if days == 1 {
         "the last day".to_owned()
     } else {
         format!("the last {days} days")
-    }
+    };
+    format!(
+        "{window} (active_days in {})",
+        crate::safety::CONFIG_DISPLAY_PATH
+    )
 }
 
-/// The repositories a running build kept, so the operator knows what to stop:
-/// the first three by path, then how many more.
-pub(crate) fn busy_repositories(repos: &[PathBuf]) -> String {
+/// Repositories named in a skip note, so the operator knows where to act: the
+/// first three by path, then how many more.
+pub(crate) fn listed_repositories(repos: &[PathBuf]) -> String {
     let mut named = repos
         .iter()
         .take(3)
@@ -465,6 +471,50 @@ pub(crate) fn busy_repositories(repos: &[PathBuf]) -> String {
         named.push_str(&format!(" and {} more", repos.len() - 3));
     }
     named
+}
+
+/// Whether `repo` is a linked worktree whose repository is gone: its `.git` is
+/// a regular file naming a `gitdir` that no longer exists. Git fails every
+/// query there, so the scanners leave such a worktree out and name it, rather
+/// than let one orphan — common under `~/.codex/worktrees` once a repository
+/// is deleted — fail the whole category. Nothing in it is offered; apply would
+/// refuse it anyway, because its activity cannot be read. Any other shape is
+/// not an orphan and goes to Git as before.
+pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
+    let marker = repo.join(".git");
+    let metadata = match std::fs::symlink_metadata(&marker) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot inspect Git marker {}", marker.display()));
+        }
+    };
+    if !metadata.file_type().is_file() {
+        return Ok(false);
+    }
+    // Parsed as Git parses it (git v2.51.0 `setup.c`, `read_gitfile_gently`):
+    // the exact prefix `gitdir: `, then every byte but trailing CR and LF, so a
+    // path holding a newline or ending in a space is read whole. Anything Git
+    // would reject is not an orphan: it goes to Git, which refuses it.
+    let bytes = std::fs::read(&marker)
+        .with_context(|| format!("cannot read Git marker {}", marker.display()))?;
+    let Some(mut target) = bytes.strip_prefix(b"gitdir: ") else {
+        return Ok(false);
+    };
+    while let [rest @ .., b'\n' | b'\r'] = target {
+        target = rest;
+    }
+    if target.is_empty() {
+        return Ok(false);
+    }
+    let target = std::ffi::OsStr::from_bytes(target);
+    match std::fs::symlink_metadata(repo.join(target)) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error)
+            .with_context(|| format!("cannot inspect the gitdir named by {}", marker.display())),
+    }
 }
 
 pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf]) -> bool {
@@ -481,6 +531,52 @@ mod tests {
         crate::ops::remove_test_path(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    /// Git records a worktree's `gitdir` as raw path bytes, so a name that is
+    /// not UTF-8 must still be judged, not fail the category it sits in.
+    #[test]
+    fn orphaned_worktrees_are_judged_by_their_gitdir_bytes() {
+        let base = temp("orphan-bytes");
+        let orphan = base.join("orphan");
+        std::fs::create_dir_all(&orphan).unwrap();
+        let mut marker = b"gitdir: ".to_vec();
+        marker.extend_from_slice(base.join("gone").as_os_str().as_encoded_bytes());
+        marker.extend_from_slice(b"/\xff\n");
+        std::fs::write(orphan.join(".git"), marker).unwrap();
+        let live = base.join("live");
+        std::fs::create_dir_all(base.join("main/.git/worktrees/live")).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(
+            live.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                base.join("main/.git/worktrees/live").display()
+            ),
+        )
+        .unwrap();
+        let repository = base.join("repository");
+        std::fs::create_dir_all(repository.join(".git")).unwrap();
+        // Git keeps every byte after `gitdir: ` but trailing CR/LF, so a
+        // separate Git directory named with a newline or a trailing space is
+        // live, not gone (git v2.51.0 `setup.c`, `read_gitfile_gently`).
+        let unusual = base.join("odd");
+        let gitdir = base.join("main/.git/worktrees/odd\nname ");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::create_dir_all(&unusual).unwrap();
+        let mut marker = b"gitdir: ".to_vec();
+        marker.extend_from_slice(gitdir.as_os_str().as_encoded_bytes());
+        marker.extend_from_slice(b"\r\n");
+        std::fs::write(unusual.join(".git"), marker).unwrap();
+
+        assert!(orphaned_worktree(&orphan).unwrap());
+        assert!(!orphaned_worktree(&live).unwrap());
+        assert!(
+            !orphaned_worktree(&unusual).unwrap(),
+            "a live worktree was misread as orphaned"
+        );
+        assert!(!orphaned_worktree(&repository).unwrap());
+        crate::ops::remove_test_path(base);
     }
 
     #[test]

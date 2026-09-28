@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.10.3.
+This source tree and its packaged documentation describe devtrim v0.10.4.
 
 ## Install
 
@@ -143,8 +143,10 @@ and the project half of `scan` look only under the scan roots, never the whole
 disk or the whole home folder. Without configured roots those are the
 conventional project folders that exist: `~/dev`, `~/Developer`,
 `~/Development`, `~/Projects`, `~/Code`, `~/GitHub`, `~/Repos`, `~/Workspace`,
-and `~/www` — Mole's `mo purge` defaults plus the folder Finder marks as
-`Developer`. `--root` or `roots` in the config replaces them. A root only says
+`~/www`, and `~/.codex/worktrees`, where Codex creates its worktrees — Mole's
+`mo purge` defaults plus the folder Finder marks as `Developer`. Claude Code
+puts its worktrees inside the repository (`.claude/worktrees/`), which the
+repository's own root already covers. `--root` or `roots` in the config replaces them. A root only says
 where to look; every finding still needs its category's corroborated name, Git
 owner, and staleness. Folders macOS guards with a privacy prompt (Desktop,
 Documents, Downloads), cloud storage, and `~/Library` stay out unless you name
@@ -183,35 +185,34 @@ checks run again at apply.
 
 `clean installers` considers only direct children of `Downloads` and `Desktop`
 whose extension is on a closed list (`dmg`, `pkg`, `mpkg`, `iso`, `xip`) and
-which have been untouched for longer than the configured active window. Age is
-the file's modification time, so a copy that preserves it — a Finder copy from
-another disk, for example — counts as old immediately; the preview shows the
-age it judged.
-Scanning is deliberately non-recursive, because those directories routinely hold
-extracted project trees whose bundled installers are not loose clutter. Formats
-that can carry source or user data, such as `zip` and `tar`, are never matched.
-Apply re-checks the whole shape and refuses symlinks and any target outside
-those two directories.
+which have been untouched for longer than the configured retention window
+(`retain_days`). Age is the file's modification time, so a copy that preserves
+it — a Finder copy from another disk, for example — counts as old immediately;
+the preview shows the age it judged. Scanning is deliberately non-recursive,
+because those directories routinely hold extracted project trees whose bundled
+installers are not loose clutter. Formats that can carry source or user data,
+such as `zip` and `tar`, are never matched. Apply re-checks the whole shape and
+refuses symlinks and any target outside those two directories.
 
 `clean agents` covers coding-agent storage in two tiers, because it is not one
-kind of data. *Regenerable caches* — the Claude Code metadata cache,
-the Codex catalog cache, the Pi web-search cache, the OpenCode cache — are exact
-paths their owner rebuilds on demand, so they are offered unconditionally at a
-low danger score. *Session history* — Claude Code shell snapshots; Codex shell snapshots,
-session and archived-session trees — is **not regenerable**, so a
-child is offered only once the newest
-regular file anywhere in its subtree is older than the configured active window,
-its note says the content does not come back, and its danger score reflects
-that. Codex nests sessions as `<year>/<month>/<day>`, so the day directory is
-the unit; waiting for a whole year to go stale would never offer the current
-one. Authentication material (`auth.json`, `.credentials.json`), configuration,
-memories, skills, agent definitions, installed plugins and the `.claude.json`
-backup copies are on neither list and are never candidates. Apply reasserts the
-full shape — tier membership, exact depth below the configured root, no
-symlink, and the age gate re-read from disk — so a session resumed after preview
-falls out of the plan. Agent *scratch worktrees* are a different question and
-stay where they were: `clean leftovers` lists them for review and never deletes
-them, because a worktree's staleness cannot be proven from its name.
+kind of data. *Regenerable caches* — the Claude Code metadata cache, the Codex
+catalog cache, the Pi web-search cache, the OpenCode cache — are exact paths
+their owner rebuilds on demand, so they are offered unconditionally at a low
+danger score. *Session history* — Claude Code shell snapshots; Codex shell
+snapshots, session and archived-session trees — is **not regenerable**, so a
+child is offered only once the newest regular file anywhere in its subtree is
+older than the configured retention window (`retain_days`), its note says the
+content does not come back, and its danger score reflects that. Codex nests
+sessions as `<year>/<month>/<day>`, so the day directory is the unit; waiting
+for a whole year to go stale would never offer the current one. Authentication
+material (`auth.json`, `.credentials.json`), configuration, memories, skills,
+agent definitions, installed plugins and the `.claude.json` backup copies are on
+neither list and are never candidates. Apply reasserts the full shape — tier
+membership, exact depth below the configured root, no symlink, and the age gate
+re-read from disk — so a session resumed after preview falls out of the plan.
+Agent *scratch worktrees* are a different question and stay where they were:
+`clean leftovers` lists them for review and never deletes them, because a
+worktree's staleness cannot be proven from its name.
 
 `clean agents` also offers older Codex standalone releases when the installer lock
 is available, `current` resolves to a verified package, and each candidate is a
@@ -369,7 +370,8 @@ was absent from the preview.
 
 ```toml
 roots = ["~/dev", "~/sandbox"]    # scan roots (default: the project folders above that exist)
-active_days = 30                  # newer Git activity makes a repo active (0 means 1)
+active_days = 30                  # project build output: repos with newer Git activity are active (0 means 1)
+retain_days = 30                  # agent history and installers: offered only after this many days untouched
 protect = ["~/dev/keep"]          # never delete these paths or their children
 ```
 
@@ -382,10 +384,21 @@ an existing path warns loudly. Matching is Unicode-normalization-insensitive
 symlinked entries also protect their resolved location, and deleting an
 ancestor of a protected entry is refused too.
 
-A repository is active when its HEAD commit or its newest HEAD reflog entry is
-inside the window. The reflog is what a clone, checkout, or pull writes, so an
-old project cloned today — whose dependencies were just installed — is not
-offered; a repository with reflogs disabled is judged by its commit date.
+There are two windows because they answer different questions. `active_days`
+decides when a repository's regenerable output — `node_modules`, build artifacts
+— is offered: a repository is active when its HEAD commit or its newest HEAD
+reflog entry is inside it. A shorter window frees more sooner, at the cost of
+reinstalling or rebuilding a project you return to, and it cannot see edits you
+have not committed, so keep it longer than the gap between your commits on a
+project you are still working on. A build or dev server whose working directory
+is in the repository protects it at any window, when its process name is one
+devtrim recognizes (`node`, `cargo`, `python3`, `go`, and the like). The reflog
+is what a clone, checkout, or pull writes, so an old project cloned today —
+whose dependencies were just installed — is not offered; a repository with
+reflogs disabled is judged by its commit date. `retain_days` decides when files
+nothing can regenerate — agent session history and installer archives — are
+offered. Unset, it is `active_days` or 30, whichever is longer, so lowering
+`active_days` to free build output never shortens how long those are kept.
 
 Explicit `--root` flags replace configured roots, which replace the default
 project folders. Existing roots are resolved before preview; an explicit root

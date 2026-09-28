@@ -49,7 +49,12 @@ pub struct Ctx {
     pub json: bool,
     pub roots: Vec<PathBuf>,
     pub roots_origin: RootsOrigin,
+    /// Days a repository must be inactive before its regenerable output is
+    /// offered (`active_days`).
     pub active_days: u32,
+    /// Days irreplaceable files — agent history, installer archives — must be
+    /// untouched before they are offered (`retain_days`).
+    pub retain_days: u32,
     pub home: PathBuf,
     pub protect: Vec<PathBuf>,
     pub journal_path: PathBuf,
@@ -73,7 +78,8 @@ impl Ctx {
         let cfg = home.join(".config/devtrim.toml");
         let file_cfg = load_config(&cfg)?;
         let cfg_roots = file_cfg.roots.unwrap_or_default();
-        let active_days = file_cfg.active_days.unwrap_or(30).max(1);
+        let (active_days, retain_days) =
+            activity_windows(file_cfg.active_days, file_cfg.retain_days);
         let (protect, protect_warnings) =
             configured_protect(file_cfg.protect.unwrap_or_default(), &home)?;
         let ResolvedRoots {
@@ -93,6 +99,7 @@ impl Ctx {
             roots,
             roots_origin,
             active_days,
+            retain_days,
             protect,
             journal_path,
             interactive: std::io::stdin().is_terminal(),
@@ -170,6 +177,21 @@ impl Ctx {
     }
 }
 
+/// The configuration file as previews name it.
+pub(crate) const CONFIG_DISPLAY_PATH: &str = "~/.config/devtrim.toml";
+
+/// The two windows: `active_days` decides when a repository's regenerable
+/// output is offered, `retain_days` when files nothing can regenerate (agent
+/// history, installer archives) are. They answer different questions, so
+/// lowering the first to free build output sooner must never shorten the
+/// second: unset, retention is the project window or 30 days, whichever is
+/// longer. Zero means one.
+pub(crate) fn activity_windows(active: Option<u32>, retain: Option<u32>) -> (u32, u32) {
+    let active = active.unwrap_or(30).max(1);
+    let retain = retain.map_or(active.max(30), |days| days.max(1));
+    (active, retain)
+}
+
 /// Where the project-folder scan roots came from. Previews name the roots and
 /// their origin, so an empty result is never mistaken for a clean machine when
 /// devtrim looked in only one place.
@@ -187,12 +209,21 @@ pub enum RootsOrigin {
 /// Home-relative project folders scanned when neither `--root` nor `roots`
 /// names any. Mole V1.56.0 searches the same conventional names by default
 /// (`MOLE_PURGE_DEFAULT_SEARCH_PATHS` in `lib/clean/purge_shared.sh`); devtrim
-/// adds `Developer`, the folder Finder marks with its developer icon, and
-/// leaves out Mole's `Library/CloudStorage` (cloud-backed files inside the
-/// protected `~/Library`) and its agent worktree containers. A root says only
+/// adds `Developer`, the folder Finder marks with its developer icon. Like Mole
+/// it includes `.codex/worktrees`, where Codex creates its managed worktrees
+/// under its default `CODEX_HOME` (`$CODEX_HOME/worktrees`,
+/// https://github.com/openai/codex/issues/10599; a relocated `CODEX_HOME` needs
+/// `roots`), so the dependencies an
+/// agent installed there are found; the worktrees themselves are repositories
+/// the sink never removes. It leaves out Mole's `Library/CloudStorage`
+/// (cloud-backed files inside the protected `~/Library`) and
+/// `.claude/worktrees`: Claude Code creates its worktrees inside the repository
+/// (`<repo>/.claude/worktrees/`: https://code.claude.com/docs/en/worktrees and
+/// https://code.claude.com/docs/en/desktop, read 2026-09-28),
+/// which the walk of that repository's root already reaches. A root says only
 /// where to look: every finding still needs its category's corroborated name,
 /// Git owner, and staleness, so a wider default adds no deletion authority.
-pub(crate) const DEFAULT_PROJECT_ROOTS: [&str; 9] = [
+pub(crate) const DEFAULT_PROJECT_ROOTS: [&str; 10] = [
     "dev",
     "Developer",
     "Development",
@@ -202,6 +233,7 @@ pub(crate) const DEFAULT_PROJECT_ROOTS: [&str; 9] = [
     "Repos",
     "Workspace",
     "www",
+    ".codex/worktrees",
 ];
 
 pub(crate) struct ResolvedRoots {
@@ -354,14 +386,14 @@ pub(crate) fn roots_note(roots: &[PathBuf], origin: RootsOrigin, home: &Path) ->
         .join(", ");
     match origin {
         RootsOrigin::Default if roots.is_empty() => format!(
-            "scan roots: none; no default project folder exists (~/{}); pass --root or set `roots` in ~/.config/devtrim.toml",
+            "scan roots: none; no default project folder exists (~/{}); pass --root or set `roots` in {CONFIG_DISPLAY_PATH}",
             DEFAULT_PROJECT_ROOTS.join(", ~/")
         ),
         RootsOrigin::Default => format!(
-            "scan roots: {list} (default project folders; --root or `roots` in ~/.config/devtrim.toml replaces them)"
+            "scan roots: {list} (default project folders; --root or `roots` in {CONFIG_DISPLAY_PATH} replaces them)"
         ),
         RootsOrigin::Config => format!(
-            "scan roots: {list} (from `roots` in ~/.config/devtrim.toml; --root replaces them)"
+            "scan roots: {list} (from `roots` in {CONFIG_DISPLAY_PATH}; --root replaces them)"
         ),
         RootsOrigin::Flag => format!("scan roots: {list} (from --root)"),
     }
@@ -387,6 +419,7 @@ fn shellexpand(value: &str, home: &Path) -> String {
 pub(crate) struct FileCfg {
     roots: Option<Vec<String>>,
     active_days: Option<u32>,
+    retain_days: Option<u32>,
     protect: Option<Vec<String>>,
 }
 
@@ -1754,6 +1787,8 @@ mod tests {
         let home = temp("default-roots").canonicalize().unwrap();
         std::fs::create_dir_all(home.join("dev")).unwrap();
         std::fs::create_dir_all(home.join("Projects")).unwrap();
+        // Codex keeps its managed worktrees in `$CODEX_HOME/worktrees`.
+        std::fs::create_dir_all(home.join(".codex/worktrees")).unwrap();
         std::fs::write(home.join("Code"), "not a folder").unwrap();
         symlink(home.join("dev"), home.join("Repos")).unwrap();
         symlink(home.join("missing"), home.join("GitHub")).unwrap();
@@ -1775,7 +1810,11 @@ mod tests {
         assert_eq!(resolved.origin, RootsOrigin::Default);
         assert_eq!(
             resolved.roots,
-            vec![home.join("dev"), home.join("Projects")],
+            vec![
+                home.join("dev"),
+                home.join("Projects"),
+                home.join(".codex/worktrees")
+            ],
             "PV roots/default-home-link: a default folder widened the scan"
         );
         assert_eq!(resolved.warnings.len(), 3, "{:?}", resolved.warnings);
@@ -1814,6 +1853,17 @@ mod tests {
         assert_eq!(configured.warnings.len(), 1);
         assert!(configured.warnings[0].contains("missing"));
         crate::ops::remove_test_path(home);
+    }
+
+    /// Lowering the project window must never shorten how long irreplaceable
+    /// files are kept: unset retention follows the project window only upward.
+    #[test]
+    fn retention_defaults_to_at_least_thirty_days() {
+        assert_eq!(activity_windows(None, None), (30, 30));
+        assert_eq!(activity_windows(Some(3), None), (3, 30));
+        assert_eq!(activity_windows(Some(60), None), (60, 60));
+        assert_eq!(activity_windows(Some(3), Some(7)), (3, 7));
+        assert_eq!(activity_windows(Some(0), Some(0)), (1, 1));
     }
 
     /// A folder can hold the home folder under a spelling that shares no text
@@ -2208,6 +2258,7 @@ mod tests {
             roots: Vec::new(),
             roots_origin: crate::safety::RootsOrigin::Default,
             active_days: 30,
+            retain_days: 30,
             protect: Vec::new(),
             journal_path: PathBuf::from("/tmp/devtrim-test-journal.jsonl"),
             home: PathBuf::from("/Users/example"),
