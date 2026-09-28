@@ -1,6 +1,22 @@
 # Project Memory
 
-## Current state (0.10.3)
+## Current state (0.10.4)
+
+Production is verified. `v0.10.4-beta1` and `v0.10.4` both point at `a5dc366`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`85deb2054d5c1fb3a42936f7564f64b6b90e7cbe4dec34f7e7d27a53bceff4d4`) and is
+immutable. The downloaded beta passed checksum, attestation (a wrong source
+digest fails), the PTY TUI suite, read-only views, and the black-box
+roots/build-output script. Homebrew installs and tests 0.10.4 as the sole
+visible `devtrim` (tap `74b875e`).
+
+0.10.4 splits `retain_days` (agent history, installers) from `active_days`
+(project build output), adds `~/.codex/worktrees` to the default roots, and
+skips orphaned linked worktrees instead of failing the category. The owner's
+config is `active_days = 3` with default retention (30). Story and reviews in
+`memory/2026-09-28.md`.
+
+## Previous state (0.10.3)
 
 Production is verified. `v0.10.3-beta1` and `v0.10.3` both point at `f642f8a`;
 production reused the beta archive byte for byte (ZIP SHA-256

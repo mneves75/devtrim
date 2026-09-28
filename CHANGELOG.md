@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [Unreleased]
+
 ## [0.10.4] - 2026-09-28
 
 Asked after 0.10.3: "why 10 days? can be less?" Measured on the owner's `~/dev`,
