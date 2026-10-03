@@ -610,10 +610,18 @@ CASES = (
     Case(
         name="project/unborn-no-commit",
         relative_path="src/ops/project.rs",
-        before="        .is_some_and(|listed| listed.status.success() && holds_no_commit(&listed.stdout))\n",
-        after="        .is_some_and(|listed| listed.status.success())\n",
+        before="            listed.status.success() && listed.stderr.is_empty() && holds_no_commit(&listed.stdout)\n",
+        after="            listed.status.success() && listed.stderr.is_empty()\n",
         tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
         marker="PV project/unborn-no-commit",
+    ),
+    Case(
+        name="project/unborn-complete-listing",
+        relative_path="src/ops/project.rs",
+        before="            listed.status.success() && listed.stderr.is_empty() && holds_no_commit(&listed.stdout)\n",
+        after="            listed.status.success() && holds_no_commit(&listed.stdout)\n",
+        tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
+        marker="PV project/unborn-complete-listing",
     ),
     # A default project folder linked to the home folder or above it would make
     # the whole home or disk a scan root nobody named.

@@ -19,7 +19,7 @@ folders inside archived iOS app bundles.
 
 ### Fixed
 - A folder the project walk cannot read — such as a root-owned `.fseventsd`, where even probing for `CACHEDIR.TAG` is refused — no longer fails `node-modules`, `artifacts` and `purge` whole. It is reported as an error naming the folder, so the run still exits nonzero, nothing in it is offered, and everything else is judged as usual; a scan root itself that cannot be read still fails
-- A new repository (`git init` before the first commit) made the activity query fail and emptied the category. It is now left out and named in a skip note, like a worktree whose repository is gone. Only that state qualifies: no commit object anywhere in the repository (staged files are only blobs), with HEAD naming a branch, `git refs verify` finding the reference storage sound, and every reference resolving. A HEAD naming a missing commit, damaged reference storage, a dangling symbolic branch, and an orphan checkout beside other branches keep their error
+- A new repository (`git init` before the first commit) made the activity query fail and emptied the category. It is now left out and named in a skip note, like a worktree whose repository is gone. Only that state qualifies: no commit object anywhere in the repository (staged files are only blobs), listed by Git without a complaint, with HEAD naming a branch, `git refs verify` finding the reference storage sound, and every reference resolving. A HEAD naming a missing commit, damaged reference storage, a dangling symbolic branch, and an orphan checkout beside other branches keep their error
 
 ## [0.10.4] - 2026-09-28
 

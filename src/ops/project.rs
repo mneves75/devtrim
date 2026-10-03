@@ -528,7 +528,10 @@ pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
 /// No commit object may exist (`cat-file --batch-all-objects`, which also
 /// lists alternate stores): a repository without one has no history to
 /// judge, whatever its references say, while files staged with `git add`
-/// before the first commit are only blobs. A branch turned into a dangling
+/// before the first commit are only blobs. The listing must also finish
+/// without a complaint: Git skips an object folder or pack it cannot read,
+/// says so on stderr, and still exits 0, so a silent omission would read as
+/// no history. A branch turned into a dangling
 /// symbolic reference, a file holding an object ID where the loose-ref folder
 /// was, and an orphan checkout beside other branches all keep their commits
 /// and their error. Three more answers keep a damaged repository an error
@@ -556,7 +559,9 @@ pub(crate) fn unborn_branch(repo: &Path) -> bool {
             "--unordered",
             "--batch-check=%(objecttype)",
         ])
-        .is_some_and(|listed| listed.status.success() && holds_no_commit(&listed.stdout))
+        .is_some_and(|listed| {
+            listed.status.success() && listed.stderr.is_empty() && holds_no_commit(&listed.stdout)
+        })
 }
 
 /// Whether a `git count-objects -v` report describes an object store with
@@ -717,6 +722,40 @@ mod tests {
             !unborn_branch(&orphan),
             "PV project/unborn-no-commit: an orphan checkout beside other branches read as new"
         );
+
+        // The same orphan checkout with its commit's loose-object folder
+        // searchable but not listable: Git still reads the commit by name, but
+        // the object listing silently leaves it out and complains on stderr.
+        let unlisted = base.join("unlisted");
+        init_old_git_repo(&unlisted).unwrap();
+        git(&unlisted, &["checkout", "-q", "--orphan", "fresh-root"]);
+        let commit = String::from_utf8(
+            Command::new("git")
+                .args([
+                    "for-each-ref",
+                    "--count=1",
+                    "--format=%(objectname)",
+                    "refs/heads",
+                ])
+                .current_dir(&unlisted)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let fanout = unlisted.join(".git/objects").join(&commit.trim()[..2]);
+        assert!(
+            fanout.is_dir(),
+            "the commit must be a loose object: {}",
+            fanout.display()
+        );
+        let _fanout = crate::ops::Unreadable::new(&fanout, 0o100);
+        assert!(repo_last_activity(&unlisted).is_err());
+        assert!(
+            !unborn_branch(&unlisted),
+            "PV project/unborn-complete-listing: an incomplete object listing read as no history"
+        );
+        drop(_fanout);
 
         let dangling = base.join("dangling");
         init_old_git_repo(&dangling).unwrap();
