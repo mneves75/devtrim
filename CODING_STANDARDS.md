@@ -165,7 +165,8 @@ is judged (`project::unjudged_finding`, `project::unread_folders_finding`).
 A state the scanners positively identify and treat as not stale is a gate,
 not an omission, and is named in a skip note: a worktree whose repository is
 gone (`project::orphaned_worktree`) and a repository on an unborn branch
-(`project::unborn_branch`, which accepts only Git's own unborn state). Measured
+(`project::unborn_branch`, which accepts only a new repository: an unborn
+branch, sound reference storage, and no reference at all). Measured
 bytes use `checked_add` and error on overflow (`dir_size` in `src/safety.rs`);
 saturating arithmetic is for display aggregation only (`actionable_bytes` in
 `src/report.rs`).

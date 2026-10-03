@@ -578,16 +578,16 @@ CASES = (
     Case(
         name="project/unborn-branch",
         relative_path="src/ops/project.rs",
-        before="        .is_some_and(|resolved| resolved.status.code() == Some(1) && resolved.stdout.is_empty())\n",
-        after="        .is_some_and(|resolved| resolved.status.code() == Some(99) && resolved.stdout.is_empty())\n",
+        before="    git_output(&[\"symbolic-ref\", \"-q\", \"HEAD\"]).is_some_and(|symbolic| symbolic.status.success())\n",
+        after="    git_output(&[\"symbolic-ref\", \"-q\", \"HEAD\"]).is_some_and(|symbolic| !symbolic.status.success())\n",
         tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
         marker="PV project/unborn-branch",
     ),
     Case(
         name="project/unborn-dangling",
         relative_path="src/ops/project.rs",
-        before="        .is_some_and(|resolved| resolved.status.code() == Some(1) && resolved.stdout.is_empty())\n",
-        after="        .is_some_and(|resolved| resolved.status.code().is_some())\n",
+        before="            .is_some_and(|references| references.status.success() && references.stdout.is_empty())\n",
+        after="            .is_some_and(|references| references.stdout.is_empty())\n",
         tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
         marker="PV project/unborn-dangling",
     ),
@@ -598,6 +598,22 @@ CASES = (
         after="        && git_output(&[\"refs\", \"verify\"]).is_some()\n",
         tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
         marker="PV project/unborn-broken-refs",
+    ),
+    Case(
+        name="node_modules/owner-veto",
+        relative_path="src/ops/node_modules.rs",
+        before="            groups.remove(&owner);\n",
+        after="            let _ = &owner;\n",
+        tests=("ops::node_modules::tests::a_failure_after_the_owner_is_known_blocks_the_whole_repository",),
+        marker="PV node_modules/owner-veto",
+    ),
+    Case(
+        name="project/unborn-no-references",
+        relative_path="src/ops/project.rs",
+        before="            .is_some_and(|references| references.status.success() && references.stdout.is_empty())\n",
+        after="            .is_some_and(|references| references.status.success())\n",
+        tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
+        marker="PV project/unborn-no-references",
     ),
     # A default project folder linked to the home folder or above it would make
     # the whole home or disk a scan root nobody named.

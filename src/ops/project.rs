@@ -518,35 +518,34 @@ pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
     }
 }
 
-/// Whether `repo` is on an unborn branch: HEAD names a branch that has no
-/// commit yet (Git glossary, "unborn") — `git init` before the first commit,
-/// or `checkout --orphan`. The activity query fails there, so the scanners
-/// leave such a repository out and name it instead of failing the category;
-/// they ask only after that query has failed, so no repository pays for it.
+/// Whether `repo` is a new repository: on an unborn branch (Git glossary:
+/// HEAD names a branch that has no commit yet), with no reference of any kind
+/// — `git init` before the first commit. The activity query fails there, so
+/// the scanners leave such a repository out and name it instead of failing
+/// the category; they ask only after that query has failed, so no repository
+/// pays for it.
 ///
-/// HEAD must be symbolic (`symbolic-ref -q HEAD` succeeds), resolve to
-/// nothing (`rev-parse -q --verify HEAD` exits 1 and prints nothing), and sit
-/// in reference storage Git finds sound (`refs verify` succeeds). A HEAD
-/// naming a commit whose object is gone still resolves, and a detached HEAD
-/// is not symbolic, so neither reads as unborn; a loose-ref folder that became
-/// a file resolves to nothing too, and Git's own `log` calls that "no commits
-/// yet", so only `refs verify` (Git 2.47 and later) tells it apart. Any other
-/// answer, or a Git that cannot run or lacks `refs verify`, is not unborn
-/// either: the original failure then stands.
+/// Three answers must agree. HEAD is symbolic (`symbolic-ref -q HEAD`
+/// succeeds), so a detached HEAD is not new. Git finds the reference storage
+/// sound (`refs verify`, Git 2.47 and later): a loose-ref folder that became a
+/// junk file names no reference either, and Git's own `log` calls that "no
+/// commits yet". And no reference exists (`for-each-ref --count=1` succeeds
+/// and prints nothing), so HEAD's branch cannot resolve: a HEAD naming a
+/// commit whose object is gone makes the listing fail, that folder replaced
+/// by a file holding a valid object ID is listed as a reference named
+/// `refs/heads`, and an orphan checkout beside other branches lists them.
+/// Any other answer, or a Git that cannot run or lacks `refs verify`, is not
+/// new: the original failure then stands.
 pub(crate) fn unborn_branch(repo: &Path) -> bool {
     let git_output = |arguments: &[&str]| {
         let mut command = hardened_git(repo, "git");
         command.args(arguments);
         command.output().ok()
     };
-    if !git_output(&["symbolic-ref", "-q", "HEAD"])
-        .is_some_and(|symbolic| symbolic.status.success())
-    {
-        return false;
-    }
-    git_output(&["rev-parse", "-q", "--verify", "HEAD"])
-        .is_some_and(|resolved| resolved.status.code() == Some(1) && resolved.stdout.is_empty())
+    git_output(&["symbolic-ref", "-q", "HEAD"]).is_some_and(|symbolic| symbolic.status.success())
         && git_output(&["refs", "verify"]).is_some_and(|verified| verified.status.success())
+        && git_output(&["for-each-ref", "--count=1"])
+            .is_some_and(|references| references.status.success() && references.stdout.is_empty())
 }
 
 /// A folder a project walk could not read, and why. Like a scan root that
@@ -658,10 +657,16 @@ mod tests {
             "PV project/unborn-branch: a repository without commits was not recognized"
         );
 
+        // An orphan checkout beside other branches is not a new repository:
+        // its references show history exists, so its failure stands.
         let orphan = base.join("orphan");
         init_old_git_repo(&orphan).unwrap();
         git(&orphan, &["checkout", "-q", "--orphan", "fresh-root"]);
-        assert!(unborn_branch(&orphan), "an orphan checkout is unborn too");
+        assert!(repo_last_activity(&orphan).is_err());
+        assert!(
+            !unborn_branch(&orphan),
+            "PV project/unborn-no-references: a repository with references read as new"
+        );
 
         let dangling = base.join("dangling");
         init_old_git_repo(&dangling).unwrap();
@@ -689,6 +694,23 @@ mod tests {
         assert!(
             !unborn_branch(&broken),
             "PV project/unborn-broken-refs: broken reference storage read as unborn"
+        );
+
+        // The same folder replaced by a file holding a valid object ID passes
+        // `refs verify` (it is a well-formed reference named `refs/heads`),
+        // but it is a reference, so the repository is not new.
+        let collided = base.join("collided-refs");
+        init_old_git_repo(&collided).unwrap();
+        let head = std::fs::read_to_string(collided.join(".git/refs/heads/master"))
+            .or_else(|_| std::fs::read_to_string(collided.join(".git/refs/heads/main")))
+            .unwrap();
+        std::fs::remove_dir_all(collided.join(".git/refs/heads")).unwrap();
+        std::fs::write(collided.join(".git/refs/heads"), head).unwrap();
+        std::fs::remove_file(collided.join(".git/packed-refs")).ok();
+        assert!(repo_last_activity(&collided).is_err());
+        assert!(
+            !unborn_branch(&collided),
+            "PV project/unborn-no-references: an obstructed branch path read as unborn"
         );
 
         let born = base.join("born");
