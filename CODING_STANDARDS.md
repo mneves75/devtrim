@@ -158,7 +158,14 @@ smaller plan and exit 0. A silently shorter plan is indistinguishable from a
 clean machine.
 
 Fix: block the affected findings and report the error. Only
-`ErrorKind::NotFound` may become an empty success (`src/safety.rs`). Measured
+`ErrorKind::NotFound` may become an empty success (`src/safety.rs`). Block
+only what the failure touched: a repository whose checks fail, or a folder a
+project walk cannot read, is one error finding while the rest of the category
+is judged (`project::unjudged_finding`, `project::unread_folders_finding`).
+A state the scanners positively identify and treat as not stale is a gate,
+not an omission, and is named in a skip note: a worktree whose repository is
+gone (`project::orphaned_worktree`) and a repository on an unborn branch
+(`project::unborn_branch`, which accepts only Git's own unborn state). Measured
 bytes use `checked_add` and error on overflow (`dir_size` in `src/safety.rs`);
 saturating arithmetic is for display aggregation only (`actionable_bytes` in
 `src/report.rs`).
@@ -214,8 +221,8 @@ exactly four:
 - `command_path` in `src/ops/caches.rs` — `"npm"` or `"brew"` from its two
   callers, trusted only inside that owner's cache namespace.
 - `hardened_git` in `src/ops/project.rs` — `"git"`, from `repo_last_activity`
-  through `hardened_git_log` and as a literal from `tracked_paths`, its only
-  production callers.
+  through `hardened_git_log`, and as a literal from `TrackedIndex::list` and
+  `unborn_branch`, its only production callers.
 
 The only other variable programs in the tree are inside `#[cfg(test)] mod
 tests`: `std::env::current_exe()` re-invoking the test binary in

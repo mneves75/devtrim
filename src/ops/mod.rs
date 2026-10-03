@@ -1084,6 +1084,37 @@ impl Drop for TestFixture {
     }
 }
 
+/// A fixture directory this process cannot read, created with `mode` (`0o000`
+/// refuses even a lookup inside it; `0o100` allows one but not a listing). It
+/// asserts the denial took effect, so a test run with privileges that ignore
+/// modes fails instead of passing without exercising anything, and restores
+/// the mode when dropped so the fixture can still be removed.
+#[cfg(test)]
+pub(crate) struct Unreadable(PathBuf);
+
+#[cfg(test)]
+impl Unreadable {
+    pub(crate) fn new(path: &Path, mode: u32) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert!(
+            std::fs::read_dir(path).is_err(),
+            "fixture {} is still readable; run the tests without privileges that ignore file modes",
+            path.display()
+        );
+        Self(path.to_path_buf())
+    }
+}
+
+#[cfg(test)]
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn remove_test_path(path: impl AsRef<Path>) {
     let path = path.as_ref();

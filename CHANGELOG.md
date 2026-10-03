@@ -4,6 +4,23 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-10-03
+
+Found by running `devtrim scan` on the owner's Mac with 27 GiB free: `purge`
+offered nothing at all. One root-owned `.fseventsd` that a mounted disk image
+had left in a project's scratch folder emptied `node-modules` and `artifacts`.
+Routed around it, a repository created with `git init` the day before emptied
+them again, and the preview that finally appeared offered `node_modules`
+folders inside archived iOS app bundles.
+
+### Changed
+- A failure now blocks only what it touches. A repository whose Git query, tracked-file check, tree search or size measurement fails offers nothing — not even a finding judged before the failure — and appears as an error finding naming it, so the run still exits nonzero; every other repository in `node-modules`, `artifacts` and `purge` is judged as usual. Until now one such repository emptied the whole category. A failed build-process liveness probe still blocks its whole category
+- `node-modules` offers a `node_modules` only when a `package.json` that is a regular file sits beside it, the manifest it was installed from and the only thing that lets an install recreate it, and apply refuses one without it. React Native copies package images into `<App>.app/assets/node_modules`, so every archived (`.xcarchive`) or unpacked (`Payload/`) iOS build holds one, where removing it breaks the bundle's signature; corepack's pnpm ships its dependencies in `dist/node_modules`, which no install restores
+
+### Fixed
+- A folder the project walk cannot read — such as a root-owned `.fseventsd`, where even probing for `CACHEDIR.TAG` is refused — no longer fails `node-modules`, `artifacts` and `purge` whole. It is reported as an error naming the folder, so the run still exits nonzero, nothing in it is offered, and everything else is judged as usual; a scan root itself that cannot be read still fails
+- A repository on an unborn branch (`git init` before the first commit, or `checkout --orphan`) made the activity query fail and emptied the category. It is now left out and named in a skip note, like a worktree whose repository is gone. Only Git's own unborn state qualifies — HEAD symbolic and resolving to nothing — so a HEAD naming a missing commit keeps its error
+
 ## [0.10.4] - 2026-09-28
 
 Asked after 0.10.3: "why 10 days? can be less?" Measured on the owner's `~/dev`,

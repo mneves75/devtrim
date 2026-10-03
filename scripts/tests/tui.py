@@ -308,6 +308,7 @@ def stale_project(home):
     (project / "Cargo.toml").write_text('[package]\nname = "fixture"\n')
     (project / "target" / "debug").mkdir(parents=True)
     (project / "target" / "debug" / "out").write_bytes(b"x" * 4096)
+    (project / "package.json").write_text("{}\n")
     (project / "node_modules" / "pkg").mkdir(parents=True)
     (project / "node_modules" / "pkg" / "index.js").write_bytes(b"x")
     return project

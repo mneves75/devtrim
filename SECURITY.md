@@ -203,7 +203,13 @@ Non-negotiable boundaries:
    above it — by any spelling, judged by device and inode — is refused so a
    default never becomes the whole home or disk, and
    one that cannot be read is skipped with a warning instead of failing every
-   project command.
+   project command. A folder below a root that the walk cannot read is reported
+   as an error and never entered, so nothing in it is offered. A repository
+   whose checks fail offers nothing — not even a finding judged before the
+   failure — and is reported as an error, so the run exits nonzero; one
+   repository can no longer empty its whole category. A `node_modules` is an
+   install only beside a regular-file `package.json`, at scan and at apply, so
+   an app bundle's `assets/node_modules` is never a target.
 4. **Typed deletion capability** — display paths are presentation only. The exact internal `PathBuf` must pass validation to become a private `VerifiedTarget`, which alone can reach physical removal.
 5. **Physical path validation** — deletion validates literal policy and the canonical existing parent immediately before mutation. Resolution is deny-only and cannot turn a refused spelling into permission; any ASCII-case variant of a `.git` component is refused.
 5b. **Anchored identity verification** — the sink re-reads the target's

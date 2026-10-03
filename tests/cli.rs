@@ -414,6 +414,7 @@ fn scan_leads_with_categories_and_lists_the_largest_until_all() {
         let project = dev.join(format!("p{index:02}"));
         std::fs::create_dir_all(project.join(".git")).unwrap();
         std::fs::create_dir_all(project.join("node_modules")).unwrap();
+        std::fs::write(project.join("package.json"), "{}").unwrap();
         std::fs::write(
             project.join("node_modules/file"),
             vec![b'x'; 100 * (index + 1)],
@@ -589,6 +590,7 @@ fn config_tilde_root_is_expanded() {
     let project = sandbox.path().join("dev/project");
     std::fs::create_dir_all(project.join(".git")).unwrap();
     std::fs::create_dir_all(project.join("node_modules")).unwrap();
+    std::fs::write(project.join("package.json"), "{}").unwrap();
     std::fs::write(project.join("node_modules/file"), "x").unwrap();
     std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
     std::fs::write(
@@ -616,6 +618,7 @@ fn config_tilde_protect_filters_preview_with_diagnostic() {
     let project = sandbox.path().join("dev/project");
     std::fs::create_dir_all(project.join(".git")).unwrap();
     std::fs::create_dir_all(project.join("node_modules")).unwrap();
+    std::fs::write(project.join("package.json"), "{}").unwrap();
     std::fs::write(project.join("node_modules/file"), "x").unwrap();
     std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
     std::fs::write(
@@ -694,6 +697,7 @@ fn purge_fixture(sandbox: &Sandbox) -> (PathBuf, PathBuf, PathBuf) {
     for project in [&small, &large] {
         std::fs::create_dir_all(project.join(".git")).unwrap();
         std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
+        std::fs::write(project.join("package.json"), "{}").unwrap();
     }
     std::fs::write(small.join("node_modules/pkg/index.js"), vec![b'x'; 100]).unwrap();
     std::fs::write(large.join("Cargo.toml"), "[package]\nname = \"beta\"\n").unwrap();
@@ -715,6 +719,7 @@ fn purge_scans_the_default_project_folders_and_names_them() {
     let gamma = sandbox.path().join("Projects/gamma");
     std::fs::create_dir_all(gamma.join(".git")).unwrap();
     std::fs::create_dir_all(gamma.join("node_modules/pkg")).unwrap();
+    std::fs::write(gamma.join("package.json"), "{}").unwrap();
     std::fs::write(gamma.join("node_modules/pkg/index.js"), "x").unwrap();
     let gamma = gamma.canonicalize().unwrap();
 
@@ -761,6 +766,7 @@ fn purge_finds_dependencies_in_codex_worktrees() {
     let sandbox = Sandbox::new("purge-codex-worktrees");
     let worktree = sandbox.path().join(".codex/worktrees/a1b2/project");
     std::fs::create_dir_all(worktree.join("node_modules/pkg")).unwrap();
+    std::fs::write(worktree.join("package.json"), "{}").unwrap();
     std::fs::write(worktree.join("node_modules/pkg/index.js"), "x").unwrap();
     // The repository the worktree belongs to lives elsewhere, as it does for
     // Codex; a worktree whose repository is gone is covered separately.
@@ -791,6 +797,131 @@ fn purge_finds_dependencies_in_codex_worktrees() {
         !stdout.contains(&format!("{}\n", worktree.display())),
         "the worktree itself is never a finding: {stdout}"
     );
+}
+
+/// Restores a fixture folder's mode when dropped, so the sandbox can be removed
+/// even when an assertion fails first.
+struct Unreadable(PathBuf);
+
+impl Unreadable {
+    fn new(path: PathBuf) -> Self {
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(
+            std::fs::read_dir(&path).is_err(),
+            "fixture is still readable; run without privileges that ignore modes"
+        );
+        Self(path)
+    }
+}
+
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
+    }
+}
+
+/// What emptied `purge` on the owner's Mac, all at once: a root-owned
+/// `.fseventsd` the walk cannot read, a repository created with `git init` and
+/// never committed to, a repository whose Git fails, and a `node_modules`
+/// inside an archived app bundle. The unreadable folder and the failing
+/// repository are errors that block only themselves, the uncommitted
+/// repository is skipped and named, the bundle's `node_modules` is never
+/// offered, and everything else is offered. Once the folder is readable and
+/// the failing repository is gone, the same run succeeds.
+#[test]
+fn purge_contains_each_failure_to_where_it_happened() {
+    let sandbox = Sandbox::new("purge-contained");
+    let dev = sandbox.path().join("dev");
+    for repo in ["alpha", "fresh", "dangling"] {
+        std::fs::create_dir_all(dev.join(repo).join(".git")).unwrap();
+        std::fs::create_dir_all(dev.join(repo).join("node_modules/pkg")).unwrap();
+        std::fs::write(dev.join(repo).join("node_modules/pkg/index.js"), "x").unwrap();
+        std::fs::write(dev.join(repo).join("package.json"), "{}").unwrap();
+    }
+    std::fs::create_dir_all(dev.join("beta/.git")).unwrap();
+    std::fs::write(dev.join("beta/Cargo.toml"), "[package]\n").unwrap();
+    std::fs::create_dir_all(dev.join("beta/target")).unwrap();
+    std::fs::write(dev.join("beta/target/out"), vec![b'x'; 500]).unwrap();
+    let bundle = dev.join("alpha/.scratch/App.xcarchive/Products/Applications/App.app/assets");
+    std::fs::create_dir_all(bundle.join("node_modules/pkg")).unwrap();
+    std::fs::write(bundle.join("node_modules/pkg/icon.png"), "png").unwrap();
+    let dev = dev.canonicalize().unwrap();
+    let locked = dev.join("alpha/.scratch/recovery-volume/.fseventsd");
+    let _locked = Unreadable::new(locked.clone());
+    sandbox.script(
+        "git",
+        "case \"$*\" in\n  *ls-files*) exit 0 ;;\n  *'/fresh '*symbolic-ref*) printf 'refs/heads/main\\n' ;;\n  *'/fresh '*rev-parse*) exit 1 ;;\n  *'/fresh '*) printf \"fatal: your current branch 'main' does not have any commits yet\\n\" >&2; exit 128 ;;\n  *'/dangling '*symbolic-ref*) printf 'refs/heads/main\\n' ;;\n  *'/dangling '*rev-parse*) printf '0123abcd\\n' ;;\n  *'/dangling '*) printf 'fatal: bad object HEAD\\n' >&2; exit 128 ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+    );
+    let root = dev.to_str().unwrap();
+    let mut expected = vec![
+        dev.join("alpha/node_modules").display().to_string(),
+        dev.join("beta/target").display().to_string(),
+    ];
+    expected.sort();
+    // Error findings carry no path, so only targets are compared.
+    let targets = |value: &Value| {
+        let mut paths = value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|finding| finding["path"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    };
+
+    let machine = run(&sandbox, &["purge", "--root", root, "--json"]);
+    let stderr = String::from_utf8_lossy(&machine.stderr).into_owned();
+    assert_eq!(machine.status.code(), Some(1), "{stderr}");
+    let value = json(&machine);
+    assert_eq!(targets(&value), expected, "{value}");
+    let errors = value["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|error| error.as_str().unwrap())
+        .collect::<Vec<_>>();
+    let dangling = dev.join("dangling").display().to_string();
+    let locked_path = locked.display().to_string();
+    // Each half of `purge` reports the folder it could not read; only
+    // `node-modules` finds anything in the failing repository.
+    assert_eq!(errors.len(), 3, "{errors:?}");
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|error| error.contains(&dangling))
+            .count(),
+        1,
+        "{errors:?}"
+    );
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|error| error.contains("could not be read") && error.contains(&locked_path))
+            .count(),
+        2,
+        "{errors:?}"
+    );
+
+    let human = run(&sandbox, &["purge", "--root", root]);
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert_eq!(human.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("no commits yet")
+            && stderr.contains(&dev.join("fresh").display().to_string()),
+        "{stderr}"
+    );
+
+    drop(_locked);
+    std::fs::remove_dir_all(dev.join("dangling")).unwrap();
+    let healed = run(&sandbox, &["purge", "--root", root, "--json"]);
+    assert!(
+        healed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&healed.stderr)
+    );
+    assert_eq!(targets(&json(&healed)), expected);
 }
 
 /// A build directory holding a file its repository tracks is part of the
@@ -920,7 +1051,14 @@ fn a_failing_tracked_file_check_refuses_rather_than_trusts() {
 
     assert!(!output.status.success());
     let value = json(&output);
-    assert!(value["findings"].as_array().unwrap().is_empty(), "{value}");
+    assert!(
+        value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|finding| finding["path"].is_null()),
+        "{value}"
+    );
     let errors = value["errors"].to_string();
     assert!(
         errors.contains("Git tracked-file check failed") && errors.contains("index file corrupt"),
@@ -1176,15 +1314,19 @@ fn project_cleanup_probe_failures_are_nonzero_json_errors() {
     }
 }
 
+/// One repository whose Git fails reports the error and offers nothing, and
+/// the run fails; the repository beside it is still judged and offered.
 #[test]
-fn project_git_probe_failure_discards_all_scan_findings() {
+fn project_git_probe_failure_blocks_only_its_own_repository() {
     let sandbox = Sandbox::new("project-git-failure");
-    let root = sandbox.path().join("dev");
+    std::fs::create_dir_all(sandbox.path().join("dev")).unwrap();
+    let root = sandbox.path().join("dev").canonicalize().unwrap();
     for repo_name in ["a-good", "z-bad"] {
         let repo = root.join(repo_name);
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(repo.join("node_modules")).unwrap();
         std::fs::write(repo.join("node_modules/payload"), "x").unwrap();
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
         std::fs::create_dir_all(repo.join("target")).unwrap();
         std::fs::write(repo.join("target/payload"), "x").unwrap();
         std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
@@ -1197,7 +1339,7 @@ fn project_git_probe_failure_discards_all_scan_findings() {
         ),
     );
 
-    for target in ["node-modules", "artifacts"] {
+    for (target, leaf) in [("node-modules", "node_modules"), ("artifacts", "target")] {
         let output = run(
             &sandbox,
             &["clean", target, "--root", root.to_str().unwrap(), "--json"],
@@ -1206,12 +1348,26 @@ fn project_git_probe_failure_discards_all_scan_findings() {
         assert!(!output.status.success());
         let value = json(&output);
         assert_eq!(value["operation"], target);
-        assert!(value["findings"].as_array().unwrap().is_empty());
+        let paths = value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|finding| finding["path"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![root.join("a-good").join(leaf).to_str().unwrap()],
+            "{target}"
+        );
+        let errors = value["errors"].as_array().unwrap();
         assert!(
-            value["errors"][0]
-                .as_str()
-                .unwrap()
-                .contains("Git activity check failed")
+            errors.len() == 1
+                && errors[0]
+                    .as_str()
+                    .unwrap()
+                    .contains("Git activity check failed")
+                && errors[0].as_str().unwrap().contains("z-bad"),
+            "{target}: {errors:?}"
         );
     }
 }
@@ -1224,6 +1380,7 @@ fn project_targets_with_their_own_git_marker_are_rejected() {
         let repo = root.join(repo_name);
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(repo.join("node_modules")).unwrap();
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
         std::fs::create_dir_all(repo.join("target")).unwrap();
         std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
         for candidate in [repo.join("node_modules"), repo.join("target")] {
@@ -1254,6 +1411,7 @@ fn overlapping_project_roots_do_not_duplicate_findings() {
     let repo = root.join("project");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     std::fs::create_dir_all(repo.join("node_modules")).unwrap();
+    std::fs::write(repo.join("package.json"), "{}").unwrap();
     std::fs::write(repo.join("node_modules/payload"), "x").unwrap();
     std::fs::create_dir_all(repo.join("target")).unwrap();
     std::fs::write(repo.join("target/payload"), "x").unwrap();
@@ -1279,50 +1437,48 @@ fn overlapping_project_roots_do_not_duplicate_findings() {
     }
 }
 
+/// A folder the walk cannot read is where the scan could not look: it is
+/// reported as an error, so the run fails, and nothing in it is offered, while
+/// every other repository is still judged and offered.
 #[test]
-fn project_walk_errors_discard_all_scan_findings() {
+fn project_walk_errors_block_only_the_unreadable_folder() {
     let sandbox = Sandbox::new("project-walk-error");
-    let root = sandbox.path().join("dev");
+    std::fs::create_dir_all(sandbox.path().join("dev")).unwrap();
+    let root = sandbox.path().join("dev").canonicalize().unwrap();
     let repo = root.join("a-good");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     std::fs::create_dir_all(repo.join("node_modules")).unwrap();
     std::fs::write(repo.join("node_modules/payload"), "x").unwrap();
+    std::fs::write(repo.join("package.json"), "{}").unwrap();
     std::fs::create_dir_all(repo.join("target")).unwrap();
     std::fs::write(repo.join("target/payload"), "x").unwrap();
     std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
     let unreadable = root.join("z-unreadable");
-    std::fs::create_dir_all(unreadable.join("hidden")).unwrap();
-    let original = std::fs::metadata(&unreadable).unwrap().permissions();
-    let mut denied = original.clone();
-    denied.set_mode(0o000);
-    std::fs::set_permissions(&unreadable, denied).unwrap();
+    std::fs::create_dir_all(unreadable.join("hidden/node_modules")).unwrap();
+    let _unreadable = Unreadable::new(unreadable.clone());
     sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
 
-    let outputs = ["node-modules", "artifacts"].map(|target| {
-        (
-            target,
-            run(
-                &sandbox,
-                &["clean", target, "--root", root.to_str().unwrap(), "--json"],
-            ),
-        )
-    });
-    std::fs::set_permissions(&unreadable, original).unwrap();
-
-    for (target, output) in outputs {
-        assert!(!output.status.success());
+    for (target, leaf) in [("node-modules", "node_modules"), ("artifacts", "target")] {
+        let output = run(
+            &sandbox,
+            &["clean", target, "--root", root.to_str().unwrap(), "--json"],
+        );
+        assert!(!output.status.success(), "{target}");
         let value = json(&output);
         assert_eq!(value["operation"], target);
-        assert!(value["findings"].as_array().unwrap().is_empty());
-        let error = value["errors"][0].as_str().unwrap();
-        let expected = if target == "artifacts" {
-            "cannot inspect artifact evidence"
-        } else {
-            "cannot scan"
-        };
+        let paths = value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|finding| finding["path"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec![repo.join(leaf).to_str().unwrap()], "{target}");
+        let errors = value["errors"].as_array().unwrap();
         assert!(
-            error.contains(expected) && error.contains("z-unreadable"),
-            "{target}: {error}"
+            errors.len() == 1
+                && errors[0].as_str().unwrap().contains("could not be read")
+                && errors[0].as_str().unwrap().contains("z-unreadable"),
+            "{target}: {errors:?}"
         );
     }
 }
@@ -1691,6 +1847,7 @@ fn node_modules_apply_refuses_repo_that_became_active() {
     std::fs::create_dir_all(project.join(".git")).unwrap();
     std::fs::create_dir_all(&target).unwrap();
     std::fs::write(target.join("sentinel"), "keep").unwrap();
+    std::fs::write(project.join("package.json"), "{}").unwrap();
     let state = sandbox.path().join("git-state");
     sandbox.script(
         "git",
@@ -1726,6 +1883,7 @@ fn project_apply_preflights_all_repo_probes_before_mutating() {
         std::fs::create_dir_all(target.parent().unwrap().join(".git")).unwrap();
         std::fs::create_dir_all(target).unwrap();
         std::fs::write(target.join("sentinel"), "keep").unwrap();
+        std::fs::write(target.parent().unwrap().join("package.json"), "{}").unwrap();
     }
     let counter = sandbox.path().join("git-count");
     git_stale_for_three_probes(&sandbox);
@@ -2462,6 +2620,7 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
     let project = sandbox.path().join("dev/project");
     std::fs::create_dir_all(project.join(".git")).unwrap();
     std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
+    std::fs::write(project.join("package.json"), "{}").unwrap();
     std::fs::write(project.join("node_modules/pkg/index.js"), "x").unwrap();
     std::fs::create_dir_all(project.join("target")).unwrap();
     std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
@@ -2544,7 +2703,16 @@ fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
                 "{failed_probe}: {errors:?}"
             );
         }
-        assert!(value["findings"].as_array().unwrap().is_empty());
+        // A failed liveness probe fails both categories whole; a failed Git
+        // query blocks each repository, so nothing is offered either way.
+        assert!(
+            value["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|finding| finding["path"].is_null()),
+            "{failed_probe}: {value}"
+        );
         let spawns = std::fs::read_to_string(&log).unwrap();
         assert_eq!(
             spawns

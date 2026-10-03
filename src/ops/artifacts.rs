@@ -7,9 +7,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::project::{
-    ScanObservations, TrackedIndex, activity_window, has_git_marker, is_directory_if_present,
-    iso_days_ago, listed_repositories, normalized_roots, orphaned_worktree, owning_repo,
-    repo_has_active_build, repo_last_activity, tracks_files_under,
+    ScanObservations, TrackedIndex, UnreadFolder, activity_window, has_git_marker,
+    is_directory_if_present, iso_days_ago, listed_repositories, normalized_roots,
+    orphaned_worktree, owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under,
+    unborn_branch, unjudged_finding, unread_folders_finding,
 };
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size,
@@ -58,18 +59,26 @@ impl Op for Artifacts {
         observations.process_cwds()?;
         let cutoff = iso_days_ago(ctx.active_days);
         let mut groups: BTreeMap<PathBuf, Vec<ArtifactCandidate>> = BTreeMap::new();
+        let mut findings = Vec::new();
+        let mut unread = Vec::new();
         for root in normalized_roots(&ctx.roots) {
             if !is_directory_if_present(root)? {
                 continue;
             }
-            for candidate in find_artifacts(root)? {
-                if let Some(owner) = owning_repo(&candidate.path)? {
-                    groups.entry(owner).or_default().push(candidate);
+            for candidate in find_artifacts(root, &mut unread)? {
+                match owning_repo(&candidate.path) {
+                    Ok(Some(owner)) => groups.entry(owner).or_default().push(candidate),
+                    Ok(None) => {}
+                    Err(error) => {
+                        findings.push(unjudged_finding("artifacts", &candidate.path, &error));
+                    }
                 }
             }
         }
+        if !unread.is_empty() {
+            findings.push(unread_folders_finding("artifacts", &unread));
+        }
 
-        let mut findings = Vec::new();
         let mut active = 0usize;
         let mut build_active = 0usize;
         let mut busy = Vec::new();
@@ -78,55 +87,92 @@ impl Op for Artifacts {
         let mut repositories = 0usize;
         let mut orphaned = 0usize;
         let mut orphans = Vec::new();
+        let mut unborn = Vec::new();
         for (owner, candidates) in groups {
-            if orphaned_worktree(&owner)? {
-                orphaned = orphaned.saturating_add(candidates.len());
-                orphans.push(owner);
-                continue;
-            }
-            if repo_has_active_build(&owner, observations.process_cwds()?) {
-                build_active = build_active.saturating_add(candidates.len());
-                busy.push(owner);
-                continue;
-            }
-            let last_activity = observations.last_activity(&owner)?;
-            if last_activity.as_str() > cutoff.as_str() {
-                active = active.saturating_add(candidates.len());
-                continue;
-            }
-            let mut index = TrackedIndex::list(&owner)?;
-            for candidate in candidates {
-                if index.holds_tracked_files(&candidate.path)? {
-                    tracked = tracked.saturating_add(1);
-                    continue;
+            // A repository whose checks fail offers nothing — not even a
+            // finding judged before the failure — and reports the error; every
+            // other repository is judged as usual.
+            let mut judged = Vec::new();
+            // Counted only once the whole repository has been judged, so a
+            // repository that then fails is reported as an error, not a skip.
+            let (mut tracked_here, mut keypairs_here, mut repositories_here) = (0usize, 0, 0);
+            let result = (|| -> Result<()> {
+                if orphaned_worktree(&owner)? {
+                    orphaned = orphaned.saturating_add(candidates.len());
+                    orphans.push(owner.clone());
+                    return Ok(());
                 }
-                match authored_entry_under(&candidate.path)? {
-                    Some(Authored::ProgramKeypair(_)) => {
-                        keypairs = keypairs.saturating_add(1);
+                if repo_has_active_build(&owner, observations.process_cwds()?) {
+                    build_active = build_active.saturating_add(candidates.len());
+                    busy.push(owner.clone());
+                    return Ok(());
+                }
+                let last_activity = match observations.last_activity(&owner) {
+                    Ok(last_activity) => last_activity,
+                    Err(_) if unborn_branch(&owner) => {
+                        unborn.push(owner.clone());
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                };
+                if last_activity.as_str() > cutoff.as_str() {
+                    active = active.saturating_add(candidates.len());
+                    return Ok(());
+                }
+                let mut index = TrackedIndex::list(&owner)?;
+                for candidate in &candidates {
+                    if index.holds_tracked_files(&candidate.path)? {
+                        tracked_here += 1;
                         continue;
                     }
-                    Some(Authored::Repository(_)) => {
-                        repositories = repositories.saturating_add(1);
-                        continue;
+                    match authored_entry_under(&candidate.path)? {
+                        Some(Authored::ProgramKeypair(_)) => {
+                            keypairs_here += 1;
+                            continue;
+                        }
+                        Some(Authored::Repository(_)) => {
+                            repositories_here += 1;
+                            continue;
+                        }
+                        _ => {}
                     }
-                    _ => {}
+                    let size = dir_size(&candidate.path)?;
+                    judged.push(
+                        Finding::new(
+                            candidate.evidence.label.clone(),
+                            Some(candidate.path.clone()),
+                            size,
+                            format!(
+                                "repo last active {last_activity} UTC; corroboration: {}",
+                                candidate.evidence.corroboration
+                            ),
+                            escalate(5, size),
+                            Action::Trash,
+                        )
+                        .with_project(&owner),
+                    );
                 }
-                let size = dir_size(&candidate.path)?;
-                findings.push(
-                    Finding::new(
-                        candidate.evidence.label,
-                        Some(candidate.path),
-                        size,
-                        format!(
-                            "repo last active {last_activity} UTC; corroboration: {}",
-                            candidate.evidence.corroboration
-                        ),
-                        escalate(5, size),
-                        Action::Trash,
-                    )
-                    .with_project(&owner),
-                );
+                Ok(())
+            })();
+            match result {
+                Ok(()) => {
+                    findings.append(&mut judged);
+                    tracked = tracked.saturating_add(tracked_here);
+                    keypairs = keypairs.saturating_add(keypairs_here);
+                    repositories = repositories.saturating_add(repositories_here);
+                }
+                Err(error) => findings.push(unjudged_finding("artifacts", &owner, &error)),
             }
+        }
+        if !unborn.is_empty() && !ctx.json {
+            ctx.diagnostic(
+                "info",
+                format!(
+                    "skipping artifact directories in {} repositories with no commits yet, so their activity cannot be read: {}",
+                    unborn.len(),
+                    listed_repositories(&unborn)
+                ),
+            );
         }
         if orphaned > 0 && !ctx.json {
             ctx.diagnostic(
@@ -378,12 +424,24 @@ fn is_program_keypair_name(name: &OsStr) -> bool {
     }
 }
 
-fn find_artifacts(root: &Path) -> Result<Vec<ArtifactCandidate>> {
+/// Corroborated build output under `root`. A folder the walk cannot read is
+/// recorded in `unread` and skipped with everything below it, as a scan root
+/// that cannot be read is; only the root itself failing fails the walk.
+fn find_artifacts(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<ArtifactCandidate>> {
     let mut found = Vec::new();
     let mut entries = walkdir::WalkDir::new(root).follow_links(false).into_iter();
     while let Some(result) = entries.next() {
-        let entry =
-            result.with_context(|| format!("cannot scan artifacts under {}", root.display()))?;
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) if error.depth() > 0 => {
+                unread.push(UnreadFolder::from_walk(&error));
+                continue;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("cannot scan artifacts under {}", root.display()));
+            }
+        };
         if !entry.file_type().is_dir() {
             continue;
         }
@@ -391,16 +449,28 @@ fn find_artifacts(root: &Path) -> Result<Vec<ArtifactCandidate>> {
             entries.skip_current_dir();
             continue;
         }
-        if let Some(evidence) = artifact_evidence(entry.path())? {
-            if has_git_marker(entry.path())? {
+        let evidence = match artifact_evidence(entry.path()).and_then(|evidence| {
+            Ok(match evidence {
+                Some(evidence) => Some((evidence, has_git_marker(entry.path())?)),
+                None => None,
+            })
+        }) {
+            Ok(evidence) => evidence,
+            Err(error) if entry.depth() > 0 => {
+                unread.push(UnreadFolder::new(entry.path(), &error));
                 entries.skip_current_dir();
                 continue;
             }
-            found.push(ArtifactCandidate {
-                path: entry.path().to_path_buf(),
-                evidence,
-            });
+            Err(error) => return Err(error),
+        };
+        if let Some((evidence, repository)) = evidence {
             entries.skip_current_dir();
+            if !repository {
+                found.push(ArtifactCandidate {
+                    path: entry.path().to_path_buf(),
+                    evidence,
+                });
+            }
         }
     }
     found.sort_by(|left, right| left.path.cmp(&right.path));
@@ -631,7 +701,9 @@ mod tests {
         std::fs::write(&marker, CACHEDIR_SIGNATURE).unwrap();
         symlink(&marker, linked.join("CACHEDIR.TAG")).unwrap();
 
-        let found = find_artifacts(&root).unwrap();
+        let mut unread = Vec::new();
+        let found = find_artifacts(&root, &mut unread).unwrap();
+        assert!(unread.is_empty());
         let paths = found
             .iter()
             .map(|candidate| candidate.path.as_path())
@@ -679,7 +751,9 @@ mod tests {
         std::fs::write(root.join("git/nested/Cargo.toml"), "[package]").unwrap();
         std::fs::write(root.join("package.json"), "{}").unwrap();
 
-        let found = find_artifacts(&root).unwrap();
+        let mut unread = Vec::new();
+        let found = find_artifacts(&root, &mut unread).unwrap();
+        assert!(unread.is_empty());
 
         let paths = found
             .iter()
@@ -1172,26 +1246,118 @@ mod tests {
         crate::ops::remove_test_path(root);
     }
 
-    /// A tree the scan cannot read through is not known to be free of keys or
-    /// repositories, so the category refuses rather than offer it.
-    #[test]
-    fn an_unreadable_tree_refuses_rather_than_offers() {
-        use std::os::unix::fs::PermissionsExt;
+    fn stale_target(repo: &Path) -> PathBuf {
+        init_old_git_repo(repo).unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[package]").unwrap();
+        let target = repo.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("out"), "x").unwrap();
+        target
+    }
 
+    /// A tree the scan cannot read through is not known to be free of keys or
+    /// repositories, so it is never offered: its repository reports the error
+    /// and offers nothing, while every other repository is judged as usual.
+    #[test]
+    fn an_unreadable_tree_refuses_its_repository_rather_than_offers() {
         let (_fixture, root, home) = deletable_root("unreadable-tree");
+        let healthy = stale_target(&home.join("healthy"));
+        // Judged in path order: `a/target` is measured, then `b/target`
+        // fails, so the repository's already-built finding must be withheld.
         let repo = home.join("app");
         init_old_git_repo(&repo).unwrap();
-        std::fs::write(repo.join("Cargo.toml"), "[package]").unwrap();
-        let locked = repo.join("target/locked");
-        std::fs::create_dir_all(&locked).unwrap();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        for package in ["a", "b"] {
+            std::fs::create_dir_all(repo.join(package).join("target")).unwrap();
+            std::fs::write(repo.join(package).join("Cargo.toml"), "[package]").unwrap();
+        }
+        std::fs::write(repo.join("a/target/out"), "x").unwrap();
+        let locked = repo.join("b/target/locked");
+        let _locked = crate::ops::Unreadable::new(&locked, 0o000);
         let ctx = context(home.clone());
 
-        let refused = Artifacts.scan_with_process_cwds(&ctx, &[]);
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
 
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let error = format!("{:#}", refused.unwrap_err());
-        assert!(error.contains("cannot search"), "{error}");
+        assert_eq!(
+            offered(&findings),
+            vec![healthy.as_path()],
+            "PV artifacts/repository-contained: an unreadable tree was offered"
+        );
+        let errors = findings
+            .iter()
+            .filter_map(Finding::scan_error)
+            .collect::<Vec<_>>();
+        assert!(
+            errors.len() == 1
+                && errors[0].contains("cannot search")
+                && errors[0].contains(&repo.display().to_string()),
+            "{errors:?}"
+        );
+        drop(_locked);
+        crate::ops::remove_test_path(root);
+    }
+
+    /// The failure found on the owner's Mac: a root-owned `.fseventsd`
+    /// (`0o700`) left in a project's scratch folder by a mounted disk image.
+    /// Probing it for `CACHEDIR.TAG` was refused, and that emptied `artifacts`,
+    /// `node-modules` and `purge` alike. The folder is now reported as an
+    /// error, nothing in it is offered, and everything else is still judged.
+    #[test]
+    fn an_unreadable_folder_is_reported_and_blocks_only_itself() {
+        let (_fixture, root, home) = deletable_root("unreadable-walk");
+        let target = stale_target(&home.join("app"));
+        let locked = home.join("app/.scratch/recovery-volume/.fseventsd");
+        let unlisted = home.join("other/unlisted");
+        let _locked = crate::ops::Unreadable::new(&locked, 0o000);
+        let _unlisted = crate::ops::Unreadable::new(&unlisted, 0o100);
+        let ctx = context(home.clone());
+
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+
+        assert_eq!(offered(&findings), vec![target.as_path()]);
+        let errors = findings
+            .iter()
+            .filter_map(Finding::scan_error)
+            .collect::<Vec<_>>();
+        assert!(
+            errors.len() == 1
+                && errors[0].contains("could not be read")
+                && errors[0].contains(&locked.display().to_string())
+                && errors[0].contains(&unlisted.display().to_string()),
+            "PV artifacts/unread-folders-reported: {errors:?}"
+        );
+        drop((_locked, _unlisted));
+        crate::ops::remove_test_path(root);
+    }
+
+    /// A repository created with `git init` and not yet committed to is left
+    /// out and named; it never empties the category.
+    #[test]
+    fn a_repository_without_commits_is_skipped_and_named() {
+        let (_fixture, root, home) = deletable_root("unborn-artifacts");
+        let target = stale_target(&home.join("stale"));
+        let fresh = home.join("fresh");
+        std::fs::create_dir_all(fresh.join("target")).unwrap();
+        std::fs::write(fresh.join("Cargo.toml"), "[package]").unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .current_dir(&fresh)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let ctx = context(home.clone());
+
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+
+        assert_eq!(offered(&findings), vec![target.as_path()]);
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|message| message.contains("no commits yet")
+                    && message.contains(&fresh.display().to_string())),
+            "the repository without commits must be named"
+        );
         crate::ops::remove_test_path(root);
     }
 

@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.10.4.
+This source tree and its packaged documentation describe devtrim v0.10.5.
 
 ## Install
 
@@ -46,7 +46,7 @@ cp target/release/devtrim /usr/local/bin/
 - **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets. Xcode and Swift toolchain apply reassert exact direct-child authority — for a DerivedData folder holding Swift package checkouts, its directories but `SourcePackages`; `node_modules` apply reasserts a real authorized directory leaf and rejects symlinks plus `.git`, nested dependency-tree, and non-normal ancestors.
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
 - **Untrusted repositories stay inert.** devtrim's two Git queries — the activity probe and the tracked-file check — disable every repository-configurable path by which they could run a program: hooks, fsmonitor, signature verification through `gpg.program`, and lazy fetches through a promisor remote's `uploadpack`. Previewing a directory that arrived with a hostile `.git/config` runs nothing. A `git` too old for `--no-lazy-fetch` refuses the repository.
-- **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation. A repository whose Git query fails blocks its whole category's preview, not only its own directories, so one broken `.git` under a scan root empties `purge` until it is fixed or left out of the roots; the error names it.
+- **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation. A failure blocks only what it touches: a repository whose Git query or tree check fails offers nothing and is reported as an error, so the run exits nonzero, while every other repository is still judged; a folder the walk cannot read is reported as an error too, and nothing in it is offered. A failed liveness probe still blocks its whole category.
 - **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while Xcode, `xcodebuild`, or the build services Xcode.app builds run through are running. A probe that cannot complete blocks instead of passing; a build tool that exited between the process list and the directory lookup is not mistaken for one.
 - **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle. Every directory action rejects foreign devices and Git repository/worktree markers at any depth before mutation; the one exception is the empty `.git` uv writes into its own source-distribution bucket, which Git itself rejects as an invalid gitfile, tolerated only in that exact shape under a tagged cache root that `clean caches` holds uv's lock on or `trash-empty` finds in the Trash. Permanent deletes additionally quarantine the verified leaf and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
 - **Write-ahead journal.** Every apply records an attempt before deletion and a result after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). Symlinked path components are refused, complete records are serialized and synced, and an unwritable journal blocks apply. Rotation (10 MiB, keep 3) cannot split an in-flight pair. `devtrim history` is read-only, waits for guarded applies before snapshotting, pairs legacy records across generations, reverse-scans only the bounded newest tail needed for the requested limit, and reports a genuinely unmatched attempt as interrupted.
@@ -153,8 +153,18 @@ Documents, Downloads), cloud storage, and `~/Library` stay out unless you name
 them. Every human preview of these commands begins with an `info scan roots:`
 line naming the roots, where they came from, and how to change them, so an empty
 result never reads as a clean machine when devtrim looked in one place. The skip
-notes name what is holding findings back: the activity window, and the
-repositories where a build process is running.
+notes name what is holding findings back: the activity window, the
+repositories where a build process is running, and repositories that cannot be
+judged yet — a linked worktree whose repository is gone, or a repository
+created with `git init` and not yet committed to.
+
+A `node_modules` counts as an install only when the `package.json` it was
+installed from sits beside it, because only that manifest lets a later install
+recreate it. React Native copies package images into
+`<App>.app/assets/node_modules`, so every archived or unpacked iOS build holds a
+`node_modules` with no manifest, and removing it would break the bundle's
+signature; a packaged tool such as corepack's pnpm ships its dependencies in
+`dist/node_modules` the same way. Neither is offered, and apply refuses one.
 
 A `node_modules` inside a repository's own build output — Next.js
 `output: 'standalone'` copies one into `.next/standalone` — belongs to that

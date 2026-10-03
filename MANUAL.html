@@ -414,7 +414,7 @@
   <h1 class="wordmark">DEVTRIM</h1>
   <p class="tagline"><b>measure</b> · classify · trim</p>
   <p class="chip-row">
-    <span class="chip g">v0.10.4</span>
+    <span class="chip g">v0.10.5</span>
     <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
@@ -517,7 +517,7 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">node-modules</span><span class="cmd-desc">exact paths in conclusively stale repos</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p>Maps each <code>node_modules</code> to its owning Git repo, skips repos with recent activity — the newer of HEAD's commit date and its newest reflog entry, so a clone or checkout of old history counts as active — and applies only the exact paths shown. Reading that activity runs no program the repository configures. Apply reasserts a real <code>node_modules</code> directory leaf and refuses symlinks plus <code>.git</code>, nested dependency-tree, or non-normal ancestors. A <code>node_modules</code> holding any file its repository tracks is committed content, not a stale install, and is never offered. Unknown Git activity is refused.</p></div>
+    <div class="card-body"><p>Maps each <code>node_modules</code> to its owning Git repo, skips repos with recent activity — the newer of HEAD's commit date and its newest reflog entry, so a clone or checkout of old history counts as active — and applies only the exact paths shown. Reading that activity runs no program the repository configures. Apply reasserts a real <code>node_modules</code> directory leaf and refuses symlinks plus <code>.git</code>, nested dependency-tree, or non-normal ancestors. A <code>node_modules</code> holding any file its repository tracks is committed content, not a stale install, and is never offered. Neither is one without a <code>package.json</code> beside it — the manifest an install recreates it from — such as the <code>assets/node_modules</code> inside an archived or unpacked iOS app bundle, whose removal would break the bundle's signature. Unknown Git activity is refused: that repository offers nothing and is reported as an error, while the others are still judged. A repository with no commits yet is skipped and named.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">artifacts</span><span class="cmd-desc">corroborated build artifacts in stale repos</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
@@ -525,7 +525,7 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">purge</span><span class="cmd-desc">node_modules + build artifacts, by project</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
-    <div class="card-body"><p><code>devtrim purge</code> is the project view of the two categories above: stale <code>node_modules</code> and corroborated build artifacts in one plan, ordered by project with the largest first and a header per project. It adds no authority of its own — each finding keeps its category's staleness and build-liveness gates and is applied by that category, which reasserts its exact shape. Like every category it moves to Trash unless you pass <code>--shred</code>. Like Mole's <code>mo purge</code>, it skips a directory holding files its repository tracks, and a build directory holding a Solana program keypair or a nested Git repository. Unlike <code>mo purge</code>, it never matches ambiguous names such as <code>build</code>, <code>dist</code>, or <code>coverage</code>, and never touches a repository with recent Git activity. In the TUI it is <code>p</code>, where <code>Space</code> leaves individual projects' items out.</p></div>
+    <div class="card-body"><p><code>devtrim purge</code> is the project view of the two categories above: stale <code>node_modules</code> and corroborated build artifacts in one plan, ordered by project with the largest first and a header per project. It adds no authority of its own — each finding keeps its category's staleness and build-liveness gates and is applied by that category, which reasserts its exact shape. Like every category it moves to Trash unless you pass <code>--shred</code>. Like Mole's <code>mo purge</code>, it skips a directory holding files its repository tracks, and a build directory holding a Solana program keypair or a nested Git repository. Unlike <code>mo purge</code>, it never matches ambiguous names such as <code>build</code>, <code>dist</code>, or <code>coverage</code>, and never touches a repository with recent Git activity. A folder it cannot read and a repository it cannot judge each offer nothing and are reported as errors, without emptying the plan. In the TUI it is <code>p</code>, where <code>Space</code> leaves individual projects' items out.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">xcode</span><span class="cmd-desc">DeviceSupport + DerivedData</span><span class="pill a"><span class="sq"><i class="on"></i><i class="on"></i><i></i></span>CAUTION</span></summary>
@@ -752,7 +752,7 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
 </section>
 
 <footer>
-  <span>devtrim <b>v0.10.4</b></span>
+  <span>devtrim <b>v0.10.5</b></span>
   <span>Apache-2.0</span>
   <span>single self-contained HTML file</span>
   <span>rust · edition 2024</span>

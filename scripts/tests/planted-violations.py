@@ -425,8 +425,8 @@ CASES = (
     Case(
         name="artifacts/keypair-scan",
         relative_path="src/ops/artifacts.rs",
-        before="                        keypairs = keypairs.saturating_add(1);\n                        continue;\n",
-        after="                        keypairs = keypairs.saturating_add(1);\n",
+        before="                            keypairs_here += 1;\n                            continue;\n",
+        after="                            keypairs_here += 1;\n",
         tests=("ops::artifacts::tests::a_tree_holding_a_program_keypair_is_never_offered_or_removed",),
         marker="PV artifacts/keypair-scan",
     ),
@@ -461,8 +461,8 @@ CASES = (
     Case(
         name="artifacts/nested-repository-scan",
         relative_path="src/ops/artifacts.rs",
-        before="                        repositories = repositories.saturating_add(1);\n                        continue;\n",
-        after="                        repositories = repositories.saturating_add(1);\n",
+        before="                            repositories_here += 1;\n                            continue;\n",
+        after="                            repositories_here += 1;\n",
         tests=("ops::artifacts::tests::a_tree_holding_a_git_repository_is_never_offered_or_removed",),
         marker="PV artifacts/nested-repository-scan",
     ),
@@ -497,16 +497,16 @@ CASES = (
     Case(
         name="node_modules/build-output-walk",
         relative_path="src/ops/node_modules.rs",
-        before="        if entry.depth() > 0\n",
-        after="        if false && entry.depth() > 0\n",
+        before="            Ok(true) => entries.skip_current_dir(),\n",
+        after="            Ok(true) => {}\n",
         tests=("ops::node_modules::tests::a_node_modules_inside_build_output_belongs_to_that_output",),
         marker="PV node_modules/build-output-walk",
     ),
     Case(
         name="node_modules/build-output-scan",
         relative_path="src/ops/node_modules.rs",
-        before="                        if build_output_between(&owner, &path)?.is_some() {\n",
-        after="                        if false && build_output_between(&owner, &path)?.is_some() {\n",
+        before="                    if build_output_between(&owner, &path)?.is_some() {\n",
+        after="                    if false && build_output_between(&owner, &path)?.is_some() {\n",
         tests=("ops::node_modules::tests::a_node_modules_inside_build_output_belongs_to_that_output",),
         marker="PV node_modules/build-output-scan",
     ),
@@ -517,6 +517,79 @@ CASES = (
         after="                if let Some(output) = build_output_between(&owner, path)?.filter(|_| false) {\n",
         tests=("ops::node_modules::tests::a_node_modules_inside_build_output_belongs_to_that_output",),
         marker="PV node_modules/build-output-apply",
+    ),
+    # A node_modules is an install only beside the package.json it was
+    # installed from: an app bundle's `assets/node_modules` and a packaged
+    # tool's `dist/node_modules` have none, and no install recreates them.
+    Case(
+        name="node_modules/manifest-scan",
+        relative_path="src/ops/node_modules.rs",
+        before="                    if !has_manifest(&path)? {\n",
+        after="                    if false && !has_manifest(&path)? {\n",
+        tests=("ops::node_modules::tests::a_node_modules_without_a_manifest_beside_it_is_not_an_install",),
+        marker="PV node_modules/manifest-scan",
+    ),
+    Case(
+        name="node_modules/manifest-apply",
+        relative_path="src/ops/node_modules.rs",
+        before="                if !has_manifest(path)? {\n",
+        after="                if false && !has_manifest(path)? {\n",
+        tests=("ops::node_modules::tests::a_node_modules_without_a_manifest_beside_it_is_not_an_install",),
+        marker="PV node_modules/manifest-apply",
+    ),
+    # A repository whose checks fail offers nothing, not even a finding judged
+    # before the failure; only the repository's error is reported.
+    Case(
+        name="node_modules/repository-contained",
+        relative_path="src/ops/node_modules.rs",
+        before="                Err(error) => findings.push(unjudged_finding(\"node_modules\", &owner, &error)),\n",
+        after="                Err(error) => {\n                    findings.append(&mut judged);\n                    findings.push(unjudged_finding(\"node_modules\", &owner, &error));\n                }\n",
+        tests=("ops::node_modules::tests::a_failing_repository_blocks_only_its_own_findings",),
+        marker="PV node_modules/repository-contained",
+    ),
+    Case(
+        name="artifacts/repository-contained",
+        relative_path="src/ops/artifacts.rs",
+        before="                Err(error) => findings.push(unjudged_finding(\"artifacts\", &owner, &error)),\n",
+        after="                Err(error) => {\n                    findings.append(&mut judged);\n                    findings.push(unjudged_finding(\"artifacts\", &owner, &error));\n                }\n",
+        tests=("ops::artifacts::tests::an_unreadable_tree_refuses_its_repository_rather_than_offers",),
+        marker="PV artifacts/repository-contained",
+    ),
+    # A folder the walk cannot read is reported, never silently dropped from
+    # the plan (CODING_STANDARDS.md S8).
+    Case(
+        name="node_modules/unread-folders-reported",
+        relative_path="src/ops/node_modules.rs",
+        before="            findings.push(unread_folders_finding(\"node_modules\", &unread));\n",
+        after="            let _ = &unread;\n",
+        tests=("ops::node_modules::tests::an_unreadable_folder_is_reported_and_blocks_only_itself",),
+        marker="PV node_modules/unread-folders-reported",
+    ),
+    Case(
+        name="artifacts/unread-folders-reported",
+        relative_path="src/ops/artifacts.rs",
+        before="            findings.push(unread_folders_finding(\"artifacts\", &unread));\n",
+        after="            let _ = &unread;\n",
+        tests=("ops::artifacts::tests::an_unreadable_folder_is_reported_and_blocks_only_itself",),
+        marker="PV artifacts/unread-folders-reported",
+    ),
+    # Only Git's own unborn state is skipped: HEAD symbolic and resolving to
+    # nothing. A HEAD naming a missing commit must keep its error.
+    Case(
+        name="project/unborn-branch",
+        relative_path="src/ops/project.rs",
+        before="        .is_some_and(|resolved| resolved.status.code() == Some(1) && resolved.stdout.is_empty())\n",
+        after="        .is_some_and(|resolved| resolved.status.code() == Some(99) && resolved.stdout.is_empty())\n",
+        tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
+        marker="PV project/unborn-branch",
+    ),
+    Case(
+        name="project/unborn-dangling",
+        relative_path="src/ops/project.rs",
+        before="        .is_some_and(|resolved| resolved.status.code() == Some(1) && resolved.stdout.is_empty())\n",
+        after="        .is_some_and(|resolved| resolved.status.code().is_some())\n",
+        tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
+        marker="PV project/unborn-dangling",
     ),
     # A default project folder linked to the home folder or above it would make
     # the whole home or disk a scan root nobody named.

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::report::{Action, Finding};
 use crate::safety::is_git_metadata_name;
 
 type ActivityObservation = Arc<OnceLock<std::result::Result<String, String>>>;
@@ -517,6 +518,98 @@ pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
     }
 }
 
+/// Whether `repo` is on an unborn branch: HEAD names a branch that has no
+/// commit yet (Git glossary, "unborn") — `git init` before the first commit,
+/// or `checkout --orphan`. The activity query fails there, so the scanners
+/// leave such a repository out and name it instead of failing the category;
+/// they ask only after that query has failed, so no repository pays for it.
+///
+/// HEAD must be symbolic (`symbolic-ref -q HEAD` succeeds) and resolve to
+/// nothing (`rev-parse -q --verify HEAD` exits 1 and prints nothing). A HEAD
+/// naming a commit whose object is gone still resolves, and a detached HEAD
+/// is not symbolic, so neither reads as unborn. Any other answer, or a Git
+/// that cannot run, is not unborn either: the original failure then stands.
+pub(crate) fn unborn_branch(repo: &Path) -> bool {
+    let git_output = |arguments: &[&str]| {
+        let mut command = hardened_git(repo, "git");
+        command.args(arguments);
+        command.output().ok()
+    };
+    if !git_output(&["symbolic-ref", "-q", "HEAD"])
+        .is_some_and(|symbolic| symbolic.status.success())
+    {
+        return false;
+    }
+    git_output(&["rev-parse", "-q", "--verify", "HEAD"])
+        .is_some_and(|resolved| resolved.status.code() == Some(1) && resolved.stdout.is_empty())
+}
+
+/// A folder a project walk could not read, and why. Like a scan root that
+/// cannot be read, it bounds where the scan looked, never what may go: nothing
+/// in it is offered, and the scan says so.
+pub(crate) struct UnreadFolder {
+    pub(crate) path: PathBuf,
+    pub(crate) reason: String,
+}
+
+impl UnreadFolder {
+    pub(crate) fn new(path: &Path, error: &anyhow::Error) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            reason: error.root_cause().to_string(),
+        }
+    }
+
+    pub(crate) fn from_walk(error: &walkdir::Error) -> Self {
+        let reason = error
+            .io_error()
+            .map_or_else(|| error.to_string(), ToString::to_string);
+        Self {
+            path: error.path().map(Path::to_path_buf).unwrap_or_default(),
+            reason,
+        }
+    }
+}
+
+/// The error finding for folders a project walk could not read: the scan did
+/// not look inside them, so nothing in them is offered, and the run reports
+/// it (`CODING_STANDARDS.md` S8) rather than present a shorter plan as a clean
+/// one. It names the first three with their reasons, then how many more.
+pub(crate) fn unread_folders_finding(subject: &str, folders: &[UnreadFolder]) -> Finding {
+    let mut named = folders
+        .iter()
+        .take(3)
+        .map(|folder| format!("{} ({})", folder.path.display(), folder.reason))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if folders.len() > 3 {
+        named.push_str(&format!(" and {} more", folders.len() - 3));
+    }
+    error_finding(
+        format!("{subject}: unreadable folders"),
+        format!(
+            "{} folder(s) could not be read while looking for {subject}, so nothing in them is offered: {named}",
+            folders.len()
+        ),
+    )
+}
+
+/// The error finding for something a scan found but could not judge: the
+/// repository or candidate at `path` offers nothing, while the rest of the
+/// category is judged as usual.
+pub(crate) fn unjudged_finding(subject: &str, path: &Path, error: &anyhow::Error) -> Finding {
+    error_finding(
+        format!("{subject} not judged"),
+        format!("cannot judge {subject} in {}: {error:#}", path.display()),
+    )
+}
+
+/// A finding that offers nothing and carries no target; its `scan_error`
+/// makes the run report failure.
+fn error_finding(label: String, message: String) -> Finding {
+    Finding::new(label, None, 0, &message, 5, Action::Info).with_scan_error(message)
+}
+
 pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf]) -> bool {
     process_cwds.iter().any(|cwd| cwd.starts_with(repo))
 }
@@ -531,6 +624,63 @@ mod tests {
         crate::ops::remove_test_path(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    /// An unborn branch (Git glossary: HEAD names a branch that has no commit
+    /// yet — `git init` before the first commit, or `checkout --orphan`) is a
+    /// state Git defines, and the activity query fails there. Only that state
+    /// is recognized: a HEAD naming a commit whose object is gone and a
+    /// detached HEAD both stay what they are, so their failures still refuse.
+    #[test]
+    fn an_unborn_branch_is_recognized_and_a_dangling_head_is_not() {
+        let base = temp("unborn");
+        let git = |repo: &Path, arguments: &[&str]| {
+            let status = Command::new("git")
+                .args(arguments)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .current_dir(repo)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {arguments:?}");
+        };
+        let fresh = base.join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        git(&fresh, &["init", "-q"]);
+        assert!(repo_last_activity(&fresh).is_err());
+        assert!(
+            unborn_branch(&fresh),
+            "PV project/unborn-branch: a repository without commits was not recognized"
+        );
+
+        let orphan = base.join("orphan");
+        init_old_git_repo(&orphan).unwrap();
+        git(&orphan, &["checkout", "-q", "--orphan", "fresh-root"]);
+        assert!(unborn_branch(&orphan), "an orphan checkout is unborn too");
+
+        let dangling = base.join("dangling");
+        init_old_git_repo(&dangling).unwrap();
+        for entry in std::fs::read_dir(dangling.join(".git/objects")).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name().len() == 2 {
+                std::fs::remove_dir_all(entry.path()).unwrap();
+            }
+        }
+        assert!(repo_last_activity(&dangling).is_err());
+        assert!(
+            !unborn_branch(&dangling),
+            "PV project/unborn-dangling: a HEAD naming a missing commit read as unborn"
+        );
+
+        let born = base.join("born");
+        init_old_git_repo(&born).unwrap();
+        assert!(!unborn_branch(&born), "a repository with a commit is born");
+
+        let detached = base.join("detached");
+        init_old_git_repo(&detached).unwrap();
+        git(&detached, &["checkout", "-q", "--detach"]);
+        assert!(!unborn_branch(&detached), "a detached HEAD is not unborn");
+        crate::ops::remove_test_path(base);
     }
 
     /// Git records a worktree's `gitdir` as raw path bytes, so a name that is
