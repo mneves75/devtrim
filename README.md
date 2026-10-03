@@ -270,8 +270,8 @@ wholesale; that list is the carve-out, it is the same constant the protection
 boundary reads, and a name is only on it when one developer tool owns the
 directory and rebuilds it on demand.
 
-Homebrew's cache, found through `brew --cache`, is offered whole unless it
-holds a Git clone Homebrew keeps for a Git-sourced formula (`<name>--git`).
+Homebrew's cache, found through `brew --cache`, is offered whole unless it is
+the standard `~/Library/Caches/Homebrew` and holds a Git clone Homebrew keeps for a Git-sourced formula (`<name>--git`).
 devtrim never removes a repository, so such a cache is offered as its other
 direct children — `downloads`, `api`, `Cask`, and so on — and the clones stay;
 links Homebrew left at the top are left for `brew cleanup`.
@@ -355,8 +355,8 @@ narrows the purge to what devtrim itself moved there: each move to the Trash
 journals the item's device, inode and birth time, which survive the move while
 Finder renames the item at will, and only a Trash item matching a successful
 move is offered. Everything else stays and is counted in a note; an apply
-journal that cannot be read whole is an error, because an item it recorded
-could be missed.
+journal that cannot be read whole refuses the narrowed purge and offers
+nothing, because the record that tells an item apart could be the one missed.
 A direct item named as an ASCII-case variant of `.git` is warned about and left
 in Trash instead of blocking the other exact items.
 

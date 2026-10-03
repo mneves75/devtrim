@@ -556,7 +556,7 @@ fn actionable_total(findings: &[Finding]) -> String {
 
 /// How many entries are findings and how many stand for an error: an entry
 /// carrying a scan error marks something the scan could not judge.
-fn finding_and_error_counts(findings: &[Finding]) -> (usize, usize) {
+pub(crate) fn finding_and_error_counts(findings: &[Finding]) -> (usize, usize) {
     let errors = findings
         .iter()
         .filter(|finding| finding.scan_error().is_some())

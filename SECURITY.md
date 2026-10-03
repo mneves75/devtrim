@@ -41,7 +41,7 @@ Non-negotiable boundaries:
 - `artifacts` and `node_modules` never offer or apply a directory holding a file its repository tracks. The index is listed once per repository and each tracked path's ancestor at the directory's depth is looked up on the volume and compared with the directory by device and inode, so a directory renamed only in case, in Unicode case, or to an ASCII alias the volume folds to (`STRASSE` for `Straße`) is still recognized: Git compares spellings, the volume compares names. `artifacts` never offers or applies a tree holding an entry named `*-keypair.json`, matched in any case and with the Kelvin sign and long s that APFS folds onto `k` and `s`, without following links: `cargo build-sbf` writes a Solana program's keypair there once, and no rebuild restores it. Nor does it offer or apply a tree holding a Git metadata name anywhere below its root, which the sink would refuse anyway. These checks run at preview and again at apply, and a query or walk that fails refuses. `artifacts` and `node_modules` preflight every finding before changing anything; a finding the sink then refuses costs only itself.
 - Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
 - Literal and physically resolved parents must agree; symlinked ancestors fail closed. Any ASCII-case variant of a `.git` path component is refused.
-- `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children. An item the sink refuses at apply — a trashed project that still holds its repository — is recorded and skipped; the purge continues with the other exact items and reports nonzero. `--only-devtrim` narrows the purge to items whose device, inode and birth time match a Trash move devtrim journaled as successful, so another program's item — even one carrying a name devtrim's item had — is never offered; an unreadable history is an error, never a wider set.
+- `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children. An item the sink refuses at apply — a trashed project that still holds its repository — is recorded and skipped; the purge continues with the other exact items and reports nonzero. `--only-devtrim` narrows the purge to items whose device, inode and birth time match a Trash move devtrim journaled as successful, so another program's item — even one carrying a name devtrim's item had — is never offered; a history that cannot be read whole refuses the purge and offers nothing.
 - System roots and descendants (including ASCII case variants), the user home
   root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
   Only named managed Library subpaths are eligible. The `~/Library/Caches`
@@ -140,7 +140,10 @@ Non-negotiable boundaries:
   activity window, or that holds a file one of those processes has open, is
   refused; an older, closed folder may go. The age gate is the main guard,
   because the compilers a build runs are not Xcode processes; an `lsof`
-  listing of Xcode's open files must be complete or DerivedData is refused. A working-directory name that `lsof` escapes ambiguously
+  listing of Xcode's open files must be complete, and every file in it that is
+  not a socket, pipe or queue must be named by a path, or DerivedData is
+  refused; that refusal, like a folder whose age cannot be read, is an error
+  entry that blocks only DerivedData or that folder. A working-directory name that `lsof` escapes ambiguously
   refuses rather than matching nothing. Liveness probes use fixed
   argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
   `lsof` exiting 1 is accepted only when every process it did not report is

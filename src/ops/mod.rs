@@ -1011,47 +1011,39 @@ pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
 /// a move that succeeded. The Trash is shared with every other program and
 /// session, and Finder renames what it moves at will, so the name proves
 /// nothing; the identity does. The selection only narrows: an item no record
-/// names stays, and a history that cannot be read whole is an error, because
-/// an item it recorded might be missed.
+/// names stays, and a history that cannot be read whole refuses the command,
+/// because the record that tells an item apart might be the one missed.
 pub fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>> {
     use crate::journal::TrashedIdentity;
 
     let history = crate::journal::read_history(&ctx.journal_path, usize::MAX)
         .context("cannot read the apply journal that records what devtrim moved to the Trash")?;
+    // A history read only in part could be missing the very record that tells
+    // an item apart, so nothing is offered rather than a part.
+    if !history.errors.is_empty() {
+        anyhow::bail!(
+            "cannot read the whole apply journal, so which Trash items devtrim moved there is unknown; nothing is offered: {}",
+            history.errors.join("; ")
+        );
+    }
     let moved = history
         .entries
         .iter()
         .filter(|record| record.action == "trash" && record.status.as_deref() == Some("ok"))
         .filter_map(|record| record.identity)
         .collect::<std::collections::HashSet<_>>();
-    let mut left = 0usize;
-    let mut findings = trash_findings_where(ctx, |path| {
+    let mut others = 0usize;
+    let findings = trash_findings_where(ctx, |path| {
         let ours = TrashedIdentity::of(path).is_some_and(|identity| moved.contains(&identity));
         if !ours {
-            left = left.saturating_add(1);
+            others = others.saturating_add(1);
         }
         ours
     })?;
-    if left > 0 {
+    if others > 0 {
         ctx.diagnostic(
             "info",
-            format!("leaving {left} Trash item(s) devtrim did not move there"),
-        );
-    }
-    for error in history.errors {
-        let message = format!(
-            "cannot read the whole apply journal, so an item devtrim moved to the Trash may be left there: {error}"
-        );
-        findings.push(
-            Finding::new(
-                "apply journal unreadable",
-                None,
-                0,
-                &message,
-                5,
-                Action::Info,
-            )
-            .with_scan_error(message),
+            format!("leaving {others} Trash item(s) devtrim did not move there"),
         );
     }
     Ok(findings)
@@ -1752,6 +1744,17 @@ mod tests {
                 .iter()
                 .any(|message| message.contains("1 Trash item(s) devtrim did not move there")),
             "the items left in place must be counted"
+        );
+
+        // A history read only in part refuses, though `ours` still matches.
+        let mut journal = std::fs::read_to_string(&ctx.journal_path).unwrap();
+        journal.push_str("{not json\n");
+        std::fs::write(&ctx.journal_path, journal).unwrap();
+        let refused = trash_findings_moved_by_devtrim(&ctx);
+        assert!(
+            refused.is_err(),
+            "PV trash/incomplete-history: a partly read history still offered {:?}",
+            refused.map(|findings| findings.len())
         );
         remove_test_path(home);
     }

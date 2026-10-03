@@ -1130,9 +1130,14 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
             report::gb(total),
         )
     } else {
+        let (counted, errors) = report::finding_and_error_counts(&app.findings);
+        let errors = if errors == 0 {
+            String::new()
+        } else {
+            format!(", {errors} error(s)")
+        };
         format!(
-            " {mode} · {} finding(s) · {} actionable · danger-{danger} ",
-            app.findings.len(),
+            " {mode} · {counted} finding(s){errors} · {} actionable · danger-{danger} ",
             report::gb(total),
         )
     };
@@ -1624,6 +1629,31 @@ mod tests {
                 target.as_str()
             );
         }
+    }
+
+    /// The results title counts findings, not the error entries beside them,
+    /// as the CLI totals do.
+    #[test]
+    fn the_results_title_counts_error_entries_apart() {
+        let findings = vec![
+            Finding::new("note", None, 0, "info", 1, Action::Info),
+            Finding::new(
+                "node_modules not judged",
+                None,
+                0,
+                "failed",
+                5,
+                Action::Info,
+            )
+            .with_scan_error("failed".into()),
+        ];
+        let app = App {
+            screen: Screen::Results,
+            findings,
+            ..App::default()
+        };
+        let screen = rendered(&app, 100, 30);
+        assert!(screen.contains("1 finding(s), 1 error(s)"), "{screen}");
     }
 
     #[test]

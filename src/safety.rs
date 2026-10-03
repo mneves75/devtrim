@@ -1341,13 +1341,17 @@ pub(crate) fn build_process_cwds() -> Result<Vec<PathBuf>> {
     resolve_build_process_cwds(&pids, first, running_build_pids, lsof_cwds_of)
 }
 
-/// One `lsof` run for the working directories of exactly these processes.
-fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
-    let pid_list = pids
-        .iter()
+/// The comma-separated process list `lsof -p` takes.
+fn lsof_pid_list<'a>(pids: impl IntoIterator<Item = &'a u32>) -> String {
+    pids.into_iter()
         .map(u32::to_string)
         .collect::<Vec<_>>()
-        .join(",");
+        .join(",")
+}
+
+/// One `lsof` run for the working directories of exactly these processes.
+fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
+    let pid_list = lsof_pid_list(pids);
     let lsof = Command::new("lsof")
         .args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"])
         .output()
@@ -1514,13 +1518,9 @@ pub(crate) fn xcode_activity() -> Result<XcodeActivity> {
     if pids.is_empty() {
         return Ok(XcodeActivity::Idle);
     }
-    let pid_list = pids
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+    let pid_list = lsof_pid_list(&pids);
     let lsof = Command::new("lsof")
-        .args(["-p", &pid_list, "-F", "n"])
+        .args(["-p", &pid_list, "-F", "tn"])
         .output()
         .context("cannot run the probe of files Xcode holds open")?;
     Ok(XcodeActivity::Active {
@@ -1528,11 +1528,24 @@ pub(crate) fn xcode_activity() -> Result<XcodeActivity> {
     })
 }
 
-/// The absolute names in an `lsof -p <pids> -F n` listing of every file those
-/// processes hold open. Unlike the working-directory probe, a process `lsof`
-/// could not read (exit 1) is not rechecked: Xcode's processes are long-lived,
-/// so a missing one refuses rather than passes. Sockets, pipes and other names
-/// that are not paths cannot lie under DerivedData and are skipped; an
+/// `lsof` file types whose NAME is not a path: sockets (including Skywalk
+/// channels, nexus and route sockets), kernel controls and event sources,
+/// pipes and queues — every type a system-wide listing on the development
+/// machine named without a path. None of them lies under DerivedData. A file
+/// whose vnode was revoked is named `(revoked)` and still refuses.
+const LSOF_NON_PATH_TYPES: &[&[u8]] = &[
+    b"unix", b"IPv4", b"IPv6", b"systm", b"NPOLICY", b"PIPE", b"KQUEUE", b"FSEVENT", b"PSXSEM",
+    b"PSXSHM", b"ndrv", b"key", b"ATALK", b"CHAN", b"NEXUS", b"rte",
+];
+
+/// The absolute names in an `lsof -p <pids> -F tn` listing of every file
+/// those processes hold open. Unlike the working-directory probe, a process
+/// `lsof` could not read (exit 1) is not rechecked: Xcode's processes are
+/// long-lived, so a missing one refuses rather than passes. Each name must
+/// follow its type. A socket, pipe or other type on [`LSOF_NON_PATH_TYPES`]
+/// is skipped whatever its name; any other file must be named by an absolute
+/// path, because Apple's lsof prints `no more information` for a file it
+/// could not resolve and still exits 0 — that file could lie anywhere. An
 /// absolute name with an ambiguous escape refuses, as everywhere else.
 pub(crate) fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Result<Vec<PathBuf>> {
     match exit_code {
@@ -1541,19 +1554,33 @@ pub(crate) fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Re
         None => bail!("lsof open-file probe terminated without an exit status"),
     }
     let mut in_process = false;
+    let mut file_type: Option<&[u8]> = None;
     let mut paths = Vec::new();
     for line in output.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         match line.first() {
             None => {}
-            Some(b'p') => in_process = true,
+            Some(b'p') => {
+                in_process = true;
+                file_type = None;
+            }
+            Some(b't') => file_type = Some(&line[1..]),
             Some(b'n') => {
                 if !in_process {
                     bail!("lsof returned an open file before naming its process");
                 }
+                let Some(kind) = file_type.take() else {
+                    bail!("lsof returned an open file without its type");
+                };
                 let name = &line[1..];
                 if name.starts_with(b"/") {
                     paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)));
+                } else if !LSOF_NON_PATH_TYPES.contains(&kind) {
+                    bail!(
+                        "lsof could not name an open {} file (`{}`), so whether it lies under DerivedData is unknown",
+                        String::from_utf8_lossy(kind),
+                        String::from_utf8_lossy(name)
+                    );
                 }
             }
             Some(_) => {}
@@ -2629,12 +2656,15 @@ mod tests {
         assert!(parse_lsof_mappings(b"p1\nftxt\nn/a\n", None).is_err());
     }
 
-    /// The files Xcode holds open are its absolute names only; sockets and
-    /// pipes are not paths, an ambiguous escape refuses, and anything but a
-    /// complete listing refuses too.
+    /// The files Xcode holds open are its absolute names. A socket, kernel
+    /// control, pipe or queue is named otherwise and skipped; a file whose name
+    /// `lsof` could not resolve — Apple's lsof prints `no more information` and
+    /// still exits 0 — or of a type it does not know refuses, as do a name
+    /// without its type, an ambiguous escape and anything but a complete,
+    /// non-empty listing.
     #[test]
     fn xcode_open_files_are_absolute_names_from_a_complete_listing() {
-        let listing = b"p501\nn/Applications/Xcode.app/Contents/MacOS/Xcode\nn/Users/me/Library/Developer/Xcode/DerivedData/App-a/Index.noindex/DataStore/v5/db\nn->0xabc\nnpipe\nn*:49152\np502\nn/Users/me/dev/app\n";
+        let listing = b"p501\ntREG\nn/Applications/Xcode.app/Contents/MacOS/Xcode\ntREG\nn/Users/me/Library/Developer/Xcode/DerivedData/App-a/Index.noindex/DataStore/v5/db\ntunix\nn->0xabc\ntPIPE\nn->0x1\ntsystm\nn[ctl com.apple.netsrc id 10 unit 33]\ntNPOLICY\nn\ntIPv4\nn*:49152\np502\ntDIR\nn/Users/me/dev/app\n";
         let paths = parse_lsof_open_files(listing, Some(0)).unwrap();
         assert_eq!(paths.len(), 3, "{paths:?}");
         assert!(paths.contains(&PathBuf::from(
@@ -2642,9 +2672,21 @@ mod tests {
         )));
         assert!(parse_lsof_open_files(listing, Some(1)).is_err());
         assert!(parse_lsof_open_files(listing, None).is_err());
-        assert!(parse_lsof_open_files(b"n/early\np1\nn/x\n", Some(0)).is_err());
-        assert!(parse_lsof_open_files(b"p1\nn/odd^Xname\n", Some(0)).is_err());
-        assert!(parse_lsof_open_files(b"p1\nn->0x1\n", Some(0)).is_err());
+        for refused in [
+            &b"p1\ntREG\nn/x\ntREG\nnno more information\n"[..],
+            b"p1\ntREG\nn/x\ntVNEW\nnsomething\n",
+            b"p1\ntREG\nn/x\nn/second-without-type\n",
+            b"tREG\nn/early\np1\ntREG\nn/x\n",
+            b"p1\ntREG\nn/odd^Xname\n",
+            b"p1\ntunix\nn->0x1\n",
+            b"p1\n",
+        ] {
+            assert!(
+                parse_lsof_open_files(refused, Some(0)).is_err(),
+                "PV liveness/xcode-open-files: accepted {}",
+                String::from_utf8_lossy(refused)
+            );
+        }
     }
 
     #[test]

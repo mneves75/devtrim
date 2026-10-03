@@ -129,7 +129,7 @@ impl Op for Caches {
             }
         }
         if let Some(path) = owner_cache_path("brew", &["--cache"], ctx)? {
-            findings.extend(brew_cache_findings(&path)?);
+            findings.extend(brew_cache_findings(&path, &ctx.home)?);
         }
         Ok(findings)
     }
@@ -175,7 +175,7 @@ impl Op for Caches {
 /// its Git marker rather than its name, stays; every other non-empty child is
 /// offered. A top-level link into `downloads` is left in place: Homebrew's own
 /// `brew cleanup` removes links it finds dangling.
-fn brew_cache_findings(cache: &Path) -> Result<Vec<Finding>> {
+fn brew_cache_findings(cache: &Path, home: &Path) -> Result<Vec<Finding>> {
     const LABEL: &str = "homebrew downloads cache";
     let entries = match std::fs::read_dir(cache) {
         Ok(entries) => entries,
@@ -202,7 +202,10 @@ fn brew_cache_findings(cache: &Path) -> Result<Vec<Finding>> {
         }
         children.push(entry.path());
     }
-    if clones == 0 {
+    // Only the standard cache is split, so apply can hold each entry to being
+    // its direct child; a relocated `HOMEBREW_CACHE` stays one finding, which
+    // the sink refuses whole while it holds a clone.
+    if clones == 0 || !is_standard_brew_cache(cache, home) {
         let size = dir_size(cache)?;
         return Ok((size > 0)
             .then(|| {
@@ -225,7 +228,7 @@ fn brew_cache_findings(cache: &Path) -> Result<Vec<Finding>> {
             .to_string_lossy()
             .into_owned();
         let note = format!(
-            "{}; the {clones} Git clone(s) Homebrew keeps for Git-sourced formulae (`*--git`) stay",
+            "{}; the {clones} Git clone(s) Homebrew keeps for Git-sourced formulae, such as `<name>--git`, stay",
             cache_note(&child)
         );
         findings.push(
@@ -293,13 +296,20 @@ fn authorize_cache_finding(finding: &Finding, home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The shape `brew_cache_findings` offers a child in: directly inside an
-/// eligible Homebrew cache, neither a link nor a Git repository.
+/// Whether `cache` is Homebrew's standard cache folder, the only one split.
+fn is_standard_brew_cache(cache: &Path, home: &Path) -> bool {
+    normalized_absolute(cache)
+        .zip(normalized_absolute(&home.join("Library/Caches/Homebrew")))
+        .is_some_and(|(cache, standard)| cache == standard)
+}
+
+/// The shape `brew_cache_findings` offers a child in: directly inside the
+/// standard Homebrew cache, neither a link nor a Git repository.
 fn is_brew_cache_entry(target: &Path, home: &Path) -> Result<bool> {
     let Some(parent) = target.parent() else {
         return Ok(false);
     };
-    if !is_eligible_owner_cache("brew", parent, home) {
+    if !is_standard_brew_cache(parent, home) {
         return Ok(false);
     }
     let metadata = std::fs::symlink_metadata(target)
@@ -493,7 +503,7 @@ mod tests {
         )
         .unwrap();
 
-        let findings = brew_cache_findings(&cache).unwrap();
+        let findings = brew_cache_findings(&cache, &home).unwrap();
         let mut offered = findings
             .iter()
             .filter_map(Finding::target)
@@ -516,7 +526,7 @@ mod tests {
         let plain = home.join("plain/Library/Caches/Homebrew");
         std::fs::create_dir_all(plain.join("downloads")).unwrap();
         std::fs::write(plain.join("downloads/a.tar.gz"), "x").unwrap();
-        let whole = brew_cache_findings(&plain).unwrap();
+        let whole = brew_cache_findings(&plain, &home.join("plain")).unwrap();
         assert_eq!(
             whole.iter().filter_map(Finding::target).collect::<Vec<_>>(),
             vec![plain.as_path()]
@@ -550,19 +560,24 @@ mod tests {
             )
             .with_authority(TargetAuthority::BrewCacheEntry)
         };
-        let refused = Caches
-            .apply(
-                &[entry(clone.clone()), entry(cache.join("tool--1.0"))],
-                &ctx,
-            )
-            .unwrap();
-        assert!(
-            refused.summary.items_touched == 0
-                && refused.errors.len() == 2
-                && clone.join("README").exists()
-                && std::fs::symlink_metadata(cache.join("tool--1.0")).is_ok(),
-            "PV caches/brew-entry-apply: {refused:?}"
-        );
+        std::fs::create_dir_all(clone.join("src")).unwrap();
+        std::fs::write(clone.join("src/lib.rs"), "source").unwrap();
+        for (forged, marker) in [
+            (cache.join("tool--1.0"), "PV caches/brew-entry-apply"),
+            (clone.clone(), "PV caches/brew-entry-repository"),
+            (clone.join("src"), "PV caches/brew-entry-direct-child"),
+        ] {
+            let refused = Caches.apply(&[entry(forged.clone())], &ctx).unwrap();
+            assert!(
+                refused.summary.items_touched == 0
+                    && refused.errors.len() == 1
+                    && refused.errors[0].contains("outside its authorized namespace")
+                    && std::fs::symlink_metadata(&forged).is_ok()
+                    && clone.join("README").exists(),
+                "{marker}: {} was not refused by the entry authority: {refused:?}",
+                forged.display()
+            );
+        }
         let removed = Caches.apply(&[entry(cache.join("api"))], &ctx).unwrap();
         assert!(removed.errors.is_empty(), "{removed:?}");
         assert!(!cache.join("api").exists() && clone.join("README").exists());

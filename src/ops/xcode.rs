@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use super::project::{activity_window, has_git_marker};
+use super::project::{activity_window, has_git_marker, unjudged_finding};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, XcodeActivity, escalate, xcode_activity};
 
@@ -61,12 +61,24 @@ impl Xcode {
         ctx: &Ctx,
         xcode_build_state: Result<XcodeActivity>,
     ) -> Result<Vec<Finding>> {
-        // A failed probe must be visible to automation, not a silently
-        // smaller plan with exit 0.
-        let activity = xcode_build_state.context("cannot verify Xcode build activity")?;
-        let (mut recent, mut open) = (0usize, 0usize);
+        // A failed probe blocks DerivedData alone and is reported, never a
+        // silently smaller plan with exit 0; DeviceSupport is still judged.
         let mut findings = Vec::new();
+        let activity = match xcode_build_state.context("cannot verify Xcode build activity") {
+            Ok(activity) => Some(activity),
+            Err(error) => {
+                let derived_data = ctx.home.join("Library/Developer/Xcode/DerivedData");
+                findings.push(unjudged_finding("DerivedData", &derived_data, &error));
+                None
+            }
+        };
+        let (mut recent, mut open) = (0usize, 0usize);
         for (label, relative, note) in TARGETS {
+            let activity = match (&activity, *label == "DerivedData") {
+                (Some(activity), _) => activity,
+                (None, false) => &XcodeActivity::Idle,
+                (None, true) => continue,
+            };
             let directory = ctx.home.join("Library").join(relative);
             let entries = match std::fs::read_dir(&directory) {
                 Ok(entries) => entries,
@@ -94,16 +106,22 @@ impl Xcode {
                 }
                 let path = entry.path();
                 if *label == "DerivedData" {
-                    match derived_data_in_use(&path, &activity, ctx.active_days)? {
-                        Some(InUse::Recent) => {
+                    match derived_data_in_use(&path, activity, ctx.active_days) {
+                        Ok(Some(InUse::Recent)) => {
                             recent = recent.saturating_add(1);
                             continue;
                         }
-                        Some(InUse::Open) => {
+                        Ok(Some(InUse::Open)) => {
                             open = open.saturating_add(1);
                             continue;
                         }
-                        None => {}
+                        Ok(None) => {}
+                        // A folder whose use cannot be judged blocks only
+                        // itself and is reported.
+                        Err(error) => {
+                            findings.push(unjudged_finding("DerivedData", &path, &error));
+                            continue;
+                        }
                     }
                 }
                 if *label == "DerivedData" && is_package_folder(&path)? {
@@ -264,13 +282,13 @@ fn derived_data_in_use(
     let XcodeActivity::Active { open_files } = activity else {
         return Ok(None);
     };
-    let canonical = folder.canonicalize().ok();
-    if open_files.iter().any(|file| {
-        file.starts_with(folder)
-            || canonical
-                .as_ref()
-                .is_some_and(|real| file.starts_with(real))
-    }) {
+    let canonical = folder
+        .canonicalize()
+        .with_context(|| format!("cannot resolve DerivedData folder {}", folder.display()))?;
+    if open_files
+        .iter()
+        .any(|file| file.starts_with(folder) || file.starts_with(&canonical))
+    {
         return Ok(Some(InUse::Open));
     }
     let (_, newest) = crate::safety::dir_stats(folder)?;
@@ -458,13 +476,22 @@ mod tests {
                 .any(|message| message.contains("skipping DerivedData still in use"))
         );
 
+        // A failed probe blocks DerivedData alone and reports it; the
+        // DeviceSupport beside it is still offered.
         let unknown = Xcode
             .scan_with_xcode_build_state(&ctx, Err(anyhow::anyhow!("probe failed")))
-            .unwrap_err();
+            .unwrap();
         assert!(
             unknown
-                .to_string()
-                .contains("cannot verify Xcode build activity")
+                .iter()
+                .any(|finding| finding.label.starts_with("iOS DeviceSupport"))
+                && unknown.iter().all(|finding| finding
+                    .target()
+                    .is_none_or(|path| !path.ends_with("DerivedData/project")))
+                && unknown.iter().any(|finding| finding
+                    .scan_error()
+                    .is_some_and(|error| error.contains("cannot verify Xcode build activity"))),
+            "PV xcode/probe-contained: {unknown:?}"
         );
         crate::ops::remove_test_path(home);
     }
@@ -964,7 +991,10 @@ mod tests {
             &derived_data.join("Pkg-d/SourcePackages/checkouts/dep/README"),
             10,
         );
-        aged_file(&derived_data.join("PkgFresh-e/Build/out.o"), 0);
+        // An old `Build` in a folder that changed today: judged alone it
+        // would go, so only judging it with its folder keeps it.
+        aged_file(&derived_data.join("PkgFresh-e/Build/out.o"), 10);
+        aged_file(&derived_data.join("PkgFresh-e/Index.noindex/fresh"), 0);
         aged_file(
             &derived_data.join("PkgFresh-e/SourcePackages/checkouts/dep/README"),
             10,
@@ -1049,6 +1079,79 @@ mod tests {
             .unwrap();
         assert!(removed.errors.is_empty(), "{removed:?}");
         assert!(!derived_data.join("Old-a").exists());
+    }
+
+    /// `lsof` names the files Xcode holds by their real path, while the scan
+    /// reaches DerivedData through the home folder as given, which may be
+    /// spelled through a link. An open file is matched under either spelling.
+    #[test]
+    fn an_open_file_is_matched_under_the_folders_real_path() {
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-canonical");
+        let real = fixture.path().join("real-home");
+        std::fs::create_dir_all(&real).unwrap();
+        let real = real.canonicalize().unwrap();
+        let alias = fixture.path().canonicalize().unwrap().join("alias-home");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        aged_file(
+            &real.join("Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db"),
+            10,
+        );
+        let mut ctx = test_context(alias);
+        ctx.active_days = 3;
+        let activity = XcodeActivity::Active {
+            open_files: vec![
+                real.join("Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db"),
+            ],
+        };
+
+        let findings = Xcode
+            .scan_with_xcode_build_state(&ctx, Ok(activity))
+            .unwrap();
+
+        assert!(
+            findings
+                .iter()
+                .filter_map(Finding::target)
+                .all(|path| !path.ends_with("Open-c")),
+            "PV xcode/active-canonical: a folder held open under its real path was offered"
+        );
+    }
+
+    /// A folder whose age cannot be read while Xcode runs blocks only itself
+    /// and is reported; the folders beside it are still judged.
+    #[test]
+    fn an_unjudgeable_derived_data_folder_blocks_only_itself() {
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-unjudged");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let derived_data = home.join("Library/Developer/Xcode/DerivedData");
+        aged_file(&derived_data.join("Old-a/Build/out.o"), 10);
+        aged_file(&derived_data.join("Locked-b/Build/out.o"), 10);
+        let locked =
+            crate::ops::Unreadable::new(&derived_data.join("Locked-b/Build/sealed"), 0o000);
+        let mut ctx = test_context(home.clone());
+        ctx.active_days = 3;
+        let activity = XcodeActivity::Active {
+            open_files: vec![home.join("elsewhere")],
+        };
+
+        let findings = Xcode
+            .scan_with_xcode_build_state(&ctx, Ok(activity))
+            .unwrap();
+
+        drop(locked);
+        let offered = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        assert_eq!(offered, vec![derived_data.join("Old-a").as_path()]);
+        assert!(
+            findings
+                .iter()
+                .filter_map(Finding::scan_error)
+                .any(|error| error.contains("Locked-b")),
+            "{findings:?}"
+        );
     }
 
     #[test]

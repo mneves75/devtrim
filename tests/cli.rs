@@ -849,6 +849,34 @@ fn trash_empty_only_devtrim_leaves_everyone_elses_items() {
         vec![ours.display().to_string()]
     );
 
+    // A history that cannot be read whole could be missing a move, so the
+    // narrowed purge is refused outright rather than offered partially, even
+    // though `ours` still matches a readable record.
+    let journal_file = journal.join("journal.jsonl");
+    let readable = std::fs::read_to_string(&journal_file).unwrap();
+    std::fs::write(&journal_file, format!("{readable}{{not json\n")).unwrap();
+    for arguments in [
+        &["trash-empty", "--only-devtrim", "--json"][..],
+        &[
+            "trash-empty",
+            "--only-devtrim",
+            "--apply",
+            "--confirm=0",
+            "--yolo",
+            "--json",
+        ],
+    ] {
+        let refused = run(&sandbox, arguments);
+        assert!(!refused.status.success(), "{arguments:?}");
+        let value = json(&refused);
+        assert!(
+            value["findings"].as_array().is_none_or(Vec::is_empty),
+            "PV-E2E: an incomplete history still offered a target: {value}"
+        );
+        assert!(ours.join("file").exists() && foreign.join("file").exists());
+    }
+    std::fs::write(&journal_file, readable).unwrap();
+
     let applied = run(
         &sandbox,
         &[

@@ -697,6 +697,48 @@ CASES = (
         tests=("ops::xcode::tests::scan_skips_derived_data_when_an_xcode_build_is_running_or_unknown",),
         marker="PV xcode/active-empty-folder",
     ),
+    # 0.10.6 review round: incomplete history, typed lsof names, the brew
+    # entry's two halves and the canonical open-file match.
+    Case(
+        name="trash/incomplete-history",
+        relative_path="src/ops/mod.rs",
+        before="    if !history.errors.is_empty() {\n",
+        after="    if false && !history.errors.is_empty() {\n",
+        tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
+        marker="PV trash/incomplete-history",
+    ),
+    Case(
+        name="liveness/xcode-open-files",
+        relative_path="src/safety.rs",
+        before="                } else if !LSOF_NON_PATH_TYPES.contains(&kind) {\n",
+        after="                } else if false && !LSOF_NON_PATH_TYPES.contains(&kind) {\n",
+        tests=("safety::tests::xcode_open_files_are_absolute_names_from_a_complete_listing",),
+        marker="PV liveness/xcode-open-files",
+    ),
+    Case(
+        name="caches/brew-entry-repository",
+        relative_path="src/ops/caches.rs",
+        before="    Ok(!(metadata.is_dir() && has_git_marker(target)?))\n",
+        after="    Ok(true)\n",
+        tests=("ops::caches::tests::a_homebrew_cache_holding_a_git_clone_is_offered_around_it",),
+        marker="PV caches/brew-entry-repository",
+    ),
+    Case(
+        name="caches/brew-entry-direct-child",
+        relative_path="src/ops/caches.rs",
+        before="    if !is_standard_brew_cache(parent, home) {\n",
+        after="    if !is_eligible_owner_cache(\"brew\", parent, home) {\n",
+        tests=("ops::caches::tests::a_homebrew_cache_holding_a_git_clone_is_offered_around_it",),
+        marker="PV caches/brew-entry-direct-child",
+    ),
+    Case(
+        name="xcode/active-canonical",
+        relative_path="src/ops/xcode.rs",
+        before="        .any(|file| file.starts_with(folder) || file.starts_with(&canonical))\n",
+        after="        .any(|file| file.starts_with(folder) || canonical.as_os_str().is_empty())\n",
+        tests=("ops::xcode::tests::an_open_file_is_matched_under_the_folders_real_path",),
+        marker="PV xcode/active-canonical",
+    ),
     # A default project folder linked to the home folder or above it would make
     # the whole home or disk a scan root nobody named.
     Case(

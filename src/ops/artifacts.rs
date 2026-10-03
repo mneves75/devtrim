@@ -551,11 +551,12 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
         Some(".build") => sibling_evidence(path, &["Package.swift"]),
         Some(".dart_tool") => sibling_evidence(path, &["pubspec.yaml"]),
         Some(".zig-cache" | "zig-out") => sibling_evidence(path, &["build.zig"]),
-        // The Android Gradle Plugin's default external native build output
-        // directory, `<project_dir>/<module>/.cxx/`, which it creates and fills
-        // with CMake configure output, Ninja files and objects; it outlives
-        // `gradle clean` on purpose, and the next native build regenerates it
-        // (AGP 9.4 DSL reference, `Cmake.buildStagingDirectory`).
+        // The Android Gradle Plugin's default "external native build output
+        // directory", `<project_dir>/<module>/.cxx/`, which "also includes
+        // other build system files that should persist when performing clean
+        // builds, such as Ninja build files"; the plugin creates it and the
+        // next native build regenerates it (AGP 9.4 DSL reference,
+        // `Cmake.buildStagingDirectory`).
         Some(".cxx") => sibling_evidence(path, &["build.gradle", "build.gradle.kts"]),
         // "You can safely delete this folder any time, and Terragrunt will
         // recreate it as necessary" (Terragrunt reference, "Terragrunt cache",
