@@ -525,17 +525,19 @@ pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
 /// the category; they ask only after that query has failed, so no repository
 /// pays for it.
 ///
-/// Three answers must agree. HEAD is symbolic (`symbolic-ref -q HEAD`
-/// succeeds), so a detached HEAD is not new. Git finds the reference storage
-/// sound (`refs verify`, Git 2.47 and later): a loose-ref folder that became a
-/// junk file names no reference either, and Git's own `log` calls that "no
-/// commits yet". And no reference exists (`for-each-ref --count=1` succeeds
-/// and prints nothing), so HEAD's branch cannot resolve: a HEAD naming a
-/// commit whose object is gone makes the listing fail, that folder replaced
-/// by a file holding a valid object ID is listed as a reference named
-/// `refs/heads`, and an orphan checkout beside other branches lists them.
-/// Any other answer, or a Git that cannot run or lacks `refs verify`, is not
-/// new: the original failure then stands.
+/// The object store must be empty (`count-objects -v`): every commit is an
+/// object, so a repository holding none has no commit to judge, whatever its
+/// references say — and a branch turned into a dangling symbolic reference,
+/// a file holding an object ID where the loose-ref folder was, or an orphan
+/// checkout beside other branches all still hold their history. Three more
+/// answers keep a damaged repository an error rather than a new one. HEAD is
+/// symbolic (`symbolic-ref -q HEAD`), so a detached HEAD naming a missing
+/// commit is not new. Git finds the reference storage sound (`refs verify`,
+/// Git 2.47 and later): a loose-ref folder that became a junk file is damage,
+/// although Git's own `log` calls it "no commits yet". And every reference
+/// resolves (`for-each-ref --count=1` succeeds), so a branch whose commit
+/// was deleted is not new either. Any other answer, or a Git that cannot run
+/// or lacks `refs verify`, is not new: the original failure then stands.
 pub(crate) fn unborn_branch(repo: &Path) -> bool {
     let git_output = |arguments: &[&str]| {
         let mut command = hardened_git(repo, "git");
@@ -545,7 +547,28 @@ pub(crate) fn unborn_branch(repo: &Path) -> bool {
     git_output(&["symbolic-ref", "-q", "HEAD"]).is_some_and(|symbolic| symbolic.status.success())
         && git_output(&["refs", "verify"]).is_some_and(|verified| verified.status.success())
         && git_output(&["for-each-ref", "--count=1"])
-            .is_some_and(|references| references.status.success() && references.stdout.is_empty())
+            .is_some_and(|references| references.status.success())
+        && git_output(&["count-objects", "-v"])
+            .is_some_and(|counted| counted.status.success() && holds_no_objects(&counted.stdout))
+}
+
+/// Whether a `git count-objects -v` report describes an object store with
+/// nothing in it: zero loose objects, zero packed objects, zero packs, and no
+/// alternate store lending objects. Its keys are fixed, not translated; a
+/// report missing a count, or one that is not text, proves nothing.
+fn holds_no_objects(report: &[u8]) -> bool {
+    let Ok(report) = std::str::from_utf8(report) else {
+        return false;
+    };
+    let mut counted = 0;
+    for line in report.lines() {
+        match line.split_once(": ") {
+            Some(("count" | "in-pack" | "packs", "0")) => counted += 1,
+            Some(("count" | "in-pack" | "packs" | "alternate", _)) | None => return false,
+            Some(_) => {}
+        }
+    }
+    counted == 3
 }
 
 /// A folder a project walk could not read, and why. Like a scan root that
@@ -635,6 +658,16 @@ mod tests {
     /// state Git defines, and the activity query fails there. Only that state
     /// is recognized: a HEAD naming a commit whose object is gone and a
     /// detached HEAD both stay what they are, so their failures still refuse.
+    /// Removes every loose object, as a damaged or emptied store would be.
+    fn empty_object_store(repo: &Path) {
+        for entry in std::fs::read_dir(repo.join(".git/objects")).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name().len() == 2 {
+                std::fs::remove_dir_all(entry.path()).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn an_unborn_branch_is_recognized_and_a_dangling_head_is_not() {
         let base = temp("unborn");
@@ -665,17 +698,12 @@ mod tests {
         assert!(repo_last_activity(&orphan).is_err());
         assert!(
             !unborn_branch(&orphan),
-            "PV project/unborn-no-references: a repository with references read as new"
+            "PV project/unborn-empty-store: an orphan checkout beside other branches read as new"
         );
 
         let dangling = base.join("dangling");
         init_old_git_repo(&dangling).unwrap();
-        for entry in std::fs::read_dir(dangling.join(".git/objects")).unwrap() {
-            let entry = entry.unwrap();
-            if entry.file_name().len() == 2 {
-                std::fs::remove_dir_all(entry.path()).unwrap();
-            }
-        }
+        empty_object_store(&dangling);
         assert!(repo_last_activity(&dangling).is_err());
         assert!(
             !unborn_branch(&dangling),
@@ -683,10 +711,11 @@ mod tests {
         );
 
         // Git itself reads a repository whose loose-ref folder became a file
-        // as unborn (`log` says "no commits yet"); only `refs verify` sees
-        // that its reference storage is broken.
+        // as unborn (`log` says "no commits yet"); with its objects gone too,
+        // only `refs verify` sees that its reference storage is broken.
         let broken = base.join("broken-refs");
         init_old_git_repo(&broken).unwrap();
+        empty_object_store(&broken);
         std::fs::remove_dir_all(broken.join(".git/refs/heads")).unwrap();
         std::fs::write(broken.join(".git/refs/heads"), "junk\n").unwrap();
         std::fs::remove_file(broken.join(".git/packed-refs")).ok();
@@ -710,7 +739,26 @@ mod tests {
         assert!(repo_last_activity(&collided).is_err());
         assert!(
             !unborn_branch(&collided),
-            "PV project/unborn-no-references: an obstructed branch path read as unborn"
+            "PV project/unborn-empty-store: an obstructed branch path read as new"
+        );
+
+        // The only branch turned into a symbolic reference to a missing one:
+        // HEAD stays symbolic, `refs verify` accepts it, and `for-each-ref`
+        // leaves a dangling symbolic reference out. The commits it held are
+        // still in the object store, so the repository is not new.
+        let dangling_symbolic = base.join("dangling-symbolic");
+        init_old_git_repo(&dangling_symbolic).unwrap();
+        let branch = ["master", "main"]
+            .into_iter()
+            .map(|name| dangling_symbolic.join(".git/refs/heads").join(name))
+            .find(|path| path.exists())
+            .unwrap();
+        std::fs::write(&branch, "ref: refs/heads/missing\n").unwrap();
+        std::fs::remove_file(dangling_symbolic.join(".git/packed-refs")).ok();
+        assert!(repo_last_activity(&dangling_symbolic).is_err());
+        assert!(
+            !unborn_branch(&dangling_symbolic),
+            "PV project/unborn-empty-store: a repository holding commits read as new"
         );
 
         let born = base.join("born");
@@ -722,6 +770,29 @@ mod tests {
         git(&detached, &["checkout", "-q", "--detach"]);
         assert!(!unborn_branch(&detached), "a detached HEAD is not unborn");
         crate::ops::remove_test_path(base);
+    }
+
+    /// Only an object store reported as empty — no loose object, no pack,
+    /// and no alternate store lending objects — holds no commit; a report
+    /// missing one of those counts proves nothing.
+    #[test]
+    fn only_an_empty_object_store_holds_no_commit() {
+        let empty = b"count: 0\nsize: 0\nin-pack: 0\npacks: 0\nsize-pack: 0\nprune-packable: 0\ngarbage: 0\nsize-garbage: 0\n";
+        assert!(holds_no_objects(empty));
+        for report in [
+            &b"count: 2\nsize: 1\nin-pack: 0\npacks: 0\n"[..],
+            b"count: 0\nsize: 0\nin-pack: 7\npacks: 1\n",
+            b"count: 0\nin-pack: 0\npacks: 0\nalternate: /elsewhere/objects\n",
+            b"count: 0\nin-pack: 0\n",
+            b"count: zero\nin-pack: 0\npacks: 0\n",
+            b"\xff\n",
+        ] {
+            assert!(
+                !holds_no_objects(report),
+                "{}",
+                String::from_utf8_lossy(report)
+            );
+        }
     }
 
     /// Git records a worktree's `gitdir` as raw path bytes, so a name that is
