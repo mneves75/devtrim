@@ -773,6 +773,14 @@ CASES = (
         tests=("ops::xcode::tests::an_open_file_is_matched_by_the_folders_identity",),
         marker="PV xcode/active-identity",
     ),
+    Case(
+        name="xcode/active-identity-every-component",
+        relative_path="src/ops/xcode.rs",
+        before="                Ok(_) => {}\n                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}\n",
+        after="                Ok(_) => break,\n                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}\n",
+        tests=("ops::xcode::tests::the_identity_match_looks_past_an_earlier_derived_data_component",),
+        marker="PV xcode/active-identity-every-component",
+    ),
     # A default project folder linked to the home folder or above it would make
     # the whole home or disk a scan root nobody named.
     Case(

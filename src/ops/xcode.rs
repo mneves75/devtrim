@@ -315,9 +315,9 @@ fn derived_data_in_use(
 
 /// Whether an open file lies in `folder` under another spelling: the kernel
 /// can name it through a link, or through the `/System/Volumes/Data` firmlink
-/// that `realpath` keeps as given. Each open file's DerivedData child — the
-/// path up to the component after `DerivedData` — is looked up and compared
-/// with `folder` by device and inode. One that no longer exists names no
+/// that `realpath` keeps as given. Each open file's DerivedData children — the
+/// path up to the component after each `DerivedData` in it — are looked up and
+/// compared with `folder` by device and inode. One that no longer exists names no
 /// folder; any other failure to look it up refuses.
 fn held_open_by_identity(folder: &Path, open_files: &[PathBuf]) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
@@ -325,32 +325,32 @@ fn held_open_by_identity(folder: &Path, open_files: &[PathBuf]) -> Result<bool> 
     let wanted = std::fs::symlink_metadata(folder)
         .with_context(|| format!("cannot inspect DerivedData folder {}", folder.display()))?;
     for file in open_files {
-        let mut prefix = PathBuf::new();
-        let mut components = file.components();
-        let mut child = None;
-        while let Some(component) = components.next() {
-            prefix.push(component);
-            if component.as_os_str().eq_ignore_ascii_case("DerivedData") {
-                child = components.next().map(|next| prefix.join(next));
-                break;
+        let components = file.components().collect::<Vec<_>>();
+        // Every component named `DerivedData` is a candidate, not only the
+        // first: the path may pass through another folder of that name.
+        for (index, component) in components.iter().enumerate() {
+            if !component.as_os_str().eq_ignore_ascii_case("DerivedData")
+                || index + 1 >= components.len()
+            {
+                continue;
             }
-        }
-        let Some(child) = child else {
-            continue;
-        };
-        match std::fs::metadata(&child) {
-            Ok(metadata) if (metadata.dev(), metadata.ino()) == (wanted.dev(), wanted.ino()) => {
-                return Ok(true);
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "cannot inspect the folder of an open file {}",
-                        child.display()
-                    )
-                });
+            let child = components[..=index + 1].iter().collect::<PathBuf>();
+            match std::fs::metadata(&child) {
+                Ok(metadata)
+                    if (metadata.dev(), metadata.ino()) == (wanted.dev(), wanted.ino()) =>
+                {
+                    return Ok(true);
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "cannot inspect the folder of an open file {}",
+                            child.display()
+                        )
+                    });
+                }
             }
         }
     }
@@ -1202,6 +1202,44 @@ mod tests {
                     .as_path()
             ],
             "PV xcode/active-identity: a folder held open under another spelling was offered"
+        );
+    }
+
+    /// The identity match looks after every component named `DerivedData`,
+    /// not only the first: a path can pass through another folder of that
+    /// name — here a link to the home folder sits inside one — before it
+    /// reaches Xcode's.
+    #[test]
+    fn the_identity_match_looks_past_an_earlier_derived_data_component() {
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-identity-nested");
+        let real = fixture.path().join("real-home");
+        std::fs::create_dir_all(&real).unwrap();
+        let real = real.canonicalize().unwrap();
+        let outer = fixture.path().canonicalize().unwrap().join("DerivedData");
+        std::fs::create_dir_all(&outer).unwrap();
+        std::os::unix::fs::symlink(&real, outer.join("home")).unwrap();
+        aged_file(
+            &real.join("Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db"),
+            10,
+        );
+        let mut ctx = test_context(real.clone());
+        ctx.active_days = 3;
+        let activity = XcodeActivity::Active {
+            open_files: vec![
+                outer.join("home/Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db"),
+            ],
+        };
+
+        let findings = Xcode
+            .scan_with_xcode_build_state(&ctx, Ok(activity))
+            .unwrap();
+
+        assert!(
+            findings
+                .iter()
+                .filter_map(Finding::target)
+                .all(|path| !path.ends_with("Open-c")),
+            "PV xcode/active-identity-every-component: an earlier DerivedData component hid the real one"
         );
     }
 
