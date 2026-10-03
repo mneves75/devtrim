@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::project::{activity_window, has_git_marker, unjudged_finding};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
-use crate::safety::{Ctx, XcodeActivity, escalate, xcode_activity};
+use crate::safety::{Ctx, OpenFile, XcodeActivity, escalate, xcode_activity};
 
 pub struct Xcode;
 
@@ -279,16 +279,45 @@ fn derived_data_in_use(
     activity: &XcodeActivity,
     active_days: u32,
 ) -> Result<Option<InUse>> {
+    use std::os::unix::fs::MetadataExt;
+
     let XcodeActivity::Active { open_files } = activity else {
         return Ok(None);
     };
     let canonical = folder
         .canonicalize()
         .with_context(|| format!("cannot resolve DerivedData folder {}", folder.display()))?;
-    if open_files
+    let device = std::fs::metadata(&canonical)
+        .with_context(|| format!("cannot inspect DerivedData folder {}", folder.display()))?
+        .dev();
+    // Only a file on the folder's own volume can lie in it, whatever its name
+    // says; that also leaves network mounts, other disks and devices aside.
+    let same_volume = open_files
         .iter()
-        .any(|file| file.starts_with(folder) || file.starts_with(&canonical))
-        || held_open_by_identity(folder, open_files)?
+        .filter(|file| file.dev == device)
+        .collect::<Vec<_>>();
+    if !same_volume.is_empty() {
+        // For a file it could not name, Apple's lsof prints the mount it lies
+        // on followed by that mount's source in parentheses, read from the
+        // filesystem (`dmnt.c`, `print.c`): such a name places nothing.
+        let fallback = format!(" ({})", volume_mount_source(&canonical)?.to_string_lossy());
+        if let Some(file) = same_volume.iter().find(|file| {
+            file.path
+                .as_os_str()
+                .as_encoded_bytes()
+                .ends_with(fallback.as_bytes())
+        }) {
+            anyhow::bail!(
+                "lsof could not name a file Xcode holds open on this volume (`{}`), so whether it lies in {} is unknown",
+                file.path.display(),
+                folder.display()
+            );
+        }
+    }
+    if same_volume
+        .iter()
+        .any(|file| file.path.starts_with(folder) || file.path.starts_with(&canonical))
+        || held_open_by_identity(folder, &same_volume)?
     {
         return Ok(Some(InUse::Open));
     }
@@ -313,19 +342,37 @@ fn derived_data_in_use(
     Ok((newest > cutoff).then_some(InUse::Recent))
 }
 
+/// The source the volume holding `path` was mounted from — `/dev/disk3s5`
+/// for the data volume, `server:/export` for a network share — as `statfs`
+/// reports it.
+fn volume_mount_source(path: &Path) -> Result<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let stats = rustix::fs::statfs(path)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot read the volume of {}", path.display()))?;
+    let source = stats
+        .f_mntfromname
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect::<Vec<_>>();
+    Ok(std::ffi::OsString::from_vec(source))
+}
+
 /// Whether an open file lies in `folder` under another spelling: the kernel
 /// can name it through a link, or through the `/System/Volumes/Data` firmlink
 /// that `realpath` keeps as given. Each open file's DerivedData children — the
 /// path up to the component after each `DerivedData` in it — are looked up and
 /// compared with `folder` by device and inode. One that no longer exists names no
 /// folder; any other failure to look it up refuses.
-fn held_open_by_identity(folder: &Path, open_files: &[PathBuf]) -> Result<bool> {
+fn held_open_by_identity(folder: &Path, open_files: &[&OpenFile]) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
 
     let wanted = std::fs::symlink_metadata(folder)
         .with_context(|| format!("cannot inspect DerivedData folder {}", folder.display()))?;
     for file in open_files {
-        let components = file.components().collect::<Vec<_>>();
+        let components = file.path.components().collect::<Vec<_>>();
         // Every component named `DerivedData` is a candidate, not only the
         // first: the path may pass through another folder of that name.
         for (index, component) in components.iter().enumerate() {
@@ -1000,6 +1047,13 @@ mod tests {
         crate::ops::remove_test_path(root);
     }
 
+    /// An open file as `lsof` reports it: its own device, and its name.
+    fn open_at(path: PathBuf) -> OpenFile {
+        use std::os::unix::fs::MetadataExt;
+        let dev = std::fs::metadata(&path).map_or(0, |metadata| metadata.dev());
+        OpenFile { dev, path }
+    }
+
     fn aged_file(path: &Path, days: u64) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "x").unwrap();
@@ -1048,7 +1102,7 @@ mod tests {
         let mut ctx = test_context(home.clone());
         ctx.active_days = 3;
         let active = || XcodeActivity::Active {
-            open_files: vec![open.clone()],
+            open_files: vec![open_at(open.clone())],
         };
 
         let findings = Xcode
@@ -1143,7 +1197,7 @@ mod tests {
         let mut ctx = test_context(home);
         ctx.active_days = 3;
         let activity = XcodeActivity::Active {
-            open_files: vec![moved.join("Open-c/Index.noindex/db")],
+            open_files: vec![open_at(moved.join("Open-c/Index.noindex/db"))],
         };
 
         let findings = Xcode
@@ -1182,9 +1236,9 @@ mod tests {
         let mut ctx = test_context(real.clone());
         ctx.active_days = 3;
         let activity = XcodeActivity::Active {
-            open_files: vec![
+            open_files: vec![open_at(
                 alias.join("Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db"),
-            ],
+            )],
         };
 
         let findings = Xcode
@@ -1225,9 +1279,9 @@ mod tests {
         let mut ctx = test_context(real.clone());
         ctx.active_days = 3;
         let activity = XcodeActivity::Active {
-            open_files: vec![
-                outer.join("home/Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db"),
-            ],
+            open_files: vec![open_at(outer.join(
+                "home/Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db",
+            ))],
         };
 
         let findings = Xcode
@@ -1240,6 +1294,70 @@ mod tests {
                 .filter_map(Finding::target)
                 .all(|path| !path.ends_with("Open-c")),
             "PV xcode/active-identity-every-component: an earlier DerivedData component hid the real one"
+        );
+    }
+
+    /// For a file it could not name, Apple's lsof prints the mount it lies on
+    /// and that mount's source in parentheses. On the folder's own volume that
+    /// places nothing, so the folder cannot be judged and is reported; on
+    /// another device, a network share say, the file cannot lie in the folder
+    /// at all and is set aside. A real path ending in a parenthesis is kept.
+    #[test]
+    fn a_mount_fallback_name_on_the_folders_volume_refuses_the_folder() {
+        use std::os::unix::fs::MetadataExt;
+
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-mount-fallback");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let derived_data = home.join("Library/Developer/Xcode/DerivedData");
+        aged_file(&derived_data.join("Old-a/Build/out.o"), 10);
+        let device = std::fs::metadata(&derived_data).unwrap().dev();
+        let source = volume_mount_source(&derived_data).unwrap();
+        let fallback = PathBuf::from(format!(
+            "/System/Volumes/Data ({})",
+            source.to_string_lossy()
+        ));
+        let mut ctx = test_context(home.clone());
+        ctx.active_days = 3;
+        let scan = |open_files: Vec<OpenFile>| {
+            Xcode
+                .scan_with_xcode_build_state(&ctx, Ok(XcodeActivity::Active { open_files }))
+                .unwrap()
+        };
+        let offered = |findings: &[Finding]| {
+            findings
+                .iter()
+                .filter_map(Finding::target)
+                .any(|path| path.ends_with("Old-a"))
+        };
+
+        let same_volume = scan(vec![OpenFile {
+            dev: device,
+            path: fallback.clone(),
+        }]);
+        assert!(
+            !offered(&same_volume)
+                && same_volume
+                    .iter()
+                    .filter_map(Finding::scan_error)
+                    .any(|error| error.contains("could not name a file Xcode holds open")),
+            "PV xcode/active-mount-fallback: {same_volume:?}"
+        );
+        let elsewhere = scan(vec![OpenFile {
+            dev: device.wrapping_add(1),
+            path: PathBuf::from("/Volumes/builds (server:/export)"),
+        }]);
+        assert!(
+            offered(&elsewhere),
+            "positive control: another device's file cannot lie here"
+        );
+        let helper = scan(vec![OpenFile {
+            dev: device,
+            path: home.join("App Helper (Renderer).app/Contents/MacOS/App Helper (Renderer)"),
+        }]);
+        assert!(
+            offered(&helper),
+            "a real path ending in a parenthesis must not refuse"
         );
     }
 
@@ -1258,7 +1376,7 @@ mod tests {
         let mut ctx = test_context(home.clone());
         ctx.active_days = 3;
         let activity = XcodeActivity::Active {
-            open_files: vec![home.join("elsewhere")],
+            open_files: vec![open_at(home.join("elsewhere"))],
         };
 
         let findings = Xcode

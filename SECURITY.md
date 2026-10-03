@@ -142,8 +142,10 @@ Non-negotiable boundaries:
   because the compilers a build runs are not Xcode processes; an `lsof`
   listing of Xcode's open files must be complete, and every file in it that is
   not a socket, pipe or queue must be named by a path, or DerivedData is
-  refused, as is lsof's mount-and-device fallback for a file it could not name.
-  An open file is matched to its folder by spelling, real path and identity.
+  refused. Only a file on the folder's own device is judged against it; lsof's
+  fallback for a file it could not name on that volume, its mount followed by
+  the volume's mount source, leaves the folder unjudged. The rest are matched
+  to their folder by spelling, real path and identity.
   That refusal, like a folder whose age cannot be read, is an error entry that
   blocks only DerivedData or that folder. A working-directory name that `lsof` escapes ambiguously
   refuses rather than matching nothing. Liveness probes use fixed

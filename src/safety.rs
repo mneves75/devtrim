@@ -1503,7 +1503,15 @@ const XCODE_BUILD_PATTERN: &str = "xcodebuild|SWBBuildService|XCBBuildService|Xc
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum XcodeActivity {
     Idle,
-    Active { open_files: Vec<PathBuf> },
+    Active { open_files: Vec<OpenFile> },
+}
+
+/// A file an Xcode-family process holds open: the device `lsof` reports for
+/// the file itself, and the name it gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpenFile {
+    pub(crate) dev: u64,
+    pub(crate) path: PathBuf,
 }
 
 /// Whether an Xcode-family process runs and, if so, every file the running
@@ -1520,25 +1528,12 @@ pub(crate) fn xcode_activity() -> Result<XcodeActivity> {
     }
     let pid_list = lsof_pid_list(&pids);
     let lsof = Command::new("lsof")
-        .args(["-p", &pid_list, "-F", "tn"])
+        .args(["-p", &pid_list, "-F", "tDn"])
         .output()
         .context("cannot run the probe of files Xcode holds open")?;
     Ok(XcodeActivity::Active {
         open_files: parse_lsof_open_files(&lsof.stdout, lsof.status.code())?,
     })
-}
-
-/// Whether an absolute `lsof` NAME is its fallback for a file whose path the
-/// kernel could not give: the mount directory followed by its device in
-/// parentheses, as in `/ (/dev/disk3s1)` (Apple lsof `print.c`). A real path
-/// may end in a parenthesis — `App Helper (Renderer).app` — but not in one
-/// that holds a device path.
-fn is_lsof_mount_fallback(name: &[u8]) -> bool {
-    name.ends_with(b")")
-        && name
-            .windows(2)
-            .rposition(|pair| pair == b" (")
-            .is_some_and(|start| name[start + 2..].starts_with(b"/dev/"))
 }
 
 /// `lsof` file types whose NAME is not a path: sockets (including Skywalk
@@ -1551,16 +1546,22 @@ const LSOF_NON_PATH_TYPES: &[&[u8]] = &[
     b"PSXSHM", b"ndrv", b"key", b"ATALK", b"CHAN", b"NEXUS", b"rte",
 ];
 
-/// The absolute names in an `lsof -p <pids> -F tn` listing of every file
-/// those processes hold open. Unlike the working-directory probe, a process
-/// `lsof` could not read (exit 1) is not rechecked: Xcode's processes are
-/// long-lived, so a missing one refuses rather than passes. Each name must
-/// follow its type. A socket, pipe or other type on [`LSOF_NON_PATH_TYPES`]
-/// is skipped whatever its name; any other file must be named by an absolute
-/// path, because Apple's lsof prints `no more information` for a file it
-/// could not resolve and still exits 0 — that file could lie anywhere. An
-/// absolute name with an ambiguous escape refuses, as everywhere else.
-pub(crate) fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Result<Vec<PathBuf>> {
+/// Every file in an `lsof -p <pids> -F tDn` listing of what those processes
+/// hold open that could lie in a folder: its own device (`D`, hexadecimal)
+/// and its name. Unlike the working-directory probe, a process `lsof` could
+/// not read (exit 1) is not rechecked: Xcode's processes are long-lived, so a
+/// missing one refuses rather than passes. A socket, pipe or other type on
+/// [`LSOF_NON_PATH_TYPES`] is skipped whatever its name. Every other file
+/// needs its device, which places it on a volume whatever its name says, and
+/// a name that is an absolute path: Apple's lsof prints `no more information`
+/// or `(revoked)` for a file it could not resolve and still exits 0, so such a
+/// file could lie anywhere. A name lsof built from the mount instead is judged
+/// against the folder's own volume (`xcode::derived_data_in_use`). An
+/// ambiguous escape refuses, as everywhere else.
+pub(crate) fn parse_lsof_open_files(
+    output: &[u8],
+    exit_code: Option<i32>,
+) -> Result<Vec<OpenFile>> {
     match exit_code {
         Some(0) => {}
         Some(code) => bail!("lsof open-file probe exited with status {code}"),
@@ -1568,7 +1569,8 @@ pub(crate) fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Re
     }
     let mut in_process = false;
     let mut file_type: Option<&[u8]> = None;
-    let mut paths = Vec::new();
+    let mut device: Option<&[u8]> = None;
+    let mut files = Vec::new();
     for line in output.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         match line.first() {
@@ -1576,8 +1578,10 @@ pub(crate) fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Re
             Some(b'p') => {
                 in_process = true;
                 file_type = None;
+                device = None;
             }
             Some(b't') => file_type = Some(&line[1..]),
+            Some(b'D') => device = Some(&line[1..]),
             Some(b'n') => {
                 if !in_process {
                     bail!("lsof returned an open file before naming its process");
@@ -1585,33 +1589,41 @@ pub(crate) fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Re
                 let Some(kind) = file_type.take() else {
                     bail!("lsof returned an open file without its type");
                 };
+                let dev = device.take();
+                if LSOF_NON_PATH_TYPES.contains(&kind) {
+                    continue;
+                }
                 let name = &line[1..];
-                if name.starts_with(b"/") && is_lsof_mount_fallback(name) {
-                    bail!(
-                        "lsof could not name an open {} file and showed its mount instead (`{}`), so whether it lies under DerivedData is unknown",
-                        String::from_utf8_lossy(kind),
-                        String::from_utf8_lossy(name)
-                    );
-                } else if name.starts_with(b"/") {
-                    paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)));
-                } else if !LSOF_NON_PATH_TYPES.contains(&kind) {
+                if !name.starts_with(b"/") {
                     bail!(
                         "lsof could not name an open {} file (`{}`), so whether it lies under DerivedData is unknown",
                         String::from_utf8_lossy(kind),
                         String::from_utf8_lossy(name)
                     );
                 }
+                let dev = dev
+                    .and_then(|dev| std::str::from_utf8(dev).ok())
+                    .and_then(|dev| dev.strip_prefix("0x"))
+                    .and_then(|dev| u64::from_str_radix(dev, 16).ok())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "lsof gave no device for the open file {}, so whether it lies under DerivedData is unknown",
+                            String::from_utf8_lossy(name)
+                        )
+                    })?;
+                files.push(OpenFile {
+                    dev,
+                    path: PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)),
+                });
             }
             Some(_) => {}
         }
     }
     // Every process has its program and working directory open.
-    if paths.is_empty() {
+    if files.is_empty() {
         bail!("lsof reported no open files for running Xcode processes");
     }
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
+    Ok(files)
 }
 
 pub(crate) fn parse_pgrep_pids(output: &[u8], exit_code: Option<i32>) -> Result<Vec<u32>> {
@@ -2675,36 +2687,37 @@ mod tests {
         assert!(parse_lsof_mappings(b"p1\nftxt\nn/a\n", None).is_err());
     }
 
-    /// The files Xcode holds open are its absolute names. A socket, kernel
-    /// control, pipe or queue is named otherwise and skipped; a file whose name
-    /// `lsof` could not resolve — Apple's lsof prints `no more information` and
-    /// still exits 0 — or of a type it does not know refuses, as do a name
-    /// without its type, an ambiguous escape and anything but a complete,
-    /// non-empty listing.
+    /// The files Xcode holds open are its absolute names with their device. A
+    /// socket, kernel control, pipe or queue is named otherwise and skipped
+    /// without one; a file whose name `lsof` could not resolve — Apple's lsof
+    /// prints `no more information` and still exits 0 — or of a type it does
+    /// not know refuses, as do a file without its device, a name without its
+    /// type, an ambiguous escape and anything but a complete, non-empty
+    /// listing. A real path ending in a parenthesis is kept: lsof's mount
+    /// fallback is judged against the folder's volume, not here.
     #[test]
     fn xcode_open_files_are_absolute_names_from_a_complete_listing() {
-        let listing = b"p501\ntREG\nn/Applications/Xcode.app/Contents/MacOS/Xcode\ntREG\nn/Users/me/Library/Developer/Xcode/DerivedData/App-a/Index.noindex/DataStore/v5/db\ntunix\nn->0xabc\ntPIPE\nn->0x1\ntsystm\nn[ctl com.apple.netsrc id 10 unit 33]\ntNPOLICY\nn\ntIPv4\nn*:49152\np502\ntDIR\nn/Users/me/dev/app\n";
-        let paths = parse_lsof_open_files(listing, Some(0)).unwrap();
-        assert_eq!(paths.len(), 3, "{paths:?}");
-        // A real path may end in a parenthesis; only lsof's mount-and-device
-        // fallback for a file it could not name is refused.
-        let helper = b"p1\ntREG\nn/Applications/App.app/Contents/Frameworks/App Helper (Renderer).app/Contents/MacOS/App Helper (Renderer)\n";
-        assert_eq!(parse_lsof_open_files(helper, Some(0)).unwrap().len(), 1);
-        assert!(paths.contains(&PathBuf::from(
-            "/Users/me/Library/Developer/Xcode/DerivedData/App-a/Index.noindex/DataStore/v5/db"
-        )));
+        let listing = b"p501\ntREG\nD0x100000e\nn/Applications/Xcode.app/Contents/MacOS/Xcode\ntREG\nD0x1000012\nn/Users/me/Library/Developer/Xcode/DerivedData/App-a/Index.noindex/DataStore/v5/db\ntunix\nn->0xabc\ntPIPE\nn->0x1\ntsystm\nn[ctl com.apple.netsrc id 10 unit 33]\ntNPOLICY\nn\ntIPv4\nn*:49152\np502\ntDIR\nD0x1000012\nn/Users/me/dev/app\ntREG\nD0x1000012\nn/Applications/App.app/Contents/Frameworks/App Helper (Renderer).app/Contents/MacOS/App Helper (Renderer)\n";
+        let files = parse_lsof_open_files(listing, Some(0)).unwrap();
+        assert_eq!(files.len(), 4, "{files:?}");
+        assert!(files.contains(&OpenFile {
+            dev: 0x1000012,
+            path: PathBuf::from(
+                "/Users/me/Library/Developer/Xcode/DerivedData/App-a/Index.noindex/DataStore/v5/db"
+            ),
+        }));
         assert!(parse_lsof_open_files(listing, Some(1)).is_err());
         assert!(parse_lsof_open_files(listing, None).is_err());
         for refused in [
-            &b"p1\ntREG\nn/x\ntREG\nnno more information\n"[..],
-            b"p1\ntREG\nn/x\ntVNEW\nnsomething\n",
-            b"p1\ntREG\nn/x\nn/second-without-type\n",
-            b"tREG\nn/early\np1\ntREG\nn/x\n",
-            b"p1\ntREG\nn/odd^Xname\n",
+            &b"p1\ntREG\nD0x1\nn/x\ntREG\nD0x1\nnno more information\n"[..],
+            b"p1\ntREG\nD0x1\nn/x\ntVNEW\nnsomething\n",
+            b"p1\ntREG\nD0x1\nn/x\nn/second-without-type\n",
+            b"p1\ntREG\nD0x1\nn/x\ntREG\nn/no-device\n",
+            b"p1\ntREG\nD0x1\nn/x\ntREG\nDzz\nn/bad-device\n",
+            b"tREG\nD0x1\nn/early\np1\ntREG\nD0x1\nn/x\n",
+            b"p1\ntREG\nD0x1\nn/odd^Xname\n",
             b"p1\ntunix\nn->0x1\n",
             b"p1\n",
-            b"p1\ntREG\nn/x\ntREG\nn/ (/dev/disk3s1)\n",
-            b"p1\ntREG\nn/x\ntDIR\nn/System/Volumes/Data (/dev/disk3s5)\n",
         ] {
             assert!(
                 parse_lsof_open_files(refused, Some(0)).is_err(),
