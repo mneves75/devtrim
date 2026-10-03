@@ -21,6 +21,9 @@ folders inside archived iOS app bundles.
 - A folder the project walk cannot read — such as a root-owned `.fseventsd`, where even probing for `CACHEDIR.TAG` is refused — no longer fails `node-modules`, `artifacts` and `purge` whole. It is reported as an error naming the folder, so the run still exits nonzero, nothing in it is offered, and everything else is judged as usual; a scan root itself that cannot be read still fails
 - A new repository (`git init` before the first commit) made the activity query fail and emptied the category. It is now left out and named in a skip note, like a worktree whose repository is gone. Only that state qualifies: no commit object anywhere in the repository (staged files are only blobs), listed by Git without a complaint, with HEAD naming a branch, `git refs verify` finding the reference storage sound, and every reference resolving. A HEAD naming a missing commit, damaged reference storage, a dangling symbolic branch, and an orphan checkout beside other branches keep their error
 
+### Security
+- The demo-video tooling's lockfile moves `fast-uri` from 3.1.6 to 3.1.8 (GHSA-58mr-gqgx-xq4g, GHSA-qw65-cvwx-89v3, GHSA-hrr3-gc8f-f4qj, all high) and `brace-expansion` from 5.0.9 to 5.0.12, so the `npm audit --audit-level=low` gate in CI and the release workflow passes again. Neither ships in the devtrim binary
+
 ## [0.10.4] - 2026-09-28
 
 Asked after 0.10.3: "why 10 days? can be less?" Measured on the owner's `~/dev`,
