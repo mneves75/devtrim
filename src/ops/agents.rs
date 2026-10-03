@@ -1664,25 +1664,44 @@ mod tests {
         crate::ops::remove_test_path(home);
     }
 
-    /// The whole chain against the real system: a copied program executing
-    /// from the release, the system-wide `lsof` probe, and the production
-    /// entry points. It depends on the host, so the planted-violation gate
-    /// relies on the deterministic tests above instead; a probe the host makes
-    /// refuse fails this test with the reason, never passes it.
-    #[test]
-    fn a_release_a_real_process_executes_is_refused_through_lsof() {
-        let (_fixture, home, old) = codex_home("live");
+    /// What the production paths attach to a failed executable-mapping probe:
+    /// the only failure [`a_release_a_real_process_executes_is_refused_through_lsof`]
+    /// attributes to the host and retries.
+    const PROBE_REFUSALS: [&str; 2] = [
+        "cannot tell which Codex releases running processes execute",
+        "cannot recheck which processes execute this Codex release",
+    ];
+
+    /// One run of the real chain in a fresh fixture. `Err` carries the probe's
+    /// refusals; every other failure panics at once.
+    fn refused_through_lsof(attempt: usize) -> std::result::Result<(), Vec<String>> {
+        let (_fixture, home, old) = codex_home(&format!("live-{attempt}"));
         let mut ctx = test_ctx(home.clone());
         ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
-        let scan = |ctx: &Ctx| Agents.scan(ctx, &ScanObservations::default()).unwrap();
-        let errors = |findings: &[Finding]| {
-            findings
+        let refusals = |messages: &[String]| -> Vec<String> {
+            messages
+                .iter()
+                .filter(|message| {
+                    PROBE_REFUSALS
+                        .iter()
+                        .any(|refusal| message.contains(refusal))
+                })
+                .cloned()
+                .collect()
+        };
+        let scan = |ctx: &Ctx| {
+            let findings = Agents.scan(ctx, &ScanObservations::default()).unwrap();
+            let errors: Vec<String> = findings
                 .iter()
                 .filter_map(Finding::scan_error)
                 .map(str::to_owned)
-                .collect::<Vec<_>>()
+                .collect();
+            (findings, errors)
         };
-        let idle = scan(&ctx);
+        let (idle, idle_errors) = scan(&ctx);
+        if !refusals(&idle_errors).is_empty() {
+            return Err(refusals(&idle_errors));
+        }
         let mut plan: Vec<_> = idle
             .iter()
             .filter(|finding| finding.target() == Some(old.as_path()))
@@ -1691,16 +1710,21 @@ mod tests {
         assert_eq!(
             plan.len(),
             1,
-            "control: an idle obsolete release is offered; scan errors: {:?}",
-            errors(&idle)
+            "control: an idle obsolete release is offered; scan errors: {idle_errors:?}"
         );
         plan[0].action = Action::Shred;
 
         let mut running = execute_from(&old);
-        let busy = scan(&ctx);
+        let (busy, busy_errors) = scan(&ctx);
         let outcome = Agents.apply(&plan, &ctx);
         running.kill().unwrap();
         running.wait().unwrap();
+        let outcome = outcome.unwrap();
+        let mut host = refusals(&busy_errors);
+        host.extend(refusals(&outcome.errors));
+        if !host.is_empty() {
+            return Err(host);
+        }
 
         assert!(
             !busy
@@ -1712,10 +1736,8 @@ mod tests {
             ctx.take_diagnostics()
                 .iter()
                 .any(|message| message.contains("still executing in a running process")),
-            "scan errors: {:?}",
-            errors(&busy)
+            "scan errors: {busy_errors:?}"
         );
-        let outcome = outcome.unwrap();
         assert_eq!(
             outcome.summary.items_touched, 0,
             "a running release was removed"
@@ -1728,6 +1750,27 @@ mod tests {
         );
         assert!(old.exists(), "a running release must survive apply");
         crate::ops::remove_test_path(home);
+        Ok(())
+    }
+
+    /// The whole chain against the real system: a copied program executing
+    /// from the release, the system-wide `lsof` probe, and the production
+    /// entry points. It depends on the host, so the planted-violation gate
+    /// relies on the deterministic tests above instead. A busy host makes the
+    /// probe refuse now and then (about one run in 200 under load), which only
+    /// ever withholds a release, so that refusal alone is retried in a fresh
+    /// fixture; any other failure, and three refusals in a row, fail the test.
+    #[test]
+    fn a_release_a_real_process_executes_is_refused_through_lsof() {
+        let mut host_refusals = Vec::new();
+        for attempt in 0..3 {
+            match refused_through_lsof(attempt) {
+                Ok(()) => return,
+                Err(refusals) => host_refusals.push(refusals),
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        panic!("the executable-mapping probe refused every attempt: {host_refusals:?}");
     }
 
     #[test]
