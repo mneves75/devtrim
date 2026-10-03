@@ -525,19 +525,21 @@ pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
 /// the category; they ask only after that query has failed, so no repository
 /// pays for it.
 ///
-/// The object store must be empty (`count-objects -v`): every commit is an
-/// object, so a repository holding none has no commit to judge, whatever its
-/// references say — and a branch turned into a dangling symbolic reference,
-/// a file holding an object ID where the loose-ref folder was, or an orphan
-/// checkout beside other branches all still hold their history. Three more
-/// answers keep a damaged repository an error rather than a new one. HEAD is
-/// symbolic (`symbolic-ref -q HEAD`), so a detached HEAD naming a missing
-/// commit is not new. Git finds the reference storage sound (`refs verify`,
-/// Git 2.47 and later): a loose-ref folder that became a junk file is damage,
-/// although Git's own `log` calls it "no commits yet". And every reference
-/// resolves (`for-each-ref --count=1` succeeds), so a branch whose commit
-/// was deleted is not new either. Any other answer, or a Git that cannot run
-/// or lacks `refs verify`, is not new: the original failure then stands.
+/// No commit object may exist (`cat-file --batch-all-objects`, which also
+/// lists alternate stores): a repository without one has no history to
+/// judge, whatever its references say, while files staged with `git add`
+/// before the first commit are only blobs. A branch turned into a dangling
+/// symbolic reference, a file holding an object ID where the loose-ref folder
+/// was, and an orphan checkout beside other branches all keep their commits
+/// and their error. Three more answers keep a damaged repository an error
+/// rather than a new one. HEAD is symbolic (`symbolic-ref -q HEAD`), so a
+/// detached HEAD naming a missing commit is not new. Git finds the reference
+/// storage sound (`refs verify`, Git 2.47 and later): a loose-ref folder that
+/// became a junk file is damage, although Git's own `log` calls it "no
+/// commits yet". And every reference resolves (`for-each-ref --count=1`
+/// succeeds), so a branch whose commit was deleted is not new either. Any
+/// other answer, or a Git that cannot run or lacks `refs verify`, is not new:
+/// the original failure then stands.
 pub(crate) fn unborn_branch(repo: &Path) -> bool {
     let git_output = |arguments: &[&str]| {
         let mut command = hardened_git(repo, "git");
@@ -548,27 +550,29 @@ pub(crate) fn unborn_branch(repo: &Path) -> bool {
         && git_output(&["refs", "verify"]).is_some_and(|verified| verified.status.success())
         && git_output(&["for-each-ref", "--count=1"])
             .is_some_and(|references| references.status.success())
-        && git_output(&["count-objects", "-v"])
-            .is_some_and(|counted| counted.status.success() && holds_no_objects(&counted.stdout))
+        && git_output(&[
+            "cat-file",
+            "--batch-all-objects",
+            "--unordered",
+            "--batch-check=%(objecttype)",
+        ])
+        .is_some_and(|listed| listed.status.success() && holds_no_commit(&listed.stdout))
 }
 
 /// Whether a `git count-objects -v` report describes an object store with
 /// nothing in it: zero loose objects, zero packed objects, zero packs, and no
 /// alternate store lending objects. Its keys are fixed, not translated; a
 /// report missing a count, or one that is not text, proves nothing.
-fn holds_no_objects(report: &[u8]) -> bool {
-    let Ok(report) = std::str::from_utf8(report) else {
+/// Whether a `cat-file --batch-all-objects --batch-check=%(objecttype)`
+/// listing holds no commit: every line names an object type, none of them
+/// `commit`. Git prints types untranslated; anything else proves nothing.
+fn holds_no_commit(listing: &[u8]) -> bool {
+    let Ok(listing) = std::str::from_utf8(listing) else {
         return false;
     };
-    let mut counted = 0;
-    for line in report.lines() {
-        match line.split_once(": ") {
-            Some(("count" | "in-pack" | "packs", "0")) => counted += 1,
-            Some(("count" | "in-pack" | "packs" | "alternate", _)) | None => return false,
-            Some(_) => {}
-        }
-    }
-    counted == 3
+    listing
+        .lines()
+        .all(|kind| matches!(kind, "blob" | "tree" | "tag"))
 }
 
 /// A folder a project walk could not read, and why. Like a scan root that
@@ -690,6 +694,19 @@ mod tests {
             "PV project/unborn-branch: a repository without commits was not recognized"
         );
 
+        // `git add` before the first commit stores blobs, not commits: the
+        // repository on the owner's Mac that this case comes from held 27.
+        let staged = base.join("staged");
+        std::fs::create_dir_all(&staged).unwrap();
+        git(&staged, &["init", "-q"]);
+        std::fs::write(staged.join("README.md"), "draft\n").unwrap();
+        git(&staged, &["add", "README.md"]);
+        assert!(repo_last_activity(&staged).is_err());
+        assert!(
+            unborn_branch(&staged),
+            "PV project/unborn-no-commit: staged files made a new repository read as having history"
+        );
+
         // An orphan checkout beside other branches is not a new repository:
         // its references show history exists, so its failure stands.
         let orphan = base.join("orphan");
@@ -698,7 +715,7 @@ mod tests {
         assert!(repo_last_activity(&orphan).is_err());
         assert!(
             !unborn_branch(&orphan),
-            "PV project/unborn-empty-store: an orphan checkout beside other branches read as new"
+            "PV project/unborn-no-commit: an orphan checkout beside other branches read as new"
         );
 
         let dangling = base.join("dangling");
@@ -739,7 +756,7 @@ mod tests {
         assert!(repo_last_activity(&collided).is_err());
         assert!(
             !unborn_branch(&collided),
-            "PV project/unborn-empty-store: an obstructed branch path read as new"
+            "PV project/unborn-no-commit: an obstructed branch path read as new"
         );
 
         // The only branch turned into a symbolic reference to a missing one:
@@ -758,7 +775,7 @@ mod tests {
         assert!(repo_last_activity(&dangling_symbolic).is_err());
         assert!(
             !unborn_branch(&dangling_symbolic),
-            "PV project/unborn-empty-store: a repository holding commits read as new"
+            "PV project/unborn-no-commit: a repository holding commits read as new"
         );
 
         let born = base.join("born");
@@ -772,25 +789,28 @@ mod tests {
         crate::ops::remove_test_path(base);
     }
 
-    /// Only an object store reported as empty — no loose object, no pack,
-    /// and no alternate store lending objects — holds no commit; a report
-    /// missing one of those counts proves nothing.
+    /// Only a listing of object types that holds no commit proves there is
+    /// no history; anything that is not such a listing proves nothing.
     #[test]
-    fn only_an_empty_object_store_holds_no_commit() {
-        let empty = b"count: 0\nsize: 0\nin-pack: 0\npacks: 0\nsize-pack: 0\nprune-packable: 0\ngarbage: 0\nsize-garbage: 0\n";
-        assert!(holds_no_objects(empty));
-        for report in [
-            &b"count: 2\nsize: 1\nin-pack: 0\npacks: 0\n"[..],
-            b"count: 0\nsize: 0\nin-pack: 7\npacks: 1\n",
-            b"count: 0\nin-pack: 0\npacks: 0\nalternate: /elsewhere/objects\n",
-            b"count: 0\nin-pack: 0\n",
-            b"count: zero\nin-pack: 0\npacks: 0\n",
+    fn only_a_listing_without_a_commit_object_proves_no_history() {
+        for listing in [&b""[..], b"blob\n", b"blob\nblob\ntree\n"] {
+            assert!(
+                holds_no_commit(listing),
+                "{}",
+                String::from_utf8_lossy(listing)
+            );
+        }
+        for listing in [
+            &b"blob\ncommit\n"[..],
+            b"commit\n",
+            b"blob\nmissing\n",
+            b"blob\n\n",
             b"\xff\n",
         ] {
             assert!(
-                !holds_no_objects(report),
+                !holds_no_commit(listing),
                 "{}",
-                String::from_utf8_lossy(report)
+                String::from_utf8_lossy(listing)
             );
         }
     }

@@ -608,12 +608,12 @@ CASES = (
         marker="PV node_modules/owner-veto",
     ),
     Case(
-        name="project/unborn-empty-store",
+        name="project/unborn-no-commit",
         relative_path="src/ops/project.rs",
-        before="            .is_some_and(|counted| counted.status.success() && holds_no_objects(&counted.stdout))\n",
-        after="            .is_some_and(|counted| counted.status.success())\n",
+        before="        .is_some_and(|listed| listed.status.success() && holds_no_commit(&listed.stdout))\n",
+        after="        .is_some_and(|listed| listed.status.success())\n",
         tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
-        marker="PV project/unborn-empty-store",
+        marker="PV project/unborn-no-commit",
     ),
     # A default project folder linked to the home folder or above it would make
     # the whole home or disk a scan root nobody named.
