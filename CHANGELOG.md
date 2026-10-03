@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [Unreleased]
+
 ## [0.10.6] - 2026-10-03
 
 The open items from 0.10.5, all approved by the owner, plus what using 0.10.5

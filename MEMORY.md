@@ -1,6 +1,24 @@
 # Project Memory
 
-## Current state (0.10.5)
+## Current state (0.10.6)
+
+Production is verified. `v0.10.6-beta1` and `v0.10.6` both point at `b8a6468`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`3cee0095a10508b43a46ee9d95f87c1aff7f522c64017f9cf5a57b8809923d2b`) and is
+immutable. The downloaded beta passed checksum, attestation (source `b8a6468`,
+the beta tag, a GitHub-hosted runner; a wrong source digest fails), the PTY TUI
+suite run from a long download path, read-only views, and a live read-only
+`scan`. Homebrew installs and tests 0.10.6 as the sole visible `devtrim` (tap
+`bc9084e`, closed out with `scripts/update-homebrew.sh` after the release
+script's local watch was killed; the hosted workflow itself succeeded).
+
+0.10.6 adds `trash-empty --only-devtrim` (journaled Trash identity), per-folder
+DerivedData liveness while Xcode runs (age gate plus Xcode's open files judged
+by device), the Homebrew cache split around Git clones, `.cxx`,
+`.terragrunt-cache` and Nuxt `.output` with a Terraform-state guard, and error
+counts apart in totals. Story in `memory/2026-10-03.md`.
+
+## Previous state (0.10.5)
 
 Production is verified. `v0.10.5-beta1` and `v0.10.5` both point at `57bfb08`;
 production reused the beta archive byte for byte (ZIP SHA-256
