@@ -85,6 +85,7 @@ impl Op for Artifacts {
         let mut tracked = 0usize;
         let mut keypairs = 0usize;
         let mut repositories = 0usize;
+        let mut states = 0usize;
         let mut orphaned = 0usize;
         let mut orphans = Vec::new();
         let mut unborn = Vec::new();
@@ -95,7 +96,8 @@ impl Op for Artifacts {
             let mut judged = Vec::new();
             // Counted only once the whole repository has been judged, so a
             // repository that then fails is reported as an error, not a skip.
-            let (mut tracked_here, mut keypairs_here, mut repositories_here) = (0usize, 0, 0);
+            let (mut tracked_here, mut keypairs_here, mut repositories_here, mut states_here) =
+                (0usize, 0, 0, 0);
             let result = (|| -> Result<()> {
                 if orphaned_worktree(&owner)? {
                     orphaned = orphaned.saturating_add(candidates.len());
@@ -134,6 +136,10 @@ impl Op for Artifacts {
                             repositories_here += 1;
                             continue;
                         }
+                        Some(Authored::TerraformState(_)) => {
+                            states_here += 1;
+                            continue;
+                        }
                         _ => {}
                     }
                     let size = dir_size(&candidate.path)?;
@@ -160,6 +166,7 @@ impl Op for Artifacts {
                     tracked = tracked.saturating_add(tracked_here);
                     keypairs = keypairs.saturating_add(keypairs_here);
                     repositories = repositories.saturating_add(repositories_here);
+                    states = states.saturating_add(states_here);
                 }
                 Err(error) => findings.push(unjudged_finding("artifacts", &owner, &error)),
             }
@@ -212,6 +219,14 @@ impl Op for Artifacts {
                 "info",
                 format!(
                     "skipping {keypairs} artifact directories holding a program keypair (*-keypair.json)"
+                ),
+            );
+        }
+        if states > 0 && !ctx.json {
+            ctx.diagnostic(
+                "info",
+                format!(
+                    "skipping {states} artifact directories holding Terraform state (*.tfstate), which no rebuild restores"
                 ),
             );
         }
@@ -332,6 +347,11 @@ impl Artifacts {
                         path.display(),
                         marker.display()
                     ),
+                    Some(Authored::TerraformState(state)) => anyhow::bail!(
+                        "refusing {}: it holds the Terraform state {}",
+                        path.display(),
+                        state.display()
+                    ),
                     _ => {}
                 }
                 Ok(())
@@ -361,6 +381,8 @@ enum Authored {
     ProgramKeypair(PathBuf),
     /// The marker of a Git repository or worktree below the tree's root.
     Repository(PathBuf),
+    /// Terraform state or its backup, the only record of what it manages.
+    TerraformState(PathBuf),
 }
 
 /// The first entry under `path` that no rebuild restores, as Mole V1.56.0
@@ -392,11 +414,26 @@ fn authored_entry_under(path: &Path) -> Result<Option<Authored>> {
         if is_program_keypair_name(entry.file_name()) {
             return Ok(Some(Authored::ProgramKeypair(entry.into_path())));
         }
+        if is_terraform_state_name(entry.file_name()) {
+            return Ok(Some(Authored::TerraformState(entry.into_path())));
+        }
         if entry.depth() > 0 && is_git_metadata_name(entry.file_name()) {
             return Ok(Some(Authored::Repository(entry.into_path())));
         }
     }
     Ok(None)
+}
+
+/// Whether `name` is Terraform state: `*.tfstate`, or the `*.tfstate.backup`
+/// Terraform keeps beside it, in any ASCII case. Terraform's local backend
+/// writes `terraform.tfstate` into its working directory, which under
+/// Terragrunt is inside `.terragrunt-cache` (Terraform "Backend Type: local";
+/// Terragrunt "Terragrunt cache"), and nothing regenerates it.
+fn is_terraform_state_name(name: &OsStr) -> bool {
+    let name = name.as_encoded_bytes();
+    [&b".tfstate"[..], b".tfstate.backup"].iter().any(|suffix| {
+        name.len() >= suffix.len() && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    })
 }
 
 /// Whether `name` ends in `-keypair.json` as the volume compares names: in any
@@ -1279,6 +1316,70 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(target.join("out"), "x").unwrap();
         target
+    }
+
+    /// Terraform's local backend writes `terraform.tfstate` into the working
+    /// directory Terragrunt runs it in, `.terragrunt-cache/<hash>/<hash>/`, and
+    /// that file is the only record of the infrastructure it manages: no
+    /// rebuild restores it. A build-output tree holding a state file or its
+    /// backup is never offered, whatever its name, and apply refuses it.
+    #[test]
+    fn a_tree_holding_terraform_state_is_never_offered_or_removed() {
+        let (_fixture, root, home) = deletable_root("terraform-state");
+        let repo = home.join("infra");
+        init_old_git_repo(&repo).unwrap();
+        let unit = repo.join("live/app");
+        std::fs::create_dir_all(unit.join(".terragrunt-cache/a1/b2")).unwrap();
+        std::fs::write(unit.join("terragrunt.hcl"), "").unwrap();
+        let state = unit.join(".terragrunt-cache/a1/b2/terraform.tfstate");
+        std::fs::write(&state, "{\"version\": 4}").unwrap();
+        let other_unit = repo.join("live/db");
+        std::fs::create_dir_all(other_unit.join(".terragrunt-cache/c3/modules")).unwrap();
+        std::fs::write(other_unit.join("terragrunt.hcl"), "").unwrap();
+        std::fs::write(other_unit.join(".terragrunt-cache/c3/modules/main.tf"), "").unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::create_dir_all(repo.join("target/debug")).unwrap();
+        std::fs::write(repo.join("target/debug/Terraform.TFSTATE.backup"), "{}").unwrap();
+        let ctx = context(home.clone());
+
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+
+        assert_eq!(
+            findings
+                .iter()
+                .filter_map(Finding::target)
+                .collect::<Vec<_>>(),
+            vec![other_unit.join(".terragrunt-cache").as_path()],
+            "PV artifacts/terraform-state-scan: a tree holding Terraform state was offered"
+        );
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|message| message.contains("2 artifact directories holding Terraform state")),
+            "the kept state must be named"
+        );
+
+        let forged = Finding::new(
+            "stale .terragrunt-cache artifacts",
+            Some(unit.join(".terragrunt-cache")),
+            1,
+            "test",
+            5,
+            Action::Shred,
+        );
+        let outcome = Artifacts
+            .apply_with_process_cwds(&[forged], &ctx, Ok(Vec::new()))
+            .unwrap();
+        assert!(
+            outcome.summary.items_touched == 0
+                && state.exists()
+                && outcome
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("Terraform state")),
+            "PV artifacts/terraform-state-apply: {outcome:?}"
+        );
+        crate::ops::remove_test_path(root);
     }
 
     /// Mole's three further names, each only beside the file of the tool that

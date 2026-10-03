@@ -355,6 +355,18 @@ fn owner_cache_path(program: &str, args: &[&str], ctx: &Ctx) -> Result<Option<Pa
     let Some(path) = command_path(program, args, &ctx.home)? else {
         return Ok(None);
     };
+    // The home folder is resolved to its real path; an owner answers in the
+    // spelling `$HOME` gave it, which may run through a link, so its answer is
+    // resolved the same way before it is judged. A cache that does not exist
+    // yet holds nothing to offer either way.
+    let path = match path.canonicalize() {
+        Ok(real) => real,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => path,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot resolve the cache root `{program}` reports"));
+        }
+    };
     if !is_eligible_owner_cache(program, &path, &ctx.home) {
         ctx.diagnostic(
             "warn",

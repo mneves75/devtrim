@@ -194,7 +194,9 @@ keeps its dependencies as Git clones — nor one holding an entry named
 `*-keypair.json`: `cargo build-sbf`, which
 `anchor build` runs, writes a Solana program's keypair into `target/deploy`
 once, and a rebuild after removal mints a different program address. Both
-checks run again at apply.
+checks run again at apply. A tree holding Terraform state (`*.tfstate`) is never offered either:
+Terraform's local backend writes it into the working directory Terragrunt
+runs it in, inside `.terragrunt-cache`, and nothing regenerates it.
 
 `clean installers` considers only direct children of `Downloads` and `Desktop`
 whose extension is on a closed list (`dmg`, `pkg`, `mpkg`, `iso`, `xip`) and

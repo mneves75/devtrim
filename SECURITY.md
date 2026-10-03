@@ -142,8 +142,10 @@ Non-negotiable boundaries:
   because the compilers a build runs are not Xcode processes; an `lsof`
   listing of Xcode's open files must be complete, and every file in it that is
   not a socket, pipe or queue must be named by a path, or DerivedData is
-  refused; that refusal, like a folder whose age cannot be read, is an error
-  entry that blocks only DerivedData or that folder. A working-directory name that `lsof` escapes ambiguously
+  refused, as is lsof's mount-and-device fallback for a file it could not name.
+  An open file is matched to its folder by spelling, real path and identity.
+  That refusal, like a folder whose age cannot be read, is an error entry that
+  blocks only DerivedData or that folder. A working-directory name that `lsof` escapes ambiguously
   refuses rather than matching nothing. Liveness probes use fixed
   argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
   `lsof` exiting 1 is accepted only when every process it did not report is
@@ -176,7 +178,8 @@ Non-negotiable boundaries:
 - `artifacts` requires both a closed directory-name list with ecosystem
   corroboration (or an exact `CACHEDIR.TAG` signature) and a conclusively stale
   owning Git repo; corroboration, ownership, staleness, liveness, tracked
-  files, and program keypairs are all re-verified at apply time.
+  files, program keypairs, and Terraform state (`*.tfstate`), which no rebuild
+  restores, are all re-verified at apply time.
 - Incomplete directory traversal, metadata, or numeric parsing is not size authority for an actionable plan.
 - Unknown configuration fields are rejected so a misspelled safety setting cannot appear active.
 - Docker volumes and Xcode Archives are never pruned.

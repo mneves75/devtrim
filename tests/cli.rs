@@ -908,6 +908,48 @@ fn trash_empty_only_devtrim_leaves_everyone_elses_items() {
     );
 }
 
+/// devtrim resolves `$HOME` to its real path, while `brew --cache` answers in
+/// the spelling it was given; a home reached through a link must not make the
+/// Homebrew cache look like it lies outside the home folder.
+#[test]
+fn a_homebrew_cache_reported_through_a_linked_home_is_still_offered() {
+    let sandbox = Sandbox::in_target("brew-linked-home");
+    let real = sandbox.path().canonicalize().unwrap();
+    let alias = real.with_file_name(format!(
+        "{}-alias",
+        real.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::remove_file(&alias).ok();
+    symlink(&real, &alias).unwrap();
+    let cache = real.join("Library/Caches/Homebrew/downloads");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("bottle.tar.gz"), vec![b'x'; 100]).unwrap();
+    sandbox.script(
+        "brew",
+        &format!(
+            "printf '%s\\n' '{}/Library/Caches/Homebrew'",
+            alias.display()
+        ),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["clean", "caches", "--json"])
+        .env("HOME", &alias)
+        .env("PATH", sandbox.bin())
+        .env_remove("XDG_STATE_HOME")
+        .output()
+        .unwrap();
+    std::fs::remove_file(&alias).ok();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        finding_paths(&json(&output))
+            .contains(&real.join("Library/Caches/Homebrew").display().to_string()),
+        "the Homebrew cache was skipped: {stderr}"
+    );
+}
+
 /// Restores a fixture folder's mode when dropped, so the sandbox can be removed
 /// even when an assertion fails first.
 struct Unreadable(PathBuf);

@@ -739,6 +739,40 @@ CASES = (
         tests=("ops::xcode::tests::an_open_file_is_matched_under_the_folders_real_path",),
         marker="PV xcode/active-canonical",
     ),
+    # 0.10.6 final review: Terraform state, lsof's mount fallback, and the
+    # open-file match by identity.
+    Case(
+        name="artifacts/terraform-state-scan",
+        relative_path="src/ops/artifacts.rs",
+        before="        if is_terraform_state_name(entry.file_name()) {\n",
+        after="        if false && is_terraform_state_name(entry.file_name()) {\n",
+        tests=("ops::artifacts::tests::a_tree_holding_terraform_state_is_never_offered_or_removed",),
+        marker="PV artifacts/terraform-state-scan",
+    ),
+    Case(
+        name="artifacts/terraform-state-apply",
+        relative_path="src/ops/artifacts.rs",
+        before="                    Some(Authored::TerraformState(state)) => anyhow::bail!(\n                        \"refusing {}: it holds the Terraform state {}\",\n                        path.display(),\n                        state.display()\n                    ),\n",
+        after="                    Some(Authored::TerraformState(_)) => {}\n",
+        tests=("ops::artifacts::tests::a_tree_holding_terraform_state_is_never_offered_or_removed",),
+        marker="PV artifacts/terraform-state-apply",
+    ),
+    Case(
+        name="liveness/xcode-mount-fallback",
+        relative_path="src/safety.rs",
+        before="                if name.starts_with(b\"/\") && is_lsof_mount_fallback(name) {\n",
+        after="                if false && name.starts_with(b\"/\") && is_lsof_mount_fallback(name) {\n",
+        tests=("safety::tests::xcode_open_files_are_absolute_names_from_a_complete_listing",),
+        marker="PV liveness/xcode-open-files",
+    ),
+    Case(
+        name="xcode/active-identity",
+        relative_path="src/ops/xcode.rs",
+        before="        || held_open_by_identity(folder, open_files)?\n",
+        after="        || (held_open_by_identity(folder, open_files)? && false)\n",
+        tests=("ops::xcode::tests::an_open_file_is_matched_by_the_folders_identity",),
+        marker="PV xcode/active-identity",
+    ),
     # A default project folder linked to the home folder or above it would make
     # the whole home or disk a scan root nobody named.
     Case(

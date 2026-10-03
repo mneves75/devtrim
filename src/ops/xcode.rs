@@ -288,6 +288,7 @@ fn derived_data_in_use(
     if open_files
         .iter()
         .any(|file| file.starts_with(folder) || file.starts_with(&canonical))
+        || held_open_by_identity(folder, open_files)?
     {
         return Ok(Some(InUse::Open));
     }
@@ -310,6 +311,50 @@ fn derived_data_in_use(
         .checked_sub(window)
         .unwrap_or(std::time::UNIX_EPOCH);
     Ok((newest > cutoff).then_some(InUse::Recent))
+}
+
+/// Whether an open file lies in `folder` under another spelling: the kernel
+/// can name it through a link, or through the `/System/Volumes/Data` firmlink
+/// that `realpath` keeps as given. Each open file's DerivedData child — the
+/// path up to the component after `DerivedData` — is looked up and compared
+/// with `folder` by device and inode. One that no longer exists names no
+/// folder; any other failure to look it up refuses.
+fn held_open_by_identity(folder: &Path, open_files: &[PathBuf]) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let wanted = std::fs::symlink_metadata(folder)
+        .with_context(|| format!("cannot inspect DerivedData folder {}", folder.display()))?;
+    for file in open_files {
+        let mut prefix = PathBuf::new();
+        let mut components = file.components();
+        let mut child = None;
+        while let Some(component) = components.next() {
+            prefix.push(component);
+            if component.as_os_str().eq_ignore_ascii_case("DerivedData") {
+                child = components.next().map(|next| prefix.join(next));
+                break;
+            }
+        }
+        let Some(child) = child else {
+            continue;
+        };
+        match std::fs::metadata(&child) {
+            Ok(metadata) if (metadata.dev(), metadata.ino()) == (wanted.dev(), wanted.ino()) => {
+                return Ok(true);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "cannot inspect the folder of an open file {}",
+                        child.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Whether a DerivedData folder is offered directory by directory: it holds
@@ -1081,27 +1126,24 @@ mod tests {
         assert!(!derived_data.join("Old-a").exists());
     }
 
-    /// `lsof` names the files Xcode holds by their real path, while the scan
-    /// reaches DerivedData through the home folder as given, which may be
-    /// spelled through a link. An open file is matched under either spelling.
+    /// A DerivedData folder that is itself a link to a folder of another name
+    /// — moved to a larger disk, say — makes `lsof` name the files Xcode holds
+    /// under the link's target, with no `DerivedData` component to match by
+    /// identity. The folder's real path is what still matches them.
     #[test]
     fn an_open_file_is_matched_under_the_folders_real_path() {
         let fixture = crate::ops::TestFixture::new("devtrim-xcode-canonical");
-        let real = fixture.path().join("real-home");
-        std::fs::create_dir_all(&real).unwrap();
-        let real = real.canonicalize().unwrap();
-        let alias = fixture.path().canonicalize().unwrap().join("alias-home");
-        std::os::unix::fs::symlink(&real, &alias).unwrap();
-        aged_file(
-            &real.join("Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db"),
-            10,
-        );
-        let mut ctx = test_context(alias);
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let moved = home.join("elsewhere/BuildProducts");
+        aged_file(&moved.join("Open-c/Index.noindex/db"), 10);
+        std::fs::create_dir_all(home.join("Library/Developer/Xcode")).unwrap();
+        std::os::unix::fs::symlink(&moved, home.join("Library/Developer/Xcode/DerivedData"))
+            .unwrap();
+        let mut ctx = test_context(home);
         ctx.active_days = 3;
         let activity = XcodeActivity::Active {
-            open_files: vec![
-                real.join("Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db"),
-            ],
+            open_files: vec![moved.join("Open-c/Index.noindex/db")],
         };
 
         let findings = Xcode
@@ -1114,6 +1156,52 @@ mod tests {
                 .filter_map(Finding::target)
                 .all(|path| !path.ends_with("Open-c")),
             "PV xcode/active-canonical: a folder held open under its real path was offered"
+        );
+    }
+
+    /// The kernel may name an open file through a spelling the scan does not
+    /// use — a link, or the `/System/Volumes/Data` firmlink, which `realpath`
+    /// keeps as given. The folder an open file lies in is therefore matched by
+    /// device and inode too, not only by spelling.
+    #[test]
+    fn an_open_file_is_matched_by_the_folders_identity() {
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-identity");
+        let real = fixture.path().join("real-home");
+        std::fs::create_dir_all(&real).unwrap();
+        let real = real.canonicalize().unwrap();
+        let alias = fixture.path().canonicalize().unwrap().join("alias-home");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        aged_file(
+            &real.join("Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db"),
+            10,
+        );
+        aged_file(
+            &real.join("Library/Developer/Xcode/DerivedData/Old-a/Build/out.o"),
+            10,
+        );
+        let mut ctx = test_context(real.clone());
+        ctx.active_days = 3;
+        let activity = XcodeActivity::Active {
+            open_files: vec![
+                alias.join("Library/Developer/Xcode/DerivedData/Open-c/Index.noindex/db"),
+            ],
+        };
+
+        let findings = Xcode
+            .scan_with_xcode_build_state(&ctx, Ok(activity))
+            .unwrap();
+
+        let offered = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            offered,
+            vec![
+                real.join("Library/Developer/Xcode/DerivedData/Old-a")
+                    .as_path()
+            ],
+            "PV xcode/active-identity: a folder held open under another spelling was offered"
         );
     }
 

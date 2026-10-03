@@ -1528,6 +1528,19 @@ pub(crate) fn xcode_activity() -> Result<XcodeActivity> {
     })
 }
 
+/// Whether an absolute `lsof` NAME is its fallback for a file whose path the
+/// kernel could not give: the mount directory followed by its device in
+/// parentheses, as in `/ (/dev/disk3s1)` (Apple lsof `print.c`). A real path
+/// may end in a parenthesis — `App Helper (Renderer).app` — but not in one
+/// that holds a device path.
+fn is_lsof_mount_fallback(name: &[u8]) -> bool {
+    name.ends_with(b")")
+        && name
+            .windows(2)
+            .rposition(|pair| pair == b" (")
+            .is_some_and(|start| name[start + 2..].starts_with(b"/dev/"))
+}
+
 /// `lsof` file types whose NAME is not a path: sockets (including Skywalk
 /// channels, nexus and route sockets), kernel controls and event sources,
 /// pipes and queues — every type a system-wide listing on the development
@@ -1573,7 +1586,13 @@ pub(crate) fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Re
                     bail!("lsof returned an open file without its type");
                 };
                 let name = &line[1..];
-                if name.starts_with(b"/") {
+                if name.starts_with(b"/") && is_lsof_mount_fallback(name) {
+                    bail!(
+                        "lsof could not name an open {} file and showed its mount instead (`{}`), so whether it lies under DerivedData is unknown",
+                        String::from_utf8_lossy(kind),
+                        String::from_utf8_lossy(name)
+                    );
+                } else if name.starts_with(b"/") {
                     paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)));
                 } else if !LSOF_NON_PATH_TYPES.contains(&kind) {
                     bail!(
@@ -2667,6 +2686,10 @@ mod tests {
         let listing = b"p501\ntREG\nn/Applications/Xcode.app/Contents/MacOS/Xcode\ntREG\nn/Users/me/Library/Developer/Xcode/DerivedData/App-a/Index.noindex/DataStore/v5/db\ntunix\nn->0xabc\ntPIPE\nn->0x1\ntsystm\nn[ctl com.apple.netsrc id 10 unit 33]\ntNPOLICY\nn\ntIPv4\nn*:49152\np502\ntDIR\nn/Users/me/dev/app\n";
         let paths = parse_lsof_open_files(listing, Some(0)).unwrap();
         assert_eq!(paths.len(), 3, "{paths:?}");
+        // A real path may end in a parenthesis; only lsof's mount-and-device
+        // fallback for a file it could not name is refused.
+        let helper = b"p1\ntREG\nn/Applications/App.app/Contents/Frameworks/App Helper (Renderer).app/Contents/MacOS/App Helper (Renderer)\n";
+        assert_eq!(parse_lsof_open_files(helper, Some(0)).unwrap().len(), 1);
         assert!(paths.contains(&PathBuf::from(
             "/Users/me/Library/Developer/Xcode/DerivedData/App-a/Index.noindex/DataStore/v5/db"
         )));
@@ -2680,6 +2703,8 @@ mod tests {
             b"p1\ntREG\nn/odd^Xname\n",
             b"p1\ntunix\nn->0x1\n",
             b"p1\n",
+            b"p1\ntREG\nn/x\ntREG\nn/ (/dev/disk3s1)\n",
+            b"p1\ntREG\nn/x\ntDIR\nn/System/Volumes/Data (/dev/disk3s5)\n",
         ] {
             assert!(
                 parse_lsof_open_files(refused, Some(0)).is_err(),
