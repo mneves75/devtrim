@@ -197,7 +197,7 @@ struct CodexReleases {
 }
 
 impl CodexReleases {
-    fn open(home: &Path) -> Result<Option<Self>> {
+    fn open(home: &Path, mappings: &dyn Fn() -> Result<Vec<PathBuf>>) -> Result<Option<Self>> {
         let standalone = home.join(CODEX_STANDALONE);
         let root = home.join(CODEX_RELEASES.relative);
         match fs::symlink_metadata(&root) {
@@ -321,8 +321,8 @@ impl CodexReleases {
         };
         // Read while the lock is held: the installer cannot move `current`
         // underneath this answer, and a failed probe refuses release cleanup.
-        let in_use = crate::safety::executable_mappings()
-            .context("cannot tell which Codex releases running processes execute")?;
+        let in_use =
+            mappings().context("cannot tell which Codex releases running processes execute")?;
         Ok(Some(Self {
             root,
             current,
@@ -712,7 +712,25 @@ impl Op for Agents {
     fn scan(
         &self,
         ctx: &Ctx,
+        observations: &super::project::ScanObservations,
+    ) -> Result<Vec<Finding>> {
+        self.scan_with_mappings(ctx, observations, &crate::safety::executable_mappings)
+    }
+
+    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
+        self.apply_with_mappings(findings, ctx, &crate::safety::executable_mappings)
+    }
+}
+
+impl Agents {
+    /// [`Op::scan`] with the executable-mapping probe supplied, so a test
+    /// decides what runs instead of every process on the host. Production
+    /// passes only [`crate::safety::executable_mappings`].
+    fn scan_with_mappings(
+        &self,
+        ctx: &Ctx,
         _observations: &super::project::ScanObservations,
+        mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         for entry in REGENERABLE {
@@ -730,7 +748,7 @@ impl Op for Agents {
             }
         }
         let release_findings = (|| -> Result<Vec<Finding>> {
-            let Some(releases) = CodexReleases::open(&ctx.home)? else {
+            let Some(releases) = CodexReleases::open(&ctx.home, mappings)? else {
                 return Ok(Vec::new());
             };
             let mut release_findings = Vec::new();
@@ -813,13 +831,19 @@ impl Op for Agents {
         Ok(findings)
     }
 
-    fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
+    /// [`Op::apply`] with the probe supplied; see [`Self::scan_with_mappings`].
+    fn apply_with_mappings(
+        &self,
+        findings: &[Finding],
+        ctx: &Ctx,
+        mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
+    ) -> Result<ApplyOutcome> {
         let releases = if findings
             .iter()
             .filter_map(Finding::target)
             .any(|target| is_codex_release_child(target, &ctx.home))
         {
-            Some(CodexReleases::open(&ctx.home))
+            Some(CodexReleases::open(&ctx.home, mappings))
         } else {
             None
         };
@@ -839,7 +863,7 @@ impl Op for Agents {
                     }
                     _ => None,
                 };
-                authorize(target, ctx, release_context)?;
+                authorize(target, ctx, release_context, mappings)?;
                 apply_filesystem_finding(self.name(), finding, ctx)
             })()
             .with_context(|| format!("failed to remove {}", finding.label));
@@ -867,7 +891,12 @@ impl Op for Agents {
 /// forged or stale plan; a target inside a history root that no longer passes
 /// the gate is the ordinary case of a session resumed between preview and
 /// apply, and saying "outside its authorized namespace" would misdescribe it.
-fn authorize(target: &Path, ctx: &Ctx, releases: Option<&CodexReleases>) -> Result<()> {
+fn authorize(
+    target: &Path,
+    ctx: &Ctx,
+    releases: Option<&CodexReleases>,
+    mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
+) -> Result<()> {
     if is_regenerable_target(target, &ctx.home) {
         return Ok(());
     }
@@ -886,8 +915,8 @@ fn authorize(target: &Path, ctx: &Ctx, releases: Option<&CodexReleases>) -> Resu
         }
         // Probed again at this finding, not once for the whole plan: an agent
         // can start a helper from this release while earlier findings apply.
-        let mappings = crate::safety::executable_mappings()
-            .context("cannot recheck which processes execute this Codex release")?;
+        let mappings =
+            mappings().context("cannot recheck which processes execute this Codex release")?;
         if executes(&mappings, target)? {
             anyhow::bail!(
                 "Codex release is still executing in a running process: {}",
@@ -1020,6 +1049,7 @@ fn collect_at_depth(base: &Path, depth: usize, found: &mut Vec<PathBuf>) -> Resu
 mod tests {
     use super::*;
     use crate::ops::project::ScanObservations;
+    use std::cell::Cell;
     use std::os::unix::fs::symlink;
     use std::time::Duration;
 
@@ -1115,7 +1145,11 @@ mod tests {
         std::fs::create_dir_all(&staging).unwrap();
 
         let findings = Agents
-            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
+            .scan_with_mappings(
+                &test_ctx(home.to_path_buf()),
+                &ScanObservations::default(),
+                &idle,
+            )
             .unwrap();
         let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
         assert!(
@@ -1156,7 +1190,9 @@ mod tests {
         let ctx = test_ctx(home.to_path_buf());
 
         let blocked = |ctx: &Ctx| {
-            let findings = Agents.scan(ctx, &ScanObservations::default()).unwrap();
+            let findings = Agents
+                .scan_with_mappings(ctx, &ScanObservations::default(), &idle)
+                .unwrap();
             assert!(
                 findings.iter().any(|finding| {
                     finding.label == "Codex standalone releases unavailable"
@@ -1234,7 +1270,9 @@ mod tests {
         blocked(&ctx);
         std::fs::remove_file(standalone.join("current")).unwrap();
         symlink(&current, standalone.join("current")).unwrap();
-        let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
+        let findings = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &idle)
+            .unwrap();
         assert!(
             findings
                 .iter()
@@ -1258,7 +1296,9 @@ mod tests {
         let lock = File::open(&lock_path).unwrap();
         hold_installer_lock(&lock);
         let ctx = test_ctx(home.to_path_buf());
-        let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
+        let findings = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &idle)
+            .unwrap();
         assert!(findings.iter().any(|finding| {
             finding.action == Action::Info && finding.note.contains("installer may be active")
         }));
@@ -1269,7 +1309,9 @@ mod tests {
         );
         flock(&lock, FlockOperation::Unlock).unwrap();
         drop(lock);
-        let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
+        let findings = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &idle)
+            .unwrap();
         assert!(
             findings
                 .iter()
@@ -1292,7 +1334,9 @@ mod tests {
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join("catalog.json"), "{}").unwrap();
         let ctx = test_ctx(home.clone());
-        let mut findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
+        let mut findings = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &idle)
+            .unwrap();
         findings.retain(|finding| {
             finding.target() == Some(old.as_path()) || finding.target() == Some(cache.as_path())
         });
@@ -1303,7 +1347,7 @@ mod tests {
         let lock = File::open(&lock_path).unwrap();
         hold_installer_lock(&lock);
 
-        let outcome = Agents.apply(&findings, &ctx).unwrap();
+        let outcome = Agents.apply_with_mappings(&findings, &ctx, &idle).unwrap();
         assert_eq!(outcome.summary.items_touched, 1);
         assert_eq!(outcome.errors.len(), 1);
         assert!(
@@ -1345,7 +1389,11 @@ mod tests {
         symlink(&linked_target, &linked).unwrap();
 
         let findings = Agents
-            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
+            .scan_with_mappings(
+                &test_ctx(home.to_path_buf()),
+                &ScanObservations::default(),
+                &idle,
+            )
             .unwrap();
         let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
         assert!(
@@ -1371,7 +1419,9 @@ mod tests {
         std::fs::write(standalone.join("install.lock"), "").unwrap();
         symlink(&current, standalone.join("current")).unwrap();
         let ctx = test_ctx(home.clone());
-        let mut findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
+        let mut findings = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &idle)
+            .unwrap();
         findings.retain(|finding| {
             finding.target() == Some(promoted.as_path()) || finding.target() == Some(old.as_path())
         });
@@ -1386,7 +1436,7 @@ mod tests {
         std::fs::remove_file(standalone.join("current")).unwrap();
         symlink(&promoted, standalone.join("current")).unwrap();
 
-        let outcome = Agents.apply(&findings, &ctx).unwrap();
+        let outcome = Agents.apply_with_mappings(&findings, &ctx, &idle).unwrap();
         assert_eq!(
             outcome.summary.items_touched, 1,
             "the still-obsolete control should be removed"
@@ -1450,13 +1500,13 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        // lsof sees the mapping only once exec has replaced the forked image.
+        // lsof sees the mapping only once exec has replaced the forked image. A
+        // probe the busy host makes refuse is only another poll here; the test
+        // itself asserts what a refusal does.
         let canonical = release.canonicalize().unwrap();
         for _ in 0..100 {
             if crate::safety::executable_mappings()
-                .unwrap()
-                .iter()
-                .any(|mapped| mapped.starts_with(&canonical))
+                .is_ok_and(|mappings| mappings.iter().any(|mapped| mapped.starts_with(&canonical)))
             {
                 return child;
             }
@@ -1468,14 +1518,35 @@ mod tests {
         panic!("control: lsof never reported the program running from the release");
     }
 
+    /// No process executes anything: the probe for fixtures that do not test
+    /// liveness, so the host's own processes cannot decide their outcome.
+    fn idle() -> Result<Vec<PathBuf>> {
+        Ok(Vec::new())
+    }
+
+    /// A probe that reports the release's `codex-path/rg` mapped while
+    /// `running` is set, as `lsof` reports a program started from it.
+    fn mapping_while(running: &Cell<bool>, release: &Path) -> impl Fn() -> Result<Vec<PathBuf>> {
+        let program = release.canonicalize().unwrap().join("codex-path/rg");
+        move || {
+            Ok(if running.get() {
+                vec![PathBuf::from("/usr/lib/dyld"), program.clone()]
+            } else {
+                vec![PathBuf::from("/usr/lib/dyld")]
+            })
+        }
+    }
+
     #[test]
     fn a_release_a_process_still_executes_is_neither_offered_nor_removed() {
         let (_fixture, home, old) = codex_home("running");
         let mut ctx = test_ctx(home.clone());
         ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
+        let running = Cell::new(false);
+        let probe = mapping_while(&running, &old);
         let offered = |ctx: &Ctx| {
             Agents
-                .scan(ctx, &ScanObservations::default())
+                .scan_with_mappings(ctx, &ScanObservations::default(), &probe)
                 .unwrap()
                 .into_iter()
                 .filter(|finding| finding.target() == Some(old.as_path()))
@@ -1490,11 +1561,9 @@ mod tests {
         );
         plan[0].action = Action::Shred;
 
-        let mut running = execute_from(&old);
+        running.set(true);
         let hidden = offered(&ctx);
-        let outcome = Agents.apply(&plan, &ctx);
-        running.kill().unwrap();
-        running.wait().unwrap();
+        let outcome = Agents.apply_with_mappings(&plan, &ctx, &probe).unwrap();
 
         assert!(
             hidden.is_empty(),
@@ -1505,7 +1574,6 @@ mod tests {
                 .iter()
                 .any(|message| message.contains("still executing in a running process")),
         );
-        let outcome = outcome.unwrap();
         assert_eq!(
             outcome.summary.items_touched, 0,
             "PV agents/codex-running-release: a running release was removed"
@@ -1532,28 +1600,133 @@ mod tests {
     fn apply_rechecks_liveness_at_each_release_not_once_per_plan() {
         let (_fixture, home, old) = codex_home("late-start");
         let ctx = test_ctx(home.clone());
+        let running = Cell::new(false);
+        let probe = mapping_while(&running, &old);
         // Opened while nothing runs from the release, as apply opens it before
         // working through earlier findings.
-        let releases = CodexReleases::open(&home).unwrap().unwrap();
+        let releases = CodexReleases::open(&home, &probe).unwrap().unwrap();
         assert!(!releases.running(&old).unwrap(), "control: idle snapshot");
 
-        let mut running = execute_from(&old);
-        let decision = authorize(&old, &ctx, Some(&releases));
-        running.kill().unwrap();
-        running.wait().unwrap();
-
-        let error = decision.expect_err(
+        running.set(true);
+        let error = authorize(&old, &ctx, Some(&releases), &probe).expect_err(
             "PV agents/codex-running-release: a release started after the snapshot was authorized",
         );
         assert!(
             format!("{error:#}").contains("still executing in a running process"),
             "PV agents/codex-running-release: {error:#}"
         );
+        running.set(false);
         assert!(
-            authorize(&old, &ctx, Some(&releases)).is_ok(),
+            authorize(&old, &ctx, Some(&releases), &probe).is_ok(),
             "control: idle again"
         );
         drop(releases);
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn a_failed_mapping_probe_refuses_release_preview_and_apply() {
+        let (_fixture, home, old) = codex_home("probe-failed");
+        let ctx = test_ctx(home.clone());
+        let failing = Cell::new(false);
+        let probe = || {
+            if failing.get() {
+                anyhow::bail!("lsof reported a mapped path that is not absolute")
+            }
+            Ok(Vec::new())
+        };
+        let mut plan = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &probe)
+            .unwrap();
+        plan.retain(|finding| finding.target() == Some(old.as_path()));
+        assert_eq!(plan.len(), 1, "control: a working probe offers the release");
+
+        failing.set(true);
+        let findings = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &probe)
+            .unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.target() == Some(old.as_path())),
+            "a failed probe offered a release"
+        );
+        assert!(
+            findings.iter().any(|finding| finding
+                .scan_error()
+                .is_some_and(|error| error.contains("cannot tell which Codex releases"))),
+            "a failed probe must surface as a scan error"
+        );
+        let outcome = Agents.apply_with_mappings(&plan, &ctx, &probe).unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
+        assert!(old.exists(), "a failed probe removed a release");
+        crate::ops::remove_test_path(home);
+    }
+
+    /// The whole chain against the real system: a copied program executing
+    /// from the release, the system-wide `lsof` probe, and the production
+    /// entry points. It depends on the host, so the planted-violation gate
+    /// relies on the deterministic tests above instead; a probe the host makes
+    /// refuse fails this test with the reason, never passes it.
+    #[test]
+    fn a_release_a_real_process_executes_is_refused_through_lsof() {
+        let (_fixture, home, old) = codex_home("live");
+        let mut ctx = test_ctx(home.clone());
+        ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
+        let scan = |ctx: &Ctx| Agents.scan(ctx, &ScanObservations::default()).unwrap();
+        let errors = |findings: &[Finding]| {
+            findings
+                .iter()
+                .filter_map(Finding::scan_error)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let idle = scan(&ctx);
+        let mut plan: Vec<_> = idle
+            .iter()
+            .filter(|finding| finding.target() == Some(old.as_path()))
+            .cloned()
+            .collect();
+        assert_eq!(
+            plan.len(),
+            1,
+            "control: an idle obsolete release is offered; scan errors: {:?}",
+            errors(&idle)
+        );
+        plan[0].action = Action::Shred;
+
+        let mut running = execute_from(&old);
+        let busy = scan(&ctx);
+        let outcome = Agents.apply(&plan, &ctx);
+        running.kill().unwrap();
+        running.wait().unwrap();
+
+        assert!(
+            !busy
+                .iter()
+                .any(|finding| finding.target() == Some(old.as_path())),
+            "a running release was offered"
+        );
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|message| message.contains("still executing in a running process")),
+            "scan errors: {:?}",
+            errors(&busy)
+        );
+        let outcome = outcome.unwrap();
+        assert_eq!(
+            outcome.summary.items_touched, 0,
+            "a running release was removed"
+        );
+        assert!(
+            outcome.errors.len() == 1
+                && outcome.errors[0].contains("still executing in a running process"),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(old.exists(), "a running release must survive apply");
         crate::ops::remove_test_path(home);
     }
 
@@ -1570,7 +1743,7 @@ mod tests {
         let ctx = test_ctx(home.clone());
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let findings = Agents.scan(&ctx, &ScanObservations::default());
+            let findings = Agents.scan_with_mappings(&ctx, &ScanObservations::default(), &idle);
             let _ = sender.send(findings.map(|findings| findings.len()));
         });
 
@@ -1581,7 +1754,7 @@ mod tests {
         );
         assert!(finished.unwrap().is_ok());
         let findings = Agents
-            .scan(&test_ctx(home.clone()), &ScanObservations::default())
+            .scan_with_mappings(&test_ctx(home.clone()), &ScanObservations::default(), &idle)
             .unwrap();
         assert!(
             !findings
@@ -1599,7 +1772,7 @@ mod tests {
         std::fs::write(tampered.join("bin/codex"), "not the vendor binary").unwrap();
 
         let findings = Agents
-            .scan(&test_ctx(home.clone()), &ScanObservations::default())
+            .scan_with_mappings(&test_ctx(home.clone()), &ScanObservations::default(), &idle)
             .unwrap();
         let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
         assert!(

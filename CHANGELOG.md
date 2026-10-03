@@ -4,6 +4,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+### Fixed
+- The `agents` tests for Codex releases no longer depend on every process the host runs. Ten tests read the system-wide `lsof -d txt` probe, and a busy host occasionally failed several of them at once (once in about 175 local runs). They now receive the probe's answer: no mapping, a mapping inside the release, or a failed probe, which is newly tested to refuse both preview and apply. The planted-violation gate runs only these deterministic tests. One test still runs a real program from a fixture release through the real probe and the production entry points, and a probe the host makes refuse fails it with the reason. Production behavior is unchanged
+
 ## [0.10.6] - 2026-10-03
 
 The open items from 0.10.5, all approved by the owner, plus what using 0.10.5

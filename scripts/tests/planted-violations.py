@@ -114,8 +114,8 @@ CASES = (
     Case(
         name="agents/apply-namespace",
         relative_path="src/ops/agents.rs",
-        before="                authorize(target, ctx, release_context)?;\n",
-        after="                let _ = release_context;\n",
+        before="                authorize(target, ctx, release_context, mappings)?;\n",
+        after="                let _ = (release_context, mappings);\n",
         tests=(
             "ops::agents::tests::the_retired_claude_trees_can_never_become_roots_again",
         ),
