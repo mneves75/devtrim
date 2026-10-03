@@ -799,6 +799,87 @@ fn purge_finds_dependencies_in_codex_worktrees() {
     );
 }
 
+/// The Trash is shared: other programs and sessions keep items there, so
+/// emptying it whole takes theirs too. `--only-devtrim` purges only what the
+/// journal says devtrim moved there, recognized by identity rather than name;
+/// the plain command, the positive control, still lists everything.
+#[test]
+fn trash_empty_only_devtrim_leaves_everyone_elses_items() {
+    use std::os::macos::fs::MetadataExt;
+
+    let sandbox = Sandbox::in_target("trash-only-devtrim");
+    let home = sandbox.path().canonicalize().unwrap();
+    let trash = home.join(".Trash");
+    let ours = trash.join("cache 12.09.42");
+    let foreign = trash.join("berlin-notes");
+    for item in [&ours, &foreign] {
+        std::fs::create_dir_all(item).unwrap();
+        std::fs::write(item.join("file"), vec![b'x'; 10]).unwrap();
+    }
+    let metadata = std::fs::symlink_metadata(&ours).unwrap();
+    let identity = format!(
+        r#"{{"dev":{},"ino":{},"birth_secs":{},"birth_nanos":{}}}"#,
+        metadata.st_dev(),
+        metadata.st_ino(),
+        metadata.st_birthtime(),
+        metadata.st_birthtime_nsec()
+    );
+    let journal = home.join(".local/state/devtrim");
+    std::fs::create_dir_all(&journal).unwrap();
+    std::fs::write(
+        journal.join("journal.jsonl"),
+        format!(
+            "{{\"id\":\"a1\",\"ts\":1,\"phase\":\"attempt\",\"op\":\"caches\",\"action\":\"trash\",\"target\":\"/Users/x/Library/Caches/cache\",\"size_bytes\":10,\"identity\":{identity}}}\n{{\"id\":\"a1\",\"ts\":2,\"phase\":\"result\",\"op\":\"caches\",\"action\":\"trash\",\"target\":\"/Users/x/Library/Caches/cache\",\"size_bytes\":10,\"status\":\"ok\",\"identity\":{identity}}}\n"
+        ),
+    )
+    .unwrap();
+
+    let everything = run(&sandbox, &["trash-empty", "--json"]);
+    assert!(everything.status.success());
+    assert_eq!(finding_paths(&json(&everything)).len(), 2);
+
+    let preview = run(&sandbox, &["trash-empty", "--only-devtrim", "--json"]);
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    assert_eq!(
+        finding_paths(&json(&preview)),
+        vec![ours.display().to_string()]
+    );
+
+    let applied = run(
+        &sandbox,
+        &[
+            "trash-empty",
+            "--only-devtrim",
+            "--apply",
+            "--confirm=0",
+            "--yolo",
+            "--json",
+        ],
+    );
+    assert!(
+        applied.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&applied.stdout),
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert!(!ours.exists(), "devtrim's own item was not purged");
+    assert!(
+        foreign.join("file").exists(),
+        "another program's item was purged"
+    );
+
+    let rejected = run(&sandbox, &["scan", "--only-devtrim"]);
+    assert_eq!(
+        rejected.status.code(),
+        Some(2),
+        "only trash-empty takes the flag"
+    );
+}
+
 /// Restores a fixture folder's mode when dropped, so the sandbox can be removed
 /// even when an assertion fails first.
 struct Unreadable(PathBuf);

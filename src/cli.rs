@@ -106,6 +106,10 @@ pub enum Command {
         /// Approximate Trash size in GB as acknowledgment (e.g. --confirm=14)
         #[arg(long = "confirm")]
         confirm_gb: Option<u64>,
+        /// Purge only items devtrim itself moved to the Trash, recognized by
+        /// the file identity its journal recorded; everything else stays
+        #[arg(long = "only-devtrim")]
+        only_devtrim: bool,
     },
 }
 

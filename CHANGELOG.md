@@ -2,7 +2,22 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.10.6] - 2026-10-03
+
+The open items from 0.10.5, all approved by the owner, plus what using 0.10.5
+on this Mac showed: the Homebrew cache was stranded whole by one Git clone, the
+Trash could only be emptied whole although other sessions keep items there, and
+an idle Xcode window blocked every DerivedData folder.
+
+### Added
+- `trash-empty --only-devtrim` purges only what devtrim itself moved to the Trash. Each move to the Trash now journals the item's device, inode and birth time, which survive the move while Finder renames the item, and only a Trash item matching a successful move is offered; everyone else's items stay and are counted in a note. The journal field is additive: older records parse unchanged and never match. A history that cannot be read whole is an error, never a wider set
+- `artifacts` (and so `purge`) recognizes three more build outputs Mole purges, each only beside its owner's file: Android's native build folder `.cxx` beside `build.gradle` or `build.gradle.kts` (the Android Gradle Plugin's default `buildStagingDirectory`), `.terragrunt-cache` beside `terragrunt.hcl` (Terragrunt: "you can safely delete this folder any time"), and Nuxt's `.output` beside a `nuxt.config.*` (re-created by every `nuxt build`)
+
+### Changed
+- While Xcode, `xcodebuild` or its build services run, DerivedData is judged folder by folder instead of skipped whole: a folder whose newest file changed within `active_days`, or that holds a file an Xcode process has open, stays, and every other folder is offered; apply judges each again. A folder holding no file yet is judged by its own modification time
+- Homebrew's cache holding a Git clone Homebrew keeps for a Git-sourced formula (`<name>--git`) is offered as its other direct children — `downloads`, `api`, `Cask` and the like — instead of whole, which the deletion sink always refused (1.1 GB stranded on this Mac); the clones stay, and apply reasserts that shape
+- Human totals count error entries apart from findings: "17.9 GB actionable across 31 finding(s) and 2 error(s)", and per category "4 finding(s), 1 error(s)". JSON is unchanged
+- Dependencies: `rustix` 1.1.5, `trash` 5.2.9 (macOS code unchanged), `clap` 4.6.7, `clap_complete` 4.6.11 and `toml` 1.1.6 in both lockfiles; the demo-video tooling moves to Remotion 4.0.529 for all its packages, React 19.2.8, `@types/react` 19.2.18 and Prettier 3.9.6, within the 7-day release-age cooldown
 
 ## [0.10.5] - 2026-10-03
 

@@ -20,6 +20,43 @@ const KEEP_ROTATED: usize = 3;
 const HISTORY_LOCK_RACE_RETRIES: usize = 3;
 static JOURNAL_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// What identifies an item devtrim moved to the Trash once it is there: its
+/// device, inode and birth time, which a move into the Trash on the same
+/// volume keeps — Finder's and `NSFileManager`'s moves alike — while it renames
+/// the item at will. APFS assigns inode numbers from a counter that only grows
+/// (Apple File System Reference, `apfs_next_obj_id`), and the birth time tells
+/// apart even a reused number.
+#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, Hash)]
+pub(crate) struct TrashedIdentity {
+    pub dev: u64,
+    pub ino: u64,
+    pub birth_secs: i64,
+    pub birth_nanos: i64,
+}
+
+impl TrashedIdentity {
+    /// The identity of the item at `path` itself, never what a link names.
+    /// Unknown where the platform keeps no birth time.
+    pub(crate) fn of(path: &Path) -> Option<Self> {
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt as _;
+            let metadata = std::fs::symlink_metadata(path).ok()?;
+            Some(Self {
+                dev: metadata.st_dev(),
+                ino: metadata.st_ino(),
+                birth_secs: metadata.st_birthtime(),
+                birth_nanos: metadata.st_birthtime_nsec(),
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = path;
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 pub(crate) struct JournalRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,6 +76,9 @@ pub(crate) struct JournalRecord {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The moved item's identity, on a `trash` record only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<TrashedIdentity>,
 }
 
 impl JournalRecord {
@@ -60,7 +100,14 @@ impl JournalRecord {
             argv: None,
             status: None,
             error: None,
+            identity: None,
         }
+    }
+
+    /// Records what the item will be recognized by once in the Trash.
+    pub(crate) fn with_trashed_identity(mut self, identity: Option<TrashedIdentity>) -> Self {
+        self.identity = identity;
+        self
     }
 
     pub(crate) fn command_attempt(
@@ -84,6 +131,7 @@ impl JournalRecord {
             argv: Some(argv),
             status: None,
             error: None,
+            identity: None,
         }
     }
 
@@ -805,6 +853,9 @@ fn valid_record(record: &JournalRecord) -> bool {
     if !id_valid {
         return false;
     }
+    if record.identity.is_some() && record.action != "trash" {
+        return false;
+    }
     let action_valid = match record.action.as_str() {
         "trash" | "shred" => record.target.is_some() && record.argv.is_none(),
         "command" => {
@@ -966,6 +1017,44 @@ mod tests {
             .unwrap();
         file.write_all(b"oversized current journal").unwrap();
         file.set_len(MAX_JOURNAL_BYTES + 1).unwrap();
+    }
+
+    /// A move to the Trash records the moved item's identity, so a later
+    /// `trash-empty --only-devtrim` can recognize it there under whatever name
+    /// Finder gave it. The field is additive: older records parse without it,
+    /// and only a `trash` record may carry one.
+    #[test]
+    fn a_trash_record_carries_the_moved_items_identity_and_nothing_else_may() {
+        let identity = TrashedIdentity {
+            dev: 16_777_230,
+            ino: 229_644_858,
+            birth_secs: 1_791_053_720,
+            birth_nanos: 42,
+        };
+        let record = JournalRecord::filesystem_attempt("caches", "trash", Path::new("/x"), 4)
+            .with_trashed_identity(Some(identity));
+        assert!(valid_record(&record));
+        let encoded = serde_json::to_string(&record).unwrap();
+        let decoded: JournalRecord = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.identity, Some(identity));
+        assert_eq!(
+            JournalRecord::result(&record, &Ok(())).identity,
+            Some(identity),
+            "the result record carries the attempt's identity"
+        );
+
+        let older: JournalRecord = serde_json::from_str(
+            r#"{"ts":1,"phase":"attempt","op":"caches","action":"trash","target":"/x","size_bytes":4}"#,
+        )
+        .unwrap();
+        assert!(valid_record(&older) && older.identity.is_none());
+
+        let shred = JournalRecord::filesystem_attempt("caches", "shred", Path::new("/x"), 4)
+            .with_trashed_identity(Some(identity));
+        assert!(
+            !valid_record(&shred),
+            "a permanent deletion moves nothing to the Trash"
+        );
     }
 
     #[test]

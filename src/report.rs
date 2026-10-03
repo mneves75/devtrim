@@ -191,6 +191,9 @@ pub(crate) enum TargetAuthority {
     Standard,
     NpmCache,
     BrewCache,
+    /// A direct child of the Homebrew cache, offered instead of the whole
+    /// cache when a Git clone Homebrew keeps sits beside it.
+    BrewCacheEntry,
 }
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -491,10 +494,15 @@ fn scan_text(findings: &[Finding], sections: &[ScanSection], all: bool) -> Strin
         } else {
             "report only".dimmed()
         };
+        let (counted, errors) = finding_and_error_counts(part);
+        let errors = if errors == 0 {
+            String::new()
+        } else {
+            format!(", {errors} error(s)")
+        };
         output.push_str(&format!(
-            "  {name:<13} {:>9}  {:>5} finding(s)   {next}\n",
+            "  {name:<13} {:>9}  {counted:>5} finding(s){errors}   {next}\n",
             gb(actionable_bytes(part)),
-            part.len()
         ));
     }
     for (name, part) in &ordered {
@@ -534,11 +542,26 @@ fn human_text(findings: &[Finding]) -> String {
 
 /// The closing line of every human findings report.
 fn actionable_total(findings: &[Finding]) -> String {
+    let (counted, errors) = finding_and_error_counts(findings);
+    let errors = if errors == 0 {
+        String::new()
+    } else {
+        format!(" and {errors} error(s)")
+    };
     format!(
-        "\n{} actionable across {} finding(s)\n",
+        "\n{} actionable across {counted} finding(s){errors}\n",
         gb(actionable_bytes(findings)).bold(),
-        findings.len()
     )
+}
+
+/// How many entries are findings and how many stand for an error: an entry
+/// carrying a scan error marks something the scan could not judge.
+fn finding_and_error_counts(findings: &[Finding]) -> (usize, usize) {
+    let errors = findings
+        .iter()
+        .filter(|finding| finding.scan_error().is_some())
+        .count();
+    (findings.len() - errors, errors)
 }
 
 /// One entry per finding, with a header wherever a new project begins.
@@ -682,6 +705,45 @@ mod tests {
         let mixed = summary_headline(&summary(5 * gib, 2 * gib));
         assert!(mixed.contains("~3.0 GB reclaimed"), "{mixed}");
         assert!(mixed.contains("~2.0 GB moved to Trash"), "{mixed}");
+    }
+
+    /// An error entry stands for something the scan could not judge; it is
+    /// not a finding, so the totals count it apart (observed: "344 MB
+    /// actionable across 6 finding(s)" for four targets and two errors).
+    #[test]
+    fn totals_count_error_entries_apart_from_findings() {
+        let target = Finding::new(
+            "stale node_modules",
+            Some(PathBuf::from("/dev/a/node_modules")),
+            10,
+            "test",
+            5,
+            Action::Trash,
+        );
+        let error = Finding::new(
+            "node_modules not judged",
+            None,
+            0,
+            "failed",
+            5,
+            Action::Info,
+        )
+        .with_scan_error("failed".into());
+        let findings = [target.clone(), error];
+
+        let total = human_text(&findings);
+        assert!(
+            total.contains("across 1 finding(s) and 1 error(s)"),
+            "{total}"
+        );
+        assert!(!human_text(&[target]).contains("error"));
+
+        let sections = [ScanSection {
+            category: "node-modules",
+            range: 0..2,
+        }];
+        let scan = scan_text(&findings, &sections, false);
+        assert!(scan.contains("1 finding(s), 1 error(s)"), "{scan}");
     }
 
     /// A plan spanning many repositories reads as one flat list otherwise; each

@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.10.5.
+This source tree and its packaged documentation describe devtrim v0.10.6.
 
 ## Install
 
@@ -47,7 +47,7 @@ cp target/release/devtrim /usr/local/bin/
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
 - **Untrusted repositories stay inert.** devtrim's two Git queries — the activity probe and the tracked-file check — disable every repository-configurable path by which they could run a program: hooks, fsmonitor, signature verification through `gpg.program`, and lazy fetches through a promisor remote's `uploadpack`. Previewing a directory that arrived with a hostile `.git/config` runs nothing. A `git` too old for `--no-lazy-fetch` refuses the repository.
 - **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation. A failure blocks only what it touches: a repository whose Git query or tree check fails offers nothing and is reported as an error, so the run exits nonzero, while every other repository is still judged; a folder the walk cannot read is reported as an error too, and nothing in it is offered. A failed liveness probe still blocks its whole category.
-- **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; `xcode` refuses DerivedData while Xcode, `xcodebuild`, or the build services Xcode.app builds run through are running. A probe that cannot complete blocks instead of passing; a build tool that exited between the process list and the directory lookup is not mistaken for one.
+- **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; while Xcode, `xcodebuild`, or the build services Xcode.app builds run through are running, `xcode` offers only DerivedData folders untouched for longer than the activity window that no Xcode process holds a file open in, and apply judges each again. A probe that cannot complete blocks instead of passing; a build tool that exited between the process list and the directory lookup is not mistaken for one.
 - **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle. Every directory action rejects foreign devices and Git repository/worktree markers at any depth before mutation; the one exception is the empty `.git` uv writes into its own source-distribution bucket, which Git itself rejects as an invalid gitfile, tolerated only in that exact shape under a tagged cache root that `clean caches` holds uv's lock on or `trash-empty` finds in the Trash. Permanent deletes additionally quarantine the verified leaf and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
 - **Write-ahead journal.** Every apply records an attempt before deletion and a result after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). Symlinked path components are refused, complete records are serialized and synced, and an unwritable journal blocks apply. Rotation (10 MiB, keep 3) cannot split an in-flight pair. `devtrim history` is read-only, waits for guarded applies before snapshotting, pairs legacy records across generations, reverse-scans only the bounded newest tail needed for the requested limit, and reports a genuinely unmatched attempt as interrupted.
 - **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
@@ -100,6 +100,7 @@ devtrim clean leftovers                   # report-only hints; never deletes wor
 devtrim icloud                            # large iCloud Drive files and local allocation
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
 devtrim trash-empty --confirm=14 --apply  # perform the verified purge
+devtrim trash-empty --only-devtrim        # only what devtrim itself moved to the Trash
 devtrim history                           # recent journaled applies; --json for one document
 devtrim analyze                           # interactive read-only disk explorer (never deletes)
 devtrim analyze ~/Library --json          # one-shot breakdown of a directory
@@ -179,7 +180,9 @@ than what apply may remove.
 `clean artifacts` deletes a directory only when its name is on a closed list
 **and** its ecosystem corroborates it — `target` next to `Cargo.toml`, `.venv`
 containing `pyvenv.cfg`, `Pods` next to `Podfile`, `.next` next to
-`package.json`, a valid `CACHEDIR.TAG` signature, and so on — inside a Git repo
+`package.json`, Android's native build folder `.cxx` next to `build.gradle`,
+`.terragrunt-cache` next to `terragrunt.hcl`, Nuxt's `.output` next to
+`nuxt.config.*`, a valid `CACHEDIR.TAG` signature, and so on — inside a Git repo
 whose last activity is conclusively stale. Ambiguous names such as `build`,
 `dist`, `vendor`, `bin`, and `obj` are deliberately never matched, and the
 scanner/apply owner refuse artifacts below every ASCII-case variant of
@@ -267,6 +270,12 @@ wholesale; that list is the carve-out, it is the same constant the protection
 boundary reads, and a name is only on it when one developer tool owns the
 directory and rebuilds it on demand.
 
+Homebrew's cache, found through `brew --cache`, is offered whole unless it
+holds a Git clone Homebrew keeps for a Git-sourced formula (`<name>--git`).
+devtrim never removes a repository, so such a cache is offered as its other
+direct children — `downloads`, `api`, `Cask`, and so on — and the clones stay;
+links Homebrew left at the top are left for `brew cleanup`.
+
 Two boundaries inside that are worth stating, because a shorter list would
 over-claim. The pnpm entry is the metadata cache, never the content-addressable
 store at `~/Library/pnpm/store` that installed `node_modules` trees hard-link
@@ -341,6 +350,13 @@ to Trash after the earlier preview is shown before it can be approved. The
 `--confirm=<gb>` acknowledgment is measured over that exact set, not the whole
 Trash, so an excluded item never makes it unsatisfiable. Anything moved to
 Trash after confirmation remains.
+The Trash is shared with every other program and session, so `--only-devtrim`
+narrows the purge to what devtrim itself moved there: each move to the Trash
+journals the item's device, inode and birth time, which survive the move while
+Finder renames the item at will, and only a Trash item matching a successful
+move is offered. Everything else stays and is counted in a note; an apply
+journal that cannot be read whole is an error, because an item it recorded
+could be missed.
 A direct item named as an ASCII-case variant of `.git` is warned about and left
 in Trash instead of blocking the other exact items.
 
@@ -475,7 +491,7 @@ output.
 | Physical path | literal and resolved parent must agree; deny-only resolution |
 | Directory preflight | foreign devices and nested Git repository/worktree markers are refused before Trash or permanent mutation; only uv's own empty `.git` in `sdists-v<N>` under a `CACHEDIR.TAG` root is tolerated, where uv's lock or the Trash grants it |
 | Activity | unknown Git/toolchain ownership is ineligible |
-| Liveness | a repo owning a running build process, or DerivedData under a running `xcodebuild`, is refused; probe failure blocks |
+| Liveness | a repo owning a running build process is refused; while Xcode runs, a DerivedData folder changed within the activity window or holding a file Xcode has open is refused; probe failure blocks |
 | Protect config | user-listed `protect` paths are refused at the deletion sink and filtered from previews |
 | Journal | a write-ahead attempt/result record precedes and follows every deletion; an unwritable journal blocks apply |
 | Measurement | incomplete traversal, metadata, or numeric state blocks an actionable plan |

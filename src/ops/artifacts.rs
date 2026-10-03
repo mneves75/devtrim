@@ -551,6 +551,31 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
         Some(".build") => sibling_evidence(path, &["Package.swift"]),
         Some(".dart_tool") => sibling_evidence(path, &["pubspec.yaml"]),
         Some(".zig-cache" | "zig-out") => sibling_evidence(path, &["build.zig"]),
+        // The Android Gradle Plugin's default external native build output
+        // directory, `<project_dir>/<module>/.cxx/`, which it creates and fills
+        // with CMake configure output, Ninja files and objects; it outlives
+        // `gradle clean` on purpose, and the next native build regenerates it
+        // (AGP 9.4 DSL reference, `Cmake.buildStagingDirectory`).
+        Some(".cxx") => sibling_evidence(path, &["build.gradle", "build.gradle.kts"]),
+        // "You can safely delete this folder any time, and Terragrunt will
+        // recreate it as necessary" (Terragrunt reference, "Terragrunt cache",
+        // docs.terragrunt.com/reference/terragrunt-cache); state lives in the
+        // backend, not here.
+        Some(".terragrunt-cache") => sibling_evidence(path, &["terragrunt.hcl"]),
+        // Nuxt's production build output, "re-created each time you run
+        // `nuxt build`", which Nuxt says to keep out of Git (Nuxt 4.x docs,
+        // "Directory Structure: .output").
+        Some(".output") => sibling_evidence(
+            path,
+            &[
+                "nuxt.config.ts",
+                "nuxt.config.js",
+                "nuxt.config.mjs",
+                "nuxt.config.mts",
+                "nuxt.config.cjs",
+                "nuxt.config.cts",
+            ],
+        ),
         _ => Ok(None),
     };
     if let Some(corroboration) = named? {
@@ -1253,6 +1278,49 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(target.join("out"), "x").unwrap();
         target
+    }
+
+    /// Mole's three further names, each only beside the file of the tool that
+    /// writes it: Android's native build staging folder `.cxx` beside the
+    /// module's `build.gradle(.kts)`, Terragrunt's `.terragrunt-cache` beside a
+    /// `terragrunt.hcl`, and Nuxt's `.output` beside a `nuxt.config.*`.
+    /// Without that file the same name is someone else's folder.
+    #[test]
+    fn newer_names_are_offered_only_beside_their_owners_file() {
+        let root = temp("newer-names");
+        for (folder, owner_file) in [
+            ("android/app/.cxx", Some("android/app/build.gradle")),
+            ("android/kts/.cxx", Some("android/kts/build.gradle.kts")),
+            (
+                "infra/unit/.terragrunt-cache",
+                Some("infra/unit/terragrunt.hcl"),
+            ),
+            ("web/.output", Some("web/nuxt.config.ts")),
+            ("web-mjs/.output", Some("web-mjs/nuxt.config.mjs")),
+            ("native/.cxx", None),
+            ("ops/.terragrunt-cache", None),
+            ("site/.output", None),
+        ] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+            if let Some(owner_file) = owner_file {
+                std::fs::write(root.join(owner_file), "").unwrap();
+            }
+            let evidence = artifact_evidence(&root.join(folder)).unwrap();
+            assert_eq!(
+                evidence.is_some(),
+                owner_file.is_some(),
+                "PV artifacts/newer-names: {folder} beside {owner_file:?}"
+            );
+        }
+        // A folder named like the owner file is not one.
+        std::fs::create_dir_all(root.join("fake/nuxt.config.ts")).unwrap();
+        std::fs::create_dir_all(root.join("fake/.output")).unwrap();
+        assert!(
+            artifact_evidence(&root.join("fake/.output"))
+                .unwrap()
+                .is_none()
+        );
+        crate::ops::remove_test_path(root);
     }
 
     /// A tree the scan cannot read through is not known to be free of keys or

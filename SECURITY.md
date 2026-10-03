@@ -41,7 +41,7 @@ Non-negotiable boundaries:
 - `artifacts` and `node_modules` never offer or apply a directory holding a file its repository tracks. The index is listed once per repository and each tracked path's ancestor at the directory's depth is looked up on the volume and compared with the directory by device and inode, so a directory renamed only in case, in Unicode case, or to an ASCII alias the volume folds to (`STRASSE` for `Straße`) is still recognized: Git compares spellings, the volume compares names. `artifacts` never offers or applies a tree holding an entry named `*-keypair.json`, matched in any case and with the Kelvin sign and long s that APFS folds onto `k` and `s`, without following links: `cargo build-sbf` writes a Solana program's keypair there once, and no rebuild restores it. Nor does it offer or apply a tree holding a Git metadata name anywhere below its root, which the sink would refuse anyway. These checks run at preview and again at apply, and a query or walk that fails refuses. `artifacts` and `node_modules` preflight every finding before changing anything; a finding the sink then refuses costs only itself.
 - Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
 - Literal and physically resolved parents must agree; symlinked ancestors fail closed. Any ASCII-case variant of a `.git` path component is refused.
-- `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children. An item the sink refuses at apply — a trashed project that still holds its repository — is recorded and skipped; the purge continues with the other exact items and reports nonzero.
+- `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children. An item the sink refuses at apply — a trashed project that still holds its repository — is recorded and skipped; the purge continues with the other exact items and reports nonzero. `--only-devtrim` narrows the purge to items whose device, inode and birth time match a Trash move devtrim journaled as successful, so another program's item — even one carrying a name devtrim's item had — is never offered; an unreadable history is an error, never a wider set.
 - System roots and descendants (including ASCII case variants), the user home
   root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
   Only named managed Library subpaths are eligible. The `~/Library/Caches`
@@ -134,9 +134,13 @@ Non-negotiable boundaries:
   symlinked ancestor is refused before anything is created; the lock file is
   otherwise opened without following links or blocking and is created when
   missing, as uv does.
-- A repo owning the working directory of a running build/package process, and
-  DerivedData while Xcode, `xcodebuild`, `SWBBuildService`, or `XCBBuildService`
-  runs, are refused. A working-directory name that `lsof` escapes ambiguously
+- A repo owning the working directory of a running build/package process is
+  refused. While Xcode, `xcodebuild`, `SWBBuildService`, or `XCBBuildService`
+  runs, a DerivedData folder whose newest regular file changed within the
+  activity window, or that holds a file one of those processes has open, is
+  refused; an older, closed folder may go. The age gate is the main guard,
+  because the compilers a build runs are not Xcode processes; an `lsof`
+  listing of Xcode's open files must be complete or DerivedData is refused. A working-directory name that `lsof` escapes ambiguously
   refuses rather than matching nothing. Liveness probes use fixed
   argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
   `lsof` exiting 1 is accepted only when every process it did not report is
@@ -230,8 +234,9 @@ Non-negotiable boundaries:
    errors block actionable plans rather than producing partial estimates.
 11. **Terminal-safe presentation** — complete human-facing actions and other untrusted text escape control characters before rendering and are never parsed back into deletion authority.
 12. **Liveness guards** — running build processes (by working directory) and
-   Xcode or its build services block the affected repo or DerivedData targets,
-   failing closed when the probe itself fails.
+   Xcode or its build services block the affected repo, and DerivedData
+   folders changed recently or held open while Xcode runs, failing closed when
+   the probe itself fails.
 13. **Write-ahead journal** — attempt/result records surround every deletion and
    typed command; symlink-safe parent handles, serialized appends, and
    bounded read-only history preserve a coherent local audit trail.

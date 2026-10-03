@@ -1494,13 +1494,78 @@ fn resolve_build_process_cwds(
 /// the IDE, not `xcodebuild`), and the IDE itself, whose indexer writes there.
 const XCODE_BUILD_PATTERN: &str = "xcodebuild|SWBBuildService|XCBBuildService|Xcode";
 
-pub(crate) fn xcode_build_running() -> Result<bool> {
+/// What Xcode-family processes are doing, for DerivedData: none runs, or some
+/// do and hold these files open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum XcodeActivity {
+    Idle,
+    Active { open_files: Vec<PathBuf> },
+}
+
+/// Whether an Xcode-family process runs and, if so, every file the running
+/// ones hold open, from one `lsof` that must report them all.
+pub(crate) fn xcode_activity() -> Result<XcodeActivity> {
     let output = Command::new("pgrep")
         .args(PGREP_MATCH_ARGS)
         .arg(XCODE_BUILD_PATTERN)
         .output()
         .context("cannot run Xcode build liveness probe")?;
-    Ok(!parse_pgrep_pids(&output.stdout, output.status.code())?.is_empty())
+    let pids = parse_pgrep_pids(&output.stdout, output.status.code())?;
+    if pids.is_empty() {
+        return Ok(XcodeActivity::Idle);
+    }
+    let pid_list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let lsof = Command::new("lsof")
+        .args(["-p", &pid_list, "-F", "n"])
+        .output()
+        .context("cannot run the probe of files Xcode holds open")?;
+    Ok(XcodeActivity::Active {
+        open_files: parse_lsof_open_files(&lsof.stdout, lsof.status.code())?,
+    })
+}
+
+/// The absolute names in an `lsof -p <pids> -F n` listing of every file those
+/// processes hold open. Unlike the working-directory probe, a process `lsof`
+/// could not read (exit 1) is not rechecked: Xcode's processes are long-lived,
+/// so a missing one refuses rather than passes. Sockets, pipes and other names
+/// that are not paths cannot lie under DerivedData and are skipped; an
+/// absolute name with an ambiguous escape refuses, as everywhere else.
+pub(crate) fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Result<Vec<PathBuf>> {
+    match exit_code {
+        Some(0) => {}
+        Some(code) => bail!("lsof open-file probe exited with status {code}"),
+        None => bail!("lsof open-file probe terminated without an exit status"),
+    }
+    let mut in_process = false;
+    let mut paths = Vec::new();
+    for line in output.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        match line.first() {
+            None => {}
+            Some(b'p') => in_process = true,
+            Some(b'n') => {
+                if !in_process {
+                    bail!("lsof returned an open file before naming its process");
+                }
+                let name = &line[1..];
+                if name.starts_with(b"/") {
+                    paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)));
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    // Every process has its program and working directory open.
+    if paths.is_empty() {
+        bail!("lsof reported no open files for running Xcode processes");
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 pub(crate) fn parse_pgrep_pids(output: &[u8], exit_code: Option<i32>) -> Result<Vec<u32>> {
@@ -2562,6 +2627,24 @@ mod tests {
         }
         assert!(parse_lsof_mappings(b"p1\nftxt\nn/a\n", Some(1)).is_err());
         assert!(parse_lsof_mappings(b"p1\nftxt\nn/a\n", None).is_err());
+    }
+
+    /// The files Xcode holds open are its absolute names only; sockets and
+    /// pipes are not paths, an ambiguous escape refuses, and anything but a
+    /// complete listing refuses too.
+    #[test]
+    fn xcode_open_files_are_absolute_names_from_a_complete_listing() {
+        let listing = b"p501\nn/Applications/Xcode.app/Contents/MacOS/Xcode\nn/Users/me/Library/Developer/Xcode/DerivedData/App-a/Index.noindex/DataStore/v5/db\nn->0xabc\nnpipe\nn*:49152\np502\nn/Users/me/dev/app\n";
+        let paths = parse_lsof_open_files(listing, Some(0)).unwrap();
+        assert_eq!(paths.len(), 3, "{paths:?}");
+        assert!(paths.contains(&PathBuf::from(
+            "/Users/me/Library/Developer/Xcode/DerivedData/App-a/Index.noindex/DataStore/v5/db"
+        )));
+        assert!(parse_lsof_open_files(listing, Some(1)).is_err());
+        assert!(parse_lsof_open_files(listing, None).is_err());
+        assert!(parse_lsof_open_files(b"n/early\np1\nn/x\n", Some(0)).is_err());
+        assert!(parse_lsof_open_files(b"p1\nn/odd^Xname\n", Some(0)).is_err());
+        assert!(parse_lsof_open_files(b"p1\nn->0x1\n", Some(0)).is_err());
     }
 
     #[test]

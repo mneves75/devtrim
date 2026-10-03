@@ -6,17 +6,17 @@
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
-    "@remotion/cli": "4.0.512",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "remotion": "4.0.512"
+    "@remotion/cli": "4.0.529",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.529"
   },
   "devDependencies": {
-    "@remotion/eslint-config-flat": "4.0.512",
-    "@types/react": "19.2.7",
+    "@remotion/eslint-config-flat": "4.0.529",
+    "@types/react": "19.2.18",
     "@types/web": "0.0.166",
     "eslint": "10.8.1",
-    "prettier": "3.8.1",
+    "prettier": "3.9.6",
     "typescript": "5.9.3"
   },
   "overrides": {

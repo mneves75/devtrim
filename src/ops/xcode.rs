@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use super::project::has_git_marker;
+use super::project::{activity_window, has_git_marker};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
-use crate::safety::{Ctx, escalate, xcode_build_running};
+use crate::safety::{Ctx, XcodeActivity, escalate, xcode_activity};
 
 pub struct Xcode;
 
@@ -39,7 +39,7 @@ impl Op for Xcode {
         ctx: &Ctx,
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
-        self.scan_with_xcode_build_state(ctx, xcode_build_running())
+        self.scan_with_xcode_build_state(ctx, xcode_activity())
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
@@ -50,7 +50,7 @@ impl Op for Xcode {
                         .is_ok_and(|kind| kind == XcodeTargetKind::DerivedData)
                 })
         });
-        let xcode_build_state = needs_probe.then(xcode_build_running);
+        let xcode_build_state = needs_probe.then(xcode_activity);
         self.apply_with_xcode_build_state(findings, ctx, xcode_build_state)
     }
 }
@@ -59,26 +59,14 @@ impl Xcode {
     fn scan_with_xcode_build_state(
         &self,
         ctx: &Ctx,
-        xcode_build_state: Result<bool>,
+        xcode_build_state: Result<XcodeActivity>,
     ) -> Result<Vec<Finding>> {
-        let derived_data_safe = match xcode_build_state {
-            Ok(true) => {
-                ctx.diagnostic(
-                    "info",
-                    "Xcode or an Xcode build is running; skipping DerivedData while it is active",
-                );
-                false
-            }
-            Ok(false) => true,
-            // A failed probe must be visible to automation, not a silently
-            // smaller plan with exit 0.
-            Err(error) => return Err(error.context("cannot verify Xcode build activity")),
-        };
+        // A failed probe must be visible to automation, not a silently
+        // smaller plan with exit 0.
+        let activity = xcode_build_state.context("cannot verify Xcode build activity")?;
+        let (mut recent, mut open) = (0usize, 0usize);
         let mut findings = Vec::new();
         for (label, relative, note) in TARGETS {
-            if *label == "DerivedData" && !derived_data_safe {
-                continue;
-            }
             let directory = ctx.home.join("Library").join(relative);
             let entries = match std::fs::read_dir(&directory) {
                 Ok(entries) => entries,
@@ -105,6 +93,19 @@ impl Xcode {
                     continue;
                 }
                 let path = entry.path();
+                if *label == "DerivedData" {
+                    match derived_data_in_use(&path, &activity, ctx.active_days)? {
+                        Some(InUse::Recent) => {
+                            recent = recent.saturating_add(1);
+                            continue;
+                        }
+                        Some(InUse::Open) => {
+                            open = open.saturating_add(1);
+                            continue;
+                        }
+                        None => {}
+                    }
+                }
                 if *label == "DerivedData" && is_package_folder(&path)? {
                     let folder = path.file_name().unwrap_or_default().to_string_lossy();
                     let package_note =
@@ -139,6 +140,15 @@ impl Xcode {
                 ));
             }
         }
+        if recent > 0 || open > 0 {
+            ctx.diagnostic(
+                "info",
+                format!(
+                    "Xcode is running; skipping DerivedData still in use: {recent} DerivedData folder(s) changed in {} and {open} open in Xcode",
+                    activity_window(ctx.active_days)
+                ),
+            );
+        }
         let archives = ctx.home.join("Library/Developer/Xcode/Archives");
         let archive_size = dir_size(&archives)?;
         if archive_size > 0 {
@@ -157,7 +167,7 @@ impl Xcode {
         &self,
         findings: &[Finding],
         ctx: &Ctx,
-        xcode_build_state: Option<Result<bool>>,
+        xcode_build_state: Option<Result<XcodeActivity>>,
     ) -> Result<ApplyOutcome> {
         let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
@@ -177,12 +187,28 @@ impl Xcode {
                 let target_kind = authorize_xcode_target(path, &ctx.home)?;
                 if target_kind == XcodeTargetKind::DerivedData {
                     match xcode_build_state.as_ref() {
-                        Some(Ok(false)) => {}
-                        Some(Ok(true)) => {
-                            anyhow::bail!(
-                                "Xcode or an Xcode build is running; refusing DerivedData target {}",
-                                path.display()
-                            );
+                        Some(Ok(activity)) => {
+                            let derived_data = ctx.home.join("Library/Developer/Xcode/DerivedData");
+                            // A package folder's directory is judged with its folder.
+                            let folder = if path.parent() == Some(derived_data.as_path()) {
+                                path
+                            } else {
+                                path.parent().unwrap_or(path)
+                            };
+                            match derived_data_in_use(folder, activity, ctx.active_days)? {
+                                Some(InUse::Recent) => anyhow::bail!(
+                                    "Xcode is running and {} changed in {}; refusing DerivedData target {}",
+                                    folder.display(),
+                                    activity_window(ctx.active_days),
+                                    path.display()
+                                ),
+                                Some(InUse::Open) => anyhow::bail!(
+                                    "{} holds a file open in Xcode; refusing DerivedData target {}",
+                                    folder.display(),
+                                    path.display()
+                                ),
+                                None => {}
+                            }
                         }
                         Some(Err(error)) => {
                             anyhow::bail!(
@@ -210,6 +236,62 @@ impl Xcode {
         }
         Ok(outcome)
     }
+}
+
+/// Why a DerivedData folder is still in use while Xcode runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InUse {
+    /// A regular file under it changed within the activity window.
+    Recent,
+    /// An Xcode-family process holds a file under it open.
+    Open,
+}
+
+/// Whether `folder`, a DerivedData folder, is in use. With no Xcode-family
+/// process running, nothing is. Otherwise a build writes there constantly,
+/// and the compilers and linkers it runs are not Xcode processes, so the age
+/// of its newest regular file is the main guard: one changed within the
+/// activity window stays. A file an Xcode process holds open there — an open
+/// workspace's index — keeps it too. A folder holding no regular file yet is
+/// judged by its own modification time. A modification time that cannot be
+/// read refuses rather than guesses. Apply probes Xcode's open files once for
+/// its plan and judges each folder's age as it reaches it.
+fn derived_data_in_use(
+    folder: &Path,
+    activity: &XcodeActivity,
+    active_days: u32,
+) -> Result<Option<InUse>> {
+    let XcodeActivity::Active { open_files } = activity else {
+        return Ok(None);
+    };
+    let canonical = folder.canonicalize().ok();
+    if open_files.iter().any(|file| {
+        file.starts_with(folder)
+            || canonical
+                .as_ref()
+                .is_some_and(|real| file.starts_with(real))
+    }) {
+        return Ok(Some(InUse::Open));
+    }
+    let (_, newest) = crate::safety::dir_stats(folder)?;
+    let mut newest = newest.ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot read every modification time under {}, so whether Xcode still uses it is unknown",
+            folder.display()
+        )
+    })?;
+    // A folder holding no regular file yet — one a build has just created —
+    // is judged by its own modification time, not read as maximally stale.
+    if newest == std::time::UNIX_EPOCH {
+        newest = std::fs::symlink_metadata(folder)
+            .and_then(|metadata| metadata.modified())
+            .with_context(|| format!("cannot inspect DerivedData folder {}", folder.display()))?;
+    }
+    let window = std::time::Duration::from_secs(u64::from(active_days).saturating_mul(86_400));
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(window)
+        .unwrap_or(std::time::UNIX_EPOCH);
+    Ok((newest > cutoff).then_some(InUse::Recent))
 }
 
 /// Whether a DerivedData folder is offered directory by directory: it holds
@@ -356,13 +438,24 @@ mod tests {
             .unwrap();
         let ctx = test_context(home.clone());
 
-        let running = Xcode.scan_with_xcode_build_state(&ctx, Ok(true)).unwrap();
-        assert_eq!(running.len(), 1);
+        let running = Xcode
+            .scan_with_xcode_build_state(
+                &ctx,
+                Ok(XcodeActivity::Active {
+                    open_files: Vec::new(),
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            running.len(),
+            1,
+            "PV xcode/active-empty-folder: a just-created DerivedData folder was offered while Xcode runs"
+        );
         assert!(running[0].label.starts_with("iOS DeviceSupport"));
         assert!(
             ctx.take_diagnostics()
                 .iter()
-                .any(|message| message.contains("skipping DerivedData while it is active"))
+                .any(|message| message.contains("skipping DerivedData still in use"))
         );
 
         let unknown = Xcode
@@ -394,7 +487,7 @@ mod tests {
         let home = root.canonicalize().unwrap();
 
         let findings = Xcode
-            .scan_with_xcode_build_state(&test_context(home.clone()), Ok(false))
+            .scan_with_xcode_build_state(&test_context(home.clone()), Ok(XcodeActivity::Idle))
             .unwrap();
 
         let mut labels: Vec<_> = findings
@@ -618,7 +711,7 @@ mod tests {
             .apply_with_xcode_build_state(
                 &[finding("WithPackages"), finding("Plain")],
                 &test_context(home.clone()),
-                Some(Ok(false)),
+                Some(Ok(XcodeActivity::Idle)),
             )
             .unwrap();
 
@@ -676,7 +769,9 @@ mod tests {
         std::fs::write(derived_data.join("App-plain/Build/output"), "rebuilt").unwrap();
         let ctx = test_context(home.clone());
 
-        let mut findings = Xcode.scan_with_xcode_build_state(&ctx, Ok(false)).unwrap();
+        let mut findings = Xcode
+            .scan_with_xcode_build_state(&ctx, Ok(XcodeActivity::Idle))
+            .unwrap();
 
         let mut offered: Vec<_> = findings
             .iter()
@@ -700,7 +795,7 @@ mod tests {
         );
         crate::report::effective_actions(&mut findings, true);
         let outcome = Xcode
-            .apply_with_xcode_build_state(&findings, &ctx, Some(Ok(false)))
+            .apply_with_xcode_build_state(&findings, &ctx, Some(Ok(XcodeActivity::Idle)))
             .unwrap();
         assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
         assert_eq!(outcome.summary.items_touched, 4);
@@ -730,7 +825,9 @@ mod tests {
         std::fs::write(folder.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         let ctx = test_context(home.clone());
 
-        let findings = Xcode.scan_with_xcode_build_state(&ctx, Ok(false)).unwrap();
+        let findings = Xcode
+            .scan_with_xcode_build_state(&ctx, Ok(XcodeActivity::Idle))
+            .unwrap();
 
         let split: Vec<_> = findings
             .iter()
@@ -750,7 +847,7 @@ mod tests {
             Action::Shred,
         );
         let outcome = Xcode
-            .apply_with_xcode_build_state(&[forged], &ctx, Some(Ok(false)))
+            .apply_with_xcode_build_state(&[forged], &ctx, Some(Ok(XcodeActivity::Idle)))
             .unwrap();
         assert!(
             outcome.summary.items_touched == 0
@@ -782,7 +879,7 @@ mod tests {
                 Action::Shred,
             );
             let outcome = Xcode
-                .apply_with_xcode_build_state(&[forged], &ctx, Some(Ok(false)))
+                .apply_with_xcode_build_state(&[forged], &ctx, Some(Ok(XcodeActivity::Idle)))
                 .unwrap();
             assert!(
                 outcome.summary.items_touched == 0
@@ -831,6 +928,129 @@ mod tests {
         crate::ops::remove_test_path(root);
     }
 
+    fn aged_file(path: &Path, days: u64) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "x").unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    /// While Xcode runs, each DerivedData folder is judged on its own (observed:
+    /// five stale `App-*` duplicates kept while one project built). A folder
+    /// changed within the activity window stays — a build writes there all the
+    /// time, and the compilers it runs are not Xcode processes — and so does
+    /// one holding a file an Xcode process has open, such as the index of an
+    /// open workspace; an old, closed folder is offered, and a package folder
+    /// is judged whole before it is split. Apply judges each again.
+    #[test]
+    fn while_xcode_runs_only_old_closed_derived_data_is_offered() {
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-active");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let derived_data = home.join("Library/Developer/Xcode/DerivedData");
+        aged_file(&derived_data.join("Old-a/Build/out.o"), 10);
+        aged_file(&derived_data.join("Fresh-b/Build/out.o"), 0);
+        aged_file(
+            &derived_data.join("Open-c/Index.noindex/DataStore/v5/db"),
+            10,
+        );
+        aged_file(&derived_data.join("Pkg-d/Build/out.o"), 10);
+        aged_file(
+            &derived_data.join("Pkg-d/SourcePackages/checkouts/dep/README"),
+            10,
+        );
+        aged_file(&derived_data.join("PkgFresh-e/Build/out.o"), 0);
+        aged_file(
+            &derived_data.join("PkgFresh-e/SourcePackages/checkouts/dep/README"),
+            10,
+        );
+        let open = derived_data.join("Open-c/Index.noindex/DataStore/v5/db");
+        let mut ctx = test_context(home.clone());
+        ctx.active_days = 3;
+        let active = || XcodeActivity::Active {
+            open_files: vec![open.clone()],
+        };
+
+        let findings = Xcode
+            .scan_with_xcode_build_state(&ctx, Ok(active()))
+            .unwrap();
+
+        let mut offered = findings
+            .iter()
+            .filter_map(Finding::target)
+            .filter(|path| path.starts_with(&derived_data))
+            .collect::<Vec<_>>();
+        offered.sort();
+        assert_eq!(
+            offered,
+            vec![
+                derived_data.join("Old-a").as_path(),
+                derived_data.join("Pkg-d/Build").as_path()
+            ],
+            "PV xcode/active-folders: a fresh or open folder was offered while Xcode runs"
+        );
+        let diagnostics = ctx.take_diagnostics();
+        assert!(
+            diagnostics.iter().any(|message| message
+                .contains("2 DerivedData folder(s) changed in the last 3 days")
+                && message.contains("1 open in Xcode")),
+            "{diagnostics:?}"
+        );
+
+        let idle = Xcode
+            .scan_with_xcode_build_state(&ctx, Ok(XcodeActivity::Idle))
+            .unwrap();
+        assert!(
+            idle.iter()
+                .filter_map(Finding::target)
+                .any(|path| path == derived_data.join("Fresh-b")),
+            "positive control: with Xcode closed every folder is offered"
+        );
+
+        let forged =
+            |path: PathBuf| Finding::new("DerivedData", Some(path), 1, "test", 4, Action::Shred);
+        let refused = Xcode
+            .apply_with_xcode_build_state(
+                &[
+                    forged(derived_data.join("Fresh-b")),
+                    forged(derived_data.join("Open-c")),
+                    forged(derived_data.join("PkgFresh-e/Build")),
+                ],
+                &ctx,
+                Some(Ok(active())),
+            )
+            .unwrap();
+        assert!(
+            refused.summary.items_touched == 0
+                && refused.errors.len() == 3
+                && refused
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("changed in the last 3 days"))
+                && refused
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("open in Xcode"))
+                && derived_data.join("Fresh-b/Build/out.o").exists()
+                && open.exists(),
+            "PV xcode/active-apply: {refused:?}"
+        );
+        let removed = Xcode
+            .apply_with_xcode_build_state(
+                &[forged(derived_data.join("Old-a"))],
+                &ctx,
+                Some(Ok(active())),
+            )
+            .unwrap();
+        assert!(removed.errors.is_empty(), "{removed:?}");
+        assert!(!derived_data.join("Old-a").exists());
+    }
+
     #[test]
     fn derived_data_apply_refuses_a_running_or_unknown_xcode_build() {
         let home = std::env::temp_dir().join(format!("devtrim-xcode-live-{}", std::process::id()));
@@ -865,9 +1085,19 @@ mod tests {
         };
 
         let running = Xcode
-            .apply_with_xcode_build_state(std::slice::from_ref(&finding), &ctx, Some(Ok(true)))
+            .apply_with_xcode_build_state(
+                std::slice::from_ref(&finding),
+                &ctx,
+                Some(Ok(XcodeActivity::Active {
+                    open_files: Vec::new(),
+                })),
+            )
             .unwrap();
-        assert!(running.errors[0].contains("an Xcode build is running"));
+        assert!(
+            running.errors[0].contains("Xcode is running"),
+            "{:?}",
+            running.errors
+        );
         assert!(sentinel.exists());
 
         let unknown = Xcode

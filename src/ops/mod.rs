@@ -329,6 +329,11 @@ fn apply_verified_finding(
     let target = finding
         .target()
         .ok_or_else(|| anyhow::anyhow!("filesystem finding missing internal target"))?;
+    // A move to the Trash keeps the item's identity, so recording it lets a
+    // later `trash-empty --only-devtrim` tell this item from everyone else's.
+    let trashed = (!permanent)
+        .then(|| crate::journal::TrashedIdentity::of(target))
+        .flatten();
     let attempt = crate::journal::begin(
         ctx,
         crate::journal::JournalRecord::filesystem_attempt(
@@ -336,7 +341,8 @@ fn apply_verified_finding(
             action,
             target,
             finding.size_bytes,
-        ),
+        )
+        .with_trashed_identity(trashed),
     )
     .with_context(|| format!("cannot write apply journal: {}", ctx.journal_path.display()))?;
     let result = crate::safety::validate_path_for_deletion(target, &ctx.home, &ctx.protect)
@@ -997,6 +1003,62 @@ fn restore_quarantined_target(
 }
 
 pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
+    trash_findings_where(ctx, |_| true)
+}
+
+/// The Trash items devtrim itself moved there, for `trash-empty
+/// --only-devtrim`: those whose identity matches one its journal recorded for
+/// a move that succeeded. The Trash is shared with every other program and
+/// session, and Finder renames what it moves at will, so the name proves
+/// nothing; the identity does. The selection only narrows: an item no record
+/// names stays, and a history that cannot be read whole is an error, because
+/// an item it recorded might be missed.
+pub fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>> {
+    use crate::journal::TrashedIdentity;
+
+    let history = crate::journal::read_history(&ctx.journal_path, usize::MAX)
+        .context("cannot read the apply journal that records what devtrim moved to the Trash")?;
+    let moved = history
+        .entries
+        .iter()
+        .filter(|record| record.action == "trash" && record.status.as_deref() == Some("ok"))
+        .filter_map(|record| record.identity)
+        .collect::<std::collections::HashSet<_>>();
+    let mut left = 0usize;
+    let mut findings = trash_findings_where(ctx, |path| {
+        let ours = TrashedIdentity::of(path).is_some_and(|identity| moved.contains(&identity));
+        if !ours {
+            left = left.saturating_add(1);
+        }
+        ours
+    })?;
+    if left > 0 {
+        ctx.diagnostic(
+            "info",
+            format!("leaving {left} Trash item(s) devtrim did not move there"),
+        );
+    }
+    for error in history.errors {
+        let message = format!(
+            "cannot read the whole apply journal, so an item devtrim moved to the Trash may be left there: {error}"
+        );
+        findings.push(
+            Finding::new(
+                "apply journal unreadable",
+                None,
+                0,
+                &message,
+                5,
+                Action::Info,
+            )
+            .with_scan_error(message),
+        );
+    }
+    Ok(findings)
+}
+
+/// Direct Trash children `keep` accepts, judged before any is measured.
+fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Result<Vec<Finding>> {
     let directory = crate::safety::validate_trash_root(&ctx.home)?;
     let mut entries = std::fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
@@ -1013,6 +1075,9 @@ pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
             continue;
         }
         let path = entry.path();
+        if !keep(&path) {
+            continue;
+        }
         let size = dir_size(&path)?;
         findings.push(Finding::new(
             format!("Trash item: {}", entry.file_name().to_string_lossy()),
@@ -1630,6 +1695,100 @@ mod tests {
             );
             remove_test_path(home);
         }
+    }
+
+    /// `trash-empty --only-devtrim` purges what devtrim itself moved to the
+    /// Trash, recognized by the identity its journal recorded, under whatever
+    /// name Finder gave it; everyone else's items stay, even one carrying the
+    /// name devtrim's item had. A failed move and an item that is gone count
+    /// for nothing.
+    #[test]
+    fn only_items_devtrim_moved_to_the_trash_are_offered() {
+        use crate::journal::{JournalRecord, TrashedIdentity, begin};
+
+        let (_fixture, home) = sink_test_home("only-devtrim");
+        let trash = home.join(".Trash");
+        let ours = trash.join("cache 12.09.42");
+        let foreign = trash.join("cache");
+        for item in [&ours, &foreign] {
+            std::fs::create_dir_all(item).unwrap();
+            std::fs::write(item.join("file"), "x").unwrap();
+        }
+        let gone = home.join("gone");
+        std::fs::create_dir_all(&gone).unwrap();
+        let gone_identity = TrashedIdentity::of(&gone);
+        std::fs::remove_dir(&gone).unwrap();
+        let ctx = context(home.clone());
+        let record = |identity: Option<TrashedIdentity>, succeeded: bool| {
+            let attempt = begin(
+                &ctx,
+                JournalRecord::filesystem_attempt("caches", "trash", Path::new("/x/cache"), 1)
+                    .with_trashed_identity(identity),
+            )
+            .unwrap();
+            let result = if succeeded {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("refused"))
+            };
+            let _ = attempt.finish(&ctx, result);
+        };
+        record(TrashedIdentity::of(&ours), true);
+        record(gone_identity, true);
+        record(TrashedIdentity::of(&foreign), false);
+
+        let findings = trash_findings_moved_by_devtrim(&ctx).unwrap();
+
+        assert_eq!(
+            findings
+                .iter()
+                .filter_map(Finding::target)
+                .collect::<Vec<_>>(),
+            vec![ours.as_path()],
+            "PV trash/only-devtrim-identity: an item devtrim did not move was offered"
+        );
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|message| message.contains("1 Trash item(s) devtrim did not move there")),
+            "the items left in place must be counted"
+        );
+        remove_test_path(home);
+    }
+
+    /// The sink records the identity of what it moves to the Trash before it
+    /// moves anything, so even a refused move is journaled with it; a
+    /// permanent deletion records none. A `protect` entry refuses here, so no
+    /// test reaches the real Trash.
+    #[test]
+    fn the_sink_journals_the_identity_of_what_it_moves_to_the_trash() {
+        let (_fixture, home) = sink_test_home("trash-identity-journal");
+        let target = home.join("cache");
+        std::fs::create_dir_all(&target).unwrap();
+        let mut ctx = context(home.clone());
+        ctx.protect = vec![target.clone()];
+        for action in [Action::Trash, Action::Shred] {
+            let finding = Finding::new("cache", Some(target.clone()), 1, "test", 3, action);
+            assert!(apply_filesystem_finding("caches", &finding, &ctx).is_err());
+        }
+
+        let history = crate::journal::read_history(&ctx.journal_path, 10).unwrap();
+        let recorded = |action: &str| {
+            history
+                .entries
+                .iter()
+                .find(|record| record.action == action)
+                .map(|record| record.identity)
+                .unwrap()
+        };
+        assert_eq!(
+            recorded("trash"),
+            crate::journal::TrashedIdentity::of(&target),
+            "PV trash/journal-identity: a Trash move was journaled without its identity"
+        );
+        assert!(recorded("trash").is_some());
+        assert_eq!(recorded("shred"), None);
+        remove_test_path(home);
     }
 
     /// The Trash grant belongs to items directly in the Trash that

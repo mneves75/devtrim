@@ -154,14 +154,12 @@ const footer = (keys: string, status: string): Row[] =>
   boxed("", COLS, 4, [[{ t: keys, c: CYAN }], [{ t: status, c: AMBER }]]);
 
 const menuBody = (selected: number): Row[] => {
-  const list = MENU.map(
-    ([key, label, marker], i): Row => [
-      { t: i === selected ? "▶ " : "  ", c: GREEN, b: true },
-      { t: ` ${key} `, c: DIM },
-      { t: label, c: i === selected ? GREEN : INK, b: i === selected },
-      { t: `  ${marker}`, c: markerColor(marker) },
-    ],
-  );
+  const list = MENU.map(([key, label, marker], i): Row => [
+    { t: i === selected ? "▶ " : "  ", c: GREEN, b: true },
+    { t: ` ${key} `, c: DIM },
+    { t: label, c: i === selected ? GREEN : INK, b: i === selected },
+    { t: `  ${marker}`, c: markerColor(marker) },
+  ]);
   const d = DETAIL[selected] ?? DETAIL[0];
   const detail: Row[] = [
     [{ t: d[0], c: GREEN, b: true }],

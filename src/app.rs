@@ -386,26 +386,44 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        cli::Command::TrashEmpty { confirm_gb } => {
-            let mut findings = match ops::trash_findings(&ctx) {
+        cli::Command::TrashEmpty {
+            confirm_gb,
+            only_devtrim,
+        } => {
+            let listed = if only_devtrim {
+                ops::trash_findings_moved_by_devtrim(&ctx)
+            } else {
+                ops::trash_findings(&ctx)
+            };
+            let mut findings = match listed {
                 Ok(findings) => findings,
                 Err(error) => return command_error("trash-empty", false, &[], &ctx, error),
             };
             ops::filter_protected_findings(&mut findings, &ctx);
             let size = report::actionable_bytes(&findings);
+            let scan_errors: Vec<_> = findings
+                .iter()
+                .filter_map(report::Finding::scan_error)
+                .map(str::to_owned)
+                .collect();
             if !cli.apply {
                 if ctx.json {
-                    report::print_json("trash-empty", false, &findings, None, &[])?;
+                    report::print_json("trash-empty", false, &findings, None, &scan_errors)?;
                 } else {
                     report::print_human(&findings)?;
+                    let narrowed = if only_devtrim { " --only-devtrim" } else { "" };
                     report::print_line(&format!(
                         "\n{} no changes made. Re-run with {} and {} to act.",
                         "dry-run".yellow().bold(),
-                        "--apply".cyan(),
+                        format!("--apply{narrowed}").cyan(),
                         format!("--confirm={}", size / (1024 * 1024 * 1024)).cyan()
                     ))?;
                 }
-                return Ok(ExitCode::SUCCESS);
+                return Ok(if scan_errors.is_empty() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                });
             }
             if !ctx.json {
                 report::print_human(&findings)?;
