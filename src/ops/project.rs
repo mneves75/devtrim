@@ -524,11 +524,15 @@ pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
 /// leave such a repository out and name it instead of failing the category;
 /// they ask only after that query has failed, so no repository pays for it.
 ///
-/// HEAD must be symbolic (`symbolic-ref -q HEAD` succeeds) and resolve to
-/// nothing (`rev-parse -q --verify HEAD` exits 1 and prints nothing). A HEAD
+/// HEAD must be symbolic (`symbolic-ref -q HEAD` succeeds), resolve to
+/// nothing (`rev-parse -q --verify HEAD` exits 1 and prints nothing), and sit
+/// in reference storage Git finds sound (`refs verify` succeeds). A HEAD
 /// naming a commit whose object is gone still resolves, and a detached HEAD
-/// is not symbolic, so neither reads as unborn. Any other answer, or a Git
-/// that cannot run, is not unborn either: the original failure then stands.
+/// is not symbolic, so neither reads as unborn; a loose-ref folder that became
+/// a file resolves to nothing too, and Git's own `log` calls that "no commits
+/// yet", so only `refs verify` (Git 2.47 and later) tells it apart. Any other
+/// answer, or a Git that cannot run or lacks `refs verify`, is not unborn
+/// either: the original failure then stands.
 pub(crate) fn unborn_branch(repo: &Path) -> bool {
     let git_output = |arguments: &[&str]| {
         let mut command = hardened_git(repo, "git");
@@ -542,6 +546,7 @@ pub(crate) fn unborn_branch(repo: &Path) -> bool {
     }
     git_output(&["rev-parse", "-q", "--verify", "HEAD"])
         .is_some_and(|resolved| resolved.status.code() == Some(1) && resolved.stdout.is_empty())
+        && git_output(&["refs", "verify"]).is_some_and(|verified| verified.status.success())
 }
 
 /// A folder a project walk could not read, and why. Like a scan root that
@@ -670,6 +675,20 @@ mod tests {
         assert!(
             !unborn_branch(&dangling),
             "PV project/unborn-dangling: a HEAD naming a missing commit read as unborn"
+        );
+
+        // Git itself reads a repository whose loose-ref folder became a file
+        // as unborn (`log` says "no commits yet"); only `refs verify` sees
+        // that its reference storage is broken.
+        let broken = base.join("broken-refs");
+        init_old_git_repo(&broken).unwrap();
+        std::fs::remove_dir_all(broken.join(".git/refs/heads")).unwrap();
+        std::fs::write(broken.join(".git/refs/heads"), "junk\n").unwrap();
+        std::fs::remove_file(broken.join(".git/packed-refs")).ok();
+        assert!(repo_last_activity(&broken).is_err());
+        assert!(
+            !unborn_branch(&broken),
+            "PV project/unborn-broken-refs: broken reference storage read as unborn"
         );
 
         let born = base.join("born");

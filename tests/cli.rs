@@ -851,7 +851,7 @@ fn purge_contains_each_failure_to_where_it_happened() {
     let _locked = Unreadable::new(locked.clone());
     sandbox.script(
         "git",
-        "case \"$*\" in\n  *ls-files*) exit 0 ;;\n  *'/fresh '*symbolic-ref*) printf 'refs/heads/main\\n' ;;\n  *'/fresh '*rev-parse*) exit 1 ;;\n  *'/fresh '*) printf \"fatal: your current branch 'main' does not have any commits yet\\n\" >&2; exit 128 ;;\n  *'/dangling '*symbolic-ref*) printf 'refs/heads/main\\n' ;;\n  *'/dangling '*rev-parse*) printf '0123abcd\\n' ;;\n  *'/dangling '*) printf 'fatal: bad object HEAD\\n' >&2; exit 128 ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+        "case \"$*\" in\n  *ls-files*) exit 0 ;;\n  *'/fresh '*symbolic-ref*) printf 'refs/heads/main\\n' ;;\n  *'/fresh '*rev-parse*) exit 1 ;;\n  *'/fresh '*'refs verify'*) exit 0 ;;\n  *'/fresh '*) printf \"fatal: your current branch 'main' does not have any commits yet\\n\" >&2; exit 128 ;;\n  *'/dangling '*symbolic-ref*) printf 'refs/heads/main\\n' ;;\n  *'/dangling '*rev-parse*) printf '0123abcd\\n' ;;\n  *'/dangling '*) printf 'fatal: bad object HEAD\\n' >&2; exit 128 ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
     );
     let root = dev.to_str().unwrap();
     let mut expected = vec![

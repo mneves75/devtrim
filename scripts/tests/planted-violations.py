@@ -591,6 +591,14 @@ CASES = (
         tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
         marker="PV project/unborn-dangling",
     ),
+    Case(
+        name="project/unborn-broken-refs",
+        relative_path="src/ops/project.rs",
+        before="        && git_output(&[\"refs\", \"verify\"]).is_some_and(|verified| verified.status.success())\n",
+        after="        && git_output(&[\"refs\", \"verify\"]).is_some()\n",
+        tests=("ops::project::tests::an_unborn_branch_is_recognized_and_a_dangling_head_is_not",),
+        marker="PV project/unborn-broken-refs",
+    ),
     # A default project folder linked to the home folder or above it would make
     # the whole home or disk a scan root nobody named.
     Case(
