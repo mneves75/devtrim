@@ -1,6 +1,24 @@
 # Project Memory
 
-## Current state (0.10.4)
+## Current state (0.10.5)
+
+Production is verified. `v0.10.5-beta1` and `v0.10.5` both point at `57bfb08`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`1a6f5f724ccf34041ff74adea956d1dc04c153e955a18615712b79fc93e14ac3`) and is
+immutable. The downloaded beta passed checksum, attestation (source `57bfb08`,
+the beta tag, a GitHub-hosted runner; a wrong source digest fails), the PTY TUI
+suite run from a long download path, read-only views, and a live read-only
+`purge` on this Mac. Homebrew installs and tests 0.10.5 as the sole visible
+`devtrim` (tap `bd839e2`).
+
+0.10.5 contains each project-scan failure to where it happened: an unreadable
+folder and a failing repository are error findings that block only themselves;
+a new repository (no commit object) is skipped and named; a `node_modules`
+needs a `package.json` beside it. Four autoreview rounds hardened the
+new-repository check; independent black-box verification (GPT-6, fresh context)
+passed on the final binary. Story in `memory/2026-10-03.md`.
+
+## Previous state (0.10.4)
 
 Production is verified. `v0.10.4-beta1` and `v0.10.4` both point at `a5dc366`;
 production reused the beta archive byte for byte (ZIP SHA-256
