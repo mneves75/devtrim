@@ -2,8 +2,6 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
-
 ## [0.10.5] - 2026-10-03
 
 Found by running `devtrim scan` on the owner's Mac with 27 GiB free: `purge`
