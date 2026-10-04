@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [Unreleased]
+
 ## [0.10.7] - 2026-10-04
 
 Using the TUI showed two puzzles: `A` seemed to do nothing, and the menu put a

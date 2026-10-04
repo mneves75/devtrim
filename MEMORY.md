@@ -1,11 +1,20 @@
 # Project Memory
 
-## Current state (0.10.7 in source, unreleased)
+## Current state (0.10.7)
 
-`main` carries 0.10.7 (TUI action keys explain themselves, the footer names
-what `A` does next, the menu explains its badges; Codex-release tests take an
-injected `lsof` probe). It is not tagged or released: production and Homebrew
-stay on 0.10.6 until the owner asks for a release. Story in
+Production is verified. `v0.10.7-beta1` and `v0.10.7` both point at `0b71b18`;
+production reused the beta archive byte for byte (ZIP SHA-256
+`6e00356ae6d44b314afc826e0877773846b0c8e774a16de94e97365d1a5a4a38`) and is
+immutable. The downloaded beta passed checksum, attestation (source `0b71b18`,
+the beta tag, a GitHub-hosted runner; a wrong source digest fails), the PTY TUI
+suite and read-only views run from the download path, and a live read-only
+`scan` (exit 1 only for the known unreadable Berlin `.fseventsd`). Homebrew
+installs and tests 0.10.7 as the sole visible `devtrim` (tap `e11eaf5`).
+
+0.10.7 makes every TUI action key explain itself (Scan everything names the
+category view that can act, "b, then 2 (caches)"), names what the next `A`
+does in the footer, explains the menu badges, fits every footer line at 64×18,
+and gives the Codex-release tests an injected `lsof` probe. Story in
 `memory/2026-10-04.md`.
 
 ## Previous state (0.10.6)
