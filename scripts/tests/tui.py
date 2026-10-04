@@ -286,6 +286,37 @@ def verify_selection(binary):
             session.quit()
 
 
+def verify_action_keys_explain_themselves(binary):
+    """No action key passes in silence. In the read-only scan, `A` names the
+    menu entry that acts on the highlighted cache; the starting status, which
+    says only that the result is read-only, is the control the new line
+    replaces. In the caches view the footer names what `A` does next: "A none"
+    with everything selected, then "A all" once `A` has left everything out."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        # No build or Xcode process runs, so every category scans cleanly and
+        # the session can end with status 0.
+        (home / "bin").mkdir()
+        write_script(home / "bin" / "pgrep", "exit 1")
+        for name in ("uv", "node"):
+            cache = home / ".cache" / name
+            cache.mkdir(parents=True)
+            (cache / "blob").write_bytes(b"x")
+        with Session(binary, home) as session:
+            session.wait_for("Scan everything")
+            session.send(b"1")
+            session.wait_for_screen("Read-only result", "uv package cache")
+            session.send(b"A")
+            session.wait_for_screen("Read-only scan. To act on it: b, then 2 (caches).")
+            session.send(b"b2")
+            session.wait_for_screen("2/2 selected", "A none")
+            session.send(b"A")
+            session.wait_for_screen(
+                "0/2 selected", "A all", "Every item is left out; A selects them all again."
+            )
+            session.quit()
+
+
 def write_script(path, body):
     path.write_text(f"#!/bin/sh\nset -eu\n{body}\n")
     path.chmod(0o755)
@@ -379,6 +410,7 @@ def main():
         verify_menu(binary)
         verify_type_ahead(binary)
         verify_selection(binary)
+        verify_action_keys_explain_themselves(binary)
         verify_purge(binary)
         verify_minimum_size(binary)
     except (AssertionError, OSError, termios.error) as error:
@@ -386,7 +418,8 @@ def main():
         return 1
     print(
         "tui: menu, help, cancel, quit, terminal restoration, type-ahead discard,"
-        " selection, project purge, and the minimum-size detail pane and view passed"
+        " selection, action-key explanations, project purge, and the minimum-size"
+        " detail pane and view passed"
     )
     return 0
 

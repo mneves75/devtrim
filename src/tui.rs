@@ -190,6 +190,9 @@ struct App {
     selected: usize,
     operation: Option<Operation>,
     findings: Vec<Finding>,
+    /// Each category's slice of a Scan everything result, so a key that cannot
+    /// act there names the view that can; empty for every other operation.
+    sections: Vec<report::ScanSection>,
     /// Highlighted row of the results list: a finding, then scan errors, then
     /// warnings, in that order.
     cursor: usize,
@@ -225,6 +228,7 @@ impl Default for App {
             selected: 0,
             operation: None,
             findings: Vec::new(),
+            sections: Vec::new(),
             cursor: 0,
             excluded: std::collections::BTreeSet::new(),
             list_offset: std::cell::Cell::new(0),
@@ -308,6 +312,12 @@ impl App {
         if !self.excluded.remove(&self.cursor) {
             self.excluded.insert(self.cursor);
         }
+        // Replaces whatever an earlier `A` said, which this press made false.
+        self.status = format!(
+            "{} of {} items selected.",
+            self.choice_count() - self.excluded.len(),
+            self.choice_count()
+        );
     }
 
     /// Everything back in when anything is out; otherwise every choice out.
@@ -316,8 +326,10 @@ impl App {
             self.excluded = (0..self.findings.len())
                 .filter(|index| self.is_selectable(*index))
                 .collect();
+            self.status = "Every item is left out; A selects them all again.".into();
         } else {
             self.excluded.clear();
+            self.status = "Every item is selected; A leaves them all out.".into();
         }
     }
 
@@ -352,6 +364,7 @@ impl App {
         self.operation = Some(operation);
         self.reset_selection();
         self.findings = findings;
+        self.sections.clear();
         self.errors = errors;
         self.warnings = warnings;
         if !self.errors.is_empty() {
@@ -364,8 +377,80 @@ impl App {
         } else if operation.read_only() {
             "Read-only result. No apply action is available.".into()
         } else {
-            "Review every finding. Space leaves one out; a applies the rest.".into()
+            "Review every finding. Space leaves one out; a applies the rest".into()
         };
+    }
+
+    /// A Scan everything result, keeping each category's slice for routing.
+    fn finish_scan(&mut self, result: ops::ScanResult, warnings: Vec<String>) {
+        self.finish_results(Operation::ScanAll, result.findings, result.errors, warnings);
+        self.sections = result.sections;
+    }
+
+    /// Why an action key would change nothing on the results screen, so no
+    /// key press passes in silence; `None` when the key acts.
+    fn inert_reason(&self, key: KeyCode) -> Option<String> {
+        let operation = self.operation?;
+        if operation == Operation::ScanAll {
+            return Some(self.scan_route());
+        }
+        if operation.read_only() {
+            return Some("Read-only report: nothing here can be applied.".into());
+        }
+        let reason = match key {
+            KeyCode::Char(' ' | 'A') if self.choice_count() == 0 => {
+                "Nothing here can be applied, so nothing can be selected."
+            }
+            KeyCode::Char(' ') if self.cursor >= self.findings.len() => {
+                "Space leaves out findings only, not errors or notes."
+            }
+            KeyCode::Char(' ') if !self.is_selectable(self.cursor) => {
+                "This row is a report; Space leaves out only items that apply."
+            }
+            KeyCode::Char('s') if operation == Operation::TrashEmpty => {
+                "Emptying the Trash is already permanent."
+            }
+            KeyCode::Char('s')
+                if !self
+                    .findings
+                    .iter()
+                    .any(|finding| finding.action == Action::Trash) =>
+            {
+                "Permanent mode does not apply: nothing here moves to Trash."
+            }
+            KeyCode::Char('s') if !self.can_toggle_shred() => {
+                "Permanent mode needs a selected item that moves to Trash."
+            }
+            _ => return None,
+        };
+        Some(reason.into())
+    }
+
+    /// Where the highlighted Scan everything row can be acted on: the menu
+    /// entry of its own category, named only when that view can apply it.
+    fn scan_route(&self) -> String {
+        let Some(finding) = self.findings.get(self.cursor) else {
+            return "Read-only scan. Open a category from the menu (b) to act.".into();
+        };
+        let entry = self
+            .sections
+            .iter()
+            .find(|section| section.range.contains(&self.cursor))
+            .and_then(|section| {
+                MENU.iter()
+                    .find(|item| item.operation.name() == section.category)
+            });
+        match entry {
+            Some(entry) if finding.action.is_actionable() && !entry.operation.read_only() => {
+                format!(
+                    "Read-only scan. To act on it: b, then {} ({}).",
+                    entry.key,
+                    entry.operation.name()
+                )
+            }
+            Some(_) => "Read-only scan: this item is a report, with nothing to apply.".into(),
+            None => "Read-only scan. Open a category from the menu (b) to act.".into(),
+        }
     }
 
     fn fail(&mut self, error: anyhow::Error) {
@@ -390,7 +475,7 @@ impl App {
                 .iter()
                 .any(|finding| finding.action.is_actionable())
             {
-                "Nothing is selected. Space adds the highlighted item; A selects every item."
+                "Nothing is selected: Space adds an item, A selects all."
             } else {
                 "This result has no actionable findings."
             }
@@ -525,6 +610,12 @@ impl App {
     }
 
     fn handle_results_key(&mut self, key: KeyCode) -> Intent {
+        if matches!(key, KeyCode::Char(' ' | 'A' | 'a' | 's'))
+            && let Some(reason) = self.inert_reason(key)
+        {
+            self.status = reason;
+            return Intent::None;
+        }
         match key {
             KeyCode::Char('q') => Intent::Quit,
             KeyCode::Esc | KeyCode::Char('b') => {
@@ -567,8 +658,7 @@ impl App {
                 self.shred = !self.shred;
                 self.scroll = 0;
                 self.status = if self.shred {
-                    "Permanent mode: preview actions changed to SHRED and danger is critical."
-                        .into()
+                    "Permanent mode: every action is SHRED; danger is critical.".into()
                 } else {
                     "Trash-first mode restored.".into()
                 };
@@ -758,7 +848,7 @@ fn load_operation(app: &mut App, operation: Operation, ctx: &Ctx) {
         Operation::ScanAll => {
             let result = ops::scan_all(ctx);
             let warnings = ctx.take_diagnostics();
-            app.finish_results(operation, result.findings, result.errors, warnings);
+            app.finish_scan(result, warnings);
         }
         Operation::Clean(target) => {
             let cleanup = ops::for_target(target);
@@ -878,23 +968,11 @@ fn apply_operation(app: &mut App, ctx: &Ctx, plan: ApprovedPlan) {
             if !outcome.errors.is_empty() {
                 app.failed = true;
             }
+            app.status =
+                outcome_status(!outcome.errors.is_empty(), outcome.summary.items_touched).into();
             app.summary = Some(outcome.summary);
             app.errors = outcome.errors;
             app.screen = Screen::Outcome;
-            app.status = if app.errors.is_empty() {
-                "Apply completed. Review the truthful summary below.".into()
-            } else if app
-                .summary
-                .as_ref()
-                .is_some_and(|summary| summary.items_touched == 0)
-            {
-                "Apply failed before any item was changed.".into()
-            } else {
-                // Some categories continue past a refused item, so "stopped"
-                // would be false; the summary is the record either way.
-                "Apply finished with errors; the summary below lists what changed and what failed."
-                    .into()
-            };
         }
         Err(error) => app.fail(error),
     }
@@ -1043,30 +1121,53 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// The status an apply leaves: whether it failed, and how many items it
+/// changed before it did.
+fn outcome_status(failed: bool, touched: usize) -> &'static str {
+    if !failed {
+        "Apply completed. Review the truthful summary below."
+    } else if touched == 0 {
+        "Apply failed before any item was changed."
+    } else {
+        // Some categories continue past a refused item, so "stopped" would be
+        // false; the summary is the record either way.
+        "Apply finished with errors: see what changed and what failed."
+    }
+}
+
+/// The badge beside a menu operation, its token, and what it means, which the
+/// Selected pane spells out so the badge is never left to guess.
+fn badge(operation: Operation) -> (&'static str, Token, &'static str) {
+    if operation.read_only() {
+        (
+            "READ-ONLY",
+            Token::Info,
+            "READ-ONLY: it reports and never changes anything.",
+        )
+    } else if operation == Operation::TrashEmpty {
+        (
+            "PERMANENT",
+            Token::Critical,
+            "PERMANENT: it deletes for good, after a typed size acknowledgment.",
+        )
+    } else {
+        (
+            "PREVIEW",
+            Token::Success,
+            "PREVIEW: it scans first; nothing changes until you select items, press a and approve.",
+        )
+    }
+}
+
 fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     let [menu_area, detail_area] =
         Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]).areas(area);
     let items = MENU.iter().map(|item| {
-        let marker = if item.operation.read_only() {
-            "READ-ONLY"
-        } else if item.operation == Operation::TrashEmpty {
-            "PERMANENT"
-        } else {
-            "PREVIEW"
-        };
+        let (marker, token, _) = badge(item.operation);
         ListItem::new(Line::from(vec![
             Span::styled(format!(" {} ", item.key), app.theme.style(Token::Muted)),
             Span::raw(item.label),
-            Span::styled(
-                format!("  {marker}"),
-                app.theme.style(if marker == "PERMANENT" {
-                    Token::Critical
-                } else if marker == "READ-ONLY" {
-                    Token::Info
-                } else {
-                    Token::Success
-                }),
-            ),
+            Span::styled(format!("  {marker}"), app.theme.style(token)),
         ]))
     });
     let list = List::new(items)
@@ -1078,19 +1179,13 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(list, menu_area, &mut state);
 
     let selected = &MENU[app.selected];
+    let (_, _, meaning) = badge(selected.operation);
     let detail = Text::from(vec![
         Line::styled(selected.label, app.theme.bold(Token::Accent)),
         Line::raw(""),
         Line::raw(selected.description),
         Line::raw(""),
-        Line::styled(
-            if selected.operation.read_only() {
-                "No mutation is available from this screen."
-            } else {
-                "Selecting this operation scans first. Apply is a separate, explicit step."
-            },
-            app.theme.style(Token::Warning),
-        ),
+        Line::styled(meaning, app.theme.style(Token::Warning)),
         Line::raw(""),
         Line::raw("↑/↓ or j/k navigate · Enter opens · menu key opens directly · ? all keys"),
     ]);
@@ -1489,21 +1584,29 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     // Progressive disclosure: the footer carries only the few keys that matter
     // on this screen, and `?` opens the complete reference. Listing everything
     // here would make the one key the operator needs harder to find.
-    let keys = match app.screen {
-        Screen::Menu => "↑/↓ navigate · Enter select · ? keys · q quit",
-        Screen::Results => {
-            if app.choice_count() == 0 {
-                "↑/↓ move · r rescan · b back · ? keys"
-            } else if app.can_toggle_shred() {
-                "Space select · A all · a apply · s permanent · b back · ? keys"
-            } else {
-                "Space select · A all · a apply · r rescan · b back · ? keys"
-            }
+    let keys: String = match app.screen {
+        Screen::Menu => "↑/↓ navigate · Enter select · ? keys · q quit".into(),
+        Screen::Results if app.choice_count() == 0 => {
+            "↑/↓ move · r rescan · b back · ? keys".into()
         }
-        Screen::Detail => "↑/↓ or j/k scroll · Esc back to the results · ? keys",
-        Screen::Confirm => "Esc cancel · type the exact requested acknowledgment",
-        Screen::Outcome | Screen::Error => "↑/↓ or j/k scroll · b back to menu · ? keys",
-        Screen::Loading => "Scanning and apply are synchronous; please wait",
+        Screen::Results => {
+            // `A` toggles, so the label names what the next press does.
+            let toggle = if app.excluded.is_empty() {
+                "none"
+            } else {
+                "all"
+            };
+            let mode = if app.can_toggle_shred() {
+                "s permanent"
+            } else {
+                "r rescan"
+            };
+            format!("Space pick · A {toggle} · a apply · {mode} · b back · ? keys")
+        }
+        Screen::Detail => "↑/↓ or j/k scroll · Esc back to the results · ? keys".into(),
+        Screen::Confirm => "Esc cancel · type the exact requested acknowledgment".into(),
+        Screen::Outcome | Screen::Error => "↑/↓ or j/k scroll · b back to menu · ? keys".into(),
+        Screen::Loading => "Scanning and apply are synchronous; please wait".into(),
     };
     // The results status names keys that act on the plan; none of them works
     // in the detail view, so it says so instead.
@@ -2634,6 +2737,284 @@ mod tests {
         assert!(app.excluded.is_empty());
     }
 
+    fn scan_everything(findings: Vec<Finding>, sections: Vec<report::ScanSection>) -> App {
+        let mut app = App::default();
+        app.finish_scan(
+            ops::ScanResult {
+                findings,
+                sections,
+                errors: vec!["docker: failed".into()],
+            },
+            Vec::new(),
+        );
+        app
+    }
+
+    fn section(category: &'static str, range: std::ops::Range<usize>) -> report::ScanSection {
+        report::ScanSection { category, range }
+    }
+
+    /// Scan everything only reports, so its action keys cannot act; each one
+    /// says where the highlighted finding can be acted on instead of being
+    /// silently ignored, and never names a view that cannot act on it either.
+    #[test]
+    fn a_read_only_scan_says_where_each_finding_can_be_acted_on() {
+        let mut app = scan_everything(
+            vec![
+                trash("cache", 1, 2),
+                Finding::new("hint", None, 1, "test", 0, Action::Info),
+                trash("odd", 1, 2),
+            ],
+            vec![
+                section("caches", 0..1),
+                section("leftovers", 1..2),
+                section("leftovers", 2..3),
+            ],
+        );
+        for code in [' ', 'A', 'a', 's'] {
+            app.status.clear();
+            assert_eq!(app.handle_key(key(KeyCode::Char(code))), Intent::None);
+            assert_eq!(app.screen, Screen::Results, "{code}");
+            assert_eq!(
+                app.status, "Read-only scan. To act on it: b, then 2 (caches).",
+                "{code}"
+            );
+        }
+        // A report-only finding, and one whose own view is read-only too.
+        for _ in 0..2 {
+            app.handle_key(key(KeyCode::Down));
+            app.handle_key(key(KeyCode::Char('A')));
+            assert_eq!(
+                app.status,
+                "Read-only scan: this item is a report, with nothing to apply."
+            );
+        }
+        // The error row below the findings belongs to no category.
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(
+            app.status,
+            "Read-only scan. Open a category from the menu (b) to act."
+        );
+        assert!(app.excluded.is_empty(), "a read-only scan has no choices");
+    }
+
+    /// Every category a scan reports routes to its own menu entry, and the
+    /// whole explanation fits the footer at the minimum terminal size, which
+    /// does not wrap and would cut a longer line off silently.
+    #[test]
+    fn every_scan_category_routes_to_its_menu_entry_within_the_minimum_width() {
+        for op in ops::all() {
+            let category = op.name();
+            let mut app = scan_everything(vec![trash("x", 1, 2)], vec![section(category, 0..1)]);
+            app.handle_key(key(KeyCode::Char('A')));
+            let entry = MENU
+                .iter()
+                .find(|item| item.operation.name() == category)
+                .unwrap_or_else(|| panic!("{category} has no menu entry"));
+            if entry.operation.read_only() {
+                assert!(app.status.contains("nothing to apply"), "{category}");
+            } else {
+                assert_eq!(
+                    app.status,
+                    format!(
+                        "Read-only scan. To act on it: b, then {} ({category}).",
+                        entry.key
+                    )
+                );
+            }
+            let output = rendered(&app, 64, 18);
+            assert!(output.contains(&app.status), "{category}: {output}");
+        }
+    }
+
+    #[test]
+    fn a_read_only_report_says_nothing_there_applies() {
+        for operation in [Operation::Icloud, Operation::Clean(Target::Leftovers)] {
+            let mut app = App::default();
+            app.finish_results(operation, vec![trash("x", 1, 2)], Vec::new(), Vec::new());
+            for code in [' ', 'A', 'a', 's'] {
+                app.status.clear();
+                app.handle_key(key(KeyCode::Char(code)));
+                assert_eq!(
+                    app.status, "Read-only report: nothing here can be applied.",
+                    "{code}"
+                );
+            }
+        }
+    }
+
+    /// In a view that can apply, a key that cannot act on the highlighted row
+    /// or on this plan says why, so no key press passes in silence.
+    #[test]
+    fn keys_that_cannot_act_in_a_cleanup_view_say_why() {
+        let mut app = App::default();
+        app.finish_results(
+            Operation::Clean(Target::Docker),
+            vec![Finding::new("vm disk", None, 1, "test", 0, Action::None)],
+            vec!["docker: failed".into()],
+            Vec::new(),
+        );
+        for code in [' ', 'A'] {
+            app.status.clear();
+            app.handle_key(key(KeyCode::Char(code)));
+            assert_eq!(
+                app.status, "Nothing here can be applied, so nothing can be selected.",
+                "{code}"
+            );
+        }
+        app.handle_key(key(KeyCode::Char('s')));
+        assert_eq!(
+            app.status,
+            "Permanent mode does not apply: nothing here moves to Trash."
+        );
+        // Below the findings, the error row is not a report finding.
+        let mut errored = cleanup(vec![trash("deletable", 1, 2)]);
+        errored.errors = vec!["caches: failed".into()];
+        errored.handle_key(key(KeyCode::End));
+        errored.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(
+            errored.status,
+            "Space leaves out findings only, not errors or notes."
+        );
+        // Trash items exist but every one is left out: selecting one helps.
+        let mut left_out = cleanup(vec![trash("first", 1, 2)]);
+        left_out.handle_key(key(KeyCode::Char(' ')));
+        left_out.handle_key(key(KeyCode::Char('s')));
+        assert_eq!(
+            left_out.status,
+            "Permanent mode needs a selected item that moves to Trash."
+        );
+        assert!(!left_out.shred);
+
+        let mut mixed = cleanup(vec![
+            Finding::new("disclosure", None, 1, "test", 0, Action::None),
+            trash("deletable", 1, 2),
+        ]);
+        mixed.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(
+            mixed.status,
+            "This row is a report; Space leaves out only items that apply."
+        );
+        assert!(mixed.excluded.is_empty());
+        let output = rendered(&mixed, 64, 18);
+        assert!(output.contains(&mixed.status), "{output}");
+    }
+
+    /// `A` toggles: with nothing left out it leaves everything out, so the
+    /// footer names what the next press does rather than a bare "all".
+    #[test]
+    fn the_footer_names_what_select_all_does_next() {
+        let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        let output = rendered(&app, 100, 30);
+        assert!(
+            output.contains("A none") && !output.contains("A all"),
+            "{output}"
+        );
+
+        app.handle_key(key(KeyCode::Char(' ')));
+        let output = rendered(&app, 100, 30);
+        assert!(
+            output.contains("A all") && !output.contains("A none"),
+            "{output}"
+        );
+
+        app.handle_key(key(KeyCode::Char('A')));
+        assert!(app.excluded.is_empty());
+        assert_eq!(app.status, "Every item is selected; A leaves them all out.");
+        app.handle_key(key(KeyCode::Char('A')));
+        assert_eq!(app.excluded.len(), 2);
+        assert_eq!(
+            app.status,
+            "Every item is left out; A selects them all again."
+        );
+        let output = rendered(&app, 64, 18);
+        assert!(output.contains(&app.status), "{output}");
+
+        // A later Space must not leave the last `A` message standing, false.
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.status, "1 of 2 items selected.");
+    }
+
+    /// The footer does not wrap, so at the minimum width each key line and the
+    /// results status must fit whole or lose their last words silently.
+    #[test]
+    fn every_results_footer_fits_the_minimum_width() {
+        let shred = |label: &str| {
+            let mut finding = trash(label, 1, 2);
+            finding.action = Action::Shred;
+            finding
+        };
+        let trash_plan = || cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        let shred_plan = || cleanup(vec![shred("first"), shred("second")]);
+        let (mut trash_left_out, mut shred_left_out) = (trash_plan(), shred_plan());
+        trash_left_out.handle_key(key(KeyCode::Char(' ')));
+        shred_left_out.handle_key(key(KeyCode::Char(' ')));
+        let mut nothing_selected = trash_plan();
+        nothing_selected.handle_key(key(KeyCode::Char('A')));
+        // On a warning row, where Space cannot add anything.
+        nothing_selected.warnings = vec!["caches: a warning".into()];
+        nothing_selected.handle_key(key(KeyCode::End));
+        nothing_selected.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            nothing_selected.status,
+            "Nothing is selected: Space adds an item, A selects all."
+        );
+        let mut permanent = trash_plan();
+        permanent.handle_key(key(KeyCode::Char('s')));
+        assert!(permanent.shred);
+        let mut restored = trash_plan();
+        restored.handle_key(key(KeyCode::Char('s')));
+        restored.handle_key(key(KeyCode::Char('s')));
+        assert!(!restored.shred);
+        for app in [
+            trash_plan(),
+            trash_left_out,
+            shred_plan(),
+            shred_left_out,
+            nothing_selected,
+            permanent,
+            restored,
+        ] {
+            let output = rendered(&app, 64, 18);
+            assert!(output.contains("? keys"), "{output}");
+            assert!(output.contains(&app.status), "{output}");
+        }
+    }
+
+    /// The outcome screen's status shares the footer, which does not wrap.
+    #[test]
+    fn every_outcome_status_fits_the_minimum_footer() {
+        for (failed, touched) in [(false, 1), (true, 0), (true, 1)] {
+            let status = outcome_status(failed, touched);
+            assert!(status.chars().count() <= 62, "{status}");
+        }
+    }
+
+    /// The badge beside each operation is explained where the operation is
+    /// described, so READ-ONLY, PREVIEW and PERMANENT are not left to guess.
+    #[test]
+    fn the_menu_explains_the_highlighted_badge() {
+        let mut app = App::default();
+        for (index, phrase) in [
+            (0, "READ-ONLY: it reports"),
+            (1, "PREVIEW: it scans first;"),
+            (
+                MENU.iter()
+                    .position(|item| item.operation == Operation::TrashEmpty)
+                    .unwrap(),
+                "PERMANENT: it deletes",
+            ),
+        ] {
+            app.selected = index;
+            // At the minimum size too, where the pane holds the fewest lines.
+            for (width, height) in [(100, 30), (64, 18)] {
+                let output = rendered(&app, width, height);
+                assert!(output.contains(phrase), "{phrase}: {output}");
+            }
+        }
+    }
+
     #[test]
     fn results_show_selection_marks_and_the_highlighted_details() {
         let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
@@ -3118,11 +3499,11 @@ mod tests {
             Vec::new(),
         );
         let report_only = rendered(&disclosure, 100, 30);
-        assert!(!report_only.contains("Space select"), "{report_only}");
+        assert!(!report_only.contains("Space pick"), "{report_only}");
         assert!(report_only.contains("r rescan"), "{report_only}");
 
         let choosable = rendered(&cleanup(vec![trash("cache", 1, 2)]), 100, 30);
-        assert!(choosable.contains("Space select"), "{choosable}");
+        assert!(choosable.contains("Space pick"), "{choosable}");
     }
 
     /// The confirmation is where consent is given, so it says how much of the

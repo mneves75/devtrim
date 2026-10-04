@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.10.6.
+This source tree and its packaged documentation describe devtrim v0.10.7.
 
 ## Install
 
@@ -370,8 +370,17 @@ highlighted one whole; a terminal too short to hold it says how many lines it
 hides, and `Enter` shows the finding in full in a view that scrolls, where no
 key changes the plan and `Esc` returns to it. `?` lists every key, whole even at
 the minimum size.
+Each operation in the menu carries a badge that the pane beside it explains:
+`READ-ONLY` reports and never changes anything, `PREVIEW` changes nothing until
+you select items, press `a` and approve, and `PERMANENT` deletes for good after
+a typed size acknowledgment. "Scan everything" is read-only, so its selection
+and apply keys do not act there; they name the category view that can act on
+the highlighted finding, such as "b, then 2 (caches)". Inside a category view,
 `Space` leaves the highlighted finding out of the plan or adds it back and `A`
-selects every finding or none; the confirmation then covers exactly the
+toggles every finding between selected and left out; everything starts
+selected, so the footer reads "A none" until something is left out and
+"A all" after. A key that cannot act on the highlighted row says why in the
+status line instead of doing nothing. The confirmation then covers exactly the
 selected findings and says how many that is and how many were left out, so
 leaving out a critical item can lower a typed-size confirmation to y/N. Selection only narrows what was previewed, and changing it
 after confirming discards that confirmation. `p` opens the project purge view.

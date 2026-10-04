@@ -1,6 +1,14 @@
 # Project Memory
 
-## Current state (0.10.6)
+## Current state (0.10.7 in source, unreleased)
+
+`main` carries 0.10.7 (TUI action keys explain themselves, the footer names
+what `A` does next, the menu explains its badges; Codex-release tests take an
+injected `lsof` probe). It is not tagged or released: production and Homebrew
+stay on 0.10.6 until the owner asks for a release. Story in
+`memory/2026-10-04.md`.
+
+## Previous state (0.10.6)
 
 Production is verified. `v0.10.6-beta1` and `v0.10.6` both point at `b8a6468`;
 production reused the beta archive byte for byte (ZIP SHA-256

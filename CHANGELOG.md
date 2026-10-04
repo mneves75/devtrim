@@ -2,9 +2,17 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.10.7] - 2026-10-04
+
+Using the TUI showed two puzzles: `A` seemed to do nothing, and the menu put a
+word such as `PREVIEW` beside each operation without saying what it meant.
+
+### Changed
+- The TUI menu explains the highlighted operation's badge: `READ-ONLY` reports and never changes anything, `PREVIEW` changes nothing until you select items, press `a` and approve, and `PERMANENT` deletes for good after a typed size acknowledgment
+- The results footer names what the next `A` does: "A none" while nothing is left out, "A all" after, and each press says what it did. `A` still toggles every finding between selected and left out; everything starts selected, so its first press leaves everything out. Space is labelled "Space pick" so the footer fits whole at the minimum 64×18, and the opening status line drops its final period for the same reason. Three older status lines that the minimum width cut off are shorter now: permanent mode ("Permanent mode: every action is SHRED; danger is critical."), an apply with nothing selected, which no longer offers to add a row Space cannot add, and an apply that finished with errors
 
 ### Fixed
+- In "Scan everything", which only reports, Space, `A` and `s` did nothing and said nothing, and `a` said "This result has no actionable findings" beside a total of actionable space. Each now names the category view that can act on the highlighted finding — "Read-only scan. To act on it: b, then 2 (caches)." — or says the item is a report with nothing to apply. In every other view, a key that cannot act on the highlighted row or on the plan (Space on a report row, `s` with no Trash item selected, any action key in iCloud or Agent leftovers) says why instead of doing nothing
 - The `agents` tests for Codex releases no longer depend on every process the host runs. Ten tests read the system-wide `lsof -d txt` probe, and a busy host occasionally failed several of them at once (once in about 175 local runs). They now receive the probe's answer: no mapping, a mapping inside the release, or a failed probe, which is newly tested to refuse both preview and apply. The planted-violation gate runs only these deterministic tests. One test still runs a real program from a fixture release through the real probe and the production entry points; it retries only the probe's own refusal, at most three times in fresh fixtures, and fails with those reasons if every attempt refuses. Production behavior is unchanged
 
 ## [0.10.6] - 2026-10-03
