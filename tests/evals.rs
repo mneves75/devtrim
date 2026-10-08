@@ -321,3 +321,463 @@ fn eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview() {
     assert!(!home.join(".cache/huggingface/hub").exists(), "{output}");
     assert!(!home.join("Library/Caches/pip").exists(), "{output}");
 }
+
+// ---------- project build output: node-modules, artifacts, purge ----------
+
+/// A planted `dev/` folder of real Git repositories, so activity dates,
+/// tracked files and hostile configuration are judged by Git itself.
+struct Projects {
+    dev: PathBuf,
+    node_modules: Vec<PathBuf>,
+    artifacts: Vec<PathBuf>,
+    /// Created only if Git ever runs a program a repository's config names.
+    hostile_marker: PathBuf,
+}
+
+const STALE: &str = "2020-01-01T00:00:00Z";
+
+fn real_git() -> PathBuf {
+    let resolved = std::process::Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(
+        resolved.status.success(),
+        "git is required for the project evals"
+    );
+    PathBuf::from(String::from_utf8(resolved.stdout).unwrap().trim())
+}
+
+/// Run fixture-building Git in `repo` as of `date`, isolated from the
+/// developer's own Git configuration.
+fn git(sandbox: &Sandbox, repo: &Path, date: &str, args: &[&str]) {
+    let output = std::process::Command::new(real_git())
+        .args([
+            "-c",
+            "user.name=devtrim-eval",
+            "-c",
+            "user.email=eval@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .current_dir(repo)
+        .env("HOME", sandbox.path())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A repository whose last activity is `date`, tracking `tracked`.
+fn repo(sandbox: &Sandbox, path: &Path, date: &str, tracked: &[&str]) {
+    std::fs::create_dir_all(path).unwrap();
+    git(sandbox, path, date, &["init", "-q"]);
+    if !tracked.is_empty() {
+        let mut add = vec!["add", "-f", "--"];
+        add.extend_from_slice(tracked);
+        git(sandbox, path, date, &add);
+        git(sandbox, path, date, &["commit", "-q", "-m", "fixture"]);
+    }
+}
+
+fn projects_fixture(sandbox: &Sandbox) -> Projects {
+    let git_binary = real_git();
+    sandbox.script("git", &format!("exec '{}' \"$@\"", git_binary.display()));
+    let dev = sandbox.path().join("dev");
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let now = format!("@{epoch} +0000");
+    let now = now.as_str();
+    let file = |path: PathBuf| write(&path, "build output");
+
+    // Positives.
+    let web = dev.join("web");
+    write(&web.join("package.json"), "{}");
+    file(web.join("node_modules/pkg/index.js"));
+    file(web.join(".next/cache/chunk.js"));
+    repo(sandbox, &web, STALE, &["package.json"]);
+
+    let rust = dev.join("rust");
+    write(&rust.join("Cargo.toml"), "[package]\nname = \"rust\"\n");
+    file(rust.join("target/debug/out"));
+    repo(sandbox, &rust, STALE, &["Cargo.toml"]);
+
+    // Next.js standalone output copies a node_modules into .next: it belongs
+    // to that output, so only .next is offered and its bytes count once.
+    let standalone = dev.join("standalone");
+    write(&standalone.join("package.json"), "{}");
+    write(&standalone.join(".next/standalone/package.json"), "{}");
+    file(standalone.join(".next/standalone/node_modules/pkg/index.js"));
+    repo(sandbox, &standalone, STALE, &["package.json"]);
+
+    // A stale repository whose config names programs Git could run. Its
+    // dependencies are still offered; the programs must never run.
+    let hostile = dev.join("hostile");
+    write(&hostile.join("package.json"), "{}");
+    file(hostile.join("node_modules/pkg/index.js"));
+    repo(sandbox, &hostile, STALE, &["package.json"]);
+    let marker = sandbox.path().join("HOSTILE-PROGRAM-RAN");
+    let payload = sandbox.script("payload", &format!("echo ran >> '{}'", marker.display()));
+    let hooks = hostile.join(".git/evil-hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    for hook in [
+        "pre-commit",
+        "post-checkout",
+        "post-index-change",
+        "reference-transaction",
+    ] {
+        std::os::unix::fs::symlink(&payload, hooks.join(hook)).unwrap();
+    }
+    for (key, value) in [
+        ("core.fsmonitor", payload.display().to_string()),
+        ("core.hooksPath", hooks.display().to_string()),
+        ("core.pager", payload.display().to_string()),
+        ("diff.external", payload.display().to_string()),
+    ] {
+        git(sandbox, &hostile, STALE, &["config", &key, &value]);
+    }
+
+    // Near misses, each kept by one documented rule.
+    let active = dev.join("active"); // recent Git activity
+    write(&active.join("package.json"), "{}");
+    file(active.join("node_modules/pkg/index.js"));
+    write(&active.join("Cargo.toml"), "[package]\nname = \"active\"\n");
+    file(active.join("target/debug/out"));
+    repo(sandbox, &active, now, &["package.json", "Cargo.toml"]);
+
+    let pods = dev.join("pods"); // a build directory holding tracked files
+    write(&pods.join("Podfile"), "platform :ios, '17.0'\n");
+    write(&pods.join("Pods/Lib/Lib.swift"), "// vendored\n");
+    repo(sandbox, &pods, STALE, &["Podfile", "Pods"]);
+
+    let solana = dev.join("solana"); // a program keypair nothing regenerates
+    write(&solana.join("Cargo.toml"), "[package]\nname = \"solana\"\n");
+    write(
+        &solana.join("target/deploy/program-keypair.json"),
+        "[1,2,3]",
+    );
+    repo(sandbox, &solana, STALE, &["Cargo.toml"]);
+
+    let terraform = dev.join("terraform"); // Terraform state nothing regenerates
+    write(&terraform.join("terragrunt.hcl"), "");
+    write(
+        &terraform.join(".terragrunt-cache/abc/terraform.tfstate"),
+        "{}",
+    );
+    repo(sandbox, &terraform, STALE, &["terragrunt.hcl"]);
+
+    let nested = dev.join("nested"); // a repository inside build output
+    write(&nested.join("Cargo.toml"), "[package]\nname = \"nested\"\n");
+    write(
+        &nested.join("target/checkout/.git/HEAD"),
+        "ref: refs/heads/main\n",
+    );
+    repo(sandbox, &nested, STALE, &["Cargo.toml"]);
+
+    let manifestless = dev.join("manifestless"); // node_modules with no package.json
+    file(manifestless.join("node_modules/pkg/index.js"));
+    write(&manifestless.join("README"), "");
+    repo(sandbox, &manifestless, STALE, &["README"]);
+
+    let ambiguous = dev.join("ambiguous"); // names too ambiguous to own
+    write(&ambiguous.join("package.json"), "{}");
+    for name in ["build", "dist", "out", "coverage", "vendor"] {
+        file(ambiguous.join(name).join("x"));
+    }
+    repo(sandbox, &ambiguous, STALE, &["package.json"]);
+
+    let fresh = dev.join("fresh"); // a new repository with no commit to judge
+    write(&fresh.join("package.json"), "{}");
+    file(fresh.join("node_modules/pkg/index.js"));
+    repo(sandbox, &fresh, STALE, &[]);
+
+    let linked = dev.join("linked"); // a node_modules that is a link
+    write(&linked.join("package.json"), "{}");
+    repo(sandbox, &linked, STALE, &["package.json"]);
+    std::os::unix::fs::symlink("../web/node_modules", linked.join("node_modules")).unwrap();
+
+    let dev = dev.canonicalize().unwrap();
+    let mut node_modules = vec![
+        dev.join("web/node_modules"),
+        dev.join("hostile/node_modules"),
+    ];
+    node_modules.sort();
+    let mut artifacts = vec![
+        dev.join("web/.next"),
+        dev.join("rust/target"),
+        dev.join("standalone/.next"),
+    ];
+    artifacts.sort();
+    Projects {
+        dev,
+        node_modules,
+        artifacts,
+        hostile_marker: marker,
+    }
+}
+
+/// One project category, previewed then applied against the fixture.
+fn eval_project_category(
+    name: &str,
+    args: &[&str],
+    op: Option<&str>,
+    pick: fn(&Projects) -> Vec<PathBuf>,
+) {
+    let sandbox = Sandbox::in_target(name);
+    let projects = projects_fixture(&sandbox);
+    let expected = pick(&projects);
+    let root = projects.dev.to_str().unwrap().to_owned();
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let mut preview_args = args.to_vec();
+    preview_args.extend(["--root", &root, "--shred", "--json"]);
+    let preview = run(&sandbox, &preview_args);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        expected,
+        "PV eval/projects-plan: {name} must offer exactly the stale, owned build output"
+    );
+    assert!(
+        !projects.hostile_marker.exists(),
+        "PV eval/hostile-repo: previewing ran a program the repository's config names"
+    );
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "PV eval/projects-preview",
+    );
+    assert!(preview.status.success(), "{document}");
+
+    let mut apply_args = args.to_vec();
+    apply_args.extend(["--root", &root, "--apply", "--shred", "--yolo", "--json"]);
+    let apply = run(&sandbox, &apply_args);
+    let document = json(&apply);
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            removed: expected.clone(),
+            scratch: vec![sandbox.path().join(".local")],
+        },
+        "PV eval/projects-apply",
+    );
+    assert!(apply.status.success(), "{document}");
+    if let Some(op) = op {
+        assert_journaled(&sandbox, op, "shred", &expected);
+    }
+}
+
+#[test]
+fn eval_clean_node_modules_removes_only_stale_installs() {
+    eval_project_category(
+        "eval-node-modules",
+        &["clean", "node-modules"],
+        Some("node-modules"),
+        |p| p.node_modules.clone(),
+    );
+}
+
+#[test]
+fn eval_clean_artifacts_removes_only_corroborated_stale_output() {
+    eval_project_category(
+        "eval-artifacts",
+        &["clean", "artifacts"],
+        Some("artifacts"),
+        |p| p.artifacts.clone(),
+    );
+}
+
+#[test]
+fn eval_purge_is_exactly_node_modules_plus_artifacts() {
+    eval_project_category("eval-purge", &["purge"], None, |p| {
+        let mut both = [p.node_modules.clone(), p.artifacts.clone()].concat();
+        both.sort();
+        both
+    });
+}
+
+// ---------- read-only commands and previews change nothing ----------
+
+/// Every report-only command and every preview, run against a fixture holding
+/// targets for every category, leaves it byte for byte as it was — first
+/// with no devtrim state at all, then with an existing journal.
+#[test]
+fn eval_read_only_commands_and_previews_change_nothing() {
+    let sandbox = Sandbox::in_target("eval-read-only");
+    caches_fixture(&sandbox);
+    let projects = projects_fixture(&sandbox);
+    write(&sandbox.path().join("Downloads/old.dmg"), "installer");
+    let root = projects.dev.to_str().unwrap().to_owned();
+    let dev = root.as_str();
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["scan", "--json"],
+        vec!["scan"],
+        vec!["scan", "--all", "--shred"],
+        vec!["purge", "--root", dev, "--json"],
+        vec!["purge", "--root", dev, "--shred"],
+        vec!["clean", "caches", "--json"],
+        vec!["clean", "node-modules", "--root", dev, "--json"],
+        vec!["clean", "artifacts", "--root", dev, "--json"],
+        vec!["clean", "simulators", "--json"],
+        vec!["clean", "xcode", "--json"],
+        vec!["clean", "docker", "--json"],
+        vec!["clean", "toolchains", "--json"],
+        vec!["clean", "installers", "--json"],
+        vec!["clean", "agents", "--json"],
+        vec!["clean", "leftovers", "--root", dev, "--json"],
+        vec!["largest", "--root", dev, "--json"],
+        vec!["icloud", "--json"],
+        vec!["history", "--json"],
+        vec!["analyze", dev, "--json"],
+        vec!["status", "--json"],
+        vec!["uninstall", "AltTab", "--json"],
+        vec!["optimize", "--json"],
+        vec!["trash-empty", "--json"],
+        vec!["completions", "zsh"],
+        vec!["manpage"],
+        vec!["--help"],
+    ];
+    for journal in [false, true] {
+        if journal {
+            write(
+                &sandbox.journal(),
+                "{\"id\":\"eval\",\"ts\":1,\"phase\":\"attempt\",\"op\":\"caches\",\"action\":\"shred\",\"target\":\"/gone\",\"size_bytes\":1}\n",
+            );
+        }
+        let pristine = Tree::snapshot(sandbox.path());
+        for args in &commands {
+            run(&sandbox, args);
+            if let Err(problems) =
+                pristine.diff(&Tree::snapshot(sandbox.path()), &Allowed::default())
+            {
+                panic!(
+                    "PV eval/read-only: `devtrim {}` (journal present: {journal}) changed the disk:\n{problems}",
+                    args.join(" ")
+                );
+            }
+        }
+    }
+}
+
+// ---------- clean xcode while Xcode runs ----------
+
+/// Set every regular file under `root` to `days` days old.
+fn age(root: &Path, days: u64) {
+    let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        let kind = std::fs::symlink_metadata(&path).unwrap().file_type();
+        if kind.is_dir() {
+            age(&path, days);
+        } else if kind.is_file() {
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(when).unwrap();
+        }
+    }
+}
+
+#[test]
+fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
+    use std::os::unix::fs::MetadataExt;
+    let sandbox = Sandbox::in_target("eval-xcode");
+    let developer = sandbox.path().join("Library/Developer/Xcode");
+    let derived = developer.join("DerivedData");
+    let build = |folder: &str| {
+        write(
+            &derived.join(folder).join("Build/Products/Debug/out"),
+            "built",
+        )
+    };
+    build("App-old");
+    build("App-recent"); // touched within the activity window while Xcode runs
+    build("App-held"); // old, but Xcode holds a file in it open
+    build("App-pkg");
+    write(&derived.join("App-pkg/Index.noindex/DataStore/v5"), "index");
+    write(
+        &derived.join("App-pkg/SourcePackages/checkouts/Example/.git/HEAD"),
+        "ref: refs/heads/main\n",
+    );
+    write(&derived.join(".DS_Store"), "finder"); // a file beside the build trees
+    std::os::unix::fs::symlink(&developer, derived.join("link")).unwrap(); // a link is never a build tree
+    write(
+        &developer.join("Archives/2026-01-01/App.xcarchive/Info.plist"),
+        "archive",
+    ); // Archives are sacred
+    write(
+        &developer.join("iOS DeviceSupport/17.0 (21A329)/Symbols/dyld"),
+        "symbols",
+    );
+    for folder in ["App-old", "App-held", "App-pkg"] {
+        age(&derived.join(folder), 60);
+    }
+    age(&developer.join("iOS DeviceSupport"), 60);
+    age(&developer.join("Archives"), 60);
+
+    let held = derived
+        .join("App-held/Build/Products/Debug/out")
+        .canonicalize()
+        .unwrap();
+    let device = std::fs::metadata(&held).unwrap().dev();
+    sandbox.script(
+        "pgrep",
+        "case \"$*\" in\n  *Xcode*) echo 4242 ;;\n  *) exit 1 ;;\nesac",
+    );
+    sandbox.script(
+        "lsof",
+        &format!(
+            "printf 'p4242\\ntREG\\nD0x{device:x}\\nn{}\\n'",
+            held.display()
+        ),
+    );
+    let derived = derived.canonicalize().unwrap();
+    let developer = developer.canonicalize().unwrap();
+    let mut expected = vec![
+        derived.join("App-old"),
+        derived.join("App-pkg/Build"),
+        derived.join("App-pkg/Index.noindex"),
+        developer.join("iOS DeviceSupport/17.0 (21A329)"),
+    ];
+    expected.sort();
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let preview = run(&sandbox, &["clean", "xcode", "--shred", "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        expected,
+        "PV eval/xcode-plan: only idle, unheld build trees and symbols may be offered: {document}"
+    );
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "PV eval/xcode-preview",
+    );
+    assert!(preview.status.success(), "{document}");
+
+    let apply = run(
+        &sandbox,
+        &["clean", "xcode", "--apply", "--shred", "--yolo", "--json"],
+    );
+    let document = json(&apply);
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            removed: expected.clone(),
+            scratch: vec![sandbox.path().join(".local")],
+        },
+        "PV eval/xcode-apply",
+    );
+    assert!(apply.status.success(), "{document}");
+    assert_journaled(&sandbox, "xcode", "shred", &expected);
+}

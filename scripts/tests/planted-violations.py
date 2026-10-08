@@ -34,8 +34,12 @@ import time
 from pathlib import Path
 
 TOOLCHAIN = "1.98.1"
-TOTAL_DEADLINE_SECONDS = 600
+# Every mutant is a full rebuild; a feature-eval mutant also relinks the
+# binary and runs it against real fixtures, about a minute each.
+TOTAL_DEADLINE_SECONDS = 3600
 TEST_TIMEOUT_SECONDS = 30
+# A feature eval builds real repositories and runs the binary several times.
+EVAL_TIMEOUT_SECONDS = 120
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SOURCE_INPUTS = ("src", "tests", "Cargo.toml", "Cargo.lock")
@@ -919,6 +923,67 @@ CASES = (
         target="evals",
     ),
     Case(
+        name="eval/projects-plan",
+        relative_path="src/ops/artifacts.rs",
+        # Terraform state no longer keeps its build directory out of the plan.
+        before="                        Some(Authored::TerraformState(_)) => {\n                            states_here += 1;\n                            continue;\n",
+        after="                        Some(Authored::TerraformState(_)) => {\n                            states_here += 1;\n",
+        tests=("eval_clean_artifacts_removes_only_corroborated_stale_output",),
+        marker="PV eval/projects-plan",
+        target="evals",
+    ),
+    Case(
+        name="eval/projects-apply",
+        relative_path="src/ops/node_modules.rs",
+        # Apply reports each install removed while removing none.
+        before="            match apply_filesystem_finding(self.name(), finding, ctx) {",
+        after="            match Ok::<(), anyhow::Error>(()) {",
+        tests=("eval_clean_node_modules_removes_only_stale_installs",),
+        marker="PV eval/projects-apply",
+        target="evals",
+    ),
+    Case(
+        name="eval/hostile-repo",
+        relative_path="src/ops/project.rs",
+        # Git's fsmonitor is no longer disabled; `git ls-files` runs it.
+        before="            \"core.fsmonitor=false\",\n",
+        after="            \"devtrim.eval-mutant=false\",\n",
+        tests=("eval_clean_node_modules_removes_only_stale_installs",),
+        marker="PV eval/hostile-repo",
+        target="evals",
+    ),
+    Case(
+        name="eval/read-only",
+        relative_path="src/journal.rs",
+        # Opening any command creates devtrim's state folder if it is absent.
+        before="    let location = match JournalLocation::open(path, ParentMode::Existing)? {\n        Some(location) => location,\n        None => return Ok(warnings),",
+        after="    let location = match JournalLocation::open(path, ParentMode::Create)? {\n        Some(location) => location,\n        None => return Ok(warnings),",
+        tests=("eval_read_only_commands_and_previews_change_nothing",),
+        marker="PV eval/read-only",
+        target="evals",
+    ),
+    Case(
+        name="eval/xcode-age",
+        relative_path="src/ops/xcode.rs",
+        # A build tree touched within the window no longer counts as in use.
+        before="    Ok((newest > cutoff).then_some(InUse::Recent))\n",
+        after="    Ok((newest > cutoff && false).then_some(InUse::Recent))\n",
+        tests=("eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs",),
+        marker="PV eval/xcode-plan",
+        target="evals",
+    ),
+    Case(
+        name="eval/xcode-open-file",
+        relative_path="src/ops/xcode.rs",
+        # A file Xcode holds open no longer keeps its folder. Both checks go:
+        # the by-identity one alone would still keep it, masking the mutant.
+        before="        .any(|file| file.path.starts_with(folder) || file.path.starts_with(&canonical))\n        || held_open_by_identity(folder, &same_volume)?\n",
+        after="        .any(|file| false && (file.path.starts_with(folder) || file.path.starts_with(&canonical)))\n        || (false && held_open_by_identity(folder, &same_volume)?)\n",
+        tests=("eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs",),
+        marker="PV eval/xcode-plan",
+        target="evals",
+    ),
+    Case(
         name="eval/write-ahead",
         relative_path="src/journal.rs",
         # A failed attempt record no longer stops the mutation it precedes.
@@ -989,12 +1054,12 @@ def build_test_binary(workspace: Path, target_dir: Path, deadline: float, target
     return Path(executable) if executable else None
 
 
-def run_one_test(binary: Path, test: str, target_dir: Path) -> subprocess.CompletedProcess:
+def run_one_test(case: Case, binary: Path, test: str, target_dir: Path) -> subprocess.CompletedProcess:
     return run(
         [str(binary), "--exact", "--nocapture", test],
         REPOSITORY,
         target_dir,
-        TEST_TIMEOUT_SECONDS,
+        TEST_TIMEOUT_SECONDS if case.target == "lib" else EVAL_TIMEOUT_SECONDS,
     )
 
 
@@ -1054,7 +1119,10 @@ def run_cases(scratch: Path) -> int:
     # Every named test must pass before it can prove anything by failing.
     for case in cases:
         for test in case.tests:
-            result = run_one_test(baselines[case.target], test, target_dir)
+            try:
+                result = run_one_test(case, baselines[case.target], test, target_dir)
+            except subprocess.TimeoutExpired:
+                fail(f"ERROR {case.name}: baseline test timed out ({test})")
             if not selected_exactly_one(result.stdout):
                 fail(f"ERROR {case.name}: expected exactly one test, ran 0 ({test})")
             if result.returncode != 0:
@@ -1082,7 +1150,7 @@ def run_cases(scratch: Path) -> int:
 
         for test in case.tests:
             try:
-                result = run_one_test(mutant, test, target_dir)
+                result = run_one_test(case, mutant, test, target_dir)
             except subprocess.TimeoutExpired:
                 fail(f"ERROR {case.name}: mutant test timed out ({test})")
             if result.returncode == 0:
