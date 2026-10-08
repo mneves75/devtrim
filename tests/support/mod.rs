@@ -176,8 +176,21 @@ impl Tree {
                 Some(_) => {}
             }
         }
-        for path in after.entries.keys() {
-            if !self.entries.contains_key(path) && !under(path, &allowed.scratch) {
+        // A directory created on the way to a scratch folder (`.local` and
+        // `.local/state` before devtrim's own state folder) is allowed; a
+        // file at such a path is not.
+        let leads_to_scratch = |path: &Path, entry: &Entry| {
+            entry.kind == "dir"
+                && allowed
+                    .scratch
+                    .iter()
+                    .any(|scratch| scratch.starts_with(path) && scratch != path)
+        };
+        for (path, entry) in &after.entries {
+            if !self.entries.contains_key(path)
+                && !under(path, &allowed.scratch)
+                && !leads_to_scratch(path, entry)
+            {
                 problems.push(format!("created: {}", path.display()));
             }
         }

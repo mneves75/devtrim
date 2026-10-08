@@ -984,6 +984,116 @@ CASES = (
         target="evals",
     ),
     Case(
+        name='eval/windows',
+        relative_path='src/safety.rs',
+        # Lowering the project window shortens retention with it.
+        before='    let retain = retain.map_or(active.max(30), |days| days.max(1));',
+        after='    let retain = retain.map_or(active, |days| days.max(1));',
+        tests=('eval_the_project_window_never_shortens_retention',),
+        marker='PV eval/windows',
+        target='evals',
+    ),
+    Case(
+        name='eval/toolchains-drift',
+        relative_path='src/ops/toolchains.rs',
+        # Apply no longer rechecks that a toolchain is still unreferenced.
+        before='    if preserved.contains(&canonical) {\n        anyhow::bail!(\n            "toolchain became referenced after preview: {}",',
+        after='    if preserved.is_empty() {\n        anyhow::bail!(\n            "toolchain became referenced after preview: {}",',
+        tests=('eval_toolchains_apply_refuses_a_toolchain_referenced_after_preview',),
+        marker='PV eval/toolchains-drift',
+        target='eval_system',
+    ),
+    Case(
+        name='eval/installers-drift',
+        relative_path='src/ops/installers.rs',
+        # Apply no longer rechecks an installer's age.
+        before='if installer_details(target, &ctx.home, ctx.retain_days)?.is_none() {',
+        after='if false {',
+        tests=('eval_installers_apply_refuses_an_archive_modified_after_preview',),
+        marker='PV eval/installers-drift',
+        target='eval_system',
+    ),
+    Case(
+        name='eval/simulators-recheck',
+        relative_path='src/ops/simulators.rs',
+        # Apply treats every listed device as still unavailable.
+        before='match current.get(udid) {',
+        after='match current.get(udid).map(|_| &false) {',
+        tests=('eval_simulators_apply_refuses_a_device_that_changed_after_preview',),
+        marker='PV eval/simulators-recheck',
+        target='eval_system',
+    ),
+    Case(
+        name='eval/docker-volumes',
+        relative_path='src/report.rs',
+        # The build-cache command prunes volumes instead.
+        before='["--host", host, "builder", "prune", "-a", "-f"]',
+        after='["--host", host, "volume", "prune", "-a", "-f"]',
+        tests=('eval_clean_docker_prunes_images_and_build_cache_never_volumes',),
+        marker='PV eval/docker-plan',
+        target='eval_system',
+    ),
+    Case(
+        name='eval/docker-down',
+        relative_path='src/ops/docker.rs',
+        # The daemon-down error stops naming the VM image and its size.
+        before='produced{disclosed}"',
+        after='produced"',
+        tests=('eval_docker_daemon_down_names_the_vm_image_and_runs_no_prune',),
+        marker='PV eval/docker-down',
+        target='eval_system',
+    ),
+    Case(
+        name='eval/optimize-refusal',
+        relative_path='src/ops/optimize.rs',
+        # Apply without an explicit task is no longer refused.
+        before='            if apply {',
+        after='            if apply && false {',
+        tests=('eval_optimize_runs_exactly_the_selected_fixed_argv',),
+        marker='PV eval/optimize-refusal',
+        target='eval_system',
+    ),
+    Case(
+        name='eval/trash-git-child',
+        relative_path='src/ops/mod.rs',
+        # A `.git` child of the Trash is offered like any other.
+        before='if is_git_metadata_name(&entry.file_name()) {',
+        after='if false {',
+        tests=('eval_trash_empty_purges_exactly_the_previewed_direct_children',),
+        marker='PV eval/trash-empty-plan',
+        target='eval_system',
+    ),
+    Case(
+        name='eval/trash-continue',
+        relative_path='src/ops/mod.rs',
+        # One refused Trash item stops every item after it.
+        before='            outcome.fail(error);\n            continue;\n        }\n        outcome.record(finding, format!("permanently deleted {}", finding.label));',
+        after='            outcome.fail(error);\n            break;\n        }\n        outcome.record(finding, format!("permanently deleted {}", finding.label));',
+        tests=('eval_trash_empty_continues_past_an_item_holding_a_repository',),
+        marker='PV eval/trash-empty-continue',
+        target='eval_system',
+    ),
+    Case(
+        name='eval/trash-only-devtrim',
+        relative_path='src/ops/mod.rs',
+        # A failed or interrupted Trash move still selects its item.
+        before='.filter(|record| record.action == "trash" && record.status.as_deref() == Some("ok"))',
+        after='.filter(|record| record.action == "trash")',
+        tests=('eval_trash_empty_only_devtrim_selects_only_journaled_identities',),
+        marker='PV eval/trash-only-plan',
+        target='eval_system',
+    ),
+    Case(
+        name='eval/flags',
+        relative_path='src/app.rs',
+        # trash-empty accepts the permanent-deletion flag instead of rejecting it.
+        before='Some(cli::Command::TrashEmpty { .. }) => ("trash-empty", true, true, true, false),',
+        after='Some(cli::Command::TrashEmpty { .. }) => ("trash-empty", true, true, true, true),',
+        tests=('eval_commands_reject_flags_they_cannot_honor_and_change_nothing',),
+        marker='PV eval/flags-reject',
+        target='eval_system',
+    ),
+    Case(
         name="eval/write-ahead",
         relative_path="src/journal.rs",
         # A failed attempt record no longer stops the mutation it precedes.
@@ -1088,7 +1198,9 @@ def main() -> int:
 def run_cases(scratch: Path) -> int:
     # An optional name prefix narrows the run while developing a case; the
     # gate runs with no argument, so every case.
-    prefix = sys.argv[1] if len(sys.argv) > 1 else ""
+    if len(sys.argv) > 2:
+        fail("usage: planted-violations.py [PREFIX]")
+    prefix = sys.argv[1] if len(sys.argv) == 2 else ""
     cases = [case for case in CASES if case.name.startswith(prefix)]
     if not cases:
         fail(f"ERROR: no case name starts with {prefix!r}")

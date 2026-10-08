@@ -129,6 +129,33 @@ fn oracle_rejects_every_unauthorized_change() {
     }
 }
 
+#[test]
+fn oracle_allows_only_directories_on_the_way_to_scratch() {
+    let (_sandbox, root) = control_fixture("oracle-scratch");
+    let scratch = root.join("state/app");
+    let allowed = Allowed {
+        scratch: vec![scratch.clone()],
+        ..Allowed::default()
+    };
+    let before = Tree::snapshot(&root);
+    write(&scratch.join("journal"), "record");
+    before.diff(&Tree::snapshot(&root), &allowed).unwrap();
+
+    let (_sandbox, root) = control_fixture("oracle-scratch-file");
+    let scratch = root.join("state/app");
+    let allowed = Allowed {
+        scratch: vec![scratch],
+        ..Allowed::default()
+    };
+    let before = Tree::snapshot(&root);
+    write(
+        &root.join("state"),
+        "a file where a folder would lead to scratch",
+    );
+    let problems = before.diff(&Tree::snapshot(&root), &allowed).unwrap_err();
+    assert!(problems.contains("created: "), "{problems}");
+}
+
 // ---------- clean caches ----------
 
 /// The `clean caches` fixture: every listed cache, planted, and the near
@@ -212,7 +239,7 @@ fn eval_clean_caches_removes_every_listed_cache_and_nothing_else() {
         &Tree::snapshot(sandbox.path()),
         &Allowed {
             removed: targets.clone(),
-            scratch: vec![sandbox.path().join(".local")],
+            scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
         "PV eval/caches-apply",
     );
@@ -568,7 +595,7 @@ fn eval_project_category(
         &Tree::snapshot(sandbox.path()),
         &Allowed {
             removed: expected.clone(),
-            scratch: vec![sandbox.path().join(".local")],
+            scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
         "PV eval/projects-apply",
     );
@@ -774,10 +801,71 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
         &Tree::snapshot(sandbox.path()),
         &Allowed {
             removed: expected.clone(),
-            scratch: vec![sandbox.path().join(".local")],
+            scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
         "PV eval/xcode-apply",
     );
     assert!(apply.status.success(), "{document}");
     assert_journaled(&sandbox, "xcode", "shred", &expected);
+}
+
+// ---------- two windows: active_days and retain_days ----------
+
+/// `active_days` gates regenerable build output; `retain_days` gates what
+/// nothing regenerates. Lowering the project window must never shorten how
+/// long an installer (or agent history) is kept: unset, retention is the
+/// project window or 30 days, whichever is longer.
+#[test]
+fn eval_the_project_window_never_shortens_retention() {
+    let sandbox = Sandbox::in_target("eval-windows");
+    let installer = sandbox.path().join("Downloads/old.dmg");
+    write(&installer, "installer");
+    age(&sandbox.path().join("Downloads"), 20);
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let app = sandbox.path().join("dev/app");
+    write(&app.join("package.json"), "{}");
+    write(&app.join("node_modules/pkg/index.js"), "dependency");
+    let ten_days_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 10 * 86_400;
+    repo(
+        &sandbox,
+        &app,
+        &format!("@{ten_days_ago} +0000"),
+        &["package.json"],
+    );
+    let installer = installer.canonicalize().unwrap();
+    let node_modules = app.join("node_modules").canonicalize().unwrap();
+    let dev = sandbox.path().join("dev").canonicalize().unwrap();
+    let dev = dev.to_str().unwrap();
+
+    let offered = |config: &str| -> (bool, bool) {
+        write(&sandbox.path().join(".config/devtrim.toml"), config);
+        let installers = json(&run(&sandbox, &["clean", "installers", "--json"]));
+        let projects = json(&run(
+            &sandbox,
+            &["clean", "node-modules", "--root", dev, "--json"],
+        ));
+        (
+            actionable_targets(&installers) == [installer.clone()],
+            actionable_targets(&projects) == [node_modules.clone()],
+        )
+    };
+    // Default: 30 days for both; neither the 20-day installer nor the
+    // 10-day-idle project is old enough.
+    assert_eq!(offered(""), (false, false), "PV eval/windows: defaults");
+    // A 3-day project window frees the build output, and retention stays 30.
+    assert_eq!(
+        offered("active_days = 3\n"),
+        (false, true),
+        "PV eval/windows: lowering active_days shortened retention"
+    );
+    // An explicit retention shorter than the installer's age releases it.
+    assert_eq!(
+        offered("active_days = 3\nretain_days = 15\n"),
+        (true, true),
+        "PV eval/windows: retain_days"
+    );
 }
