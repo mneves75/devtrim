@@ -37,9 +37,9 @@ TOOLCHAIN = "1.98.1"
 # Every mutant is a full rebuild; a feature-eval mutant also relinks the
 # binary and runs it against real fixtures, about a minute each.
 TOTAL_DEADLINE_SECONDS = 3600
-TEST_TIMEOUT_SECONDS = 30
-# A feature eval builds real repositories and runs the binary several times.
-EVAL_TIMEOUT_SECONDS = 120
+# Unit fixtures can also build and query many real Git repositories. Give
+# them the same bounded budget as feature evals; a timeout is never proof.
+TEST_TIMEOUT_SECONDS = 120
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SOURCE_INPUTS = ("src", "tests", "Cargo.toml", "Cargo.lock")
@@ -71,6 +71,158 @@ class Case:
 
 CASES = (
     Case(
+        name="eval/report-leftovers",
+        relative_path="src/ops/leftovers.rs",
+        before="        && suffix.len() == 6\n",
+        after="        && suffix.len() == 7\n",
+        tests=("eval_leftovers_reports_exact_hints_and_sizes",),
+        marker="PV eval/leftovers-hints", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-history-limit",
+        relative_path="src/journal.rs",
+        before="    let limit = limit.clamp(1, 1000);\n",
+        after="    let limit = limit.max(1000);\n",
+        tests=("eval_history_limit_selects_newest_results_across_rotation",),
+        marker="PV eval/history-limit", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-status-unavailable",
+        relative_path="src/status.rs",
+        before="    Ok(if report.unavailable.is_empty() {\n",
+        after="    Ok(if true {\n",
+        tests=("eval_status_uses_resident_memory_and_names_unavailable_metrics",),
+        marker="PV eval/status-unavailable", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-completions",
+        relative_path="src/app.rs",
+        before='    clap_complete::generate(shell, &mut command, "devtrim", &mut output);\n',
+        after="    let _ = (shell, &mut command);\n",
+        tests=("eval_generated_docs_expose_commands_and_refuse_json",),
+        marker="PV eval/generated-commands", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-manpage",
+        relative_path="src/app.rs",
+        before="    clap_mangen::Man::new(cli::Cli::command()).render(&mut output)?;\n",
+        after="",
+        tests=("eval_generated_docs_expose_commands_and_refuse_json",),
+        marker="PV eval/generated-commands", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-largest",
+        relative_path="src/largest.rs",
+        before="    let limit = top.unwrap_or(20).clamp(1, 100);",
+        after="    let limit = 100; let _ = top;",
+        tests=("eval_largest_ranks_fixture_totals_and_honors_top",),
+        marker="PV eval/largest-ranking", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-icloud",
+        relative_path="src/ops/icloud.rs",
+        before="if logical < 100 * 1024 * 1024 {",
+        after="if logical <= 100 * 1024 * 1024 {",
+        tests=("eval_icloud_reports_large_logical_files_with_local_allocation",),
+        marker="PV eval/icloud-threshold", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-uninstall",
+        relative_path="src/uninstall.rs",
+        before="    name == identifier\n",
+        after="    name.starts_with(identifier)\n",
+        tests=("eval_uninstall_attributes_only_exact_bundle_identifier",),
+        marker="PV eval/uninstall-identifier", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-scan-summary",
+        relative_path="src/report.rs",
+        before="const SCAN_LARGEST: usize = 5;",
+        after="const SCAN_LARGEST: usize = 6;",
+        tests=("eval_scan_human_summarizes_large_categories_and_all_lists_every_target",),
+        marker="PV eval/scan-summary", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-scan-all",
+        relative_path="src/report.rs",
+        before="if all || part.len() <= SCAN_FULL_LISTING {",
+        after="if part.len() <= SCAN_FULL_LISTING {",
+        tests=("eval_scan_human_summarizes_large_categories_and_all_lists_every_target",),
+        marker="PV eval/scan-all", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-status-memory",
+        relative_path="src/status.rs",
+        before="        .checked_add(wired)\n",
+        after="        .checked_add(wired.saturating_add(inactive))\n",
+        tests=("eval_status_uses_resident_memory_and_names_unavailable_metrics",),
+        marker="PV eval/status-memory", target="eval_reports",
+    ),
+    Case(
+        name="eval/report-analyze-partial",
+        relative_path="src/analyze.rs",
+        before="    Ok(if errors.is_empty() {\n",
+        after="    Ok(if true {\n",
+        tests=("eval_analyze_measures_children_and_discloses_partial_lower_bounds",),
+        marker="PV eval/analyze-partial", target="eval_reports",
+    ),
+    Case(
+        name="eval/safety-uv-busy",
+        relative_path="src/safety.rs",
+        before="    match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {\n",
+        after="    match Ok::<(), rustix::io::Errno>(()) {\n",
+        tests=("eval_busy_uv_cache_is_kept_while_later_caches_are_removed",),
+        marker="PV eval/uv-busy", target="eval_safety",
+    ),
+    Case(
+        name="eval/safety-caches-continue",
+        relative_path="src/ops/caches.rs",
+        before="                outcome.fail(error);\n                continue;\n",
+        after="                outcome.fail(error);\n                break;\n",
+        tests=("eval_busy_uv_cache_is_kept_while_later_caches_are_removed",),
+        marker="PV eval/caches-continue", target="eval_safety",
+    ),
+    Case(
+        name="eval/safety-agents-continue",
+        relative_path="src/ops/agents.rs",
+        before="                outcome.fail(error);\n                continue;\n",
+        after="                outcome.fail(error);\n                break;\n",
+        tests=("eval_agents_continues_after_a_cache_holding_a_repository_is_refused",),
+        marker="PV eval/agents-continue", target="eval_safety",
+    ),
+    Case(
+        name="eval/safety-journal-symlink",
+        relative_path="src/journal.rs",
+        before="            flags | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,\n",
+        after="            flags | OFlags::NONBLOCK | OFlags::CLOEXEC,\n",
+        tests=("eval_a_symlinked_journal_refuses_apply_without_touching_its_destination",),
+        marker="PV eval/journal-symlink", target="eval_safety",
+    ),
+    Case(
+        name="eval/safety-noninteractive",
+        relative_path="src/safety.rs",
+        before='        bail!("non-interactive run: re-run with -y to confirm danger-{max_danger} operations");\n',
+        after="        return Ok(());\n",
+        tests=("eval_noninteractive_apply_requires_explicit_consent",),
+        marker="PV eval/noninteractive-consent", target="eval_safety",
+    ),
+    Case(
+        name="eval/safety-build-busy",
+        relative_path="src/ops/project.rs",
+        before="    process_cwds.iter().any(|cwd| cwd.starts_with(repo))\n",
+        after="    let _ = (repo, process_cwds); false\n",
+        tests=("eval_build_process_liveness_keeps_only_the_busy_repository",),
+        marker="PV eval/build-busy", target="eval_safety",
+    ),
+    Case(
+        name="sink/removal-root-device",
+        relative_path="src/ops/mod.rs",
+        before="    ensure_same_device(actual, parent_device, path)?;\n",
+        after="    let _ = (actual, path);\n",
+        tests=("ops::tests::both_removal_modes_refuse_a_root_on_a_foreign_parent_device",),
+        marker="PV sink/removal-root-device",
+    ),
+    Case(
         name="agents/history-symlink",
         relative_path="src/ops/agents.rs",
         # Deleting the symlink branch is NOT enough: the file-type check below
@@ -88,35 +240,35 @@ CASES = (
     # entry is replaced, because splicing into a multi-line evidence string
     # leaves a dangling literal and the mutant fails to compile.
     Case(
-        name="evidence/library-caches",
-        relative_path="src/safety.rs",
-        before="DeletionEntry {\n        label: \"Playwright browser cache\",\n        relative: \"ms-playwright\",\n        evidence: \"Playwright's own docs describe this as the downloaded browser \\\n                   location, re-created by `npx playwright install`.\",\n    },\n",
-        after="DeletionEntry {\n        label: \"Playwright browser cache\",\n        relative: \"ms-playwright\",\n        evidence: \"\\u{a0}\",\n    },\n",
-        tests=("safety::tests::every_managed_library_cache_carries_evidence",),
+        name='evidence/library-caches',
+        relative_path='src/safety.rs',
+        before='DeletionEntry {\n        label: "Playwright browser cache",\n        relative: "ms-playwright",\n        evidence: "Playwright\'s own docs describe this as the downloaded browser \\\n                   location, re-created by `npx playwright install`.",\n    },\n',
+        after='DeletionEntry {\n        label: "Playwright browser cache",\n        relative: "ms-playwright",\n        evidence: "\\u{a0}",\n    },\n',
+        tests=('safety::tests::every_managed_library_cache_carries_evidence',),
         marker="PV evidence/library-caches",
     ),
     Case(
-        name="evidence/built-in-caches",
-        relative_path="src/ops/caches.rs",
-        before="DeletionEntry {\n        label: \"huggingface model cache\",\n        relative: \".cache/huggingface/hub\",\n        evidence: \"Model snapshots re-downloaded on next use. Scoped to `hub` \\\n                   so the sibling tokens and settings are never authority.\",\n    },\n",
-        after="DeletionEntry {\n        label: \"huggingface model cache\",\n        relative: \".cache/huggingface/hub\",\n        evidence: \"\\u{a0}\",\n    },\n",
-        tests=("ops::caches::tests::every_built_in_cache_carries_evidence",),
+        name='evidence/built-in-caches',
+        relative_path='src/ops/caches.rs',
+        before='DeletionEntry {\n        label: "huggingface model cache",\n        relative: ".cache/huggingface/hub",\n        evidence: "Model snapshots re-downloaded on next use. Scoped to `hub` \\\n                   so the sibling tokens and settings are never authority.",\n    },\n',
+        after='DeletionEntry {\n        label: "huggingface model cache",\n        relative: ".cache/huggingface/hub",\n        evidence: "\\u{a0}",\n    },\n',
+        tests=('ops::caches::tests::every_built_in_cache_carries_evidence',),
         marker="PV evidence/built-in-caches",
     ),
     Case(
-        name="evidence/agents-regenerable",
-        relative_path="src/ops/agents.rs",
-        before="DeletionEntry {\n        label: \"Claude Code metadata cache\",\n        relative: \".claude/cache\",\n        evidence: \"Vendor-documented: the `.claude` directory reference lists \\\n                   `cache/changelog.md` as refreshed in the background. The \\\n                   observed siblings (`model-catalog/`, `my-closed-issues.json`) \\\n                   are re-fetched the same way.\",\n    },\n",
-        after="DeletionEntry {\n        label: \"Claude Code metadata cache\",\n        relative: \".claude/cache\",\n        evidence: \"\\u{a0}\",\n    },\n",
-        tests=("ops::agents::tests::every_agent_entry_carries_evidence",),
+        name='evidence/agents-regenerable',
+        relative_path='src/ops/agents.rs',
+        before='DeletionEntry {\n        label: "Claude Code metadata cache",\n        relative: ".claude/cache",\n        evidence: "Vendor-documented: the `.claude` directory reference lists \\\n                   `cache/changelog.md` as refreshed in the background. The \\\n                   observed siblings (`model-catalog/`, `my-closed-issues.json`) \\\n                   are re-fetched the same way.",\n    },\n',
+        after='DeletionEntry {\n        label: "Claude Code metadata cache",\n        relative: ".claude/cache",\n        evidence: "\\u{a0}",\n    },\n',
+        tests=('ops::agents::tests::every_agent_entry_carries_evidence',),
         marker="PV evidence/agents-regenerable",
     ),
     Case(
-        name="evidence/agents-history",
-        relative_path="src/ops/agents.rs",
-        before="HistoryRoot {\n        label: \"Claude Code shell snapshots\",\n        relative: \".claude/shell-snapshots\",\n        depth: 1,\n        evidence: \"Vendor-documented: one snapshot per session, applied by the \\\n                   Bash tool to each command, and swept by Claude Code's own \\\n                   `cleanupPeriodDays` retention since v2.1.117 — so age is the \\\n                   vendor's own criterion here. Not rewritten if removed \\\n                   mid-session.\",\n    },\n",
-        after="HistoryRoot {\n        label: \"Claude Code shell snapshots\",\n        relative: \".claude/shell-snapshots\",\n        depth: 1,\n        evidence: \"\\u{a0}\",\n    },\n",
-        tests=("ops::agents::tests::every_agent_entry_carries_evidence",),
+        name='evidence/agents-history',
+        relative_path='src/ops/agents.rs',
+        before='HistoryRoot {\n        label: "Claude Code shell snapshots",\n        relative: ".claude/shell-snapshots",\n        depth: 1,\n        evidence: "Vendor-documented: one snapshot per session, applied by the \\\n                   Bash tool to each command, and swept by Claude Code\'s own \\\n                   `cleanupPeriodDays` retention since v2.1.117 — so age is the \\\n                   vendor\'s own criterion here. Not rewritten if removed \\\n                   mid-session.",\n    },\n',
+        after='HistoryRoot {\n        label: "Claude Code shell snapshots",\n        relative: ".claude/shell-snapshots",\n        depth: 1,\n        evidence: "\\u{a0}",\n    },\n',
+        tests=('ops::agents::tests::every_agent_entry_carries_evidence',),
         marker="PV evidence/agents-history",
     ),
     Case(
@@ -132,7 +284,7 @@ CASES = (
     Case(
         name="agents/codex-current-executable",
         relative_path="src/ops/agents.rs",
-        before="        || !codex_executable(&path.join(\"bin/codex-code-mode-host\"))?\n",
+        before='        || !codex_executable(&path.join("bin/codex-code-mode-host"))?\n',
         after="",
         tests=(
             "ops::agents::tests::codex_releases_fail_closed_without_a_valid_current_link_or_install_lock",
@@ -146,15 +298,15 @@ CASES = (
         name="git/signature-program",
         relative_path="src/ops/project.rs",
         # Either setting alone suppresses the display, so both go together.
-        before="        .args([\n            \"-c\",\n            \"log.showSignature=false\",\n            \"log\",\n            \"--no-show-signature\",\n            \"-1\",\n        ])\n",
-        after="        .args([\"log\", \"-1\"])\n",
+        before='        .args([\n            "-c",\n            "log.showSignature=false",\n            "log",\n            "--no-show-signature",\n            "-1",\n        ])\n',
+        after='        .args(["log", "-1"])\n',
         tests=("ops::project::tests::activity_probe_never_runs_a_repository_configured_signature_program",),
         marker="PV git/signature-program",
     ),
     Case(
         name="git/lazy-fetch-transport",
         relative_path="src/ops/project.rs",
-        before="            \"--no-lazy-fetch\",\n",
+        before='            "--no-lazy-fetch",\n',
         after="",
         tests=("ops::project::tests::activity_probe_never_lazily_fetches_through_a_repository_configured_transport",),
         marker="PV git/lazy-fetch-transport",
@@ -210,8 +362,8 @@ CASES = (
     Case(
         name="evidence/agents-codex-releases",
         relative_path="src/ops/agents.rs",
-        before="const CODEX_RELEASES: DeletionEntry = DeletionEntry {\n    label: \"Codex standalone release\",\n    relative: \".codex/packages/standalone/releases\",\n    evidence: \"Owner source: OpenAI's standalone installer at commit \\\n               0a2eb4696c26ac33204bcd255721ab30220a4774 \\\n               (`scripts/install/install.sh`) writes each release to \\\n               `releases/<version>-<target>`, points `current` at one, and \\\n               serializes itself on `install.lock` with macOS `lockf(1)`, \\\n               which is BSD `flock(2)`. It removes only its own `.staging.*` \\\n               directories, never an older release. Observed 2026-09-23: six \\\n               old releases (1.68 GiB) beside `current`; moving them to Trash \\\n               left the current release, sessions, auth and configuration \\\n               working. The vendor does not promise removal is safe while an \\\n               older binary still runs, so a release any process is executing \\\n               is refused.\",\n};\n",
-        after="const CODEX_RELEASES: DeletionEntry = DeletionEntry {\n    label: \"Codex standalone release\",\n    relative: \".codex/packages/standalone/releases\",\n    evidence: \"\\u{a0}\",\n};\n",
+        before='const CODEX_RELEASES: DeletionEntry = DeletionEntry {\n    label: "Codex standalone release",\n    relative: ".codex/packages/standalone/releases",\n    evidence: "Owner source: OpenAI\'s standalone installer at commit \\\n               0a2eb4696c26ac33204bcd255721ab30220a4774 \\\n               (`scripts/install/install.sh`) writes each release to \\\n               `releases/<version>-<target>`, points `current` at one, and \\\n               serializes itself on `install.lock` with macOS `lockf(1)`, \\\n               which is BSD `flock(2)`. It removes only its own `.staging.*` \\\n               directories, never an older release. Observed 2026-09-23: six \\\n               old releases (1.68 GiB) beside `current`; moving them to Trash \\\n               left the current release, sessions, auth and configuration \\\n               working. The vendor does not promise removal is safe while an \\\n               older binary still runs, so a release any process is executing \\\n               is refused.",\n};\n',
+        after='const CODEX_RELEASES: DeletionEntry = DeletionEntry {\n    label: "Codex standalone release",\n    relative: ".codex/packages/standalone/releases",\n    evidence: "\\u{a0}",\n};\n',
         tests=("ops::agents::tests::every_agent_entry_carries_evidence",),
         marker="PV evidence/agents-codex-releases",
     ),
@@ -228,8 +380,8 @@ CASES = (
     Case(
         name="liveness/lsof-mapping-names",
         relative_path="src/safety.rs",
-        before="    }\n    if awaiting_name {\n        bail!(\"lsof reported an executable mapping without a name\");",
-        after="    }\n    if false {\n        bail!(\"lsof reported an executable mapping without a name\");",
+        before='    }\n    if awaiting_name {\n        bail!("lsof reported an executable mapping without a name");',
+        after='    }\n    if false {\n        bail!("lsof reported an executable mapping without a name");',
         tests=("safety::tests::executable_mappings_refuse_any_mapping_they_cannot_name",),
         marker="PV liveness/lsof-mapping-names",
     ),
@@ -257,8 +409,8 @@ CASES = (
     Case(
         name="sink/uv-marker-spelling",
         relative_path="src/ops/mod.rs",
-        before="fn is_uv_source_distribution_marker(dir: &cap_std::fs::Dir, name: &OsStr) -> Result<bool> {\n    if name.as_bytes() != b\".git\" {\n",
-        after="fn is_uv_source_distribution_marker(dir: &cap_std::fs::Dir, name: &OsStr) -> Result<bool> {\n    if !is_git_metadata_name(name) {\n",
+        before='fn is_uv_source_distribution_marker(dir: &cap_std::fs::Dir, name: &OsStr) -> Result<bool> {\n    if name.as_bytes() != b".git" {\n',
+        after='fn is_uv_source_distribution_marker(dir: &cap_std::fs::Dir, name: &OsStr) -> Result<bool> {\n    if !is_git_metadata_name(name) {\n',
         tests=("ops::tests::only_the_exact_uv_marker_shape_is_tolerated",),
         marker="PV sink/uv-marker-case",
     ),
@@ -336,8 +488,8 @@ CASES = (
     Case(
         name="purge/misroute-corroboration",
         relative_path="src/ops/artifacts.rs",
-        before="                if artifact_evidence(path)?.is_none() {\n",
-        after="                if false {\n",
+        before="            if artifact_evidence(path)?.is_none() {\n",
+        after="            if false {\n",
         tests=("ops::purge::tests::a_misrouted_finding_is_refused_by_the_category_that_receives_it",),
         marker="PV purge/misroute-refused",
     ),
@@ -368,7 +520,7 @@ CASES = (
     Case(
         name="git/utc-dates",
         relative_path="src/ops/project.rs",
-        before="        .env(\"TZ\", \"UTC0\")\n",
+        before='        .env("TZ", "UTC0")\n',
         after="",
         tests=("ops::project::tests::activity_dates_are_read_in_utc_like_the_cutoff",),
         marker="PV git/utc-dates",
@@ -417,16 +569,16 @@ CASES = (
     Case(
         name="artifacts/tracked-apply",
         relative_path="src/ops/artifacts.rs",
-        before="                if tracks_files_under(&owner, path)? {\n",
-        after="                if false && tracks_files_under(&owner, path)? {\n",
+        before="            if tracks_files_under(&owner, path)? {\n",
+        after="            if false && tracks_files_under(&owner, path)? {\n",
         tests=("ops::artifacts::tests::a_tree_its_repository_tracks_is_never_offered_or_removed",),
         marker="PV artifacts/tracked-apply",
     ),
     Case(
         name="node_modules/tracked-apply",
         relative_path="src/ops/node_modules.rs",
-        before="                if tracks_files_under(&owner, path)? {\n",
-        after="                if false && tracks_files_under(&owner, path)? {\n",
+        before="            if tracks_files_under(&owner, path)? {\n",
+        after="            if false && tracks_files_under(&owner, path)? {\n",
         tests=("ops::node_modules::tests::a_committed_node_modules_is_never_offered_or_removed",),
         marker="PV node_modules/tracked-apply",
     ),
@@ -441,8 +593,8 @@ CASES = (
     Case(
         name="artifacts/keypair-apply",
         relative_path="src/ops/artifacts.rs",
-        before="                    Some(Authored::ProgramKeypair(keypair)) => anyhow::bail!(\n",
-        after="                    Some(Authored::ProgramKeypair(keypair)) if false => anyhow::bail!(\n",
+        before="                Some(Authored::ProgramKeypair(keypair)) => anyhow::bail!(\n",
+        after="                Some(Authored::ProgramKeypair(keypair)) if false => anyhow::bail!(\n",
         tests=("ops::artifacts::tests::a_tree_holding_a_program_keypair_is_never_offered_or_removed",),
         marker="PV artifacts/keypair-apply",
     ),
@@ -477,8 +629,8 @@ CASES = (
     Case(
         name="artifacts/nested-repository-apply",
         relative_path="src/ops/artifacts.rs",
-        before="                    Some(Authored::Repository(marker)) => anyhow::bail!(\n",
-        after="                    Some(Authored::Repository(marker)) if false => anyhow::bail!(\n",
+        before="                Some(Authored::Repository(marker)) => anyhow::bail!(\n",
+        after="                Some(Authored::Repository(marker)) if false => anyhow::bail!(\n",
         tests=("ops::artifacts::tests::a_tree_holding_a_git_repository_is_never_offered_or_removed",),
         marker="PV artifacts/nested-repository-apply",
     ),
@@ -521,8 +673,8 @@ CASES = (
     Case(
         name="node_modules/build-output-apply",
         relative_path="src/ops/node_modules.rs",
-        before="                if let Some(output) = build_output_between(&owner, path)? {\n",
-        after="                if let Some(output) = build_output_between(&owner, path)?.filter(|_| false) {\n",
+        before="            if let Some(output) = build_output_between(&owner, path)? {\n",
+        after="            if let Some(output) = build_output_between(&owner, path)?.filter(|_| false) {\n",
         tests=("ops::node_modules::tests::a_node_modules_inside_build_output_belongs_to_that_output",),
         marker="PV node_modules/build-output-apply",
     ),
@@ -540,8 +692,8 @@ CASES = (
     Case(
         name="node_modules/manifest-apply",
         relative_path="src/ops/node_modules.rs",
-        before="                if !has_manifest(path)? {\n",
-        after="                if false && !has_manifest(path)? {\n",
+        before="            if !has_manifest(path)? {\n",
+        after="            if false && !has_manifest(path)? {\n",
         tests=("ops::node_modules::tests::a_node_modules_without_a_manifest_beside_it_is_not_an_install",),
         marker="PV node_modules/manifest-apply",
     ),
@@ -760,8 +912,8 @@ CASES = (
     Case(
         name="artifacts/terraform-state-apply",
         relative_path="src/ops/artifacts.rs",
-        before="                    Some(Authored::TerraformState(state)) => anyhow::bail!(\n                        \"refusing {}: it holds the Terraform state {}\",\n                        path.display(),\n                        state.display()\n                    ),\n",
-        after="                    Some(Authored::TerraformState(_)) => {}\n",
+        before="                Some(Authored::TerraformState(state)) => anyhow::bail!(\n                    \"refusing {}: it holds the Terraform state {}\",\n                    path.display(),\n                    state.display()\n                ),\n",
+        after="                Some(Authored::TerraformState(_)) => {}\n",
         tests=("ops::artifacts::tests::a_tree_holding_terraform_state_is_never_offered_or_removed",),
         marker="PV artifacts/terraform-state-apply",
     ),
@@ -916,8 +1068,8 @@ CASES = (
         # The sink forgets the preview-time identity: it adopts whatever is
         # at the path now, which disarms both the pre-removal check and the
         # post-quarantine recheck that would otherwise mask this mutant.
-        before="    if actual != expected {\n        anyhow::bail!(\"target identity changed after preview; refusing\");",
-        after="    let expected = actual;\n    if actual != expected {\n        anyhow::bail!(\"target identity changed after preview; refusing\");",
+        before="    let deletion_device = checked_removal_root(actual, expected, parent_identity.dev, &path)?;",
+        after="    let expected = actual;\n    let deletion_device = checked_removal_root(actual, expected, parent_identity.dev, &path)?;",
         tests=("eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview",),
         marker="PV eval/drift-swapped-target",
         target="evals",
@@ -936,8 +1088,8 @@ CASES = (
         name="eval/projects-apply",
         relative_path="src/ops/node_modules.rs",
         # Apply reports each install removed while removing none.
-        before="            match apply_filesystem_finding(self.name(), finding, ctx) {",
-        after="            match Ok::<(), anyhow::Error>(()) {",
+        before="            match recheck(path).and_then(|()| apply_filesystem_finding(self.name(), finding, ctx)) {",
+        after="            match recheck(path) {",
         tests=("eval_clean_node_modules_removes_only_stale_installs",),
         marker="PV eval/projects-apply",
         target="evals",
@@ -1097,8 +1249,8 @@ CASES = (
         name="eval/home-repo",
         relative_path="src/ops/project.rs",
         # A repository at or above the home folder owns the projects below it.
-        before="            return Ok((!crate::safety::holds_home(&current, home)).then_some(current));\n",
-        after="            return Ok(Some(current));\n",
+        before="    Ok(nearest_repo(path)?.filter(|repo| !crate::safety::holds_home(repo, home)))\n",
+        after="    let _ = home;\n    nearest_repo(path)\n",
         tests=("eval_a_home_folder_repository_never_owns_the_projects_under_it",),
         marker="PV eval/home-repo",
         target="evals",
@@ -1201,7 +1353,7 @@ def run_one_test(case: Case, binary: Path, test: str, target_dir: Path) -> subpr
         [str(binary), "--exact", "--nocapture", test],
         REPOSITORY,
         target_dir,
-        TEST_TIMEOUT_SECONDS if case.target == "lib" else EVAL_TIMEOUT_SECONDS,
+        TEST_TIMEOUT_SECONDS,
     )
 
 
@@ -1254,6 +1406,16 @@ def run_cases(scratch: Path) -> int:
         for case in cases
     }
 
+    # Refactors can invalidate a binding without changing the guarded behavior.
+    # Detect every stale binding before paying for builds and baseline fixtures.
+    for case in cases:
+        occurrences = pristine[case.relative_path].count(case.before)
+        if occurrences != 1:
+            fail(
+                f"ERROR {case.name}: expected exactly one replacement site, "
+                f"found {occurrences} — the guarded code moved or changed shape"
+            )
+
     baselines = {}
     for target in sorted({case.target for case in cases}):
         baselines[target] = build_test_binary(workspace, target_dir, deadline, target)
@@ -1279,12 +1441,6 @@ def run_cases(scratch: Path) -> int:
 
         path = workspace / case.relative_path
         original = pristine[case.relative_path]
-        occurrences = original.count(case.before)
-        if occurrences != 1:
-            fail(
-                f"ERROR {case.name}: expected exactly one replacement site, "
-                f"found {occurrences} — the guarded code moved or changed shape"
-            )
         path.write_text(original.replace(case.before, case.after, 1))
 
         mutant = build_test_binary(workspace, target_dir, deadline, case.target)
@@ -1304,16 +1460,16 @@ def run_cases(scratch: Path) -> int:
                 fail(
                     f"ERROR {case.name}: {test} failed, but not at the named "
                     f"assertion '{case.marker}' — a different check refused, so "
-                    f"this is not proof the boundary is covered"
+                    f"this is not proof the boundary is covered\n{combined}"
                 )
             location = re.search(r"((?:src|tests)/[^\s:]+:\d+)", combined)
-            caught.append(
+            observation = (
                 f"CAUGHT {case.name}: {test.rsplit('::', 1)[-1]}"
                 f" at {location.group(1) if location else 'unknown'}"
             )
+            caught.append(observation)
+            print(observation, flush=True)
 
-    for line in caught:
-        print(line)
     print(f"planted-violations: {len(caught)} boundary/ies proven covered")
     return 0
 

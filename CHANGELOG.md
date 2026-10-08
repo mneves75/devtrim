@@ -2,27 +2,32 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
-
 ## [0.10.8] - 2026-10-08
 
-Every feature now has an eval that runs the real binary against a planted
-fixture and is proven able to fail. The evals, and a fresh-context security
-audit, found four gaps, all closed here.
+Feature evals run the real binary against planted fixtures. Named mutation
+controls prove specific assertions can fail; they do not prove every assertion
+or native integration. The evals and a fresh-context security audit found four
+gaps addressed here.
 
 ### Added
-- Feature evals for every command (`tests/evals.rs`, `tests/eval_system.rs`). Each plants what the feature claims to act on beside one near miss per documented exclusion. A preview must leave the fixture byte for byte unchanged; an apply must remove exactly the previewed targets, journal each one write-ahead, and keep every near miss. Further evals cover a target that appears or is swapped between consent and apply (driven inside one terminal session), an unwritable journal, a hostile `.git/config`, Xcode running, the two retention windows, and the flags each command rejects. Twenty-five planted mutants prove these assertions can fail; `planted-violations.py` now rebuilds the binary and selects integration tests, and accepts a name prefix while a case is developed
+- Report content evals cover ranked sizes and limits, exact app identifiers, iCloud allocation, rotated history, analyze partial results, status memory and unavailable metrics, scan summaries, completions, manpage and maintenance previews. Safety evals cover a real held uv lock, caches and agents continuing past a refusal, symlinked journals, build-process liveness, and explicit consent for unattended command apply
+- Feature evals for every command (`tests/evals.rs`, `tests/eval_system.rs`, `tests/eval_reports.rs`, `tests/eval_safety.rs`). Each plants what the feature claims to act on beside one near miss per documented exclusion. A preview must leave the fixture byte for byte unchanged; an apply must remove exactly the previewed targets, journal each one write-ahead, and keep every near miss. Further evals cover a target that appears or is swapped between consent and apply (driven inside one terminal session), an unwritable journal, a hostile `.git/config`, Xcode running, the two retention windows, and the flags each command rejects. Named planted mutants prove the assertions they select can fail; `planted-violations.py` now rebuilds the binary and selects integration tests, and accepts a name prefix while a case is developed
 - `scripts/tests/native-docker.sh` proves `clean docker` against a real, disposable Docker engine run by Apple's `container`: every unused image and all build cache go, and a volume and its data stay. A binary that skips the apply fails it
 - `scripts/perf/pageload.mjs` measures cold loads of the website and the manual in headless Chrome and fails closed on a broken image, a CSP violation or a page that paints nothing; `scripts/tests/pageload-controls.py` proves it
 
 ### Fixed
-- A home folder kept as a Git repository (dotfiles at `~`) no longer decides for the projects under it that have no repository of their own. Its last commit made a project edited that morning look stale, so `purge`, `clean node-modules` and `clean artifacts` offered its `node_modules`, `target` and `.venv`. Such a project is now not judged at all
+- The demo build locks `source-map-js` to patched 1.2.2, addressing GHSA-68fv-2mgg-jv7q without changing the pinned Remotion dependencies
+- Test subprocesses clear inherited configuration and Git authority; the native Docker check binds its disposable configuration, clears ambient endpoint/context selectors, and verifies that the selected context names its own socket
+- Eval fixtures stay inside their compiled checkout, so timed-out mutation runs remove their fixtures with the disposable source copy
+- Mutation checks refresh bindings for the apply rechecks and validate every binding before compiling. They allow 120 seconds per fixture, including unit fixtures that run real Git, within a one-hour total budget; a timeout or compile failure still fails the gate
+- A home folder kept as a Git repository (dotfiles at `~`) no longer decides for the projects under it that have no repository of their own. Its last commit made a project edited that morning look stale, so `purge`, `clean node-modules` and `clean artifacts` offered its `node_modules`, `target` and `.venv`. Such a project is now not judged and the human preview names the skip
 - `clean node-modules` and `clean artifacts` judge each finding again just before removing it, not only before the first removal, so a repository that becomes active while earlier findings are removed keeps its output
 - Moving a directory to the Trash now refuses one on another device than its parent (a mount point), as permanent deletion already did
 - A simulator is deleted only by a UUID; `simctl`'s set words (`all`, `unavailable`, `booted`) are refused
 - The manual said installers wait for the project window; they follow `retain_days`
 
 ### Changed
+- Native Docker checks use a unique container and socket per run, preserve the container owner's HOME, discover buildx before starting the VM, require a positive build-cache control, and remove their disposable HOME on exit
 - The website's hero image is a 34 KB WebP instead of a 1.3 MB PNG; the landing page now transfers 55 KB
 
 ## [0.10.7] - 2026-10-04

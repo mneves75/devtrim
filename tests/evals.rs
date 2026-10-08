@@ -17,13 +17,8 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use support::{
-    Allowed, Interactive, Sandbox, Tree, actionable_targets, assert_journaled, json, run,
+    Allowed, Interactive, Sandbox, Tree, actionable_targets, assert_journaled, json, run, write,
 };
-
-fn write(path: &Path, contents: &str) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, contents).unwrap();
-}
 
 // ---------- oracle controls ----------
 
@@ -363,6 +358,43 @@ struct Projects {
 
 const STALE: &str = "2020-01-01T00:00:00Z";
 
+#[test]
+fn fixture_home_cannot_follow_the_callers_working_directory() {
+    const CHILD: &str = "DEVTRIM_TARGET_ISOLATION_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let fixture = Sandbox::in_target("target-isolation-child");
+        let owned = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+        assert!(
+            fixture.path().starts_with(owned),
+            "the fixture escaped its compiled checkout into the caller's directory"
+        );
+        return;
+    }
+    let foreign = Sandbox::new("target-isolation-owner");
+    let pristine = Tree::snapshot(foreign.path());
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "--nocapture",
+            "fixture_home_cannot_follow_the_callers_working_directory",
+        ])
+        .env_clear()
+        .env(CHILD, "1")
+        .current_dir(foreign.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    pristine.assert_only(
+        &Tree::snapshot(foreign.path()),
+        &Allowed::default(),
+        "the fixture must not change the caller's directory",
+    );
+}
+
 fn real_git() -> PathBuf {
     let resolved = std::process::Command::new("sh")
         .args(["-c", "command -v git"])
@@ -379,6 +411,7 @@ fn real_git() -> PathBuf {
 /// developer's own Git configuration.
 fn git(sandbox: &Sandbox, repo: &Path, date: &str, args: &[&str]) {
     let output = std::process::Command::new(real_git())
+        .env_clear()
         .args([
             "-c",
             "user.name=devtrim-eval",
@@ -392,6 +425,7 @@ fn git(sandbox: &Sandbox, repo: &Path, date: &str, args: &[&str]) {
         .args(args)
         .current_dir(repo)
         .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_AUTHOR_DATE", date)
         .env("GIT_COMMITTER_DATE", date)
@@ -401,6 +435,47 @@ fn git(sandbox: &Sandbox, repo: &Path, date: &str, args: &[&str]) {
         output.status.success(),
         "git {args:?}: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn fixture_git_cannot_write_into_an_ambient_repository() {
+    const CHILD: &str = "DEVTRIM_GIT_ISOLATION_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let sandbox = Sandbox::in_target("git-isolation-child");
+        let project = sandbox.path().join("project");
+        write(&project.join("package.json"), "{}");
+        repo(&sandbox, &project, STALE, &["package.json"]);
+        assert!(
+            project.join(".git").is_dir(),
+            "fixture Git wrote into the ambient repository"
+        );
+        return;
+    }
+    let owner = Sandbox::in_target("git-isolation-owner");
+    let foreign = owner.path().join("foreign.git");
+    write(&foreign.join("sentinel"), "keep");
+    let pristine = Tree::snapshot(owner.path());
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "--nocapture",
+            "fixture_git_cannot_write_into_an_ambient_repository",
+        ])
+        .env(CHILD, "1")
+        .env("GIT_DIR", &foreign)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "fixture isolation failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    pristine.assert_only(
+        &Tree::snapshot(owner.path()),
+        &Allowed::default(),
+        "fixture Git environment isolation",
     );
 }
 
@@ -643,9 +718,18 @@ fn eval_purge_is_exactly_node_modules_plus_artifacts() {
 fn eval_read_only_commands_and_previews_change_nothing() {
     let sandbox = Sandbox::in_target("eval-read-only");
     caches_fixture(&sandbox);
-    let projects = projects_fixture(&sandbox);
+    let dev = sandbox.path().join("dev");
+    let project = dev.join("project");
+    write(&project.join("package.json"), "{}");
+    write(
+        &project.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\n",
+    );
+    write(&project.join("node_modules/pkg/index.js"), "dependency");
+    write(&project.join("target/debug/out"), "build output");
+    repo(&sandbox, &project, STALE, &["package.json", "Cargo.toml"]);
     write(&sandbox.path().join("Downloads/old.dmg"), "installer");
-    let root = projects.dev.to_str().unwrap().to_owned();
+    let root = dev.canonicalize().unwrap().to_str().unwrap().to_owned();
     let dev = root.as_str();
     let commands: Vec<Vec<&str>> = vec![
         vec!["scan", "--json"],
@@ -684,7 +768,23 @@ fn eval_read_only_commands_and_previews_change_nothing() {
         }
         let pristine = Tree::snapshot(sandbox.path());
         for args in &commands {
-            run(&sandbox, args);
+            let output = run(&sandbox, args);
+            // Positive control: the command reached its own result. A usage
+            // error or a silent failure would leave the disk unchanged too.
+            assert_ne!(
+                output.status.code(),
+                Some(2),
+                "`devtrim {}` was rejected",
+                args.join(" ")
+            );
+            assert!(
+                !output.stdout.is_empty(),
+                "`devtrim {}` printed nothing",
+                args.join(" ")
+            );
+            if args.contains(&"--json") {
+                json(&output);
+            }
             if let Err(problems) =
                 pristine.diff(&Tree::snapshot(sandbox.path()), &Allowed::default())
             {
@@ -905,6 +1005,14 @@ fn eval_a_home_folder_repository_never_owns_the_projects_under_it() {
         [dev.join("owned/node_modules")],
         "PV eval/home-repo: a repository holding the home folder judged a project: {document}"
     );
+    // The skip is named, not silent: the human preview says why the loose
+    // project's build output was left out.
+    let human = run(&sandbox, &["purge", "--root", root]);
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stderr.contains("whose only repository holds the home folder"),
+        "the home-folder skip must be disclosed:\n{stderr}"
+    );
 }
 
 // ---------- each removal is judged again just before it happens ----------
@@ -913,27 +1021,27 @@ fn eval_a_home_folder_repository_never_owns_the_projects_under_it() {
 /// earlier ones takes time. A repository that becomes active in between —
 /// here, after its preflight and before its own removal — must keep its
 /// build output: each finding is judged again just before the sink.
-fn assert_apply_rechecks_each_finding(name: &str, category: &str, plant: fn(&Path)) {
+fn assert_apply_rechecks_each_finding(name: &str, category: &str, output: &str, plant: fn(&Path)) {
     let sandbox = Sandbox::in_target(name);
-    let counter = sandbox.path().join("git-activity-queries");
-    // Scan (two repositories), preflight (two), then the first recheck:
-    // five activity queries answer "stale"; every later one, "active".
+    let dev = sandbox.path().join("dev");
+    // The second repository becomes active only after the first output has
+    // actually gone. The trigger is an observable mutation, not a query count.
     sandbox.script(
         "git",
         &format!(
-            "case \"$*\" in\n  *ls-files*) exit 0 ;;\nesac\ncount=0\nif [ -f '{c}' ]; then read count < '{c}'; fi\ncase \"$*\" in\n  *' -g '*) ;;\n  *) count=$((count + 1)); printf '%s\\n' \"$count\" > '{c}' ;;\nesac\nif [ \"$count\" -le 5 ]; then day=2020-01-01; else day=2999-01-01; fi\ncase \"$*\" in\n  *' -g '*) printf 'HEAD@{{%s}}\\n' \"$day\" ;;\n  *) printf '%s\\n' \"$day\" ;;\nesac",
-            c = counter.display()
+            "case \"$*\" in\n  *ls-files*) exit 0 ;;\nesac\nif [ -d '{}' ] && [ -d '{}' ]; then day=2020-01-01; else day=2999-01-01; fi\ncase \"$*\" in\n  *' -g '*) printf 'HEAD@{{%s}}\\n' \"$day\" ;;\n  *) printf '%s\\n' \"$day\" ;;\nesac",
+            dev.join("alpha").join(output).display(),
+            dev.join("beta").join(output).display()
         ),
     );
-    let dev = sandbox.path().join("dev");
     for project in ["alpha", "beta"] {
         let project = dev.join(project);
         std::fs::create_dir_all(project.join(".git")).unwrap();
         plant(&project);
     }
-    let before = Tree::snapshot(sandbox.path());
     let dev = dev.canonicalize().unwrap();
     let root = dev.to_str().unwrap();
+    let pristine = Tree::snapshot(sandbox.path());
 
     let apply = run(
         &sandbox,
@@ -942,24 +1050,22 @@ fn assert_apply_rechecks_each_finding(name: &str, category: &str, plant: fn(&Pat
         ],
     );
     let document = json(&apply);
-    let removed = ["alpha", "beta"]
-        .iter()
-        .filter(|project| {
-            let after = Tree::snapshot(sandbox.path());
-            before
-                .diff(
-                    &after,
-                    &Allowed {
-                        scratch: vec![counter.clone(), sandbox.path().join(".local/state/devtrim")],
-                        ..Allowed::default()
-                    },
-                )
-                .is_err_and(|problems| problems.contains(&format!("dev/{project}/")))
-        })
-        .count();
+    let survivors = ["alpha", "beta"]
+        .into_iter()
+        .filter(|project| dev.join(project).join(output).exists())
+        .collect::<Vec<_>>();
     assert_eq!(
-        removed, 1,
+        survivors,
+        ["beta"],
         "PV eval/apply-recheck: {category} removed build output from the repository that became active: {document}"
+    );
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            removed: vec![dev.join("alpha").join(output)],
+            scratch: vec![sandbox.path().join(".local/state/devtrim")],
+        },
+        "PV eval/apply-recheck",
     );
     assert!(!apply.status.success(), "{document}");
     assert!(
@@ -972,16 +1078,26 @@ fn assert_apply_rechecks_each_finding(name: &str, category: &str, plant: fn(&Pat
 
 #[test]
 fn eval_a_repository_that_becomes_active_during_apply_keeps_its_dependencies() {
-    assert_apply_rechecks_each_finding("eval-recheck-node-modules", "node-modules", |project| {
-        write(&project.join("package.json"), "{}");
-        write(&project.join("node_modules/pkg/index.js"), "dependency");
-    });
+    assert_apply_rechecks_each_finding(
+        "eval-recheck-node-modules",
+        "node-modules",
+        "node_modules",
+        |project| {
+            write(&project.join("package.json"), "{}");
+            write(&project.join("node_modules/pkg/index.js"), "dependency");
+        },
+    );
 }
 
 #[test]
 fn eval_a_repository_that_becomes_active_during_apply_keeps_its_build_output() {
-    assert_apply_rechecks_each_finding("eval-recheck-artifacts", "artifacts", |project| {
-        write(&project.join("Cargo.toml"), "[package]\nname = \"p\"\n");
-        write(&project.join("target/debug/out"), "build output");
-    });
+    assert_apply_rechecks_each_finding(
+        "eval-recheck-artifacts",
+        "artifacts",
+        "target",
+        |project| {
+            write(&project.join("Cargo.toml"), "[package]\nname = \"p\"\n");
+            write(&project.join("target/debug/out"), "build output");
+        },
+    );
 }

@@ -27,15 +27,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use support::{
     Allowed, Interactive, Sandbox, Tree, actionable_targets, assert_journaled, journal_lines, json,
-    run,
+    run, write,
 };
 
 const DAY: u64 = 60 * 60 * 24;
-
-fn write(path: &Path, contents: &str) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, contents).unwrap();
-}
 
 /// Set a regular file's modification time to `days` days ago.
 fn age(path: &Path, days: u64) {

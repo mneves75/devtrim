@@ -66,11 +66,17 @@ impl ScanObservations {
 /// that has no repository of its own, so such a project is not judged at
 /// all, at scan or at apply (`safety::holds_home` decides, failing closed).
 pub(crate) fn owning_repo(path: &Path, home: &Path) -> Result<Option<PathBuf>> {
+    Ok(nearest_repo(path)?.filter(|repo| !crate::safety::holds_home(repo, home)))
+}
+
+/// The nearest folder above `path` holding a Git marker, whatever it is: a
+/// scan uses it to name what `owning_repo` declined.
+pub(crate) fn nearest_repo(path: &Path) -> Result<Option<PathBuf>> {
     let mut current = path.to_path_buf();
     while current.parent().is_some() {
         current.pop();
         if has_git_marker(&current)? {
-            return Ok((!crate::safety::holds_home(&current, home)).then_some(current));
+            return Ok(Some(current));
         }
     }
     Ok(None)

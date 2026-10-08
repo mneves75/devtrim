@@ -1,6 +1,8 @@
-# devtrim claims matrix
+# devtrim claims matrix — 0.10.7 baseline
 
-Branch `feat/feature-evals`, base `01f5ef0` (v0.10.7). Maps each user-facing claim to the test that proves it, so gaps are visible. Read-only research: no cargo build or test was run for this file; every citation below was read in the source, and `Citation check` at the end records the mechanical check.
+Branch `feat/feature-evals`, base `01f5ef0` (v0.10.7). This is the initial gap inventory at that baseline, before the 0.10.8 evals. The gaps, cross-cutting facts and source line references below describe that snapshot. Read-only research: no cargo build or test was run for this inventory; every citation below was read in the baseline source, and `Citation check` at the end records the mechanical check.
+
+Current feature proofs are in [`tests/evals.rs`](../tests/evals.rs), [`tests/eval_system.rs`](../tests/eval_system.rs), [`tests/eval_reports.rs`](../tests/eval_reports.rs), and [`tests/eval_safety.rs`](../tests/eval_safety.rs). They add filesystem snapshots, real Git activity, held-lock and refusal controls, report content, and named integration mutants selected by [`scripts/tests/planted-violations.py`](../scripts/tests/planted-violations.py). Only the assertions that runner names are mutation-proven. Finder Trash, real simulator and maintenance effects, mounted-volume behavior and timing races retain the limits documented in README and SECURITY.
 
 ## How to read it
 

@@ -34,7 +34,10 @@ impl Sandbox {
 
     // Permanent-deletion fixtures live here so same-device preflight matches the checkout.
     pub fn in_target(name: &str) -> Self {
-        Self::new_in(std::env::current_dir().unwrap().join("target"), name)
+        Self::new_in(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
+            name,
+        )
     }
 
     pub fn path(&self) -> &Path {
@@ -68,12 +71,18 @@ impl Drop for Sandbox {
     }
 }
 
+/// Write `contents` to `path`, creating its folders.
+pub fn write(path: &Path, contents: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
+
 pub fn run(sandbox: &Sandbox, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_devtrim"))
         .args(args)
+        .env_clear()
         .env("HOME", sandbox.path())
         .env("PATH", sandbox.bin())
-        .env_remove("XDG_STATE_HOME")
         .output()
         .unwrap()
 }
@@ -350,6 +359,7 @@ pub struct Interactive {
     child: std::process::Child,
     stdin: Option<std::process::ChildStdin>,
     output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    reader: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Interactive {
@@ -358,10 +368,10 @@ impl Interactive {
         let mut child = Command::new("/usr/bin/script")
             .args(["-q", "/dev/null", env!("CARGO_BIN_EXE_devtrim")])
             .args(args)
+            .env_clear()
             .env("HOME", sandbox.path())
             .env("PATH", sandbox.bin())
             .env("NO_COLOR", "1")
-            .env_remove("XDG_STATE_HOME")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -370,7 +380,7 @@ impl Interactive {
         let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut stdout = child.stdout.take().unwrap();
         let sink = std::sync::Arc::clone(&output);
-        std::thread::spawn(move || {
+        let reader = std::thread::spawn(move || {
             let mut buffer = [0u8; 4096];
             while let Ok(count) = stdout.read(&mut buffer) {
                 if count == 0 {
@@ -381,6 +391,7 @@ impl Interactive {
         });
         let stdin = child.stdin.take();
         Self {
+            reader: Some(reader),
             child,
             stdin,
             output,
@@ -425,8 +436,11 @@ impl Interactive {
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
         drop(self.stdin.take());
-        // Let the reader drain what the process wrote last.
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // The reader ends at end of file, once it has drained everything
+        // the process wrote.
+        if let Some(reader) = self.reader.take() {
+            reader.join().unwrap();
+        }
         (status, self.text())
     }
 }

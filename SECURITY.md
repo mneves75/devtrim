@@ -309,6 +309,12 @@ Non-negotiable boundaries:
 
 ## Known limitations
 
+- Feature evals use disposable homes and controlled external-tool output.
+  Named mutation controls prove individual assertions, not every feature or
+  race. The shared removal-root device check has a same-device control and a
+  foreign-parent-device refusal using injected observed metadata; that test
+  does not mount a volume or invoke Finder's Trash move.
+
 - Directory sizes are measured with one `stat` per file. macOS `getattrlistbulk`
   would collapse that into roughly one syscall per hundred entries, but it has no
   safe wrapper in this dependency set and would require `unsafe` FFI. `unsafe_code

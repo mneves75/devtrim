@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::project::{
     ScanObservations, TrackedIndex, UnreadFolder, activity_window, has_git_marker,
-    is_directory_if_present, iso_days_ago, listed_repositories, normalized_roots,
+    is_directory_if_present, iso_days_ago, listed_repositories, nearest_repo, normalized_roots,
     orphaned_worktree, owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under,
     unborn_branch, unjudged_finding, unread_folders_finding,
 };
@@ -61,6 +61,7 @@ impl Op for Artifacts {
         let mut groups: BTreeMap<PathBuf, Vec<ArtifactCandidate>> = BTreeMap::new();
         let mut findings = Vec::new();
         let mut unread = Vec::new();
+        let mut home_held = 0usize;
         for root in normalized_roots(&ctx.roots) {
             if !is_directory_if_present(root)? {
                 continue;
@@ -68,7 +69,11 @@ impl Op for Artifacts {
             for candidate in find_artifacts(root, &mut unread)? {
                 match owning_repo(&candidate.path, &ctx.home) {
                     Ok(Some(owner)) => groups.entry(owner).or_default().push(candidate),
-                    Ok(None) => {}
+                    Ok(None) => {
+                        if matches!(nearest_repo(&candidate.path), Ok(Some(_))) {
+                            home_held = home_held.saturating_add(1);
+                        }
+                    }
                     Err(error) => {
                         findings.push(unjudged_finding("artifacts", &candidate.path, &error));
                     }
@@ -178,6 +183,14 @@ impl Op for Artifacts {
                     "skipping artifact directories in {} repositories with no commits yet, so their activity cannot be read: {}",
                     unborn.len(),
                     listed_repositories(&unborn)
+                ),
+            );
+        }
+        if home_held > 0 && !ctx.json {
+            ctx.diagnostic(
+                "info",
+                format!(
+                    "skipping {home_held} artifact directories in projects whose only repository holds the home folder: its last commit says nothing about them"
                 ),
             );
         }

@@ -545,12 +545,15 @@ python3 scripts/tests/read-only-views.py target/debug/devtrim
 It uses an isolated HOME and PATH, explicit terminal dimensions, visible
 content assertions, and bounded waits.
 
-Every command also has a feature eval (`tests/evals.rs`,
-`tests/eval_system.rs`): the real binary against planted fixtures, where a
-preview must change nothing on disk and an apply must remove exactly what it
-previewed and keep every documented near miss byte for byte. Each eval's
-assertions are proven able to fail by planted mutants in
-`scripts/tests/planted-violations.py`. Two opt-in checks go beyond stubs:
+Feature evals (`tests/evals.rs`, `tests/eval_system.rs`,
+`tests/eval_reports.rs`, `tests/eval_safety.rs`) run the real binary against
+planted fixtures. Report evals check fixture-derived content and exit codes;
+previews must change nothing on disk, and applies must change exactly the
+previewed targets while preserving near misses. Named planted mutants in
+`scripts/tests/planted-violations.py` prove the assertions they select can
+fail; other assertions remain review obligations. The shared removal-root
+device check is tested with injected device metadata, not a real mounted
+volume or Finder move. Two opt-in checks go beyond stubs:
 `scripts/tests/native-docker.sh target/debug/devtrim` runs `clean docker`
 against a real, disposable Docker engine in Apple's `container`, and
 `scripts/perf/pageload.mjs` measures cold loads of the website and manual
