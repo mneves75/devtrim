@@ -60,12 +60,17 @@ impl ScanObservations {
     }
 }
 
-pub(crate) fn owning_repo(path: &Path) -> Result<Option<PathBuf>> {
+/// The nearest repository above `path` that can speak for it. A repository
+/// at or above the home folder — dotfiles kept as a repository at `~` — is
+/// never an owner: its last commit says nothing about a project below it
+/// that has no repository of its own, so such a project is not judged at
+/// all, at scan or at apply (`safety::holds_home` decides, failing closed).
+pub(crate) fn owning_repo(path: &Path, home: &Path) -> Result<Option<PathBuf>> {
     let mut current = path.to_path_buf();
     while current.parent().is_some() {
         current.pop();
         if has_git_marker(&current)? {
-            return Ok(Some(current));
+            return Ok((!crate::safety::holds_home(&current, home)).then_some(current));
         }
     }
     Ok(None)
@@ -910,14 +915,27 @@ mod tests {
     #[test]
     fn finds_owning_repo_and_handles_orphans() {
         let base = temp("owner");
+        let home = base.join("home");
         let project = base.join("project/sub/node_modules");
         std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(base.join("project/.git")).unwrap();
-        assert_eq!(owning_repo(&project).unwrap(), Some(base.join("project")));
         assert_eq!(
-            owning_repo(&base.join("orphan/node_modules")).unwrap(),
+            owning_repo(&project, &home).unwrap(),
+            Some(base.join("project"))
+        );
+        assert_eq!(
+            owning_repo(&base.join("orphan/node_modules"), &home).unwrap(),
             None
         );
+        // A repository at the home folder, or above it, owns nothing.
+        let loose = home.join("dev/loose/node_modules");
+        std::fs::create_dir_all(&loose).unwrap();
+        std::fs::create_dir_all(home.join(".git")).unwrap();
+        assert_eq!(owning_repo(&loose, &home).unwrap(), None);
+        std::fs::remove_dir_all(home.join(".git")).unwrap();
+        std::fs::create_dir_all(base.join(".git")).unwrap();
+        assert_eq!(owning_repo(&loose, &home).unwrap(), None);
         crate::ops::remove_test_path(base);
     }
 

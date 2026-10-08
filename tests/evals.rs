@@ -869,3 +869,119 @@ fn eval_the_project_window_never_shortens_retention() {
         "PV eval/windows: retain_days"
     );
 }
+
+// ---------- a repository holding the home folder owns nothing ----------
+
+/// A home folder kept as a Git repository (dotfiles) must not become the
+/// owner of every project under it that has no repository of its own: its
+/// last commit says nothing about a project edited this morning. Such a
+/// project is not judged at all; a project with its own stale repository
+/// beside it still is.
+#[test]
+fn eval_a_home_folder_repository_never_owns_the_projects_under_it() {
+    let sandbox = Sandbox::in_target("eval-home-repo");
+    let home = sandbox.path();
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    write(&home.join(".zshrc"), "# dotfiles");
+    repo(&sandbox, home, STALE, &[".zshrc"]);
+
+    let loose = home.join("dev/loose"); // no repository of its own
+    write(&loose.join("package.json"), "{}");
+    write(&loose.join("node_modules/pkg/index.js"), "fresh dependency");
+    write(&loose.join("Cargo.toml"), "[package]\nname = \"loose\"\n");
+    write(&loose.join("target/debug/out"), "fresh build");
+
+    let owned = home.join("dev/owned"); // its own stale repository: still judged
+    write(&owned.join("package.json"), "{}");
+    write(&owned.join("node_modules/pkg/index.js"), "dependency");
+    repo(&sandbox, &owned, STALE, &["package.json"]);
+
+    let dev = home.join("dev").canonicalize().unwrap();
+    let root = dev.to_str().unwrap();
+    let preview = run(&sandbox, &["purge", "--root", root, "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        [dev.join("owned/node_modules")],
+        "PV eval/home-repo: a repository holding the home folder judged a project: {document}"
+    );
+}
+
+// ---------- each removal is judged again just before it happens ----------
+
+/// The preflight judges every finding before any is removed, but removing the
+/// earlier ones takes time. A repository that becomes active in between —
+/// here, after its preflight and before its own removal — must keep its
+/// build output: each finding is judged again just before the sink.
+fn assert_apply_rechecks_each_finding(name: &str, category: &str, plant: fn(&Path)) {
+    let sandbox = Sandbox::in_target(name);
+    let counter = sandbox.path().join("git-activity-queries");
+    // Scan (two repositories), preflight (two), then the first recheck:
+    // five activity queries answer "stale"; every later one, "active".
+    sandbox.script(
+        "git",
+        &format!(
+            "case \"$*\" in\n  *ls-files*) exit 0 ;;\nesac\ncount=0\nif [ -f '{c}' ]; then read count < '{c}'; fi\ncase \"$*\" in\n  *' -g '*) ;;\n  *) count=$((count + 1)); printf '%s\\n' \"$count\" > '{c}' ;;\nesac\nif [ \"$count\" -le 5 ]; then day=2020-01-01; else day=2999-01-01; fi\ncase \"$*\" in\n  *' -g '*) printf 'HEAD@{{%s}}\\n' \"$day\" ;;\n  *) printf '%s\\n' \"$day\" ;;\nesac",
+            c = counter.display()
+        ),
+    );
+    let dev = sandbox.path().join("dev");
+    for project in ["alpha", "beta"] {
+        let project = dev.join(project);
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        plant(&project);
+    }
+    let before = Tree::snapshot(sandbox.path());
+    let dev = dev.canonicalize().unwrap();
+    let root = dev.to_str().unwrap();
+
+    let apply = run(
+        &sandbox,
+        &[
+            "clean", category, "--root", root, "--apply", "--shred", "--yolo", "--json",
+        ],
+    );
+    let document = json(&apply);
+    let removed = ["alpha", "beta"]
+        .iter()
+        .filter(|project| {
+            let after = Tree::snapshot(sandbox.path());
+            before
+                .diff(
+                    &after,
+                    &Allowed {
+                        scratch: vec![counter.clone(), sandbox.path().join(".local/state/devtrim")],
+                        ..Allowed::default()
+                    },
+                )
+                .is_err_and(|problems| problems.contains(&format!("dev/{project}/")))
+        })
+        .count();
+    assert_eq!(
+        removed, 1,
+        "PV eval/apply-recheck: {category} removed build output from the repository that became active: {document}"
+    );
+    assert!(!apply.status.success(), "{document}");
+    assert!(
+        document
+            .to_string()
+            .contains("repo became active after preview"),
+        "{document}"
+    );
+}
+
+#[test]
+fn eval_a_repository_that_becomes_active_during_apply_keeps_its_dependencies() {
+    assert_apply_rechecks_each_finding("eval-recheck-node-modules", "node-modules", |project| {
+        write(&project.join("package.json"), "{}");
+        write(&project.join("node_modules/pkg/index.js"), "dependency");
+    });
+}
+
+#[test]
+fn eval_a_repository_that_becomes_active_during_apply_keeps_its_build_output() {
+    assert_apply_rechecks_each_finding("eval-recheck-artifacts", "artifacts", |project| {
+        write(&project.join("Cargo.toml"), "[package]\nname = \"p\"\n");
+        write(&project.join("target/debug/out"), "build output");
+    });
+}

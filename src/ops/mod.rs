@@ -377,14 +377,12 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
         anyhow::bail!("target identity changed after preview; refusing");
     }
 
-    let deletion_device = if permanent {
-        let parent_identity = file_identity_for_dir(&dir)
-            .with_context(|| format!("cannot inspect target parent: {}", parent.display()))?;
-        ensure_same_device(actual, parent_identity.dev, &path)?;
-        parent_identity.dev
-    } else {
-        expected.dev
-    };
+    // Both modes hold the target to its parent's device, so a target that is
+    // itself a mount point is refused before Trash or permanent removal.
+    let parent_identity = file_identity_for_dir(&dir)
+        .with_context(|| format!("cannot inspect target parent: {}", parent.display()))?;
+    ensure_same_device(actual, parent_identity.dev, &path)?;
+    let deletion_device = parent_identity.dev;
 
     if !permanent {
         let metadata = dir

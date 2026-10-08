@@ -56,12 +56,15 @@ fn simctl(args: &[&str]) -> Result<String> {
     )
 }
 
+/// A simulator UDID is a UUID (8-4-4-4-12 hexadecimal digits). Anything
+/// else is refused, including the words `simctl delete` reads as a set of
+/// devices (`all`, `unavailable`, `booted`).
 fn simulator_device_path(root: &Path, udid: &str) -> Result<std::path::PathBuf> {
-    let mut bytes = udid.bytes();
-    if !bytes
-        .next()
-        .is_some_and(|byte| byte.is_ascii_alphanumeric())
-        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    let groups = udid.split('-').map(str::len).collect::<Vec<_>>();
+    if groups != [8, 4, 4, 4, 12]
+        || !udid
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
     {
         anyhow::bail!("invalid simulator device identifier `{udid}`");
     }
@@ -404,14 +407,16 @@ mod tests {
             std::env::temp_dir().join(format!("devtrim-simulators-size-{}", std::process::id()));
         crate::ops::remove_test_path(&root);
         let home = root.join("home");
-        let data = home.join("Library/Developer/CoreSimulator/Devices/DEVICE-1/data");
+        let data = home.join(
+            "Library/Developer/CoreSimulator/Devices/D0D0D0D0-0000-4000-8000-000000000001/data",
+        );
         std::fs::create_dir_all(&data).unwrap();
         let payload = File::create(data.join("payload")).unwrap();
         let measured = 2 * 1024 * 1024 * 1024;
         payload.set_len(measured).unwrap();
         let mut ctx = test_ctx();
         ctx.home = home;
-        let output = r#"{"devices":{"runtime":[{"isAvailable":false,"udid":"DEVICE-1"}]}}"#;
+        let output = r#"{"devices":{"runtime":[{"isAvailable":false,"udid":"D0D0D0D0-0000-4000-8000-000000000001"}]}}"#;
 
         let findings = findings_from_simctl(output, &ctx).unwrap();
 
@@ -420,7 +425,10 @@ mod tests {
         assert_eq!(findings[0].danger, 5);
         assert_eq!(
             findings[0].action,
-            Action::command("xcrun", &["simctl", "delete", "DEVICE-1"])
+            Action::command(
+                "xcrun",
+                &["simctl", "delete", "D0D0D0D0-0000-4000-8000-000000000001"]
+            )
         );
         crate::ops::remove_test_path(root);
     }
@@ -431,10 +439,10 @@ mod tests {
         ctx.home = PathBuf::from("/Users/example");
         let output = r#"{"devices":{
             "com.apple.CoreSimulator.SimRuntime.iOS-27-0":[
-              {"udid":"AAAA-1","isAvailable":true,"name":"iPhone 17","state":"Booted","dataPathSize":14000000000,"lastUsedAt":"2026-09-15T07:48:32Z"},
-              {"udid":"BBBB-2","isAvailable":true,"name":"iPad Pro","state":"Shutdown","dataPathSize":11000000000,"lastBootedAt":"2026-07-04T09:00:00Z"},
-              {"udid":"CCCC-3","isAvailable":true,"name":"Apple Watch","state":"Shutdown","dataPathSize":8000},
-              {"udid":"DDDD-4","isAvailable":true,"name":"iPhone Air","state":"Shutdown","dataPathSize":4500000000,"lastBootedAt":null}
+              {"udid":"AAAAAAAA-0000-4000-8000-000000000001","isAvailable":true,"name":"iPhone 17","state":"Booted","dataPathSize":14000000000,"lastUsedAt":"2026-09-15T07:48:32Z"},
+              {"udid":"BBBBBBBB-0000-4000-8000-000000000002","isAvailable":true,"name":"iPad Pro","state":"Shutdown","dataPathSize":11000000000,"lastBootedAt":"2026-07-04T09:00:00Z"},
+              {"udid":"CCCCCCCC-0000-4000-8000-000000000003","isAvailable":true,"name":"Apple Watch","state":"Shutdown","dataPathSize":8000},
+              {"udid":"DDDDDDDD-0000-4000-8000-000000000004","isAvailable":true,"name":"iPhone Air","state":"Shutdown","dataPathSize":4500000000,"lastBootedAt":null}
             ]}}"#;
 
         let findings = findings_from_simctl(output, &ctx).unwrap();
@@ -454,25 +462,31 @@ mod tests {
         assert_eq!(finding.label, "Simulator device data (4 available devices)");
         let note = &finding.note;
         assert!(note.starts_with("EXCLUDED:"), "{note}");
-        let first = note.find("iPhone 17 (AAAA-1)").expect(note);
-        let second = note.find("iPad Pro (BBBB-2)").expect(note);
-        let third = note.find("iPhone Air (DDDD-4)").expect(note);
+        let first = note
+            .find("iPhone 17 (AAAAAAAA-0000-4000-8000-000000000001)")
+            .expect(note);
+        let second = note
+            .find("iPad Pro (BBBBBBBB-0000-4000-8000-000000000002)")
+            .expect(note);
+        let third = note
+            .find("iPhone Air (DDDDDDDD-0000-4000-8000-000000000004)")
+            .expect(note);
         assert!(first < second && second < third, "{note}");
         assert!(
             !note.contains("Apple Watch"),
             "only the three largest: {note}"
         );
         assert!(
-            note.contains("(AAAA-1) 13.0 GB, last used 2026-09-15"),
+            note.contains("(AAAAAAAA-0000-4000-8000-000000000001) 13.0 GB, last used 2026-09-15"),
             "{note}"
         );
         // Xcode 16 reported only `lastBootedAt`.
         assert!(
-            note.contains("(BBBB-2) 10.2 GB, last booted 2026-07-04"),
+            note.contains("(BBBBBBBB-0000-4000-8000-000000000002) 10.2 GB, last booted 2026-07-04"),
             "{note}"
         );
         assert!(
-            note.contains("(DDDD-4) 4.2 GB, last use not recorded"),
+            note.contains("(DDDDDDDD-0000-4000-8000-000000000004) 4.2 GB, last use not recorded"),
             "{note}"
         );
         assert!(note.contains("xcrun simctl delete <UDID>"), "{note}");
@@ -543,15 +557,18 @@ mod tests {
         // with its own message before anything runs. Apply stops at the first
         // error, so a disclosure mistaken for a command would surface instead.
         let mut forged = Finding::command(
-            "unavailable Apple simulator device GONE-1",
+            "unavailable Apple simulator device 60E60E60-0000-4000-8000-000000000001",
             10,
             "forged",
             4,
             CommandAuthority::DeleteSimulator {
-                udid: "GONE-1".to_string(),
+                udid: "60E60E60-0000-4000-8000-000000000001".to_string(),
             },
         );
-        forged.action = Action::command("xcrun", &["simctl", "delete", "OTHER-2"]);
+        forged.action = Action::command(
+            "xcrun",
+            &["simctl", "delete", "07E907E9-0000-4000-8000-000000000002"],
+        );
 
         let outcome = Simulators.apply(&[disclosure, forged], &ctx).unwrap();
 
@@ -569,9 +586,9 @@ mod tests {
         let mut ctx = test_ctx();
         ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
         let output = r#"{"devices":{"runtime":[
-            {"udid":"AAAA-1","isAvailable":true,"name":"iPhone","dataPathSize":18446744073709551615},
-            {"udid":"BBBB-2","isAvailable":true,"name":"iPad","dataPathSize":1},
-            {"udid":"GONE-3","isAvailable":false,"name":"Old iPhone","dataPathSize":2}
+            {"udid":"AAAAAAAA-0000-4000-8000-000000000001","isAvailable":true,"name":"iPhone","dataPathSize":18446744073709551615},
+            {"udid":"BBBBBBBB-0000-4000-8000-000000000002","isAvailable":true,"name":"iPad","dataPathSize":1},
+            {"udid":"60E60E60-0000-4000-8000-000000000003","isAvailable":false,"name":"Old iPhone","dataPathSize":2}
         ]}}"#;
 
         let findings = findings_from_simctl(output, &ctx).unwrap();
@@ -583,7 +600,10 @@ mod tests {
         );
         assert_eq!(
             findings[0].action,
-            Action::command("xcrun", &["simctl", "delete", "GONE-3"])
+            Action::command(
+                "xcrun",
+                &["simctl", "delete", "60E60E60-0000-4000-8000-000000000003"]
+            )
         );
         assert!(
             ctx.take_diagnostics()
@@ -597,8 +617,8 @@ mod tests {
         let mut ctx = test_ctx();
         ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
         let output = r#"{"devices":{"runtime":[
-            {"udid":"AAAA-1","isAvailable":true,"name":"iPhone","dataPathSize":"12 GB"},
-            {"udid":"GONE-2","isAvailable":false,"name":"Old iPhone","dataPathSize":1.5}
+            {"udid":"AAAAAAAA-0000-4000-8000-000000000001","isAvailable":true,"name":"iPhone","dataPathSize":"12 GB"},
+            {"udid":"60E60E60-0000-4000-8000-000000000002","isAvailable":false,"name":"Old iPhone","dataPathSize":1.5}
         ]}}"#;
 
         let findings = findings_from_simctl(output, &ctx).unwrap();
@@ -606,7 +626,10 @@ mod tests {
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(
             findings[0].action,
-            Action::command("xcrun", &["simctl", "delete", "GONE-2"])
+            Action::command(
+                "xcrun",
+                &["simctl", "delete", "60E60E60-0000-4000-8000-000000000002"]
+            )
         );
         assert!(
             ctx.take_diagnostics()
@@ -620,15 +643,14 @@ mod tests {
         let mut ctx = test_ctx();
         ctx.diagnostic_output = crate::safety::DiagnosticOutput::Capture;
         let output = r#"{"devices":{"runtime":[
-            {"udid":"AAAA-1","isAvailable":true,"name":"iPhone","dataPathSize":10},
-            {"udid":"BBBB-2","isAvailable":true,"name":"iPad"}
+            {"udid":"AAAAAAAA-0000-4000-8000-000000000001","isAvailable":true,"name":"iPhone","dataPathSize":10},
+            {"udid":"BBBBBBBB-0000-4000-8000-000000000002","isAvailable":true,"name":"iPad"}
         ]}}"#;
 
         assert!(findings_from_simctl(output, &ctx).unwrap().is_empty());
         assert!(
-            ctx.take_diagnostics()
-                .iter()
-                .any(|message| message.contains("no dataPathSize for BBBB-2")),
+            ctx.take_diagnostics().iter().any(|message| message
+                .contains("no dataPathSize for BBBBBBBB-0000-4000-8000-000000000002")),
             "an omitted disclosure must say why"
         );
 
@@ -642,7 +664,16 @@ mod tests {
     #[test]
     fn malformed_simulator_device_id_is_an_error() {
         let ctx = test_ctx();
-        for udid in ["../../escape", "--help"] {
+        // `simctl delete` reads these words as every device of a kind, and a
+        // name that is not a UUID is not a device identifier at all.
+        for udid in [
+            "../../escape",
+            "--help",
+            "all",
+            "unavailable",
+            "booted",
+            "NOT-A-UUID",
+        ] {
             let output =
                 format!(r#"{{"devices":{{"runtime":[{{"isAvailable":false,"udid":"{udid}"}}]}}}}"#);
             let error = findings_from_simctl(&output, &ctx).unwrap_err();
@@ -657,18 +688,24 @@ mod tests {
     #[test]
     fn preview_never_authorizes_a_broad_simulator_delete() {
         let ctx = test_ctx();
-        let output = r#"{"devices":{"runtime":[{"isAvailable":false,"udid":"DEVICE-A"},{"isAvailable":false,"udid":"DEVICE-B"}]}}"#;
+        let output = r#"{"devices":{"runtime":[{"isAvailable":false,"udid":"DEADBEEF-0000-4000-8000-00000000000A"},{"isAvailable":false,"udid":"DEADBEEF-0000-4000-8000-00000000000B"}]}}"#;
 
         let findings = findings_from_simctl(output, &ctx).unwrap();
 
         assert_eq!(findings.len(), 2);
         assert_eq!(
             findings[0].action,
-            Action::command("xcrun", &["simctl", "delete", "DEVICE-A"])
+            Action::command(
+                "xcrun",
+                &["simctl", "delete", "DEADBEEF-0000-4000-8000-00000000000A"]
+            )
         );
         assert_eq!(
             findings[1].action,
-            Action::command("xcrun", &["simctl", "delete", "DEVICE-B"])
+            Action::command(
+                "xcrun",
+                &["simctl", "delete", "DEADBEEF-0000-4000-8000-00000000000B"]
+            )
         );
     }
 }

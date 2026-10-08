@@ -1094,6 +1094,38 @@ CASES = (
         target='eval_system',
     ),
     Case(
+        name="eval/home-repo",
+        relative_path="src/ops/project.rs",
+        # A repository at or above the home folder owns the projects below it.
+        before="            return Ok((!crate::safety::holds_home(&current, home)).then_some(current));\n",
+        after="            return Ok(Some(current));\n",
+        tests=("eval_a_home_folder_repository_never_owns_the_projects_under_it",),
+        marker="PV eval/home-repo",
+        target="evals",
+    ),
+    Case(
+        name="eval/apply-recheck-node-modules",
+        relative_path="src/ops/node_modules.rs",
+        # Only the preflight judges a finding; the removals that follow it
+        # no longer recheck, so a repository active by then loses its output.
+        before="            match recheck(path).and_then(|()| apply_filesystem_finding(self.name(), finding, ctx)) {",
+        after="            match apply_filesystem_finding(self.name(), finding, ctx) {",
+        tests=("eval_a_repository_that_becomes_active_during_apply_keeps_its_dependencies",),
+        marker="PV eval/apply-recheck",
+        target="evals",
+    ),
+    Case(
+        name="eval/apply-recheck-artifacts",
+        relative_path="src/ops/artifacts.rs",
+        # Only the preflight judges a finding; the removals that follow it
+        # no longer recheck, so a repository active by then loses its output.
+        before="            match recheck(path).and_then(|()| apply_filesystem_finding(self.name(), finding, ctx)) {",
+        after="            match apply_filesystem_finding(self.name(), finding, ctx) {",
+        tests=("eval_a_repository_that_becomes_active_during_apply_keeps_its_build_output",),
+        marker="PV eval/apply-recheck",
+        target="evals",
+    ),
+    Case(
         name="eval/write-ahead",
         relative_path="src/journal.rs",
         # A failed attempt record no longer stops the mutation it precedes.
