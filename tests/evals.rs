@@ -445,7 +445,7 @@ fn projects_fixture(sandbox: &Sandbox) -> Projects {
         ("core.pager", payload.display().to_string()),
         ("diff.external", payload.display().to_string()),
     ] {
-        git(sandbox, &hostile, STALE, &["config", &key, &value]);
+        git(sandbox, &hostile, STALE, &["config", key, &value]);
     }
 
     // Near misses, each kept by one documented rule.
