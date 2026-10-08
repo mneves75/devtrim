@@ -52,6 +52,7 @@ class Case:
         after: str,
         tests: tuple[str, ...],
         marker: str,
+        target: str = "lib",
     ) -> None:
         self.name = name
         self.relative_path = relative_path
@@ -59,6 +60,9 @@ class Case:
         self.after = after
         self.tests = tests
         self.marker = marker
+        # "lib" selects a unit test; any other value names an integration test
+        # file in tests/, whose binary runs the freshly rebuilt devtrim.
+        self.target = target
 
 
 CASES = (
@@ -869,6 +873,61 @@ CASES = (
         tests=("ops::xcode::tests::a_derived_data_folder_that_is_a_repository_is_never_split",),
         marker="PV xcode/repository-folder-apply",
     ),
+    # Feature evals (tests/evals.rs): each runs the rebuilt binary against a
+    # planted fixture, so these prove the black-box assertions can fail.
+    Case(
+        name="eval/caches-plan",
+        relative_path="src/ops/caches.rs",
+        # Homebrew's Git clone stops counting, so the whole cache is offered.
+        before="        if file_type.is_dir() && has_git_marker(&entry.path())? {\n",
+        after="        if file_type.is_dir() && false && has_git_marker(&entry.path())? {\n",
+        tests=("eval_clean_caches_removes_every_listed_cache_and_nothing_else",),
+        marker="PV eval/caches-plan",
+        target="evals",
+    ),
+    Case(
+        name="eval/caches-apply",
+        relative_path="src/ops/caches.rs",
+        # Apply reports every cache removed while removing none of them.
+        before="                apply_filesystem_finding(self.name(), finding, ctx)\n            })()",
+        after="                Ok(())\n            })()",
+        tests=("eval_clean_caches_removes_every_listed_cache_and_nothing_else",),
+        marker="PV eval/caches-apply",
+        target="evals",
+    ),
+    Case(
+        name="eval/drift-new-target",
+        relative_path="src/app.rs",
+        # Apply rescans after consent (same permanent mode, so the mutant can
+        # never reach Finder's Trash) instead of consuming the previewed plan.
+        before="    let danger = safety::plan_danger(&findings);\n    if let Err(error) = safety::gate(danger, ctx, &findings) {\n        return command_error(operation.name(), false, &findings, ctx, error);\n    }\n",
+        after="    let danger = safety::plan_danger(&findings);\n    if let Err(error) = safety::gate(danger, ctx, &findings) {\n        return command_error(operation.name(), false, &findings, ctx, error);\n    }\n    let mut findings = operation.scan(ctx, &ops::project::ScanObservations::default())?;\n    report::effective_actions(&mut findings, cli.shred);\n",
+        tests=("eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview",),
+        marker="PV eval/drift-new-target",
+        target="evals",
+    ),
+    Case(
+        name="eval/drift-swapped-target",
+        relative_path="src/ops/mod.rs",
+        # The sink forgets the preview-time identity: it adopts whatever is
+        # at the path now, which disarms both the pre-removal check and the
+        # post-quarantine recheck that would otherwise mask this mutant.
+        before="    if actual != expected {\n        anyhow::bail!(\"target identity changed after preview; refusing\");",
+        after="    let expected = actual;\n    if actual != expected {\n        anyhow::bail!(\"target identity changed after preview; refusing\");",
+        tests=("eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview",),
+        marker="PV eval/drift-swapped-target",
+        target="evals",
+    ),
+    Case(
+        name="eval/write-ahead",
+        relative_path="src/journal.rs",
+        # A failed attempt record no longer stops the mutation it precedes.
+        before="    append_at(&location, &record)\n        .with_context(|| format!(\"cannot write apply journal: {}\", ctx.journal_path.display()))?;\n    Ok(JournalAttempt {",
+        after="    let _ = append_at(&location, &record);\n    Ok(JournalAttempt {",
+        tests=("eval_an_unwritable_journal_prevents_every_removal",),
+        marker="PV eval/write-ahead",
+        target="evals",
+    ),
 )
 
 
@@ -892,13 +951,20 @@ def run(command: list[str], cwd: Path, env_target: Path, timeout: int):
     )
 
 
-def build_test_binary(workspace: Path, target_dir: Path, deadline: float) -> Path:
-    """Compile the library tests and return the executable cargo produced."""
+def build_test_binary(workspace: Path, target_dir: Path, deadline: float, target: str) -> Path:
+    """Compile one test target and return the executable cargo produced.
+
+    An integration test target also rebuilds the `devtrim` binary it runs
+    (`CARGO_BIN_EXE_devtrim`), so a mutant is exercised through the real
+    entry point, not a stale build.
+    """
     remaining = int(max(1, deadline - time.monotonic()))
+    selection = ["--lib"] if target == "lib" else ["--test", target]
+    kind = ["lib"] if target == "lib" else ["test"]
     result = run(
         [
             "rustup", "run", TOOLCHAIN, "cargo", "test",
-            "--locked", "--offline", "--lib", "--all-features",
+            "--locked", "--offline", *selection, "--all-features",
             "--no-run", "--message-format=json",
         ],
         workspace,
@@ -917,7 +983,8 @@ def build_test_binary(workspace: Path, target_dir: Path, deadline: float) -> Pat
         except ValueError:
             continue
         if message.get("reason") == "compiler-artifact" and message.get("executable"):
-            if message.get("target", {}).get("kind") == ["lib"]:
+            built = message.get("target", {})
+            if built.get("kind") == kind and (target == "lib" or built.get("name") == target):
                 executable = message["executable"]
     return Path(executable) if executable else None
 
@@ -954,6 +1021,12 @@ def main() -> int:
 
 
 def run_cases(scratch: Path) -> int:
+    # An optional name prefix narrows the run while developing a case; the
+    # gate runs with no argument, so every case.
+    prefix = sys.argv[1] if len(sys.argv) > 1 else ""
+    cases = [case for case in CASES if case.name.startswith(prefix)]
+    if not cases:
+        fail(f"ERROR: no case name starts with {prefix!r}")
     deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS
     workspace = scratch / "src-copy"
     target_dir = scratch / "cargo-target"
@@ -969,24 +1042,26 @@ def run_cases(scratch: Path) -> int:
 
     pristine = {
         case.relative_path: (workspace / case.relative_path).read_text()
-        for case in CASES
+        for case in cases
     }
 
-    baseline = build_test_binary(workspace, target_dir, deadline)
-    if baseline is None:
-        fail("ERROR: the unmutated copy did not compile; gate cannot run")
+    baselines = {}
+    for target in sorted({case.target for case in cases}):
+        baselines[target] = build_test_binary(workspace, target_dir, deadline, target)
+        if baselines[target] is None:
+            fail(f"ERROR: the unmutated copy did not compile ({target}); gate cannot run")
 
     # Every named test must pass before it can prove anything by failing.
-    for case in CASES:
+    for case in cases:
         for test in case.tests:
-            result = run_one_test(baseline, test, target_dir)
+            result = run_one_test(baselines[case.target], test, target_dir)
             if not selected_exactly_one(result.stdout):
                 fail(f"ERROR {case.name}: expected exactly one test, ran 0 ({test})")
             if result.returncode != 0:
                 fail(f"ERROR {case.name}: baseline test already fails ({test})")
 
     caught = []
-    for case in CASES:
+    for case in cases:
         if time.monotonic() > deadline:
             fail(f"ERROR {case.name}: total deadline exceeded before mutation")
 
@@ -1000,7 +1075,7 @@ def run_cases(scratch: Path) -> int:
             )
         path.write_text(original.replace(case.before, case.after, 1))
 
-        mutant = build_test_binary(workspace, target_dir, deadline)
+        mutant = build_test_binary(workspace, target_dir, deadline, case.target)
         path.write_text(original)
         if mutant is None:
             fail(f"ERROR {case.name}: mutant did not compile")
@@ -1019,7 +1094,7 @@ def run_cases(scratch: Path) -> int:
                     f"assertion '{case.marker}' — a different check refused, so "
                     f"this is not proof the boundary is covered"
                 )
-            location = re.search(r"(src/[^\s:]+:\d+)", combined)
+            location = re.search(r"((?:src|tests)/[^\s:]+:\d+)", combined)
             caught.append(
                 f"CAUGHT {case.name}: {test.rsplit('::', 1)[-1]}"
                 f" at {location.group(1) if location else 'unknown'}"

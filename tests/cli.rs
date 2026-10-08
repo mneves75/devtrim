@@ -5,71 +5,13 @@
     reason = "test assertions fail by panicking"
 )]
 
+mod support;
+
 use serde_json::Value;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-struct Sandbox(PathBuf);
-
-impl Sandbox {
-    fn new(name: &str) -> Self {
-        Self::new_in(std::env::temp_dir(), name)
-    }
-
-    fn new_in(base: PathBuf, name: &str) -> Self {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = base.join(format!("devtrim-cli-{name}-{}-{id}", std::process::id()));
-        std::fs::remove_dir_all(&path).ok();
-        std::fs::create_dir_all(&path).unwrap();
-        let sandbox = Self(path);
-        sandbox.script("pgrep", "exit 1");
-        sandbox
-    }
-
-    // Permanent-deletion fixtures live here so same-device preflight matches the checkout.
-    fn in_target(name: &str) -> Self {
-        Self::new_in(std::env::current_dir().unwrap().join("target"), name)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn bin(&self) -> PathBuf {
-        let path = self.0.join("bin");
-        std::fs::create_dir_all(&path).unwrap();
-        path
-    }
-
-    fn script(&self, name: &str, body: &str) -> PathBuf {
-        let path = self.bin().join(name);
-        std::fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&path, permissions).unwrap();
-        path
-    }
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
-    }
-}
-
-fn run(sandbox: &Sandbox, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_devtrim"))
-        .args(args)
-        .env("HOME", sandbox.path())
-        .env("PATH", sandbox.bin())
-        .env_remove("XDG_STATE_HOME")
-        .output()
-        .unwrap()
-}
+use std::process::Command;
+use support::{Sandbox, git_activity, json, run};
 
 fn docker_script(sandbox: &Sandbox, image_prune_exit: i32) {
     let body = format!(
@@ -78,15 +20,6 @@ fn docker_script(sandbox: &Sandbox, image_prune_exit: i32) {
         " ;;\n  *) exit 1 ;;\nesac"
     );
     sandbox.script("docker", &body);
-}
-
-/// A `git` answering devtrim's two activity queries — HEAD's commit date, then
-/// the newest HEAD reflog entry (`-g`) — with `commit` and `reflog`, and its
-/// tracked-file check (`ls-files`) with nothing tracked.
-fn git_activity(commit: &str, reflog: &str) -> String {
-    format!(
-        "case \"$*\" in\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{{{reflog}}}\\n' ;;\n  *) printf '{commit}\\n' ;;\nesac"
-    )
 }
 
 /// A `git` that answers "stale" to its first three activity checks and fails
@@ -99,16 +32,6 @@ fn git_stale_for_three_probes(sandbox: &Sandbox) {
         "git",
         "case \"$*\" in\n  *ls-files*) exit 0 ;;\nesac\ncount=0\nif [ -f \"$DEVTRIM_TEST_COUNT\" ]; then read count < \"$DEVTRIM_TEST_COUNT\"; fi\ncase \"$*\" in\n  *' -g '*) ;;\n  *) count=$((count + 1)); printf '%s\\n' \"$count\" > \"$DEVTRIM_TEST_COUNT\" ;;\nesac\ncase \"$count\" in\n  1|2|3) ;;\n  *) exit 9 ;;\nesac\ncase \"$*\" in\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
     );
-}
-
-fn json(output: &Output) -> Value {
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
-        panic!(
-            "invalid JSON: {error}; stdout={}; stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-    })
 }
 
 #[test]
