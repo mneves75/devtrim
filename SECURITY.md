@@ -181,14 +181,18 @@ Non-negotiable boundaries:
   corroboration (or an exact `CACHEDIR.TAG` signature) and a conclusively stale
   owning Git repo; corroboration, ownership, staleness, liveness, tracked
   files, program keypairs, and Terraform state (`*.tfstate`), which no rebuild
-  restores, are all re-verified at apply time.
+  restores, are all re-verified at apply time: for the whole plan before
+  anything changes, and again for each finding just before its own removal.
+- A repository at or above the home folder never owns a project: a project
+  with no repository of its own under a home folder kept as a repository is
+  not judged by `node_modules`, `artifacts` or `purge`.
 - Incomplete directory traversal, metadata, or numeric parsing is not size authority for an actionable plan.
 - Unknown configuration fields are rejected so a misspelled safety setting cannot appear active.
 - Docker volumes and Xcode Archives are never pruned.
 - Docker cleanup refuses remote contexts and pins the previewed absolute local
   Unix-socket endpoint into the command authority.
 - Simulator cleanup creates one finding and command authority per validated
-  UDID, then rechecks that exact device is still unavailable before deletion.
+  UDID — a UUID; `simctl`'s set words such as `all` are refused — then rechecks that exact device is still unavailable before deletion.
   Working simulators appear only in one report-only finding that carries no
   authority.
 - A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize a typed Docker or simulator operation with validated arguments, and apply must match both representations exactly.
@@ -229,7 +233,8 @@ Non-negotiable boundaries:
    parent-directory handle; identity drift refuses the deletion.
    Every directory action first walks the opened tree and refuses device
    crossings and Git markers before a path-based Trash call or permanent
-   mutation. Permanent deletes quarantine the verified leaf under a private
+   mutation; in both modes a target on another device than its parent (a
+   mount point) is refused. Permanent deletes quarantine the verified leaf under a private
    unpredictable name with an atomic no-replace rename (so a refused target is
    never restored over a file recreated at its name), re-verify, repeat those checks, and drive recursive
    deletion through open handles.

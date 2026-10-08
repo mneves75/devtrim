@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.10.7.
+This source tree and its packaged documentation describe devtrim v0.10.8.
 
 ## Install
 
@@ -137,7 +137,9 @@ repository tracks, and a build directory holding a Solana program keypair or a
 nested Git repository. Unlike `mo purge`, it never
 matches ambiguous names such as `build`, `dist`, or `coverage`, never deletes
 permanently unless you pass `--shred`, and never touches a repository with
-recent Git activity.
+recent Git activity. A project with no repository of its own is never judged
+by an enclosing repository at or above your home folder, such as dotfiles
+kept as a repository at `~`.
 
 `purge`, `clean node-modules`, `clean artifacts`, `clean leftovers`, `largest`,
 and the project half of `scan` look only under the scan roots, never the whole
@@ -541,7 +543,18 @@ python3 scripts/tests/read-only-views.py target/debug/devtrim
 ```
 
 It uses an isolated HOME and PATH, explicit terminal dimensions, visible
-content assertions, and bounded waits. Use `tests/cli.rs` fixtures for JSON,
+content assertions, and bounded waits.
+
+Every command also has a feature eval (`tests/evals.rs`,
+`tests/eval_system.rs`): the real binary against planted fixtures, where a
+preview must change nothing on disk and an apply must remove exactly what it
+previewed and keep every documented near miss byte for byte. Each eval's
+assertions are proven able to fail by planted mutants in
+`scripts/tests/planted-violations.py`. Two opt-in checks go beyond stubs:
+`scripts/tests/native-docker.sh target/debug/devtrim` runs `clean docker`
+against a real, disposable Docker engine in Apple's `container`, and
+`scripts/perf/pageload.mjs` measures cold loads of the website and manual
+(`scripts/tests/pageload-controls.py` proves it rejects a slow or broken page). Use `tests/cli.rs` fixtures for JSON,
 probe failures, and deletion sentinels. Debug a failing scenario in its
 disposable fixture; do not grant broader permissions or run cleanup in your
 real home merely to make a test pass.

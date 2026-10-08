@@ -4,6 +4,27 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+## [0.10.8] - 2026-10-08
+
+Every feature now has an eval that runs the real binary against a planted
+fixture and is proven able to fail. The evals, and a fresh-context security
+audit, found four gaps, all closed here.
+
+### Added
+- Feature evals for every command (`tests/evals.rs`, `tests/eval_system.rs`). Each plants what the feature claims to act on beside one near miss per documented exclusion. A preview must leave the fixture byte for byte unchanged; an apply must remove exactly the previewed targets, journal each one write-ahead, and keep every near miss. Further evals cover a target that appears or is swapped between consent and apply (driven inside one terminal session), an unwritable journal, a hostile `.git/config`, Xcode running, the two retention windows, and the flags each command rejects. Twenty-five planted mutants prove these assertions can fail; `planted-violations.py` now rebuilds the binary and selects integration tests, and accepts a name prefix while a case is developed
+- `scripts/tests/native-docker.sh` proves `clean docker` against a real, disposable Docker engine run by Apple's `container`: every unused image and all build cache go, and a volume and its data stay. A binary that skips the apply fails it
+- `scripts/perf/pageload.mjs` measures cold loads of the website and the manual in headless Chrome and fails closed on a broken image, a CSP violation or a page that paints nothing; `scripts/tests/pageload-controls.py` proves it
+
+### Fixed
+- A home folder kept as a Git repository (dotfiles at `~`) no longer decides for the projects under it that have no repository of their own. Its last commit made a project edited that morning look stale, so `purge`, `clean node-modules` and `clean artifacts` offered its `node_modules`, `target` and `.venv`. Such a project is now not judged at all
+- `clean node-modules` and `clean artifacts` judge each finding again just before removing it, not only before the first removal, so a repository that becomes active while earlier findings are removed keeps its output
+- Moving a directory to the Trash now refuses one on another device than its parent (a mount point), as permanent deletion already did
+- A simulator is deleted only by a UUID; `simctl`'s set words (`all`, `unavailable`, `booted`) are refused
+- The manual said installers wait for the project window; they follow `retain_days`
+
+### Changed
+- The website's hero image is a 34 KB WebP instead of a 1.3 MB PNG; the landing page now transfers 55 KB
+
 ## [0.10.7] - 2026-10-04
 
 Using the TUI showed two puzzles: `A` seemed to do nothing, and the menu put a
