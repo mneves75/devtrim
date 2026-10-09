@@ -332,7 +332,7 @@ Non-negotiable boundaries:
   Named mutation controls prove individual assertions, not every feature or
   race. The shared removal-root device check has a same-device control and a
   foreign-parent-device refusal using injected observed metadata; that test
-  does not mount a volume or invoke Finder's Trash move.
+  does not mount a volume or perform a real Trash move.
 
 - Directory sizes are measured with one `stat` per file. macOS `getattrlistbulk`
   would collapse that into roughly one syscall per hundred entries, but it has no
@@ -356,18 +356,23 @@ Non-negotiable boundaries:
   Trash API). Identity is re-verified immediately before the call, but removal
   is not atomic against a concurrent rename in that final window. Directory
   targets are fully preflighted for foreign devices and nested Git markers
-  before the Trash call, but that preflight cannot make Finder's path-based move
-  atomic. devtrim is a single-user local tool; when identity cannot be proven
+  before the Trash call, but that preflight cannot make the path-based
+  `NSFileManager` move atomic. devtrim is a single-user local tool; when identity cannot be proven
   it refuses. Permanent non-directory targets are finally unlinked by their
   private unpredictable quarantine name because macOS has no general
   remove-by-open-file API. Recursive deletion rechecks each entry, device, Git
   marker, and open directory identity, but a concurrent post-preflight change
   can still stop a partially completed tree; there is no rollback after
   deletion begins.
-- The `trash` crate and Finder behavior depend on macOS permissions and volume
-  support. Files & Folders, App Management, Automation, or Full Disk Access
-  authorization is a manual user decision in System Settings; devtrim does not
-  bypass it. Trash purge is permanent once explicitly applied.
+- The `trash` crate depends on macOS permissions and volume support. devtrim
+  moves items with `NSFileManager.trashItemAtURL` (`DeleteMethod::NsFileManager`),
+  never through Finder's AppleScript, which needed Automation permission for
+  the calling process and failed without it (2026-10-02). The crate documents
+  one cost: Finder's "Put Back" may not remember where an item came from, so
+  restoring means dragging it out of the Trash. Files & Folders, App
+  Management, or Full Disk Access authorization is a manual user decision in
+  System Settings; devtrim does not bypass it. Trash purge is permanent once
+  explicitly applied.
 - External commands can change behavior across installed tool versions, and on
   a machine running dozens of agent worktrees (load average 300 to 950, about
   1,700 processes, a system-wide `lsof` taking 16 s at load 300, observed

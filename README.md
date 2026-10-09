@@ -360,7 +360,7 @@ Trash after confirmation remains.
 The Trash is shared with every other program and session, so `--only-devtrim`
 narrows the purge to what devtrim itself moved there: each move to the Trash
 journals the item's device, inode and birth time, which survive the move while
-Finder renames the item at will, and only a Trash item matching a successful
+the Trash renames the item at will, and only a Trash item matching a successful
 move is offered. Everything else stays and is counted in a note; an apply
 journal that cannot be read whole refuses the narrowed purge and offers
 nothing, because the record that tells an item apart could be the one missed.
@@ -571,7 +571,8 @@ previewed targets while preserving near misses. Named planted mutants in
 `scripts/tests/planted-violations.py` prove the assertions they select can
 fail; other assertions remain review obligations. The shared removal-root
 device check is tested with injected device metadata, not a real mounted
-volume or Finder move. Two opt-in checks go beyond stubs:
+volume or a real Trash move, which would land in the developer's own Trash.
+Two opt-in checks go beyond stubs:
 `scripts/tests/native-docker.sh target/debug/devtrim` runs `clean docker`
 against a real, disposable Docker engine in Apple's `container`, and
 `scripts/perf/pageload.mjs` measures cold loads of the website and manual

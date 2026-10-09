@@ -22,6 +22,8 @@ invalid:
   - remove_dir_all(path)?;
   - trash::delete(path)?;
   - delete(path)?;
+  - trash_context().delete(path)?;
+  - context.delete_all(paths)?;
   - dir.remove_file(path)?;
   - dir.remove_open_dir()?;
   - rustix::fs::unlinkat(dirfd, path, flags)?;

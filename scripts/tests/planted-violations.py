@@ -1404,6 +1404,14 @@ CASES = (
         marker="PV process/timeout",
     ),
     Case(
+        name="sink/trash-no-finder",
+        relative_path="src/ops/mod.rs",
+        before="    context.set_delete_method(DeleteMethod::NsFileManager);\n",
+        after="    context.set_delete_method(DeleteMethod::Finder);\n",
+        tests=("ops::tests::the_trash_move_uses_nsfilemanager_never_finder",),
+        marker="PV sink/trash-no-finder",
+    ),
+    Case(
         name="liveness/agent-processes",
         relative_path="src/safety.rs",
         before='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\\\.[0-9]+\\\\.[0-9]+";' + "\n",

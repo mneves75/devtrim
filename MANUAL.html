@@ -431,7 +431,7 @@
   <ul class="flow">
     <li><strong>Measure before cutting.</strong> <code>scan</code> is read-only and always free to run. Sizes are estimated logical bytes; APFS clones, sparse files, Trash, and container VMs can differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.</li>
     <li><strong>Classify by risk.</strong> Every finding carries a danger score from 1 to 10 that decides how hard you must confirm (see <a href="#danger">§06</a>).</li>
-    <li><strong>Trim with a net.</strong> Filesystem deletions go to macOS Trash by default — recoverable from Finder. Permanent deletion requires an explicit <code>--shred</code>.</li>
+    <li><strong>Trim with a net.</strong> Filesystem deletions go to macOS Trash by default — recoverable from the Trash (Finder&rsquo;s &ldquo;Put Back&rdquo; may not remember where an item came from). Permanent deletion requires an explicit <code>--shred</code>.</li>
   </ul>
   <p>The tool refuses to be clever about your data:</p>
   <ul class="flow">
