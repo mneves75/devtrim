@@ -4,6 +4,12 @@ Branch `feat/feature-evals`, base `01f5ef0` (0.10.7). Owner request: prove every
 feature does what it says, safely, with evals shown able to fail; audit security;
 every page under 50 ms; release.
 
+The unreleased 0.10.8 source work is now part of the 0.10.9 candidate in
+[plan 013](013-adversarial-review-fixes.md). That plan records the five later
+checked fixes, current verification and release blockers. The owner explicitly
+waived the 50 ms page-load release condition on 2026-10-09; failed measurements
+remain recorded and their controls and budgets are unchanged.
+
 ## What the review changed
 
 Inputs: Claude's draft, Sol's independent plan (GPT-6.1 Sol), an adversarial

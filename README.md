@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.10.8.
+This source tree and its packaged documentation describe devtrim v0.10.9.
 
 ## Install
 
@@ -150,7 +150,10 @@ conventional project folders that exist: `~/dev`, `~/Developer`,
 `mo purge` defaults plus the folder Finder marks as `Developer`. Claude Code
 puts its worktrees inside the repository (`.claude/worktrees/`), which the
 repository's own root already covers. `--root` or `roots` in the config replaces them. A root only says
-where to look; every finding still needs its category's corroborated name, Git
+where to look; roots at or below `.git`, or below `node_modules` (in any ASCII
+case), are excluded from both project cleanup categories, including explicit
+and configured roots. A root exactly at a top-level `node_modules` install
+may offer that install, never nested installs. Every finding still needs its category's corroborated name, Git
 owner, and staleness. Folders macOS guards with a privacy prompt (Desktop,
 Documents, Downloads), cloud storage, and `~/Library` stay out unless you name
 them. Every human preview of these commands begins with an `info scan roots:`
@@ -361,6 +364,11 @@ Finder renames the item at will, and only a Trash item matching a successful
 move is offered. Everything else stays and is counted in a note; an apply
 journal that cannot be read whole refuses the narrowed purge and offers
 nothing, because the record that tells an item apart could be the one missed.
+Ownership reads every retained generation (current plus three rotated files),
+independently of `history`'s 1,000-entry display limit. Malformed or unreadable
+records, records over 64 KiB, or a snapshot above 42,205,188 bytes (about
+40.25 MiB) refuse the entire narrowed purge. Records already rotated out are
+not recoverable ownership evidence.
 A direct item named as an ASCII-case variant of `.git` is warned about and left
 in Trash instead of blocking the other exact items.
 
@@ -404,6 +412,16 @@ critical plans still require typed confirmation. `--yolo` acknowledges the
 risk and skips interactive prompts, but it never bypasses operation-specific
 acknowledgments such as `trash-empty --confirm=<gb>` or adds an operation that
 was absent from the preview.
+
+Localized scan failures remain visible and non-actionable in the TUI and make
+its eventual exit nonzero; a later successful scan does not clear that failure.
+Build-process liveness refuses decoded `lsof` CWD names that are not absolute,
+including diagnostics, at both preview and apply.
+
+`status` uses the Data volume when layout inspection finds its directory.
+A failed or malformed Data metric stays unavailable with a reason and nonzero
+status. Root-filesystem fallback requires a positively absent Data layout;
+an unreadable or non-directory layout is unavailable.
 
 ## Config — `~/.config/devtrim.toml`
 
@@ -557,7 +575,17 @@ volume or Finder move. Two opt-in checks go beyond stubs:
 `scripts/tests/native-docker.sh target/debug/devtrim` runs `clean docker`
 against a real, disposable Docker engine in Apple's `container`, and
 `scripts/perf/pageload.mjs` measures cold loads of the website and manual
-(`scripts/tests/pageload-controls.py` proves it rejects a slow or broken page). Use `tests/cli.rs` fixtures for JSON,
+with a bounded post-load observation: after eager-image decode and font
+readiness, LCP must remain unchanged for 250 ms within five seconds. Later
+dynamic content is outside this measurement. The controls in
+`scripts/tests/pageload-controls.py` cover healthy, slow, delayed/larger paint,
+broken, CSP and blank pages, plus failed Chrome starts and profile cleanup.
+Samples include the observed LCP element ID; delayed-paint controls require
+their intended element, so a slow initial paint cannot satisfy them. The
+browser-free `python3 -B scripts/tests/pageload-controls-validation.py` checks
+that stale candidates fail and complete reports pass; local checks, CI and
+read-only release gates run it.
+Use `tests/cli.rs` fixtures for JSON,
 probe failures, and deletion sentinels. Debug a failing scenario in its
 disposable fixture; do not grant broader permissions or run cleanup in your
 real home merely to make a test pass.

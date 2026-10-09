@@ -41,6 +41,7 @@ checked 2026-09-04. User instructions take precedence over skill procedures.
 - Feature evals: `rustup run 1.98.1 cargo test --locked --test evals --test eval_system --test eval_reports --test eval_safety` (part of the test gate; every command against planted fixtures through the real binary).
 - Native Docker (opt-in, needs Apple `container`, the Docker CLI with buildx, and network): `scripts/tests/native-docker.sh target/debug/devtrim`.
 - Page load (opt-in, needs Chrome): serve the checkout with `python3 -m http.server 4173 --bind 127.0.0.1`, then `node scripts/perf/pageload.mjs "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" http://127.0.0.1:4173/ 30 50 index.html MANUAL.html`; `python3 scripts/tests/pageload-controls.py <chrome>` proves it can fail.
+- Paint-control validation (no browser): `python3 -B scripts/tests/pageload-controls-validation.py`; stale LCP candidates must fail even when their timestamps exceed the budget.
 - Read-only views: `python3 scripts/tests/read-only-views.py target/debug/devtrim` (analyze navigation/progress/help/resize; status sampling/resize/blocked-probe quit; terminal restoration).
 - Format: `rustup run 1.98.1 cargo fmt --all -- --check`
 - Lint: `rustup run 1.98.1 cargo clippy --locked --all-targets --all-features -- -D warnings`
@@ -134,6 +135,13 @@ checked 2026-09-04. User instructions take precedence over skill procedures.
 - Bare `devtrim` opens the TUI only with interactive stdin and stdout. Non-TTY automation uses explicit subcommands; `--json` remains exactly one document.
 - Keep CSP metadata intact in shipped HTML. Landing page is `index.html` + `styles.css`; demo media lives in `media/`.
 - Code review reads `CODING_STANDARDS.md`. Every bullet in this section is a hard standard, citable as `CLAUDE.md § Conventions`.
+
+- Build-process CWDs must decode to absolute paths. A diagnostic or relative name refuses liveness at preview and apply; never turn an unreadable process into an inactive repository.
+- `trash-empty --only-devtrim` uses `journal::read_complete_history`, never the display tail: current plus three retained generations, no record-count truncation, 64 KiB per-record ceiling, and an explicit 42,205,188-byte complete-snapshot ceiling (about 40.25 MiB). Malformed, oversized, unreadable or incomplete input refuses the entire narrowed purge. Rotation removes old ownership evidence; never infer it.
+- TUI results treat localized `Finding::scan_error` as failure on every results route. Failure is cumulative for the session: a later successful scan must not clear the nonzero exit status; error rows remain non-actionable.
+- `status` chooses the Data-volume metric only after layout inspection finds a directory; root fallback requires typed `NotFound`. A non-directory or unreadable layout, or failed/malformed present Data metric, remains unavailable with its reason and nonzero status.
+- Project cleanup walkers exclude roots at or below ASCII-case variants of `.git`, or below `node_modules`, before traversal, including explicit/configured roots. A root exactly at a top-level `node_modules` install may offer that install, never nested installs. This does not replace independent apply shape checks.
+- The thirteen named `review013/` planted cases cover build CWD preview/apply, complete Trash ownership/malformed input/resource budget, cumulative TUI scan errors, unreadable/non-directory disk layouts and Data metric failure, plus both project categories' dependency and Git roots. Only an executed compiling mutant that fails its tagged assertion earns mutation proof; review owns all other cases.
 
 ## Apple platforms
 

@@ -17,6 +17,10 @@ const MAX_JOURNAL_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_JOURNAL_RECORD_BYTES: usize = 64 * 1024;
 const HISTORY_READ_CHUNK_BYTES: usize = 8 * 1024;
 const KEEP_ROTATED: usize = 3;
+// A resource ceiling, not a claim about retained size: each generation may
+// overshoot rotation by one record, and any larger complete snapshot refuses.
+const MAX_COMPLETE_HISTORY_BYTES: usize =
+    (KEEP_ROTATED + 1) * (MAX_JOURNAL_BYTES as usize + MAX_JOURNAL_RECORD_BYTES + 1);
 const HISTORY_LOCK_RACE_RETRIES: usize = 3;
 static JOURNAL_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -579,9 +583,32 @@ pub(crate) fn read_history(path: &Path, limit: usize) -> Result<History> {
     read_history_with_lock_observer(path, limit, || {})
 }
 
+/// Read every retained generation, or refuse the entire ownership history.
+pub(crate) fn read_complete_history(path: &Path) -> Result<History> {
+    read_history_snapshot(path, HistoryScope::Complete, || {})
+}
+
+#[derive(Clone, Copy)]
+enum HistoryScope {
+    Tail(usize),
+    Complete,
+}
+
 fn read_history_with_lock_observer(
     path: &Path,
     limit: usize,
+    lock_acquired: impl FnMut(),
+) -> Result<History> {
+    read_history_snapshot(
+        path,
+        HistoryScope::Tail(limit.clamp(1, 1000)),
+        lock_acquired,
+    )
+}
+
+fn read_history_snapshot(
+    path: &Path,
+    scope: HistoryScope,
     mut lock_acquired: impl FnMut(),
 ) -> Result<History> {
     let Some(location) = JournalLocation::open(path, ParentMode::Existing)? else {
@@ -626,7 +653,7 @@ fn read_history_with_lock_observer(
         }
         snapshot.ok_or_else(|| anyhow::anyhow!("cannot stabilize apply journal history"))?
     };
-    let history = parse_history_snapshot(files, limit);
+    let history = parse_history_snapshot(files, scope);
     drop(history_lock);
     history
 }
@@ -674,19 +701,36 @@ fn open_history_snapshot(location: &JournalLocation) -> Result<Vec<HistoryFile>>
     Ok(files)
 }
 
-fn parse_history_snapshot(files: Vec<HistoryFile>, limit: usize) -> Result<History> {
-    let limit = limit.clamp(1, 1000);
-    let max_scanned_bytes = limit
-        .saturating_mul(2)
-        .saturating_add(1)
-        .saturating_mul(MAX_JOURNAL_RECORD_BYTES.saturating_add(1));
+fn parse_history_snapshot(files: Vec<HistoryFile>, scope: HistoryScope) -> Result<History> {
+    let (limit, max_scanned_bytes) = match scope {
+        HistoryScope::Tail(limit) => (
+            Some(limit),
+            limit
+                .saturating_mul(2)
+                .saturating_add(1)
+                .saturating_mul(MAX_JOURNAL_RECORD_BYTES.saturating_add(1)),
+        ),
+        HistoryScope::Complete => {
+            let total = files.iter().try_fold(0_u64, |total, file| {
+                total
+                    .checked_add(file.snapshot_len)
+                    .ok_or_else(|| anyhow::anyhow!("complete apply journal snapshot size overflow"))
+            })?;
+            if total > MAX_COMPLETE_HISTORY_BYTES as u64 {
+                anyhow::bail!(
+                    "complete apply journal history exceeds the bounded {MAX_COMPLETE_HISTORY_BYTES} byte snapshot; nothing is offered"
+                );
+            }
+            (None, MAX_COMPLETE_HISTORY_BYTES)
+        }
+    };
     let mut scan_budget = max_scanned_bytes;
     let mut malformed = 0usize;
-    let mut entries = Vec::with_capacity(limit);
+    let mut entries = Vec::with_capacity(limit.unwrap_or(0));
     let mut fully_scanned = true;
     let mut pending_results = HashMap::new();
     for history_file in files {
-        if entries.len() == limit {
+        if history_limit_reached(&entries, limit) {
             break;
         }
         if scan_budget == 0 && history_file.snapshot_len != 0 {
@@ -705,9 +749,14 @@ fn parse_history_snapshot(files: Vec<HistoryFile>, limit: usize) -> Result<Histo
             break;
         }
     }
-    if entries.len() < limit && !fully_scanned {
+    if !history_limit_reached(&entries, limit) && !fully_scanned {
         anyhow::bail!(
             "apply journal history exceeds the bounded {max_scanned_bytes} byte tail scan after {malformed} malformed line(s)"
+        );
+    }
+    if matches!(scope, HistoryScope::Complete) && malformed != 0 {
+        anyhow::bail!(
+            "complete apply journal history contains {malformed} malformed line(s); nothing is offered"
         );
     }
     let errors = if malformed == 0 {
@@ -720,9 +769,13 @@ fn parse_history_snapshot(files: Vec<HistoryFile>, limit: usize) -> Result<Histo
     Ok(History { entries, errors })
 }
 
+fn history_limit_reached(entries: &[JournalRecord], limit: Option<usize>) -> bool {
+    limit.is_some_and(|limit| entries.len() >= limit)
+}
+
 fn scan_history_generation(
     mut history_file: HistoryFile,
-    limit: usize,
+    limit: Option<usize>,
     scan_budget: &mut usize,
     entries: &mut Vec<JournalRecord>,
     malformed: &mut usize,
@@ -732,7 +785,7 @@ fn scan_history_generation(
     let mut block = vec![0_u8; HISTORY_READ_CHUNK_BYTES];
     let mut reversed_line = Vec::with_capacity(1024);
     let mut at_file_end = true;
-    while position != 0 && entries.len() < limit {
+    while position != 0 && !history_limit_reached(entries, limit) {
         if *scan_budget == 0 {
             return Ok(false);
         }
@@ -775,7 +828,7 @@ fn scan_history_generation(
                     entries,
                     malformed,
                 )?;
-                if entries.len() == limit {
+                if history_limit_reached(entries, limit) {
                     return Ok(true);
                 }
             } else {
@@ -790,7 +843,7 @@ fn scan_history_generation(
         }
     }
 
-    if position == 0 && history_file.snapshot_len != 0 && entries.len() < limit {
+    if position == 0 && history_file.snapshot_len != 0 && !history_limit_reached(entries, limit) {
         process_reversed_history_line(
             &mut reversed_line,
             &history_file.display_path,
@@ -1100,6 +1153,64 @@ mod tests {
         assert_eq!(history.entries[1].ts, 1);
         assert_eq!(history.entries[1].status.as_deref(), Some("interrupted"));
         crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn complete_history_pairs_legacy_records_across_generations_and_keeps_orphans() {
+        let root = temp("complete-legacy-pairing");
+        let path = root.join("journal.jsonl");
+        let mut attempt =
+            JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
+        attempt.id = None;
+        attempt.ts = 1;
+        append_to_path(&rotated_path(&path, 3), &attempt).unwrap();
+        attempt.ts = 2;
+        append_to_path(&rotated_path(&path, 2), &attempt).unwrap();
+        let mut result = JournalRecord::result(&attempt, &Ok(()));
+        result.ts = 3;
+        append_to_path(&path, &result).unwrap();
+
+        let history = read_complete_history(&path).unwrap();
+        assert!(history.errors.is_empty());
+        assert_eq!(history.entries.len(), 2);
+        assert_eq!(history.entries[0].ts, 3);
+        assert_eq!(history.entries[0].status.as_deref(), Some("ok"));
+        assert_eq!(history.entries[1].ts, 1);
+        assert_eq!(history.entries[1].status.as_deref(), Some("interrupted"));
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn complete_history_enforces_the_record_boundary() {
+        for extra in [0, 1] {
+            let root = temp(&format!("complete-record-boundary-{extra}"));
+            let path = root.join("journal.jsonl");
+            let attempt =
+                JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
+            let mut result = JournalRecord::result(&attempt, &Ok(()));
+            let encoded_len = serde_json::to_vec(&result).unwrap().len();
+            result
+                .target
+                .as_mut()
+                .unwrap()
+                .push_str(&"x".repeat(MAX_JOURNAL_RECORD_BYTES - encoded_len + extra));
+            let mut encoded = serde_json::to_vec(&result).unwrap();
+            assert_eq!(encoded.len(), MAX_JOURNAL_RECORD_BYTES + extra);
+            encoded.push(b'\n');
+            std::fs::write(&path, encoded).unwrap();
+            let history = read_complete_history(&path);
+            if extra == 0 {
+                assert_eq!(history.unwrap().entries.len(), 1);
+            } else {
+                assert!(
+                    history
+                        .unwrap_err()
+                        .to_string()
+                        .contains("journal line exceeds")
+                );
+            }
+            crate::ops::remove_test_path(root);
+        }
     }
 
     #[test]

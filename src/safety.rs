@@ -1739,7 +1739,11 @@ pub(crate) fn parse_lsof_cwds(output: &[u8], exit_code: Option<i32>) -> Result<L
         if path.is_empty() {
             bail!("lsof returned an empty cwd path");
         }
-        paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(path)?)));
+        let path = PathBuf::from(OsString::from_vec(decode_lsof_name(path)?));
+        if !path.is_absolute() {
+            bail!("lsof could not name an absolute cwd for build process {pid}");
+        }
+        paths.push(path);
         current = Some((pid, true));
     }
     if let Some((pid, false)) = current {

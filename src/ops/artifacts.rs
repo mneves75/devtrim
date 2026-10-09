@@ -483,6 +483,13 @@ fn is_program_keypair_name(name: &OsStr) -> bool {
 /// recorded in `unread` and skipped with everything below it, as a scan root
 /// that cannot be read is; only the root itself failing fails the walk.
 fn find_artifacts(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<ArtifactCandidate>> {
+    if has_node_modules_ancestor(root)
+        || root
+            .components()
+            .any(|component| is_git_metadata_name(component.as_os_str()))
+    {
+        return Ok(Vec::new());
+    }
     let mut found = Vec::new();
     let mut entries = walkdir::WalkDir::new(root).follow_links(false).into_iter();
     while let Some(result) = entries.next() {

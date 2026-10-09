@@ -4,6 +4,31 @@ Branch `feat/feature-evals`, base `01f5ef0` (v0.10.7). This is the initial gap i
 
 Current feature proofs are in [`tests/evals.rs`](../tests/evals.rs), [`tests/eval_system.rs`](../tests/eval_system.rs), [`tests/eval_reports.rs`](../tests/eval_reports.rs), and [`tests/eval_safety.rs`](../tests/eval_safety.rs). They add filesystem snapshots, real Git activity, held-lock and refusal controls, report content, and named integration mutants selected by [`scripts/tests/planted-violations.py`](../scripts/tests/planted-violations.py). Only the assertions that runner names are mutation-proven. Finder Trash, real simulator and maintenance effects, mounted-volume behavior and timing races retain the limits documented in README and SECURITY.
 
+## 0.10.9 checked-issue supplement
+
+The historical rows below retain their baseline gaps and line references.
+These later checks close five specific gaps; they do not turn that initial
+inventory into a claim that every native effect or race is proven.
+
+| Checked behavior | Current proof | Named mutation |
+| --- | --- | --- |
+| Unreadable build CWD refuses preview and apply; active and inactive controls remain distinct | `eval_system::eval_unreadable_build_cwd_refuses_project_cleanup`; `eval_system::eval_build_cwd_that_becomes_unreadable_after_preview_refuses_apply` | `review013/build-cwd-preview`, `review013/build-cwd-apply` |
+| Owned Trash identities remain recognizable beyond the display limit; malformed and over-budget retained histories offer nothing | `eval_safety::eval_trash_owned_identity_beyond_display_limit_across_retained_generations`; `eval_safety::eval_trash_malformed_retained_record_beyond_display_limit_refuses_everything`; `eval_safety::eval_trash_retained_snapshot_over_resource_budget_refuses_everything` | `review013/trash-complete-owned`, `review013/trash-complete-malformed`, `review013/trash-complete-budget` |
+| Localized TUI scan errors remain nonzero after a successful later scan; fresh healthy sessions exit zero | `tui::tests::scan_error_results_preserve_failure_across_every_route`; real-PTY `scripts/tests/tui.py` | `review013/tui-scan-error` |
+| Unknown Data layout or a failed/malformed present Data metric stays unavailable, without a root fallback | `status::tests::disk_layout_selection_fails_closed_except_for_absence`; `eval_reports::eval_status_data_failure_never_uses_sealed_root` | `review013/status-unreadable-layout`, `review013/status-nondirectory-layout`, `review013/status-data-failure` |
+| Explicit/configured roots cannot bypass dependency/Git namespace exclusions; healthy roots and the exact top-level install remain eligible | `evals::eval_project_roots_below_dependency_namespaces_offer_nothing`; `evals::eval_project_roots_below_git_metadata_offer_nothing`; `evals::eval_root_at_top_level_node_modules_still_offers_the_install` | `review013/artifacts-dependency-root`, `review013/node-modules-dependency-root`, `review013/artifacts-git-root`, `review013/node-modules-git-root` |
+
+All thirteen new controls were caught at their tagged assertions in the first
+full run, which stopped after 89 assertions at a rebuild deadline. That is
+partial catalogue proof. Later runs caught 105 assertions, corrected one stale
+history binding with its tagged control, and reached the unchanged full-run
+deadline. All nine supported prefix batches passed; the inventory in
+`.scratch/review-013/mutation-coverage-013.json` accounts for all 149 cases and
+150 tagged assertions. This complete split proof does not turn the failed
+single-run gate into PASS. No assertion or deadline was weakened. Fresh-context
+Astra black-box acceptance passed all five product behaviors; [plan 013](013-adversarial-review-fixes.md)
+records the exact evidence and remaining gates.
+
 ## How to read it
 
 - Source doc: **R** = README.md, **M** = MANUAL.html, **A** = the `## Conventions` bullets of AGENTS.md (byte-identical to CLAUDE.md).

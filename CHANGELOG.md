@@ -2,7 +2,28 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.10.9] - 2026-10-09
+
+This release also includes the unpublished 0.10.8 feature evals and safeguards:
+home-repository ownership, per-target activity rechecks, mount-point Trash
+refusal and UUID-only simulator cleanup, alongside the fixes below.
+
+### Fixed
+- Build-process liveness refuses decoded `lsof` working-directory names that are not absolute, including Darwin error diagnostics, at preview and apply
+- `trash-empty --only-devtrim` reads all retained journal generations independently of the history display limit; malformed, unreadable, oversized records or snapshots above the explicit 40.25 MiB resource ceiling refuse the entire narrowed purge
+- Localized `scan_error` findings preserve the TUI's failure exit status through every results route and later successful scans
+- `status` reports a failed or malformed Data-volume metric as unavailable; root-filesystem fallback requires a positively absent Data layout, and an unreadable or non-directory layout refuses
+- Explicit and configured project scan roots at or below ASCII-case variants of `.git`, or below `node_modules`, cannot offer nested dependency installs or build artifacts; a root exactly at a top-level install remains eligible
+- The opt-in page-load measurement waits for observed, settled paint after image/font readiness instead of sampling too early; failed Chrome starts return a measurement error and clean their disposable profiles. Timing budgets remain unchanged
+- Delayed-paint controls require the intended observed LCP element ID, so a slow initial candidate cannot satisfy their timing checks; browser-free stale-report regressions run in local checks, CI and read-only release verification
+
+### Added
+- Real-binary regressions and positive controls for liveness drift, retained Trash ownership beyond 1,000 entries, malformed old records, journal resource limits, Data-volume failures and excluded root namespaces; PTY controls cover localized scan failures and successful exit
+- Thirteen named `review013/` planted mutations cover the changed liveness, complete-history, TUI, disk-layout and root-namespace branches; each requires a compiling mutant and its tagged assertion to fail
+
 ## [0.10.8] - 2026-10-08
+
+Not published separately; included in 0.10.9.
 
 Feature evals run the real binary against planted fixtures. Named mutation
 controls prove specific assertions can fail; they do not prove every assertion

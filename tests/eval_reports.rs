@@ -369,6 +369,66 @@ fn eval_status_uses_resident_memory_and_names_unavailable_metrics() {
 }
 
 #[test]
+fn eval_status_data_failure_never_uses_sealed_root() {
+    assert!(std::fs::metadata("/System/Volumes/Data").is_ok());
+    let sandbox = sandbox("report-status-data");
+    sandbox.script("sysctl", "case \"$*\" in *hw.memsize*) printf '1048576\\n';; *hw.logicalcpu*) printf '4\\n';; *vm.loadavg*) printf '{ 0 0 0 }\\n';; *kern.boottime*) printf '{ sec = 1700000000, usec = 0 }\\n';; *) exit 1;; esac");
+    sandbox.script("vm_stat", "printf 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\\nPages free: 10.\\nPages speculative: 2.\\nPages active: 20.\\nPages inactive: 80.\\nPages wired down: 5.\\nPages occupied by compressor: 3.\\n'");
+    sandbox.script("pmset", "case \"$*\" in *batt*) printf \"Now drawing from 'AC Power'\\n\";; *therm*) printf 'CPU_Speed_Limit = 100\\n';; *) exit 1;; esac");
+    sandbox.script("netstat", "printf 'Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll\\nen0 1500 <Link#1> aa:bb 1 0 1234 2 0 5678 0\\n'");
+    sandbox.script(
+        "ps",
+        "printf 'PID %%CPU RSS COMM\\n321 0.0 128 FixtureWorker\\n'",
+    );
+    let root = "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/root 1000 100 900 10%% /\\n'";
+    sandbox.script("df", &format!("if [ \"$2\" = /System/Volumes/Data ]; then printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/data 1000 950 50 95%% /System/Volumes/Data\\n'; else {root}; fi"));
+    let before = Tree::snapshot(sandbox.path());
+    let control = run(&sandbox, &["status", "--json"]);
+    successful(&control);
+    assert_eq!(json(&control)["disk"]["used_bytes"], 950 * 1024);
+    unchanged(&before, &sandbox);
+    for (body, reason) in [
+        (
+            "printf 'synthetic Data-volume permission denied\\n' >&2; exit 1",
+            "synthetic Data-volume permission denied",
+        ),
+        (
+            "printf 'Filesystem\\n/dev/data malformed row\\n'",
+            "unexpected df row",
+        ),
+    ] {
+        sandbox.script(
+            "df",
+            &format!("if [ \"$2\" = /System/Volumes/Data ]; then {body}; else {root}; fi"),
+        );
+        let before = Tree::snapshot(sandbox.path());
+        let output = run(&sandbox, &["status", "--json"]);
+        let document = json(&output);
+        assert!(
+            document["disk"].is_null() && !output.status.success(),
+            "PV eval/status-data-failure"
+        );
+        assert!(
+            document["unavailable"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value.as_str().unwrap().contains(reason)),
+            "PV eval/status-data-failure"
+        );
+        assert!(
+            document["health"]["missing_inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "disk"),
+            "PV eval/status-data-failure"
+        );
+        unchanged(&before, &sandbox);
+    }
+}
+
+#[test]
 fn eval_generated_docs_expose_commands_and_refuse_json() {
     let sandbox = sandbox("report-generated");
     write(

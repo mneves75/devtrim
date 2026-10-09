@@ -200,6 +200,97 @@ fn drift_session(
     session.finish()
 }
 
+fn build_cwd_fixture(name: &str) -> (Sandbox, PathBuf) {
+    let sandbox = Sandbox::in_target(name);
+    let project = sandbox.path().join("dev/project");
+    write(&project.join(".git/HEAD"), "ref: refs/heads/main\n");
+    write(&project.join("package.json"), "{}");
+    write(&project.join("node_modules/pkg/file"), "dependency");
+    write(&project.join(".next/cache/file"), "build output");
+    sandbox.script("git", &support::git_activity("2000-01-01", "2000-01-01"));
+    sandbox.script("pgrep", "printf '42\\n'");
+    let project = project.canonicalize().unwrap();
+    (sandbox, project)
+}
+
+fn project_args<'a>(category: &'a str, root: &'a str, apply: bool) -> Vec<&'a str> {
+    let mut args = if category == "purge" {
+        vec!["purge"]
+    } else {
+        vec!["clean", category]
+    };
+    args.extend(["--root", root, "--shred", "--json"]);
+    if apply {
+        args.push("--apply");
+    }
+    args
+}
+
+#[test]
+fn eval_unreadable_build_cwd_refuses_project_cleanup() {
+    for category in ["node-modules", "artifacts", "purge"] {
+        let (sandbox, project) = build_cwd_fixture("eval-unreadable-build-cwd");
+        let root = project.to_str().unwrap();
+        let args = project_args(category, root, false);
+        sandbox.script("lsof", "printf 'p42\\nn/elsewhere\\n'");
+        let eligible = run(&sandbox, &args);
+        assert!(eligible.status.success(), "{}", json(&eligible));
+        assert_eq!(
+            actionable_targets(&json(&eligible)).len(),
+            if category == "purge" { 2 } else { 1 },
+            "inactive absolute cwd control must reach cleanup eligibility"
+        );
+        sandbox.script("lsof", &format!("printf 'p42\\nn{}\\n'", project.display()));
+        let busy = run(&sandbox, &args);
+        assert!(busy.status.success(), "{}", json(&busy));
+        assert!(actionable_targets(&json(&busy)).is_empty());
+
+        for name in [
+            "cwd|rtd info error: Operation not permitted",
+            "relative/project",
+            "no more information",
+        ] {
+            sandbox.script("lsof", &format!("printf 'p42\\nn{name}\\n'"));
+            let pristine = Tree::snapshot(sandbox.path());
+            let result = run(&sandbox, &args);
+            let document = json(&result);
+            assert!(
+                !result.status.success() && actionable_targets(&document).is_empty(),
+                "PV eval/build-cwd-unreadable: {category} accepted {name:?}: {document}"
+            );
+            assert!(!document["errors"].as_array().unwrap().is_empty());
+            pristine.assert_only(
+                &Tree::snapshot(sandbox.path()),
+                &Allowed::default(),
+                "unreadable build cwd preview",
+            );
+        }
+    }
+}
+
+#[test]
+fn eval_build_cwd_that_becomes_unreadable_after_preview_refuses_apply() {
+    for category in ["node-modules", "artifacts", "purge"] {
+        let (sandbox, project) = build_cwd_fixture("eval-build-cwd-drift");
+        sandbox.script("lsof", "printf 'p42\\nn/elsewhere\\n'");
+        let root = project.to_str().unwrap();
+        let args = project_args(category, root, true);
+        let (result, _) = drift_session(&sandbox, &args, || {
+            sandbox.script(
+                "lsof",
+                "printf 'p42\\nncwd|rtd info error: Operation not permitted\\n'",
+            );
+        });
+        assert!(
+            !result.success()
+                && project.join("node_modules/pkg/file").exists()
+                && project.join(".next/cache/file").exists(),
+            "PV eval/build-cwd-drift: {category} removed output after its liveness probe became unreadable"
+        );
+        assert_no_attempts(&sandbox);
+    }
+}
+
 // ---------- clean toolchains ----------
 
 /// Two unreferenced swift.org toolchains (the positives), the toolchain

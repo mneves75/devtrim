@@ -1024,7 +1024,7 @@ pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
 pub fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>> {
     use crate::journal::TrashedIdentity;
 
-    let history = crate::journal::read_history(&ctx.journal_path, usize::MAX)
+    let history = crate::journal::read_complete_history(&ctx.journal_path)
         .context("cannot read the apply journal that records what devtrim moved to the Trash")?;
     // A history read only in part could be missing the very record that tells
     // an item apart, so nothing is offered rather than a part.

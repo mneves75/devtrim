@@ -15,7 +15,9 @@ fuzz_target!(|data: &[u8]| {
         _ => None,
     });
     let _ = devtrim::fuzz_api::parse_pgrep_pids(output, exit_code);
-    let _ = devtrim::fuzz_api::parse_lsof_cwds(output, exit_code);
+    if let Ok(paths) = devtrim::fuzz_api::parse_lsof_cwds(output, exit_code) {
+        assert!(paths.iter().all(|path| path.is_absolute()));
+    }
     let _ = devtrim::fuzz_api::parse_lsof_mappings(output, exit_code);
     if let Ok(version) = std::str::from_utf8(output) {
         let _ = devtrim::fuzz_api::codex_version_core(version);

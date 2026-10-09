@@ -23,6 +23,7 @@ compiler_bin=$(dirname "$compiler")
 export PATH="$compiler_bin:$PATH"
 export CARGO_NET_OFFLINE=true
 run agent-docs cmp -s AGENTS.md CLAUDE.md
+run pageload-control-validation python3 -B scripts/tests/pageload-controls-validation.py
 run compiler rustc --version
 run format cargo fmt --all -- --check
 run structure-tests ast-grep test --skip-snapshot-tests

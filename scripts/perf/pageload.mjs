@@ -10,6 +10,9 @@
 // desktop and a phone-sized viewport it reports the median, p95 and maximum
 // of loadEventEnd and of largest contentful paint (milliseconds from
 // navigation start) and the bytes transferred, with every raw sample.
+// After load, image decode and font readiness, LCP must remain unchanged for
+// 250 ms within a 5-second observation deadline. Later dynamic content is
+// outside this bounded measurement; this is not a page-lifetime LCP metric.
 //
 // It fails closed: a sample counts only when the document and every
 // subresource loaded, every image decoded, no Content-Security-Policy
@@ -35,6 +38,8 @@ const VIEWPORTS = [
   { name: "mobile", width: 390, height: 844, mobile: true, deviceScaleFactor: 3 },
 ];
 const STEP_DEADLINE_MS = 15_000;
+const PAINT_DEADLINE_MS = 5_000;
+const PAINT_QUIET_MS = 250;
 
 const profile = mkdtempSync(join(tmpdir(), "devtrim-pageload-"));
 const browser = spawn(chrome, [
@@ -48,12 +53,16 @@ const browser = spawn(chrome, [
   "--disable-component-update",
   "about:blank",
 ], { stdio: "ignore" });
+let browserError;
+browser.on("error", (error) => { browserError = error; });
 
 // Chrome keeps writing its profile until it exits, so remove it only after exit.
 async function cleanup() {
-  const exited = new Promise((resolve) => browser.once("exit", resolve));
-  browser.kill();
-  await exited;
+  if (browser.pid !== undefined && browser.exitCode === null && browser.signalCode === null) {
+    const exited = new Promise((resolve) => browser.once("exit", resolve));
+    browser.kill();
+    await exited;
+  }
   rmSync(profile, { recursive: true, force: true });
 }
 
@@ -67,6 +76,10 @@ function deadline(promise, what) {
 
 async function endpoint() {
   for (let attempt = 0; attempt < 150; attempt++) {
+    if (browserError) throw new Error(`Chrome could not start: ${browserError.message}`);
+    if (browser.exitCode !== null || browser.signalCode !== null) {
+      throw new Error(`Chrome exited before connecting (${browser.signalCode ?? browser.exitCode})`);
+    }
     try {
       const [port, path] = readFileSync(join(profile, "DevToolsActivePort"), "utf8").trim().split("\n");
       return `ws://127.0.0.1:${port}${path}`;
@@ -119,9 +132,15 @@ function connect(url) {
 // page's CSP, so they can observe the violations it reports.
 const OBSERVE = `
   window.__lcp = 0;
+  window.__lcpElementId = null;
   window.__csp = [];
+  window.__paintWaiter = null;
   new PerformanceObserver((list) => {
-    for (const entry of list.getEntries()) window.__lcp = entry.startTime;
+    for (const entry of list.getEntries()) {
+      window.__lcp = entry.startTime;
+      window.__lcpElementId = entry.id || null;
+    }
+    if (window.__lcp > 0) window.__paintWaiter?.();
   }).observe({ type: "largest-contentful-paint", buffered: true });
   document.addEventListener("securitypolicyviolation", (event) => {
     window.__csp.push(event.violatedDirective + " " + event.blockedURI);
@@ -129,18 +148,39 @@ const OBSERVE = `
 `;
 
 const READ = `(async () => {
-  const [navigation] = performance.getEntriesByType("navigation");
-  const resources = performance.getEntriesByType("resource");
   const images = [...document.images].filter((image) => image.loading !== "lazy" || image.complete);
   const undecoded = [];
   for (const image of images) {
     try { await image.decode(); } catch { undecoded.push(image.currentSrc || image.src); }
     if (image.naturalWidth === 0) undecoded.push(image.currentSrc || image.src);
   }
+  await document.fonts.ready;
+  // A first paint can precede a larger candidate. Require a quiet observation
+  // window after readiness; a blank or continuously changing page times out.
+  const paintSettled = await new Promise((resolve) => {
+    let quietTimer;
+    const finish = (settled) => {
+      clearTimeout(quietTimer);
+      clearTimeout(timer);
+      window.__paintWaiter = null;
+      resolve(settled);
+    };
+    const timer = setTimeout(() => finish(false), ${PAINT_DEADLINE_MS});
+    window.__paintWaiter = () => {
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => finish(true), ${PAINT_QUIET_MS});
+    };
+    if (window.__lcp > 0) window.__paintWaiter();
+  });
+  const [navigation] = performance.getEntriesByType("navigation");
+  const resources = performance.getEntriesByType("resource");
   return JSON.stringify({
     status: navigation.responseStatus,
     load: navigation.loadEventEnd,
     lcp: window.__lcp,
+    lcp_element_id: window.__lcpElementId,
+    paintSettled,
+    visibility: document.visibilityState,
     bytes: navigation.transferSize + resources.reduce((sum, r) => sum + r.transferSize, 0),
     failed: resources.filter((r) => r.responseStatus >= 400 || r.responseStatus === 0).map((r) => r.name),
     undecoded,
@@ -156,12 +196,11 @@ async function sample(cdp, url, viewport) {
     await cdp.send("Network.setCacheDisabled", { cacheDisabled: true }, sessionId);
     await cdp.send("Emulation.setDeviceMetricsOverride", viewport, sessionId);
     await cdp.send("Page.enable", {}, sessionId);
+    await cdp.send("Page.bringToFront", {}, sessionId);
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: OBSERVE }, sessionId);
     const loaded = cdp.once("Page.loadEventFired", sessionId);
     await cdp.send("Page.navigate", { url }, sessionId);
     await loaded;
-    // Let the paint that follows load report its LCP entry.
-    await new Promise((resolve) => setTimeout(resolve, 250));
     const { result } = await cdp.send(
       "Runtime.evaluate",
       { expression: READ, returnByValue: true, awaitPromise: true },
@@ -181,6 +220,8 @@ function broken(s) {
   if (s.csp.length) reasons.push(`CSP violations ${s.csp.join("; ")}`);
   if (!(Number.isFinite(s.load) && s.load > 0)) reasons.push(`load ${s.load}`);
   if (!(Number.isFinite(s.lcp) && s.lcp > 0)) reasons.push(`no LCP observed (${s.lcp})`);
+  if (s.visibility !== "visible") reasons.push(`document visibility ${s.visibility}`);
+  if (!s.paintSettled) reasons.push(`LCP did not settle within ${PAINT_DEADLINE_MS} ms`);
   return reasons;
 }
 
@@ -226,7 +267,11 @@ try {
         load_ms: load,
         lcp_ms: lcp,
         bytes: samples[0].bytes,
-        samples: samples.map((s) => ({ load: round(s.load), lcp: round(s.lcp) })),
+        samples: samples.map((s) => ({
+          load: round(s.load),
+          lcp: round(s.lcp),
+          lcp_element_id: s.lcp_element_id,
+        })),
       });
     }
   }

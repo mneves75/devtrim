@@ -27,6 +27,150 @@ fn apply(sandbox: &Sandbox, category: &str) -> std::process::Output {
     )
 }
 
+#[cfg(target_os = "macos")]
+fn retained_trash_record(path: &std::path::Path) -> String {
+    use std::os::macos::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path).unwrap();
+    serde_json::json!({
+        "ts": 1, "phase": "result", "op": "caches", "action": "trash",
+        "target": "/former/cache", "size_bytes": 4, "status": "ok",
+        "identity": {
+            "dev": metadata.st_dev(), "ino": metadata.st_ino(),
+            "birth_secs": metadata.st_birthtime(),
+            "birth_nanos": metadata.st_birthtime_nsec()
+        }
+    })
+    .to_string()
+        + "\n"
+}
+
+#[cfg(target_os = "macos")]
+fn newer_history_records(count: usize) -> String {
+    (0..count)
+        .map(|index| {
+            serde_json::json!({
+                "id": format!("{:x}", index + 1), "ts": index + 2,
+                "phase": "result", "op": "caches", "action": "shred",
+                "target": "/former/unrelated-cache", "size_bytes": 1, "status": "ok"
+            })
+            .to_string()
+                + "\n"
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn eval_trash_owned_identity_beyond_display_limit_across_retained_generations() {
+    let sandbox = Sandbox::in_target("eval-trash-retained");
+    let owned = cache(&sandbox, ".Trash/renamed-cache");
+    let foreign = cache(&sandbox, ".Trash/foreign-cache");
+    write(
+        &sandbox.journal().with_extension("jsonl.3"),
+        &retained_trash_record(&owned),
+    );
+    for generation in 0..3 {
+        let journal = if generation == 0 {
+            sandbox.journal()
+        } else {
+            sandbox
+                .journal()
+                .with_extension(format!("jsonl.{generation}"))
+        };
+        write(&journal, &newer_history_records(400));
+    }
+    let pristine = Tree::snapshot(sandbox.path());
+    let preview = run(&sandbox, &["trash-empty", "--only-devtrim", "--json"]);
+    assert!(preview.status.success(), "{}", json(&preview));
+    assert_eq!(
+        actionable_targets(&json(&preview)),
+        [owned],
+        "PV eval/trash-retained-owned: every retained generation must identify owned Trash beyond 1000 newer results"
+    );
+    assert!(foreign.exists());
+    for (arguments, expected) in [
+        (vec!["history", "--json"], 20),
+        (vec!["history", "--limit", "1000", "--json"], 1000),
+    ] {
+        let output = run(&sandbox, &arguments);
+        assert!(output.status.success(), "{}", json(&output));
+        assert_eq!(json(&output)["entries"].as_array().unwrap().len(), expected);
+    }
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "PV eval/trash-retained-preview",
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn eval_trash_malformed_retained_record_beyond_display_limit_refuses_everything() {
+    let sandbox = Sandbox::in_target("eval-trash-retained-malformed");
+    let owned = cache(&sandbox, ".Trash/recent-owned-cache");
+    write(&sandbox.journal(), &retained_trash_record(&owned));
+    write(
+        &sandbox.journal().with_extension("jsonl.1"),
+        &newer_history_records(1100),
+    );
+    let oldest = sandbox.journal().with_extension("jsonl.3");
+    write(&oldest, "malformed retained ownership record\n");
+    let pristine = Tree::snapshot(sandbox.path());
+    let preview = run(&sandbox, &["trash-empty", "--only-devtrim", "--json"]);
+    assert!(
+        !preview.status.success(),
+        "PV eval/trash-retained-malformed: malformed older retained history must refuse the whole ownership selection"
+    );
+    assert!(actionable_targets(&json(&preview)).is_empty());
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "PV eval/trash-retained-malformed-preview",
+    );
+    // The ordinary display intentionally reads only its newest tail.
+    let display = run(&sandbox, &["history", "--limit", "1", "--json"]);
+    assert!(display.status.success(), "{}", json(&display));
+    write(&oldest, &newer_history_records(1));
+    let control = run(&sandbox, &["trash-empty", "--only-devtrim", "--json"]);
+    assert!(control.status.success(), "{}", json(&control));
+    assert_eq!(actionable_targets(&json(&control)), [owned]);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn eval_trash_retained_snapshot_over_resource_budget_refuses_everything() {
+    let sandbox = Sandbox::in_target("eval-trash-retained-budget");
+    let owned = cache(&sandbox, ".Trash/recent-owned-cache");
+    write(&sandbox.journal(), &retained_trash_record(&owned));
+    write(
+        &sandbox.journal().with_extension("jsonl.1"),
+        &newer_history_records(1100),
+    );
+    let oldest = sandbox.journal().with_extension("jsonl.3");
+    write(&oldest, "");
+    // Sparse: prove resource refusal without allocating a large test corpus.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&oldest)
+        .unwrap()
+        .set_len(50 * 1024 * 1024)
+        .unwrap();
+    let output = run(&sandbox, &["trash-empty", "--only-devtrim", "--json"]);
+    assert!(
+        !output.status.success(),
+        "PV eval/trash-retained-budget: an oversized retained snapshot must refuse all ownership selection"
+    );
+    assert!(
+        json(&output)["errors"].to_string().contains("bounded"),
+        "PV eval/trash-retained-budget: the whole snapshot must be refused by its resource bound before line parsing"
+    );
+    assert!(actionable_targets(&json(&output)).is_empty());
+    write(&oldest, &newer_history_records(1));
+    let control = run(&sandbox, &["trash-empty", "--only-devtrim", "--json"]);
+    assert!(control.status.success(), "{}", json(&control));
+    assert_eq!(actionable_targets(&json(&control)), [owned]);
+}
+
 #[test]
 fn eval_busy_uv_cache_is_kept_while_later_caches_are_removed() {
     let sandbox = Sandbox::in_target("eval-uv-lock");

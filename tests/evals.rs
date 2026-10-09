@@ -421,6 +421,10 @@ fn git(sandbox: &Sandbox, repo: &Path, date: &str, args: &[&str]) {
             "commit.gpgsign=false",
             "-c",
             "init.defaultBranch=main",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
         ])
         .args(args)
         .current_dir(repo)
@@ -707,6 +711,111 @@ fn eval_purge_is_exactly_node_modules_plus_artifacts() {
         both.sort();
         both
     });
+}
+
+fn eval_excluded_roots(names: &[&str], tag: &str) {
+    let commands: [(&[&str], &[&str]); 3] = [
+        (&["clean", "node-modules"], &["node_modules"]),
+        (&["clean", "artifacts"], &[".next"]),
+        (&["purge"], &["node_modules", ".next"]),
+    ];
+    let sandbox = Sandbox::in_target("eval-excluded-roots");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let mut scenarios = vec![("healthy", sandbox.path().join("dev/healthy"), true)];
+    for (index, name) in names.iter().enumerate() {
+        // Distinct parents keep case variants distinct on APFS too.
+        scenarios.push((
+            *name,
+            sandbox
+                .path()
+                .join(format!("dev/case-{index}"))
+                .join(name)
+                .join("nested"),
+            false,
+        ));
+    }
+    for (name, project, eligible) in scenarios {
+        write(&project.join("package.json"), "{}");
+        write(&project.join("node_modules/pkg/index.js"), "dependency");
+        write(&project.join(".next/cache/chunk.js"), "build output");
+        repo(&sandbox, &project, STALE, &["package.json"]);
+        for configured in [false, true] {
+            for (command, leaves) in commands {
+                let root = project.canonicalize().unwrap();
+                let spelling = root.to_str().unwrap();
+                let mut args = command.to_vec();
+                if configured {
+                    write(
+                        &sandbox.path().join(".config/devtrim.toml"),
+                        &format!("roots = [{}]\n", serde_json::to_string(spelling).unwrap()),
+                    );
+                } else {
+                    args.extend(["--root", spelling]);
+                }
+                args.push("--json");
+                let pristine = Tree::snapshot(sandbox.path());
+                let output = run(&sandbox, &args);
+                let document = json(&output);
+                assert!(output.status.success(), "{args:?}: {document}");
+                let mut expected = if eligible {
+                    leaves.iter().map(|leaf| root.join(leaf)).collect()
+                } else {
+                    Vec::new()
+                };
+                expected.sort();
+                assert_eq!(
+                    actionable_targets(&document),
+                    expected,
+                    "PV eval/excluded-roots-{tag}: {args:?}, namespace {name}, configured {configured}, eligible {eligible}"
+                );
+                pristine.assert_only(
+                    &Tree::snapshot(sandbox.path()),
+                    &Allowed::default(),
+                    "PV eval/excluded-roots-preview",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn eval_project_roots_below_dependency_namespaces_offer_nothing() {
+    eval_excluded_roots(&["node_modules", "NODE_MODULES"], "dependencies");
+}
+
+#[test]
+fn eval_project_roots_below_git_metadata_offer_nothing() {
+    eval_excluded_roots(&[".git", ".GIT"], "git");
+}
+
+#[test]
+fn eval_root_at_top_level_node_modules_still_offers_the_install() {
+    let sandbox = Sandbox::in_target("eval-install-root");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let project = sandbox.path().join("dev/project");
+    write(&project.join("package.json"), "{}");
+    write(&project.join("node_modules/pkg/index.js"), "dependency");
+    repo(&sandbox, &project, STALE, &["package.json"]);
+    let root = project.join("node_modules").canonicalize().unwrap();
+    let pristine = Tree::snapshot(sandbox.path());
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "node-modules",
+            "--root",
+            root.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let document = json(&output);
+    assert!(output.status.success(), "{document}");
+    assert_eq!(actionable_targets(&document), vec![root]);
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "PV eval/excluded-roots-install-control",
+    );
 }
 
 // ---------- read-only commands and previews change nothing ----------
