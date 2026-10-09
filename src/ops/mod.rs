@@ -1250,16 +1250,8 @@ mod tests {
     /// category instead of reading as a clean machine.
     #[test]
     fn a_command_that_outlives_its_limit_is_an_error_not_an_absent_tool() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let fixture = TestFixture::new("devtrim-command-timeout");
-        std::fs::create_dir_all(fixture.path()).unwrap();
-        let hung = fixture.path().join("docker");
-        std::fs::write(&hung, "#!/bin/sh\nexec sleep 10\n").unwrap();
-        std::fs::set_permissions(&hung, std::fs::Permissions::from_mode(0o755)).unwrap();
-
         let absent = optional_command_stdout(
-            std::process::Command::new(fixture.path().join("missing"))
+            std::process::Command::new("/nonexistent/devtrim-no-such-program")
                 .output_within(std::time::Duration::from_millis(400)),
             "`docker version`",
         )
@@ -1267,13 +1259,15 @@ mod tests {
         assert_eq!(absent, None, "control: a missing program is absent");
 
         let result = optional_command_stdout(
-            std::process::Command::new(&hung).output_within(std::time::Duration::from_millis(400)),
+            std::process::Command::new("/bin/sleep")
+                .arg("10")
+                .output_within(std::time::Duration::from_millis(400)),
             "`docker version`",
         );
         let message = format!("{:#}", result.unwrap_err());
         assert!(message.contains("`docker version`"), "{message}");
         assert!(
-            message.contains("docker timed out after 400ms"),
+            message.contains("/bin/sleep timed out after 400ms"),
             "{message}"
         );
     }

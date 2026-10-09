@@ -11,18 +11,20 @@ use std::time::{Duration, Instant};
 
 /// Read-only queries: Git, `simctl`, `docker`, `npm`, `brew`.
 ///
-/// A query that normally takes milliseconds took tens of seconds on the
-/// development machine at load average 300 to 950 with about 1,700 processes
-/// (2026-10-08). Two minutes is far past that, yet a wedged tool still fails
-/// the affected repository or category instead of hanging the whole scan.
+/// A margin, not a measurement. On the development machine at load average 300
+/// to 950 with about 1,700 processes (2026-10-08) only a system-wide `lsof` was
+/// timed (16 s at load 300); no Git, `simctl`, `docker`, `npm` or `brew` query
+/// was. A query that takes milliseconds when idle gets two minutes, which a
+/// loaded machine should not exhaust, while a wedged tool still fails the
+/// affected repository or category instead of hanging the whole scan.
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Process-table probes: `pgrep` and `lsof`.
 ///
-/// A system-wide `lsof` took 16 s at load average 300 on the same machine, and
-/// load reached about 950. Scaling that linearly gives about 50 s, so three
-/// minutes keeps a margin of more than three times over the worst observed
-/// load; beyond it the probe refuses.
+/// A system-wide `lsof` took 16 s at load average 300 on the same machine
+/// (measured), and load reached about 950. Scaling that linearly gives about
+/// 50 s (an extrapolation), so three minutes keeps a margin of more than three
+/// times over it; beyond that the probe refuses.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Typed maintenance and Docker/simulator commands run at apply, which do real
@@ -207,6 +209,9 @@ mod tests {
         path
     }
 
+    /// A shell script, for the cases where the shell itself is what the test
+    /// needs: capturing its own pid, writing to stderr with an exit code, or
+    /// leaving a background process behind.
     fn script(directory: &Path, name: &str, body: &str) -> PathBuf {
         let path = directory.join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -228,7 +233,7 @@ mod tests {
     }
 
     fn alive(pid: &str) -> bool {
-        Command::new("kill")
+        Command::new("/bin/kill")
             .args(["-0", pid])
             .output()
             .unwrap()
@@ -243,11 +248,14 @@ mod tests {
         let hang = script(
             &directory,
             "hang",
-            &format!("echo $$ > '{}'\nexec sleep 30", pid_file.display()),
+            &format!("echo $$ > '{}'\nexec sleep 60", pid_file.display()),
         );
 
-        let result = within(Duration::from_secs(10), move || {
-            Command::new(hang).output_within(Duration::from_millis(500))
+        // The limit leaves a loaded machine seconds to start the shell, and the
+        // guard and the sleep leave a regression that never times out room to
+        // fail here rather than hang or be mistaken for a normal exit.
+        let result = within(Duration::from_secs(25), move || {
+            Command::new(hang).output_within(Duration::from_secs(5))
         })
         .expect("PV process/timeout: the command was never bounded");
         let error = result.unwrap_err();
@@ -255,7 +263,7 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
         let message = error.to_string();
         assert!(message.contains("hang"), "names the command: {message}");
-        assert!(message.contains("500ms"), "names the limit: {message}");
+        assert!(message.contains("5s"), "names the limit: {message}");
         let pid = std::fs::read_to_string(&pid_file).unwrap();
         // `kill -0` still succeeds on a zombie, so this also proves the reap.
         assert!(!alive(pid.trim()), "the hung child {pid} was left behind");
@@ -266,13 +274,6 @@ mod tests {
     fn a_command_that_finishes_in_time_returns_everything_it_wrote() {
         let directory = temp("process-finish");
         let quick = script(&directory, "quick", "echo out; echo err >&2; exit 3");
-        // Well past a pipe's capacity, so a reader that waits for the exit
-        // before draining would stall the child and report a false timeout.
-        let flood = script(
-            &directory,
-            "flood",
-            "i=0\nwhile [ $i -lt 4000 ]; do echo 0123456789012345678901234567890123456789012345678901234567890123456789; i=$((i+1)); done",
-        );
 
         let output = Command::new(quick)
             .output_within(Duration::from_secs(60))
@@ -281,11 +282,15 @@ mod tests {
         assert_eq!(output.stdout, b"out\n");
         assert_eq!(output.stderr, b"err\n");
 
-        let output = Command::new(flood)
+        // 588,895 bytes, far past a pipe's capacity: a reader that waited for
+        // the exit before draining would stall the child and report a false
+        // timeout.
+        let output = Command::new("/usr/bin/seq")
+            .args(["1", "100000"])
             .output_within(Duration::from_secs(60))
             .unwrap();
         assert!(output.status.success());
-        assert_eq!(output.stdout.len(), 4000 * 71);
+        assert_eq!(output.stdout.len(), 588_895);
         crate::ops::remove_test_path(directory);
     }
 
@@ -299,30 +304,32 @@ mod tests {
 
     #[test]
     fn standard_input_is_closed_so_a_command_cannot_wait_on_the_terminal() {
-        let directory = temp("process-stdin");
-        let reader = script(&directory, "reader", "cat");
-        let output = Command::new(reader)
+        let output = Command::new("/bin/cat")
             .output_within(Duration::from_secs(60))
             .unwrap();
         assert!(output.status.success());
         assert!(output.stdout.is_empty());
-        crate::ops::remove_test_path(directory);
     }
 
     #[test]
     fn output_held_open_by_a_descendant_is_abandoned_at_the_deadline() {
         let directory = temp("process-descendant");
-        let leaves = script(&directory, "leaves", "sleep 4 &\nexit 0");
+        // The shell exits at once and its background `sleep` keeps the pipes
+        // open far past the limit, so the child is already gone when the
+        // deadline passes.
+        let leaves = script(&directory, "leaves", "sleep 40 &\nexit 0");
 
-        let started = Instant::now();
-        let result = within(Duration::from_secs(20), move || {
-            Command::new(leaves).output_within(Duration::from_millis(500))
+        let result = within(Duration::from_secs(30), move || {
+            Command::new(leaves).output_within(Duration::from_secs(5))
         })
         .expect("the descendant held the call past its deadline");
 
         let error = result.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(
+            error.to_string().contains("still held open"),
+            "the held-open branch was not reached: {error}"
+        );
         crate::ops::remove_test_path(directory);
     }
 }

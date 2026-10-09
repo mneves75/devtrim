@@ -1321,7 +1321,9 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTim
 /// agents belong here because they build and test in a worktree for hours:
 /// Codex runs as `codex` under a `node` wrapper, and Claude Code's process
 /// name is its version number (`2.1.294` for `~/.local/share/claude/versions/2.1.294`),
-/// matched as a whole dotted triple so that no other process name qualifies.
+/// matched as a whole dotted triple of digits. Any process named like that
+/// qualifies, which can only protect or refuse more; on the development
+/// machine only Claude Code matched.
 /// `rust-analyzer` keeps a workspace's `target` busy through its own checks.
 const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\.[0-9]+\\.[0-9]+";
 
@@ -2742,38 +2744,35 @@ mod tests {
     /// is the only empty answer, and a hung one must refuse instead.
     #[test]
     fn a_probe_that_cannot_finish_refuses_instead_of_reporting_nothing_running() {
-        let directory = temp("probe-timeout");
-        std::fs::create_dir_all(&directory).unwrap();
-        let script = |name: &str, body: &str| {
-            let path = directory.join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            path
+        let hung = || {
+            let mut command = Command::new("/bin/sleep");
+            command.arg("30");
+            command
         };
-        let hung = script("hung", "exec sleep 30");
-        let no_match = script("no-match", "exit 1");
         let limit = Duration::from_millis(400);
 
         let none = pgrep_pids(
-            &mut Command::new(&no_match),
+            &mut Command::new("/usr/bin/false"),
             Duration::from_secs(60),
             "probe",
         );
         assert_eq!(none.unwrap(), Vec::<u32>::new(), "control: exit 1 is empty");
 
-        let result = pgrep_pids(&mut Command::new(&hung), limit, "build-process pgrep probe");
+        let result = pgrep_pids(&mut hung(), limit, "build-process pgrep probe");
         assert!(
             result.is_err(),
             "PV liveness/probe-timeout: a pgrep that never answered read as nothing running"
         );
         let message = format!("{:#}", result.unwrap_err());
         assert!(message.contains("build-process pgrep probe"), "{message}");
-        assert!(message.contains("hung timed out after 400ms"), "{message}");
+        assert!(
+            message.contains("/bin/sleep timed out after 400ms"),
+            "{message}"
+        );
 
         // The lsof probes share the bound: a hung one is an error too.
-        let lsof = probe_output(&mut Command::new(&hung), limit, "build-process cwd probe");
+        let lsof = probe_output(&mut hung(), limit, "build-process cwd probe");
         assert!(lsof.is_err(), "a hung lsof returned output");
-        crate::ops::remove_test_path(&directory);
     }
 
     #[test]
