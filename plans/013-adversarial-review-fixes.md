@@ -76,7 +76,7 @@ Fixtures use disposable HOME/PATH in target or ignored scratch; never real HOME.
    v0.10.9 promotes the exact highest verified beta archive without rebuilding.
    Check remote checksum/provenance and visible binary behavior separately.
 
-## Current state and implementation
+## Baseline findings and chosen implementation
 
 `safety.rs:1739` rejects only empty lsof n fields, then creates a PathBuf.
 Darwin reports CWD diagnostics in NAME; lexical build matching treats them as
@@ -310,8 +310,7 @@ artifact verification remains mandatory.
 The owner's later instruction explicitly authorizes Homebrew publication and
 installation on this Mac, including the existing closeout's separate tap and
 `/opt/homebrew` writes. No renewed approval is needed for that exact delivery.
-Pending: Git/CI and full hosted mutation verification,
-beta/stable artifact proof, Homebrew and installed-binary acceptance.
+Those delivery checks subsequently passed; see the completed delivery below.
 
 The local autoreview dry run passed isolation/input preparation, but both real
 invocations were rejected by automatic approval before execution. The second
@@ -321,3 +320,43 @@ On 2026-10-09 the owner instructed us to ignore that blocked export and continue
 The external helper is waived; no provider review or clean verdict is inferred
 from the dry run. The independent on-platform reviews and acceptance above
 remain separate evidence.
+
+## Completed delivery (2026-10-09)
+
+- Fix commit `93e2cf4b82002b8fa347e15d9e8063eccda54939` passed PR CI
+  [37882176303](https://github.com/mneves75/devtrim/actions/runs/37882176303).
+  [PR #30](https://github.com/mneves75/devtrim/pull/30) was squash-merged after
+  normal merge was refused; the merged file tree is identical to the reviewed
+  commit. Main `adbadf498bcc6fad7bd0d514221bf87ef956df77` passed exact-main CI
+  [37883840310](https://github.com/mneves75/devtrim/actions/runs/37883840310).
+- The unchanged full hosted mutation gate passed in PR, main, beta and
+  production: all 150 tagged boundary assertions. This supersedes the pending
+  hosted gate above, not the recorded local timeout. Rust 1.98.1 and 1.88 each
+  passed 508 tests (two intentionally ignored). Fresh audits, secret scans,
+  video, shell/policy, terminal and all five fuzz gates passed.
+- Immutable [v0.10.9-beta1](https://github.com/mneves75/devtrim/releases/tag/v0.10.9-beta1)
+  and [v0.10.9](https://github.com/mneves75/devtrim/releases/tag/v0.10.9) point
+  at the merged main commit. Beta run `37885234145` and production run
+  `37890552663` passed. Production skipped building and packaging; independently
+  downloaded archives compare byte for byte. ZIP SHA-256:
+  `b273e1527f4ca872ee58799e1edec8b554bfc8025f33c5ea10778ddce4cc7bcf`.
+  Immutable manifests and repository/workflow/source attestations verified;
+  the wrong-source control failed specifically for its digest mismatch.
+- Homebrew tap `9c7bdea4fa8a6add5d2fc84e3e2aa24a0da597a9` publishes the exact
+  stable URL/checksum. Strict online audit, upgrade and formula tests passed.
+  `/opt/homebrew/bin/devtrim` is the sole visible binary, reports `0.10.9`,
+  and compares byte for byte with the beta executable. Both downloaded and
+  installed binaries passed real PTY TUI and read-only-view suites against
+  disposable homes. Logs and release/signature JSON remain in
+  `.scratch/review-013/`; independent black-box evidence remains in
+  `.scratch/verify-013/`.
+- Final docs advance the stable landing page only after release/install proof
+  and open `0.10.10` as Unreleased. Cargo and both lockfiles stay at 0.10.9.
+  Remove merged working branches and task-created uncited caches after final
+  documentation delivery; retain cited proof and unrelated pre-existing data.
+
+The two owner waivers remain explicit, not PASS results. The 120 valid timing
+samples still failed 50 ms. Native Finder Trash, simulator and maintenance
+execution remain unproven end to end. The implementation deliberately keeps
+focused, independently checked fixes rather than adding a broader cleanup
+framework or expanding deletion authority.

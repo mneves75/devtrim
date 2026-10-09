@@ -1,32 +1,50 @@
 # Project Memory
 
-## Current source work (0.10.9, not released)
+## Current production state (0.10.9)
 
 Plan `plans/013-adversarial-review-fixes.md` scopes five confirmed fixes:
 absolute decoded build CWDs, complete bounded retained Trash ownership,
 cumulative TUI scan failures, fail-closed Data-volume metrics, and excluded
-project-root namespaces. Source and packaged documentation target 0.10.9;
-the preceding 0.10.8 work was not released. Production remains the verified
-0.10.7 below; the landing page stays on that version.
+project-root namespaces. Source and packaged documentation identify 0.10.9;
+the preceding 0.10.8 work shipped with this release rather than separately.
 
 The main session witnessed regression failures before the fixes. The full Rust
 suite passed 508 tests, and fresh-context Astra black-box acceptance passed
 all five bug criteria. Fuzzing, fresh audits, secret scans and video gates passed.
 Rust 1.88 also passed all 508 tests. Optional page timing budgets failed with
 the corrected measurement tool. Split mutation proof accounts for all 149 cases
-and 150 tagged assertions; the single full run failed its unchanged rebuild
-deadline and still requires exact-candidate hosted verification. Local
-autoreview was waived by the owner on 2026-10-09; Git/CI delivery and release
-proof remain pending. Details in
-`memory/2026-10-08.md`; these checks are not release evidence.
+and 150 tagged assertions; the local single full run failed its unchanged
+rebuild deadline. The unchanged unified gate subsequently passed on PR #30,
+merged main, beta and production. Details of the earlier local checks remain
+in `memory/2026-10-08.md`.
 The final measurement collected 120 valid samples after the mutation workers
 finished; all four page/viewport combinations still failed the unchanged 50 ms
 budget. The owner explicitly waived that timing release gate and instructed us
 to ignore the blocked external review export on 2026-10-09. Neither waived
-check is reported as passed; the remaining CI/provenance/install gates apply.
-Homebrew and the visible Mac binary still report 0.10.7.
+check is reported as passed.
 
-## Current production state (0.10.7)
+PR #30 was squash-merged to `adbadf498bcc6fad7bd0d514221bf87ef956df77`;
+its file tree matched reviewed commit `93e2cf4` exactly. PR CI `37882176303`
+and exact-main CI `37883840310` passed. Immutable `v0.10.9-beta1` and stable
+`v0.10.9` point at that merged commit. Hosted release runs `37885234145` and
+`37890552663` passed every non-waived gate, including all 150 mutation
+assertions and five bounded fuzz targets. Production skipped rebuilding and
+reused the beta ZIP byte for byte, independently checked with `cmp` and SHA-256
+`b273e1527f4ca872ee58799e1edec8b554bfc8025f33c5ea10778ddce4cc7bcf`.
+Both immutable release manifests and source/workflow attestations verified;
+a deliberately wrong source digest was rejected for the expected mismatch.
+
+Homebrew tap `9c7bdea4fa8a6add5d2fc84e3e2aa24a0da597a9` publishes that URL
+and checksum. Strict online audit, upgrade and formula tests passed.
+`/opt/homebrew/bin/devtrim` is the sole visible binary and reports `0.10.9`;
+its bytes match the downloaded beta executable. Both the downloaded beta and
+the installed binary passed real PTY TUI and read-only-view suites against
+disposable homes. Evidence is retained in `.scratch/review-013/` and
+`.scratch/verify-013/`; the delivery journal is `memory/2026-10-09.md`.
+The landing page now links stable 0.10.9; `0.10.10` is the next Unreleased
+changelog section. Cargo and both lockfiles remain at released version 0.10.9.
+
+## Previous production state (0.10.7)
 
 Production is verified. `v0.10.7-beta1` and `v0.10.7` both point at `0b71b18`;
 production reused the beta archive byte for byte (ZIP SHA-256
