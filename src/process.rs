@@ -55,8 +55,9 @@ pub(crate) trait BoundedCommand {
     /// whole group, so what a tool spawned (`docker`'s buildx plugin, a helper
     /// of `git`) does not outlive the failure that was reported. The cost: the
     /// terminal's SIGINT reaches devtrim only, so an interrupted devtrim does
-    /// not signal a command in flight. Reads and probes end by themselves, or
-    /// on SIGPIPE once devtrim's pipes close; a typed mutation command runs on.
+    /// not signal a command in flight. A read or probe ends when it finishes or
+    /// on SIGPIPE once devtrim's pipes close; one that is stuck stays running
+    /// until it ends, and a typed mutation command runs on.
     /// Output still held open by a descendant after the child exited cleanly is
     /// abandoned, not awaited, and the descendant is left alone: it may be
     /// something the command meant to leave running.

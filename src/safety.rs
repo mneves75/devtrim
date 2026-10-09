@@ -1316,7 +1316,7 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTim
     Ok((bytes, newest))
 }
 
-/// Process names that protect the repository they work in, as `pgrep -x` reads
+/// Process names that protect the repository holding their working directory, as `pgrep -x` reads
 /// them: an anchored extended regex over the exact process name. The coding
 /// agents belong here because they build and test in a worktree for hours:
 /// Codex runs as `codex` under a `node` wrapper, and Claude Code's process
@@ -2707,7 +2707,7 @@ mod tests {
     /// test above), so a symlink to `sleep` stands in for each agent, and the
     /// production probe must report exactly the ones that qualify.
     #[test]
-    fn coding_agents_protect_the_repository_they_work_in() {
+    fn coding_agents_protect_the_repository_holding_their_working_directory() {
         let directory = temp("agent-names");
         let names = [
             ("2.1.999", true),

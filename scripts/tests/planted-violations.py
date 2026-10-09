@@ -1425,7 +1425,7 @@ CASES = (
         relative_path="src/safety.rs",
         before='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\\\.[0-9]+\\\\.[0-9]+(-[0-9A-Za-z-]+(\\\\.[0-9A-Za-z-]+)*)?";' + "\n",
         after='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake";' + "\n",
-        tests=("safety::tests::coding_agents_protect_the_repository_they_work_in",),
+        tests=("safety::tests::coding_agents_protect_the_repository_holding_their_working_directory",),
         marker="PV liveness/agent-processes",
     ),
     Case(
@@ -1433,7 +1433,7 @@ CASES = (
         relative_path="src/safety.rs",
         before='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\\\.[0-9]+\\\\.[0-9]+(-[0-9A-Za-z-]+(\\\\.[0-9A-Za-z-]+)*)?";' + "\n",
         after='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\\\.[0-9]+\\\\.[0-9]+";' + "\n",
-        tests=("safety::tests::coding_agents_protect_the_repository_they_work_in",),
+        tests=("safety::tests::coding_agents_protect_the_repository_holding_their_working_directory",),
         marker="PV liveness/agent-prerelease",
     ),
     Case(

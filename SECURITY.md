@@ -402,7 +402,8 @@ Non-negotiable boundaries:
   exited cleanly is abandoned, not killed. The price of the group is that the
   terminal's Ctrl-C reaches devtrim only (devtrim installs no signal handler,
   and the TUI runs in raw mode, where Ctrl-C is a key): a read or probe in
-  flight ends by itself or on SIGPIPE, but a typed mutation command runs on
+  flight ends when it finishes or on SIGPIPE, and one that is stuck stays running
+  until it ends; a typed mutation command runs on
   after an interrupted CLI run, and the journal shows its attempt without a
   result. `status`
   and `uninstall` (report-only, outside scan and apply) are not bounded.
