@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "development-tools"]
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 cap-std = "4.0.3"
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.4", features = ["fs", "process"] }
 walkdir = "2.5"
 trash = "5"
 colored = "3.0"

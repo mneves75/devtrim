@@ -1423,10 +1423,26 @@ CASES = (
     Case(
         name="liveness/agent-processes",
         relative_path="src/safety.rs",
-        before='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\\\.[0-9]+\\\\.[0-9]+";' + "\n",
+        before='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\\\.[0-9]+\\\\.[0-9]+(-[0-9A-Za-z-]+(\\\\.[0-9A-Za-z-]+)*)?";' + "\n",
         after='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake";' + "\n",
         tests=("safety::tests::coding_agents_protect_the_repository_they_work_in",),
         marker="PV liveness/agent-processes",
+    ),
+    Case(
+        name="liveness/agent-prerelease",
+        relative_path="src/safety.rs",
+        before='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\\\.[0-9]+\\\\.[0-9]+(-[0-9A-Za-z-]+(\\\\.[0-9A-Za-z-]+)*)?";' + "\n",
+        after='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\\\.[0-9]+\\\\.[0-9]+";' + "\n",
+        tests=("safety::tests::coding_agents_protect_the_repository_they_work_in",),
+        marker="PV liveness/agent-prerelease",
+    ),
+    Case(
+        name="process/descendants",
+        relative_path="src/process.rs",
+        before="        rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();\n",
+        after="        let _ = group;\n",
+        tests=("process::tests::a_timed_out_command_takes_its_descendants_with_it",),
+        marker="PV process/descendants",
     ),
     Case(
         name="liveness/probe-timeout",

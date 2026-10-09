@@ -160,7 +160,10 @@ Non-negotiable boundaries:
   matched by `pgrep -x` as an anchored extended regex over the exact process
   name, which includes the coding agents: `codex` (native, under a `node`
   wrapper), `claude`, and Claude Code's own process name, its version number
-  (`2.1.294`), matched only as a whole dotted triple of digits. As with
+  (`2.1.294`), matched only as a whole dotted triple of digits with an
+  optional SemVer pre-release suffix (`2.2.0-beta.1`). Protection follows the
+  process's own working directory: the repository containing it is
+  protected, not every repository the agent edits by absolute path. As with
   any build process, one `lsof` cannot read, another user's for example,
   refuses the probe.
   `lsof` exiting 1 is accepted only when every process it did not report is
@@ -287,6 +290,10 @@ Non-negotiable boundaries:
 ## Supply chain
 
 - `Cargo.lock` is committed and release builds use `--locked`.
+- `rustix` already supplies the directory-anchored file operations; its `process`
+  feature adds the safe `kill_process_group`, which `process::BoundedCommand`
+  needs to kill a timed-out command's group. It adds no crate to the lockfile;
+  std has no group kill and the crate forbids unsafe code.
 - Rust 1.98.1 is pinned in `rust-toolchain.toml` and hosted workflows; `rust-version` records the separate MSRV. This avoids the vtable-generation miscompilation documented in the [Rust 1.98.1 advisory](https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/).
 - GitHub Actions are pinned to immutable commit SHAs.
 - Dependabot checks the root and fuzz Cargo graphs, the demo video's npm graph,
@@ -384,11 +391,20 @@ Non-negotiable boundaries:
   Limits: two minutes for Git, `simctl`, `docker`, `npm` and `brew` queries;
   three for the `pgrep` and `lsof` probes (the observed 16 s scaled linearly to
   the worst observed load, about 50 s, with a margin of more than three);
-  fifteen for the typed Docker and simulator commands an apply runs, which do
-  real work and are only backstopped. A timeout is never an absent program and
+  fifteen for the typed Docker, simulator and maintenance commands an apply
+  runs, which do real work and are only backstopped. A timeout is never an absent program and
   never an empty probe: it fails the repository, category or safety check that
-  asked, and the other categories still complete. Only the child is killed; a
-  descendant it leaves holding the output is abandoned, not awaited. `status`
+  asked, and the other categories still complete. Each command leads a
+  process group of its own and a timeout kills the whole group before reaping
+  the leader (while it is unreaped its id cannot be reused), so a helper the
+  tool spawned, such as `docker`'s buildx plugin, does not outlive the
+  reported failure. A descendant still holding the output after the command
+  exited cleanly is abandoned, not killed. The price of the group is that the
+  terminal's Ctrl-C reaches devtrim only (devtrim installs no signal handler,
+  and the TUI runs in raw mode, where Ctrl-C is a key): a read or probe in
+  flight ends by itself or on SIGPIPE, but a typed mutation command runs on
+  after an interrupted CLI run, and the journal shows its attempt without a
+  result. `status`
   and `uninstall` (report-only, outside scan and apply) are not bounded.
 - Liveness probes are point-in-time snapshots. A process can start after the
   final check; apply therefore still relies on immutable targets, identity

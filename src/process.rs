@@ -4,6 +4,7 @@
 //! program (`NotFound`), so a hung probe cannot read as "nothing running".
 
 use std::io::{self, Read};
+use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -48,8 +49,17 @@ pub(crate) trait BoundedCommand {
     /// listing cannot stall it on a full pipe. Past `limit` the child is
     /// killed and reaped and the error is [`io::ErrorKind::TimedOut`], naming
     /// the program and the limit. A program that cannot start keeps its own
-    /// error, `NotFound` included. Only the child itself is killed, never its
-    /// descendants; output still held open by one is abandoned, not awaited.
+    /// error, `NotFound` included.
+    ///
+    /// The child leads a process group of its own, and a timeout kills that
+    /// whole group, so what a tool spawned (`docker`'s buildx plugin, a helper
+    /// of `git`) does not outlive the failure that was reported. The cost: the
+    /// terminal's SIGINT reaches devtrim only, so an interrupted devtrim does
+    /// not signal a command in flight. Reads and probes end by themselves, or
+    /// on SIGPIPE once devtrim's pipes close; a typed mutation command runs on.
+    /// Output still held open by a descendant after the child exited cleanly is
+    /// abandoned, not awaited, and the descendant is left alone: it may be
+    /// something the command meant to leave running.
     fn output_within(&mut self, limit: Duration) -> io::Result<Output>;
 }
 
@@ -59,6 +69,7 @@ impl BoundedCommand for Command {
         let program = self.get_program().to_string_lossy().into_owned();
         let deadline = Instant::now() + limit;
         let mut child = self
+            .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -143,10 +154,22 @@ fn drain(
     Ok(receiver)
 }
 
-/// Kills the child and waits for it, for at most [`REAP_GRACE`]. Whether it
-/// was reaped: an unreaped child stays a zombie until devtrim exits.
+/// Kills the child's whole process group and waits for the child, for at most
+/// [`REAP_GRACE`]. Whether it was reaped: an unreaped child stays a zombie
+/// until devtrim exits.
+///
+/// The group is signalled before the child is reaped: while the leader is
+/// unreaped its process id cannot be reused, so the group id still names the
+/// group this call created and nothing else.
 fn kill_and_reap(child: &mut Child) -> bool {
-    // Failing to kill means the child already exited; `try_wait` reaps it.
+    let group = i32::try_from(child.id())
+        .ok()
+        .filter(|id| *id > 1)
+        .and_then(rustix::process::Pid::from_raw);
+    // Failing to kill means the group is already gone; `try_wait` reaps it.
+    if let Some(group) = group {
+        rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();
+    }
     child.kill().ok();
     let deadline = Instant::now() + REAP_GRACE;
     loop {
@@ -267,6 +290,44 @@ mod tests {
         let pid = std::fs::read_to_string(&pid_file).unwrap();
         // `kill -0` still succeeds on a zombie, so this also proves the reap.
         assert!(!alive(pid.trim()), "the hung child {pid} was left behind");
+        crate::ops::remove_test_path(directory);
+    }
+
+    /// `docker builder prune` runs through a buildx plugin child, and a Git
+    /// helper is a child too: killing only the command would report the failure
+    /// while the work went on. A shell that starts a background `sleep` and
+    /// waits for it stands for such a tool.
+    #[test]
+    fn a_timed_out_command_takes_its_descendants_with_it() {
+        let directory = temp("process-family");
+        let pid_file = directory.join("descendant");
+        let family = script(
+            &directory,
+            "family",
+            &format!("sleep 60 &\necho $! > '{}'\nwait", pid_file.display()),
+        );
+
+        let result = within(Duration::from_secs(25), move || {
+            Command::new(family).output_within(Duration::from_secs(5))
+        })
+        .expect("the command was never bounded");
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        // The killed `sleep` is reparented and reaped by launchd, which can
+        // take a moment; a surviving one is still there 60 seconds later.
+        let mut gone = false;
+        for _ in 0..50 {
+            if !alive(pid.trim()) {
+                gone = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            gone,
+            "PV process/descendants: the timed-out command's child {pid} still runs"
+        );
         crate::ops::remove_test_path(directory);
     }
 

@@ -1321,11 +1321,12 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTim
 /// agents belong here because they build and test in a worktree for hours:
 /// Codex runs as `codex` under a `node` wrapper, and Claude Code's process
 /// name is its version number (`2.1.294` for `~/.local/share/claude/versions/2.1.294`),
-/// matched as a whole dotted triple of digits. Any process named like that
+/// matched as a whole dotted triple of digits with an optional SemVer
+/// pre-release suffix (`2.2.0-beta.1`). Any process named like that
 /// qualifies, which can only protect or refuse more; on the development
 /// machine only Claude Code matched.
 /// `rust-analyzer` keeps a workspace's `target` busy through its own checks.
-const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\.[0-9]+\\.[0-9]+";
+const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?";
 
 /// `pgrep` matching shared by every liveness probe. `-a` keeps devtrim's own
 /// ancestors in the list: pgrep omits them by default, and a `make` or
@@ -2713,10 +2714,16 @@ mod tests {
             ("codex", true),
             ("claude", true),
             ("rust-analyzer", true),
-            // Near misses: the version pattern is a whole dotted triple, and
-            // an agent's helper or a lookalike name is not an agent.
+            // A pre-release build of Claude Code is named with its suffix.
+            ("2.2.0-beta.1", true),
+            ("2.1.0-rc1", true),
+            // Near misses: the version pattern is a whole dotted triple with
+            // at most a well-formed pre-release suffix, and an agent's helper
+            // or a lookalike name is not an agent.
             ("2.1", false),
             ("1.2.3.4", false),
+            ("2.2.0-", false),
+            ("2.2.0-beta..1", false),
             ("codex-code-mode", false),
             ("claudette", false),
         ];
@@ -2730,10 +2737,15 @@ mod tests {
 
         let running = build_process_pids().unwrap();
         for (name, expected, child) in &spawned {
+            let tag = if name.contains("-beta") || name.contains("-rc") || name.ends_with('-') {
+                "PV liveness/agent-prerelease"
+            } else {
+                "PV liveness/agent-processes"
+            };
             assert_eq!(
                 running.contains(&child.0.id()),
                 *expected,
-                "PV liveness/agent-processes: process named {name}"
+                "{tag}: process named {name}"
             );
         }
         drop(spawned);
