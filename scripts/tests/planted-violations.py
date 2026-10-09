@@ -1475,6 +1475,17 @@ CASES = (
         marker="PV process/interrupt-kill",
         target="cli",
     ),
+    # The interrupt must exit without waiting on anything outside devtrim: a
+    # message written to a full, unread stderr stalled it while the run went on.
+    Case(
+        name="process/interrupt-prompt",
+        relative_path="src/process.rs",
+        before="    registry.kill_all();\n    // The lock stays held",
+        after="    registry.kill_all();\n    io::Write::write_all(&mut io::stderr(), b\"interrupted\\n\").ok();\n    // The lock stays held",
+        tests=("an_interrupt_with_a_full_unread_stderr_still_exits_promptly_and_stops_deleting",),
+        marker="PV process/interrupt-prompt",
+        target="cli",
+    ),
     Case(
         name="process/unregister",
         relative_path="src/process.rs",

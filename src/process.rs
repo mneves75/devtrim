@@ -258,6 +258,15 @@ fn poll_exit(child: &mut Child) -> io::Result<Option<ExitStatus>> {
 /// before the exit, and leaders are left for the kernel to reap. A journal
 /// attempt in flight stays unmatched, which `history` reports as interrupted.
 ///
+/// Nothing between the signal and the exit can block on the outside world: no
+/// message is written, since a full or unread stderr would stall the write
+/// while the run kept deleting. A second signal exits at once, without
+/// waiting for the first kill to finish.
+///
+/// Installing the handler replaces a SIGINT that was ignored at startup, as in
+/// a background job of a non-interactive shell: such a run now stops on SIGINT.
+/// std and rustix offer no safe way to read the earlier disposition.
+///
 /// Not installed for the TUI, which runs in raw mode where Ctrl-C is a key and
 /// owns its terminal restoration.
 pub(crate) fn exit_on_interrupt() -> io::Result<()> {
@@ -267,33 +276,41 @@ pub(crate) fn exit_on_interrupt() -> io::Result<()> {
     thread::Builder::new()
         .name("devtrim-interrupt".into())
         .spawn(move || {
-            let Some(signal) = signals.forever().next() else {
-                return;
-            };
-            let mut registry = live();
-            registry.interrupted = true;
-            while registry.spawning > 0 {
-                registry = SPAWNED
-                    .wait(registry)
-                    .unwrap_or_else(PoisonError::into_inner);
+            let mut stopping = false;
+            for signal in signals.forever() {
+                if stopping {
+                    std::process::exit(128 + signal);
+                }
+                stopping = true;
+                // On its own thread, so a second signal is still heard while
+                // the kill waits for the lock.
+                let stop = thread::Builder::new()
+                    .name("devtrim-interrupt-stop".into())
+                    .spawn(move || kill_and_exit(signal));
+                if stop.is_err() {
+                    kill_and_exit(signal);
+                }
             }
-            registry.kill_all();
-            let name = if signal == SIGINT {
-                "SIGINT"
-            } else {
-                "SIGTERM"
-            };
-            io::Write::write_all(
-                &mut io::stderr(),
-                format!("devtrim: interrupted by {name}; stopped every command it started\n")
-                    .as_bytes(),
-            )
-            .ok();
-            // The lock stays held: no command can be reaped, registered or
-            // started between the kill and the exit.
-            std::process::exit(128 + signal);
         })?;
     Ok(())
+}
+
+/// How long an interrupt waits for a spawn in flight to register its group.
+/// A spawn takes milliseconds, so the bound only keeps a wedged one from
+/// delaying the exit.
+const SPAWN_GRACE: Duration = Duration::from_secs(2);
+
+fn kill_and_exit(signal: i32) -> ! {
+    let mut registry = live();
+    registry.interrupted = true;
+    registry = SPAWNED
+        .wait_timeout_while(registry, SPAWN_GRACE, |registry| registry.spawning > 0)
+        .unwrap_or_else(PoisonError::into_inner)
+        .0;
+    registry.kill_all();
+    // The lock stays held: no command can be reaped, registered or started
+    // between the kill and the exit.
+    std::process::exit(128 + signal)
 }
 
 /// Kills the child's whole process group and waits for the child, for at most
@@ -406,61 +423,98 @@ mod tests {
             .success()
     }
 
+    /// Starts a shell script as a registered group leader, as `output_within`
+    /// does, with its output discarded.
+    fn start_family(directory: &Path, body: &str) -> Child {
+        let family = script(directory, "family", body);
+        spawn_registered(
+            Command::new(family)
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .unwrap()
+    }
+
+    /// Waits for a pid file the script writes. The script's own progress is the
+    /// readiness signal: how long a loaded machine takes to start a shell is
+    /// not something a test can guess.
+    fn pid_from(path: &Path) -> String {
+        for _ in 0..3000 {
+            if let Ok(pid) = std::fs::read_to_string(path)
+                && pid.ends_with('\n')
+            {
+                return pid.trim().to_owned();
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        panic!("the script never wrote {}", path.display());
+    }
+
+    fn registered(pid: &str) -> bool {
+        let group = pid.parse::<i32>().unwrap();
+        live().groups.contains(&group)
+    }
+
     #[test]
     fn a_hung_command_is_killed_reaped_and_reported_as_a_timeout() {
-        let directory = temp("process-hang");
-        let pid_file = directory.join("pid");
-        let hang = script(
-            &directory,
-            "hang",
-            &format!("echo $$ > '{}'\nexec sleep 60", pid_file.display()),
-        );
-
-        // The limit leaves a loaded machine seconds to start the shell, and the
-        // guard and the sleep leave a regression that never times out room to
-        // fail here rather than hang or be mistaken for a normal exit.
-        let result = within(Duration::from_secs(25), move || {
-            Command::new(hang).output_within(Duration::from_secs(5))
+        // The guard and the sleep leave a regression that never times out room
+        // to fail here rather than hang. `sleep` starts at once, so the limit
+        // depends on no script making progress.
+        let result = within(Duration::from_secs(25), || {
+            Command::new("/bin/sleep")
+                .arg("60")
+                .output_within(Duration::from_secs(3))
         })
         .expect("PV process/timeout: the command was never bounded");
         let error = result.unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
         let message = error.to_string();
-        assert!(message.contains("hang"), "names the command: {message}");
-        assert!(message.contains("5s"), "names the limit: {message}");
-        let pid = std::fs::read_to_string(&pid_file).unwrap();
-        // `kill -0` still succeeds on a zombie, so this also proves the reap.
-        assert!(!alive(pid.trim()), "the hung child {pid} was left behind");
-        crate::ops::remove_test_path(directory);
+        assert!(
+            message.contains("/bin/sleep"),
+            "names the command: {message}"
+        );
+        assert!(message.contains("3s"), "names the limit: {message}");
+        // That wording is only used once the leader was reaped.
+        assert!(message.contains("and was killed"), "{message}");
     }
 
     /// `docker builder prune` runs through a buildx plugin child, and a Git
     /// helper is a child too: killing only the command would report the failure
     /// while the work went on. A shell that starts a background `sleep` and
-    /// waits for it stands for such a tool.
+    /// waits for it stands for such a tool, and `kill_and_reap` is what a
+    /// timeout runs.
     #[test]
     fn a_timed_out_command_takes_its_descendants_with_it() {
         let directory = temp("process-family");
-        let pid_file = directory.join("descendant");
-        let family = script(
+        let leader_file = directory.join("leader");
+        let descendant_file = directory.join("descendant");
+        let mut child = start_family(
             &directory,
-            "family",
-            &format!("sleep 60 &\necho $! > '{}'\nwait", pid_file.display()),
+            &format!(
+                "echo $$ > '{}'\nsleep 60 &\necho $! > '{}'\nwait",
+                leader_file.display(),
+                descendant_file.display()
+            ),
+        );
+        let leader = pid_from(&leader_file);
+        let descendant = pid_from(&descendant_file);
+        assert!(
+            alive(&descendant),
+            "control: the child runs before the kill"
         );
 
-        let result = within(Duration::from_secs(25), move || {
-            Command::new(family).output_within(Duration::from_secs(5))
-        })
-        .expect("the command was never bounded");
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(kill_and_reap(&mut child), "the leader was not reaped");
 
-        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        // `kill -0` still succeeds on a zombie, so this proves the reap.
+        assert!(!alive(&leader), "the leader {leader} was left behind");
         // The killed `sleep` is reparented and reaped by launchd, which can
         // take a moment; a surviving one is still there 60 seconds later.
         let mut gone = false;
-        for _ in 0..50 {
-            if !alive(pid.trim()) {
+        for _ in 0..300 {
+            if !alive(&descendant) {
                 gone = true;
                 break;
             }
@@ -468,14 +522,9 @@ mod tests {
         }
         assert!(
             gone,
-            "PV process/descendants: the timed-out command's child {pid} still runs"
+            "PV process/descendants: the timed-out command's child {descendant} still runs"
         );
         crate::ops::remove_test_path(directory);
-    }
-
-    fn registered(pid: &str) -> bool {
-        let group = pid.trim().parse::<i32>().unwrap();
-        live().groups.contains(&group)
     }
 
     /// A group is registered from the spawn until its leader is reaped, and no
@@ -484,50 +533,35 @@ mod tests {
     #[test]
     fn a_command_is_registered_while_it_runs_and_unregistered_once_reaped() {
         let directory = temp("process-registry");
-        let pid_file = directory.join("pid");
-        let hang = script(
+        let leader_file = directory.join("leader");
+        let mut child = start_family(
             &directory,
-            "hang",
-            &format!("echo $$ > '{}'\nexec sleep 60", pid_file.display()),
+            &format!("echo $$ > '{}'\nexec sleep 60", leader_file.display()),
         );
-        let (sender, receiver) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            let result = Command::new(hang).output_within(Duration::from_secs(8));
-            sender.send(()).ok();
-            result
-        });
-
-        let mut pid = String::new();
-        for _ in 0..200 {
-            pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
-            if !pid.trim().is_empty() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-        assert!(registered(&pid), "control: a running command is registered");
-
-        receiver.recv_timeout(Duration::from_secs(30)).unwrap();
-        assert_eq!(
-            worker.join().unwrap().unwrap_err().kind(),
-            io::ErrorKind::TimedOut
-        );
+        let leader = pid_from(&leader_file);
         assert!(
-            !registered(&pid),
+            registered(&leader),
+            "control: a running command is registered"
+        );
+
+        assert!(kill_and_reap(&mut child));
+        assert!(
+            !registered(&leader),
             "PV process/unregister: a reaped leader's group is still registered"
         );
 
+        let finished_file = directory.join("finished");
         let quick = script(
             &directory,
             "quick",
-            &format!("echo $$ > '{}'", pid_file.display()),
+            &format!("echo $$ > '{}'", finished_file.display()),
         );
         Command::new(quick)
-            .output_within(Duration::from_secs(60))
+            .output_within(Duration::from_secs(120))
             .unwrap();
-        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let finished = pid_from(&finished_file);
         assert!(
-            !registered(&pid),
+            !registered(&finished),
             "PV process/unregister: a finished command's group is still registered"
         );
         crate::ops::remove_test_path(directory);
@@ -577,17 +611,32 @@ mod tests {
     #[test]
     fn output_held_open_by_a_descendant_is_abandoned_at_the_deadline() {
         let directory = temp("process-descendant");
+        let descendant_file = directory.join("descendant");
         // The shell exits at once and its background `sleep` keeps the pipes
         // open far past the limit, so the child is already gone when the
-        // deadline passes.
-        let leaves = script(&directory, "leaves", "sleep 40 &\nexit 0");
+        // deadline passes. The limit is long enough for a loaded machine to
+        // start and finish the shell.
+        let leaves = script(
+            &directory,
+            "leaves",
+            &format!(
+                "sleep 120 &\necho $! > '{}'\nexit 0",
+                descendant_file.display()
+            ),
+        );
 
-        let result = within(Duration::from_secs(30), move || {
-            Command::new(leaves).output_within(Duration::from_secs(5))
-        })
-        .expect("the descendant held the call past its deadline");
+        let result = within(Duration::from_secs(90), move || {
+            Command::new(leaves).output_within(Duration::from_secs(20))
+        });
+        let descendant = pid_from(&descendant_file);
+        Command::new("/bin/kill")
+            .args(["-9", &descendant])
+            .output()
+            .ok();
+        let error = result
+            .expect("the descendant held the call past its deadline")
+            .unwrap_err();
 
-        let error = result.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
         assert!(
             error.to_string().contains("still held open"),

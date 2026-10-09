@@ -647,7 +647,7 @@ impl BlockingFamily {
 
     /// Waits until the stub and its descendant are both running.
     fn running(&self) -> (String, String) {
-        for _ in 0..600 {
+        for _ in 0..1500 {
             if let (Some(stub), Some(descendant)) =
                 (Self::pid(&self.stub), Self::pid(&self.descendant))
             {
@@ -665,7 +665,7 @@ impl BlockingFamily {
             .args(["-s", signal, &devtrim.id().to_string()])
             .output()
             .unwrap();
-        for _ in 0..300 {
+        for _ in 0..600 {
             if let Some(status) = devtrim.try_wait().unwrap() {
                 let mut stderr = String::new();
                 std::io::Read::read_to_string(devtrim.stderr.as_mut().unwrap(), &mut stderr)
@@ -674,13 +674,13 @@ impl BlockingFamily {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        panic!("devtrim did not exit within 30 s of {signal}");
+        panic!("devtrim did not exit within 60 s of {signal}");
     }
 
-    /// Whether the process is gone within ten seconds. A killed process is
+    /// Whether the process is gone within thirty seconds. A killed process is
     /// reaped by launchd, which can take a moment.
     fn gone(pid: &str) -> bool {
-        for _ in 0..100 {
+        for _ in 0..300 {
             if !Self::alive(pid) {
                 return true;
             }
@@ -719,7 +719,6 @@ fn an_interrupted_scan_kills_the_commands_it_started(signal: &str, status: i32) 
     let (code, stderr) = family.interrupt(signal);
 
     assert_eq!(code, Some(status), "{stderr}");
-    assert!(stderr.contains("interrupted by"), "{stderr}");
     assert!(
         BlockingFamily::gone(&stub),
         "PV process/interrupt-kill: the stub command {stub} survived {signal}"
@@ -780,4 +779,100 @@ fn an_interrupted_apply_kills_the_prune_and_leaves_an_interrupted_journal_entry(
     assert_eq!(phases, vec![Value::from("attempt")], "{journal}");
     let history = json(&run(&sandbox, &["history", "--json"]));
     assert_eq!(history["entries"][0]["status"], "interrupted", "{history}");
+}
+
+/// A pipe that is full and that nobody reads, to hand devtrim as its stderr:
+/// any write to it blocks for as long as the test lives.
+fn full_unread_pipe() -> (std::io::PipeReader, std::io::PipeWriter) {
+    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+    use std::io::Write as _;
+
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let flags = fcntl_getfl(&writer).unwrap();
+    fcntl_setfl(&writer, flags | OFlags::NONBLOCK).unwrap();
+    loop {
+        match writer.write(&[b'x'; 4096]) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("cannot fill the pipe: {error}"),
+        }
+    }
+    fcntl_setfl(&writer, flags).unwrap();
+    (reader, writer)
+}
+
+/// The interrupt must never wait on the outside world. With stderr full and
+/// unread, a handler that wrote a message before exiting stalled for as long
+/// as nobody read it, and the run kept deleting meanwhile. Here an apply is
+/// interrupted right after its first journal attempt: devtrim must exit 130
+/// promptly, and the caches after the first must still be there.
+#[test]
+fn an_interrupt_with_a_full_unread_stderr_still_exits_promptly_and_stops_deleting() {
+    let sandbox = Sandbox::in_target("interrupt-full-stderr");
+    let home = sandbox.path().canonicalize().unwrap();
+    // The first cache listed is large, so the signal lands while it is being
+    // removed; the other two are small and must survive it.
+    let caches = [".cache/huggingface/hub", ".cache/node", ".cache/gh"];
+    for directory in 0..40 {
+        let folder = home.join(caches[0]).join(format!("d{directory}"));
+        std::fs::create_dir_all(&folder).unwrap();
+        for file in 0..150 {
+            std::fs::write(folder.join(format!("f{file}")), "x").unwrap();
+        }
+    }
+    for cache in &caches[1..] {
+        support::write(&home.join(cache).join("entry"), "x");
+    }
+    let (reader, writer) = full_unread_pipe();
+    let mut devtrim = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["clean", "caches", "--apply", "--yolo", "--shred", "--json"])
+        .env_clear()
+        .env("HOME", &home)
+        .env("PATH", sandbox.bin())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(writer))
+        .spawn()
+        .unwrap();
+
+    let journal = sandbox.journal();
+    for _ in 0..6000 {
+        if std::fs::read_to_string(&journal).is_ok_and(|text| text.contains('\n')) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Command::new("/bin/kill")
+        .args(["-s", "INT", &devtrim.id().to_string()])
+        .output()
+        .unwrap();
+    let signalled = std::time::Instant::now();
+    let mut code = None;
+    for _ in 0..200 {
+        if let Some(status) = devtrim.try_wait().unwrap() {
+            code = Some(status.code());
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if code.is_none() {
+        devtrim.kill().ok();
+        devtrim.wait().ok();
+    }
+    drop(reader);
+
+    assert_eq!(
+        code,
+        Some(Some(130)),
+        "PV process/interrupt-prompt: devtrim never exited after SIGINT"
+    );
+    assert!(
+        signalled.elapsed() < std::time::Duration::from_secs(10),
+        "PV process/interrupt-prompt: took {:?} to exit",
+        signalled.elapsed()
+    );
+    assert!(
+        caches[1..].iter().all(|cache| home.join(cache).exists()),
+        "PV process/interrupt-prompt: a cache after the first was removed after the signal"
+    );
 }
