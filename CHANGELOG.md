@@ -5,6 +5,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ## [0.10.10] - Unreleased
 
 ### Fixed
+- Running coding agents now protect the repository they work in from `node_modules` and `artifacts` cleanup. The build-process names `pgrep -x` matches gain `codex`, `claude`, `rust-analyzer` and Claude Code's real process name, its version number (`2.1.294` for `~/.local/share/claude/versions/2.1.294`), matched only as a whole dotted triple of digits so no other process name qualifies
 - External commands run under a wall-clock limit, so one stuck program no longer hangs a scan. Git, `simctl`, `docker`, `npm` and `brew` queries get two minutes, the `pgrep` and `lsof` liveness probes three (a system-wide `lsof` took 16 s at load average 300), and the typed Docker and simulator commands an apply runs fifteen. Past its limit the child is killed and reaped and the repository, category or safety check that asked fails with an error naming the command and the limit; a timed-out liveness probe refuses like any failed one and never reads as "nothing running". Other categories still complete. The `no-unbounded-subprocess` ast-grep rule rejects an unbounded `output`, `status` or `spawn` in `src/`
 
 ## [0.10.9] - 2026-10-09

@@ -522,7 +522,7 @@ output.
 | Physical path | literal and resolved parent must agree; deny-only resolution |
 | Directory preflight | foreign devices and nested Git repository/worktree markers are refused before Trash or permanent mutation; only uv's own empty `.git` in `sdists-v<N>` under a `CACHEDIR.TAG` root is tolerated, where uv's lock or the Trash grants it |
 | Activity | unknown Git/toolchain ownership is ineligible |
-| Liveness | a repo owning a running build process is refused; while Xcode runs, a DerivedData folder changed within the activity window or holding a file Xcode has open is refused; a probe that fails or does not answer in time blocks |
+| Liveness | a repo owning a running build process, including a coding agent (Codex, Claude Code), is refused; while Xcode runs, a DerivedData folder changed within the activity window or holding a file Xcode has open is refused; a probe that fails or does not answer in time blocks |
 | Protect config | user-listed `protect` paths are refused at the deletion sink and filtered from previews |
 | Journal | a write-ahead attempt/result record precedes and follows every deletion; an unwritable journal blocks apply |
 | Measurement | incomplete traversal, metadata, or numeric state blocks an actionable plan |

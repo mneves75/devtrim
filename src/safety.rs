@@ -1316,7 +1316,14 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTim
     Ok((bytes, newest))
 }
 
-const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake";
+/// Process names that protect the repository they work in, as `pgrep -x` reads
+/// them: an anchored extended regex over the exact process name. The coding
+/// agents belong here because they build and test in a worktree for hours:
+/// Codex runs as `codex` under a `node` wrapper, and Claude Code's process
+/// name is its version number (`2.1.294` for `~/.local/share/claude/versions/2.1.294`),
+/// matched as a whole dotted triple so that no other process name qualifies.
+/// `rust-analyzer` keeps a workspace's `target` busy through its own checks.
+const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\.[0-9]+\\.[0-9]+";
 
 /// `pgrep` matching shared by every liveness probe. `-a` keeps devtrim's own
 /// ancestors in the list: pgrep omits them by default, and a `make` or
@@ -2679,6 +2686,56 @@ mod tests {
         assert_eq!(with, Some(0), "ancestor not matched");
         // Control: pgrep's default excludes the same ancestor.
         assert_eq!(without, Some(1), "control failed");
+    }
+
+    /// Kills and reaps a long-lived fixture process when the test ends or fails.
+    struct Reaped(std::process::Child);
+
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            self.0.kill().ok();
+            self.0.wait().ok();
+        }
+    }
+
+    /// Codex runs as `codex`; Claude Code's process name is its version number,
+    /// and a launcher may call itself `claude`. Each protects the repository it
+    /// works in. The invoked name becomes the process name (as in the ancestor
+    /// test above), so a symlink to `sleep` stands in for each agent, and the
+    /// production probe must report exactly the ones that qualify.
+    #[test]
+    fn coding_agents_protect_the_repository_they_work_in() {
+        let directory = temp("agent-names");
+        let names = [
+            ("2.1.999", true),
+            ("codex", true),
+            ("claude", true),
+            ("rust-analyzer", true),
+            // Near misses: the version pattern is a whole dotted triple, and
+            // an agent's helper or a lookalike name is not an agent.
+            ("2.1", false),
+            ("1.2.3.4", false),
+            ("codex-code-mode", false),
+            ("claudette", false),
+        ];
+        let mut spawned = Vec::new();
+        for (name, expected) in names {
+            let link = directory.join(name);
+            symlink("/bin/sleep", &link).unwrap();
+            let child = Command::new(&link).arg("60").spawn().unwrap();
+            spawned.push((name, expected, Reaped(child)));
+        }
+
+        let running = build_process_pids().unwrap();
+        for (name, expected, child) in &spawned {
+            assert_eq!(
+                running.contains(&child.0.id()),
+                *expected,
+                "PV liveness/agent-processes: process named {name}"
+            );
+        }
+        drop(spawned);
+        crate::ops::remove_test_path(&directory);
     }
 
     /// A probe that cannot finish is not "no process runs". `pgrep` exiting 1

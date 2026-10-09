@@ -156,7 +156,13 @@ Non-negotiable boundaries:
   refuse the probe at preview and apply instead of implying inactivity.
   Liveness probes use fixed
   argv `pgrep`/`lsof`; a probe that cannot complete, or does not answer within
-  its three-minute limit, blocks instead of passing.
+  its three-minute limit, blocks instead of passing. The build-process names are
+  matched by `pgrep -x` as an anchored extended regex over the exact process
+  name, which includes the coding agents: `codex` (native, under a `node`
+  wrapper), `claude`, and Claude Code's own process name, its version number
+  (`2.1.294`), matched only as a whole dotted triple of digits. As with
+  any build process, one `lsof` cannot read, another user's for example,
+  refuses the probe.
   `lsof` exiting 1 is accepted only when every process it did not report is
   absent from a fresh `pgrep`, so a build that exited between the probes does
   not block while one it could not read still does; a build process first seen

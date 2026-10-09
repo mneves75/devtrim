@@ -1404,6 +1404,14 @@ CASES = (
         marker="PV process/timeout",
     ),
     Case(
+        name="liveness/agent-processes",
+        relative_path="src/safety.rs",
+        before='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\\\.[0-9]+\\\\.[0-9]+";' + "\n",
+        after='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake";' + "\n",
+        tests=("safety::tests::coding_agents_protect_the_repository_they_work_in",),
+        marker="PV liveness/agent-processes",
+    ),
+    Case(
         name="liveness/probe-timeout",
         relative_path="src/safety.rs",
         before="    let output = probe_output(command, limit, probe)?;\n    parse_pgrep_pids(&output.stdout, output.status.code())\n",
