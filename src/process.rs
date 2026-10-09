@@ -494,7 +494,7 @@ mod tests {
         let mut child = start_family(
             &directory,
             &format!(
-                "echo $$ > '{}'\nsleep 60 &\necho $! > '{}'\nwait",
+                "echo $$ > '{}'\nsleep 600 &\necho $! > '{}'\nwait",
                 leader_file.display(),
                 descendant_file.display()
             ),
@@ -511,15 +511,21 @@ mod tests {
         // `kill -0` still succeeds on a zombie, so this proves the reap.
         assert!(!alive(&leader), "the leader {leader} was left behind");
         // The killed `sleep` is reparented and reaped by launchd, which can
-        // take a moment; a surviving one is still there 60 seconds later.
+        // take a moment. The limit is wall-clock, because on a loaded machine
+        // each `kill` takes seconds to start, and the `sleep` outlives it.
+        let started = Instant::now();
         let mut gone = false;
-        for _ in 0..300 {
+        while started.elapsed() < Duration::from_secs(60) {
             if !alive(&descendant) {
                 gone = true;
                 break;
             }
             thread::sleep(Duration::from_millis(100));
         }
+        Command::new("/bin/kill")
+            .args(["-9", &descendant])
+            .output()
+            .ok();
         assert!(
             gone,
             "PV process/descendants: the timed-out command's child {descendant} still runs"

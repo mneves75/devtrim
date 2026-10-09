@@ -677,10 +677,13 @@ impl BlockingFamily {
         panic!("devtrim did not exit within 60 s of {signal}");
     }
 
-    /// Whether the process is gone within thirty seconds. A killed process is
+    /// Whether the process is gone within forty-five seconds. A killed process is
     /// reaped by launchd, which can take a moment.
     fn gone(pid: &str) -> bool {
-        for _ in 0..300 {
+        // Wall-clock, not a count: on a loaded machine each `kill` takes
+        // seconds to start, and the stub's `sleep` outlives any poll.
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(45) {
             if !Self::alive(pid) {
                 return true;
             }
