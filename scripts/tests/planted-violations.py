@@ -1393,6 +1393,24 @@ CASES = (
         marker="PV eval/write-ahead",
         target="evals",
     ),
+    # A command that never answers must be killed and reported as a timeout,
+    # and a liveness probe that never answers must refuse, not read as exit 1.
+    Case(
+        name="process/command-timeout",
+        relative_path="src/process.rs",
+        before="                Ok(None) if Instant::now() >= deadline => {\n",
+        after="                Ok(None) if false => {\n",
+        tests=("process::tests::a_hung_command_is_killed_reaped_and_reported_as_a_timeout",),
+        marker="PV process/timeout",
+    ),
+    Case(
+        name="liveness/probe-timeout",
+        relative_path="src/safety.rs",
+        before="    let output = probe_output(command, limit, probe)?;\n    parse_pgrep_pids(&output.stdout, output.status.code())\n",
+        after="    let Ok(output) = probe_output(command, limit, probe) else {\n        return Ok(Vec::new());\n    };\n    parse_pgrep_pids(&output.stdout, output.status.code())\n",
+        tests=("safety::tests::a_probe_that_cannot_finish_refuses_instead_of_reporting_nothing_running",),
+        marker="PV liveness/probe-timeout",
+    ),
 )
 
 

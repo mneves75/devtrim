@@ -7,11 +7,13 @@ use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use crate::cli::Cli;
 use crate::ops::Finding;
+use crate::process::{BoundedCommand as _, PROBE_TIMEOUT};
 
 pub const DATA_LOSS_NOTICE: &str = "Applying this plan can delete data. devtrim is provided AS IS, without warranties; you assume the risk for the exact targets shown. Keep backups and grant macOS permissions manually only when you understand the request.";
 
@@ -1322,23 +1324,41 @@ const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|
 /// whose repository must not lose its dependencies.
 const PGREP_MATCH_ARGS: [&str; 2] = ["-a", "-x"];
 
-pub(crate) fn build_process_cwds() -> Result<Vec<PathBuf>> {
-    let running_build_pids = || -> Result<BTreeSet<u32>> {
-        let pgrep = Command::new("pgrep")
+/// One probe subprocess under `limit`. A probe that cannot finish is an error
+/// that names the program and the limit, so no caller can read it as "nothing
+/// is running": every liveness decision goes through here.
+fn probe_output(command: &mut Command, limit: Duration, probe: &str) -> Result<Output> {
+    command
+        .output_within(limit)
+        .with_context(|| format!("cannot run {probe}"))
+}
+
+/// The processes `pgrep` matched. Exit 1 (no match) is an empty list; a probe
+/// that did not finish is an error, never an empty list.
+fn pgrep_pids(command: &mut Command, limit: Duration, probe: &str) -> Result<Vec<u32>> {
+    let output = probe_output(command, limit, probe)?;
+    parse_pgrep_pids(&output.stdout, output.status.code())
+}
+
+fn build_process_pids() -> Result<BTreeSet<u32>> {
+    Ok(pgrep_pids(
+        Command::new("pgrep")
             .args(PGREP_MATCH_ARGS)
-            .arg(BUILD_PROCESS_PATTERN)
-            .output()
-            .context("cannot run build-process pgrep probe")?;
-        Ok(parse_pgrep_pids(&pgrep.stdout, pgrep.status.code())?
-            .into_iter()
-            .collect())
-    };
-    let pids = running_build_pids()?;
+            .arg(BUILD_PROCESS_PATTERN),
+        PROBE_TIMEOUT,
+        "build-process pgrep probe",
+    )?
+    .into_iter()
+    .collect())
+}
+
+pub(crate) fn build_process_cwds() -> Result<Vec<PathBuf>> {
+    let pids = build_process_pids()?;
     if pids.is_empty() {
         return Ok(Vec::new());
     }
     let first = lsof_cwds_of(&pids)?;
-    resolve_build_process_cwds(&pids, first, running_build_pids, lsof_cwds_of)
+    resolve_build_process_cwds(&pids, first, build_process_pids, lsof_cwds_of)
 }
 
 /// The comma-separated process list `lsof -p` takes.
@@ -1352,10 +1372,11 @@ fn lsof_pid_list<'a>(pids: impl IntoIterator<Item = &'a u32>) -> String {
 /// One `lsof` run for the working directories of exactly these processes.
 fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
     let pid_list = lsof_pid_list(pids);
-    let lsof = Command::new("lsof")
-        .args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"])
-        .output()
-        .context("cannot run build-process cwd probe")?;
+    let lsof = probe_output(
+        Command::new("lsof").args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"]),
+        PROBE_TIMEOUT,
+        "build-process cwd probe",
+    )?;
     parse_lsof_cwds(&lsof.stdout, lsof.status.code())
 }
 
@@ -1371,10 +1392,11 @@ fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
 pub(crate) fn executable_mappings() -> Result<Vec<PathBuf>> {
     // lsof after 4.93.2 omits `f` unless requested; the parser needs it to
     // reject a mapped file whose name is missing.
-    let lsof = Command::new("lsof")
-        .args(["-w", "-d", "txt", "-F", "fn"])
-        .output()
-        .context("cannot run executable-mapping probe")?;
+    let lsof = probe_output(
+        Command::new("lsof").args(["-w", "-d", "txt", "-F", "fn"]),
+        PROBE_TIMEOUT,
+        "executable-mapping probe",
+    )?;
     parse_lsof_mappings(&lsof.stdout, lsof.status.code())
 }
 
@@ -1517,20 +1539,22 @@ pub(crate) struct OpenFile {
 /// Whether an Xcode-family process runs and, if so, every file the running
 /// ones hold open, from one `lsof` that must report them all.
 pub(crate) fn xcode_activity() -> Result<XcodeActivity> {
-    let output = Command::new("pgrep")
-        .args(PGREP_MATCH_ARGS)
-        .arg(XCODE_BUILD_PATTERN)
-        .output()
-        .context("cannot run Xcode build liveness probe")?;
-    let pids = parse_pgrep_pids(&output.stdout, output.status.code())?;
+    let pids = pgrep_pids(
+        Command::new("pgrep")
+            .args(PGREP_MATCH_ARGS)
+            .arg(XCODE_BUILD_PATTERN),
+        PROBE_TIMEOUT,
+        "Xcode build liveness probe",
+    )?;
     if pids.is_empty() {
         return Ok(XcodeActivity::Idle);
     }
     let pid_list = lsof_pid_list(&pids);
-    let lsof = Command::new("lsof")
-        .args(["-p", &pid_list, "-F", "tDn"])
-        .output()
-        .context("cannot run the probe of files Xcode holds open")?;
+    let lsof = probe_output(
+        Command::new("lsof").args(["-p", &pid_list, "-F", "tDn"]),
+        PROBE_TIMEOUT,
+        "the probe of files Xcode holds open",
+    )?;
     Ok(XcodeActivity::Active {
         open_files: parse_lsof_open_files(&lsof.stdout, lsof.status.code())?,
     })
@@ -2655,6 +2679,44 @@ mod tests {
         assert_eq!(with, Some(0), "ancestor not matched");
         // Control: pgrep's default excludes the same ancestor.
         assert_eq!(without, Some(1), "control failed");
+    }
+
+    /// A probe that cannot finish is not "no process runs". `pgrep` exiting 1
+    /// is the only empty answer, and a hung one must refuse instead.
+    #[test]
+    fn a_probe_that_cannot_finish_refuses_instead_of_reporting_nothing_running() {
+        let directory = temp("probe-timeout");
+        std::fs::create_dir_all(&directory).unwrap();
+        let script = |name: &str, body: &str| {
+            let path = directory.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let hung = script("hung", "exec sleep 30");
+        let no_match = script("no-match", "exit 1");
+        let limit = Duration::from_millis(400);
+
+        let none = pgrep_pids(
+            &mut Command::new(&no_match),
+            Duration::from_secs(60),
+            "probe",
+        );
+        assert_eq!(none.unwrap(), Vec::<u32>::new(), "control: exit 1 is empty");
+
+        let result = pgrep_pids(&mut Command::new(&hung), limit, "build-process pgrep probe");
+        assert!(
+            result.is_err(),
+            "PV liveness/probe-timeout: a pgrep that never answered read as nothing running"
+        );
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("build-process pgrep probe"), "{message}");
+        assert!(message.contains("hung timed out after 400ms"), "{message}");
+
+        // The lsof probes share the bound: a hung one is an error too.
+        let lsof = probe_output(&mut Command::new(&hung), limit, "build-process cwd probe");
+        assert!(lsof.is_err(), "a hung lsof returned output");
+        crate::ops::remove_test_path(&directory);
     }
 
     #[test]

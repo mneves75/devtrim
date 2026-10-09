@@ -155,7 +155,8 @@ Non-negotiable boundaries:
   name must be absolute: Darwin diagnostics such as `no more information`
   refuse the probe at preview and apply instead of implying inactivity.
   Liveness probes use fixed
-  argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
+  argv `pgrep`/`lsof`; a probe that cannot complete, or does not answer within
+  its three-minute limit, blocks instead of passing.
   `lsof` exiting 1 is accepted only when every process it did not report is
   absent from a fresh `pgrep`, so a build that exited between the probes does
   not block while one it could not read still does; a build process first seen
@@ -361,8 +362,23 @@ Non-negotiable boundaries:
   support. Files & Folders, App Management, Automation, or Full Disk Access
   authorization is a manual user decision in System Settings; devtrim does not
   bypass it. Trash purge is permanent once explicitly applied.
-- External commands can hang or change behavior across installed tool versions;
-  broad timeout/process frameworks are deferred until a measured need exists.
+- External commands can change behavior across installed tool versions, and on
+  a machine running dozens of agent worktrees (load average 300 to 950, about
+  1,700 processes, a system-wide `lsof` taking 16 s at load 300, observed
+  2026-10-08) they can stall. Every scan and apply subprocess therefore runs
+  through `process::BoundedCommand::output_within`, enforced by the
+  `no-unbounded-subprocess` ast-grep rule: standard input is null, both output
+  streams are drained while it runs, and past its limit the child is killed and
+  reaped and the call fails with `TimedOut`, naming the program and the limit.
+  Limits: two minutes for Git, `simctl`, `docker`, `npm` and `brew` queries;
+  three for the `pgrep` and `lsof` probes (the observed 16 s scaled linearly to
+  the worst observed load, about 50 s, with a margin of more than three);
+  fifteen for the typed Docker and simulator commands an apply runs, which do
+  real work and are only backstopped. A timeout is never an absent program and
+  never an empty probe: it fails the repository, category or safety check that
+  asked, and the other categories still complete. Only the child is killed; a
+  descendant it leaves holding the output is abandoned, not awaited. `status`
+  and `uninstall` (report-only, outside scan and apply) are not bounded.
 - Liveness probes are point-in-time snapshots. A process can start after the
   final check; apply therefore still relies on immutable targets, identity
   checks, and conservative refusal rather than treating liveness as a lock.

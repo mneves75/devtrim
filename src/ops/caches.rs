@@ -8,6 +8,7 @@ use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, apply_uv_cache_finding, dir_size,
     removal_note,
 };
+use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
 use crate::report::TargetAuthority;
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
@@ -387,7 +388,7 @@ fn command_path(program: &str, args: &[&str], home: &Path) -> Result<Option<Path
     let output = std::process::Command::new(program)
         .args(args)
         .current_dir(home)
-        .output();
+        .output_within(QUERY_TIMEOUT);
     let Some(value) = super::optional_command_stdout(output, &command)? else {
         return Ok(None);
     };

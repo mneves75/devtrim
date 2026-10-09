@@ -1,0 +1,39 @@
+id: no-unbounded-subprocess
+language: Rust
+severity: error
+message: Run subprocesses with output_within so a hung program cannot hang a scan or an apply.
+note: >-
+  Command::output, status and spawn wait forever. src/process.rs bounds the
+  wall-clock time, kills and reaps the child on timeout, and reports it as an
+  error naming the program, which every caller must treat as a refusal. status
+  and uninstall are the two report-only surfaces outside scan and apply that
+  have not been bounded.
+files:
+  - src/**/*.rs
+ignores:
+  - src/process.rs
+  - src/status.rs
+  - src/uninstall.rs
+rule:
+  all:
+    - any:
+        - pattern: $RECV.output()
+        - pattern: $RECV.status()
+        - pattern: $RECV.spawn()
+    - not:
+        any:
+          - inside:
+              pattern:
+                context: |
+                  #[cfg(test)]
+                  mod tests {
+                    $$$BODY
+                  }
+                selector: mod_item
+              stopBy: end
+          - inside:
+              kind: function_item
+              follows:
+                kind: attribute_item
+                regex: '^#\[cfg\(test\)\]$'
+              stopBy: end

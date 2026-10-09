@@ -17,7 +17,7 @@ violates one cannot merge, so reporting it wastes the review.
 | --- | --- |
 | `cargo fmt --all -- --check` | all formatting |
 | `cargo clippy --all-targets --all-features -- -D warnings` | every default clippy lint, plus `unsafe_code = "forbid"`, `unwrap_used`, `expect_used`, `panic`, `unreachable`, `todo`, `unimplemented`, `dbg_macro`, and `allow_attributes_without_reason` |
-| `ast-grep scan --config sgconfig.yml` | `no-direct-filesystem-delete` and `no-unowned-filesystem-delete-in-owner-module` (which pin the sink signature `fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity)` and sanction `crate::ops::remove_test_path` and the file's `#[cfg(test)] mod tests` as the test escape hatches); `no-shell-invocation`; `no-abbreviated-bindings` |
+| `ast-grep scan --config sgconfig.yml` | `no-direct-filesystem-delete` and `no-unowned-filesystem-delete-in-owner-module` (which pin the sink signature `fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity)` and sanction `crate::ops::remove_test_path` and the file's `#[cfg(test)] mod tests` as the test escape hatches); `no-shell-invocation`; `no-unbounded-subprocess` (an `output`, `status` or `spawn` outside `src/process.rs`, tests, and the unbounded report-only `src/status.rs` and `src/uninstall.rs`); `no-abbreviated-bindings` |
 | `cargo test --all-targets --all-features` | unit and CLI integration coverage |
 | `rustup run 1.88.0 cargo test` | MSRV |
 | `python3 scripts/tests/tui.py target/debug/devtrim` | real PTY menu/help/cancel/quit with isolated HOME/PATH, explicit dimensions, visible-content assertions, and restored terminal state; release-policy tests reject a non-rendering executable |

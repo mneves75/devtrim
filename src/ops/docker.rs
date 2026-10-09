@@ -6,6 +6,7 @@ use std::path::{Component, Path};
 use std::process::Command;
 
 use super::{Action, ApplyOutcome, Finding, Op, command_stdout, optional_command_stdout};
+use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
 use crate::report::CommandAuthority;
 use crate::safety::{Ctx, escalate};
 
@@ -60,14 +61,16 @@ fn docker(host: &str, args: &[&str]) -> Result<String> {
             .arg("--host")
             .arg(host)
             .args(args)
-            .output(),
+            .output_within(QUERY_TIMEOUT),
         &command,
     )
 }
 
 fn docker_host() -> Result<Option<String>> {
     let Some(output) = optional_command_stdout(
-        Command::new("docker").args(["context", "inspect"]).output(),
+        Command::new("docker")
+            .args(["context", "inspect"])
+            .output_within(QUERY_TIMEOUT),
         "`docker context inspect`",
     )?
     else {
