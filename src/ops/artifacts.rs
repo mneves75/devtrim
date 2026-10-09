@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::project::{
     ScanObservations, TrackedIndex, UnreadFolder, activity_window, has_git_marker,
-    is_directory_if_present, iso_days_ago, listed_repositories, normalized_roots,
+    is_directory_if_present, iso_days_ago, listed_repositories, nearest_repo, normalized_roots,
     orphaned_worktree, owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under,
     unborn_branch, unjudged_finding, unread_folders_finding,
 };
@@ -61,14 +61,19 @@ impl Op for Artifacts {
         let mut groups: BTreeMap<PathBuf, Vec<ArtifactCandidate>> = BTreeMap::new();
         let mut findings = Vec::new();
         let mut unread = Vec::new();
+        let mut home_held = 0usize;
         for root in normalized_roots(&ctx.roots) {
             if !is_directory_if_present(root)? {
                 continue;
             }
             for candidate in find_artifacts(root, &mut unread)? {
-                match owning_repo(&candidate.path) {
+                match owning_repo(&candidate.path, &ctx.home) {
                     Ok(Some(owner)) => groups.entry(owner).or_default().push(candidate),
-                    Ok(None) => {}
+                    Ok(None) => {
+                        if matches!(nearest_repo(&candidate.path), Ok(Some(_))) {
+                            home_held = home_held.saturating_add(1);
+                        }
+                    }
                     Err(error) => {
                         findings.push(unjudged_finding("artifacts", &candidate.path, &error));
                     }
@@ -181,6 +186,14 @@ impl Op for Artifacts {
                 ),
             );
         }
+        if home_held > 0 && !ctx.json {
+            ctx.diagnostic(
+                "info",
+                format!(
+                    "skipping {home_held} artifact directories in projects whose only repository holds the home folder: its last commit says nothing about them"
+                ),
+            );
+        }
         if orphaned > 0 && !ctx.json {
             ctx.diagnostic(
                 "info",
@@ -268,6 +281,69 @@ impl Artifacts {
                 return Ok(outcome);
             }
         };
+        // Everything a finding must still satisfy, judged in the preflight
+        // for the whole plan and again just before its own removal.
+        let recheck = |path: &Path| -> Result<()> {
+            if has_git_marker(path)? {
+                anyhow::bail!(
+                    "target gained its own Git marker after preview; refusing {}",
+                    path.display()
+                );
+            }
+            if has_node_modules_ancestor(path) {
+                anyhow::bail!(
+                    "refusing artifact target under an excluded node_modules ancestor: {}",
+                    path.display()
+                );
+            }
+            let owner = owning_repo(path, &ctx.home)?
+                .ok_or_else(|| anyhow::anyhow!("cannot prove Git owner for {}", path.display()))?;
+            if artifact_evidence(path)?.is_none() {
+                anyhow::bail!(
+                    "artifact corroboration changed after preview; refusing {}",
+                    path.display()
+                );
+            }
+            if repo_has_active_build(&owner, &process_cwds) {
+                anyhow::bail!(
+                    "build process active in {}; refusing {}",
+                    owner.display(),
+                    path.display()
+                );
+            }
+            let last_activity = repo_last_activity(&owner)?;
+            if last_activity > cutoff {
+                anyhow::bail!(
+                    "repo became active after preview; refusing {}",
+                    path.display()
+                );
+            }
+            if tracks_files_under(&owner, path)? {
+                anyhow::bail!(
+                    "refusing {}: its repository tracks files under it",
+                    path.display()
+                );
+            }
+            match authored_entry_under(path)? {
+                Some(Authored::ProgramKeypair(keypair)) => anyhow::bail!(
+                    "refusing {}: it holds the program keypair {}",
+                    path.display(),
+                    keypair.display()
+                ),
+                Some(Authored::Repository(marker)) => anyhow::bail!(
+                    "refusing {}: it holds the Git repository marked by {}",
+                    path.display(),
+                    marker.display()
+                ),
+                Some(Authored::TerraformState(state)) => anyhow::bail!(
+                    "refusing {}: it holds the Terraform state {}",
+                    path.display(),
+                    state.display()
+                ),
+                _ => {}
+            }
+            Ok(())
+        };
         let mut ready = Vec::new();
         for finding in findings {
             if !matches!(finding.action, Action::Trash | Action::Shred) {
@@ -294,68 +370,7 @@ impl Artifacts {
                     return Ok(outcome);
                 }
             }
-            let result = (|| -> Result<()> {
-                if has_git_marker(path)? {
-                    anyhow::bail!(
-                        "target gained its own Git marker after preview; refusing {}",
-                        path.display()
-                    );
-                }
-                if has_node_modules_ancestor(path) {
-                    anyhow::bail!(
-                        "refusing artifact target under an excluded node_modules ancestor: {}",
-                        path.display()
-                    );
-                }
-                let owner = owning_repo(path)?.ok_or_else(|| {
-                    anyhow::anyhow!("cannot prove Git owner for {}", path.display())
-                })?;
-                if artifact_evidence(path)?.is_none() {
-                    anyhow::bail!(
-                        "artifact corroboration changed after preview; refusing {}",
-                        path.display()
-                    );
-                }
-                if repo_has_active_build(&owner, &process_cwds) {
-                    anyhow::bail!(
-                        "build process active in {}; refusing {}",
-                        owner.display(),
-                        path.display()
-                    );
-                }
-                let last_activity = repo_last_activity(&owner)?;
-                if last_activity > cutoff {
-                    anyhow::bail!(
-                        "repo became active after preview; refusing {}",
-                        path.display()
-                    );
-                }
-                if tracks_files_under(&owner, path)? {
-                    anyhow::bail!(
-                        "refusing {}: its repository tracks files under it",
-                        path.display()
-                    );
-                }
-                match authored_entry_under(path)? {
-                    Some(Authored::ProgramKeypair(keypair)) => anyhow::bail!(
-                        "refusing {}: it holds the program keypair {}",
-                        path.display(),
-                        keypair.display()
-                    ),
-                    Some(Authored::Repository(marker)) => anyhow::bail!(
-                        "refusing {}: it holds the Git repository marked by {}",
-                        path.display(),
-                        marker.display()
-                    ),
-                    Some(Authored::TerraformState(state)) => anyhow::bail!(
-                        "refusing {}: it holds the Terraform state {}",
-                        path.display(),
-                        state.display()
-                    ),
-                    _ => {}
-                }
-                Ok(())
-            })();
+            let result = recheck(path);
             if let Err(error) = result {
                 outcome.fail(error);
                 return Ok(outcome);
@@ -365,8 +380,11 @@ impl Artifacts {
 
         // Every finding passed its preflight; one the sink still refuses costs
         // only itself. Each failure is recorded, so the run reports nonzero.
+        // The preflight judged every finding before any was removed, but
+        // removing the earlier ones takes time: each is judged again just
+        // before its own removal, and a change in between refuses only it.
         for (finding, path) in ready {
-            match apply_filesystem_finding(self.name(), finding, ctx) {
+            match recheck(path).and_then(|()| apply_filesystem_finding(self.name(), finding, ctx)) {
                 Ok(()) => outcome.record(finding, removal_note(finding, path.display())),
                 Err(error) => outcome.fail(error),
             }
@@ -465,6 +483,13 @@ fn is_program_keypair_name(name: &OsStr) -> bool {
 /// recorded in `unread` and skipped with everything below it, as a scan root
 /// that cannot be read is; only the root itself failing fails the walk.
 fn find_artifacts(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<ArtifactCandidate>> {
+    if has_node_modules_ancestor(root)
+        || root
+            .components()
+            .any(|component| is_git_metadata_name(component.as_os_str()))
+    {
+        return Ok(Vec::new());
+    }
     let mut found = Vec::new();
     let mut entries = walkdir::WalkDir::new(root).follow_links(false).into_iter();
     while let Some(result) = entries.next() {

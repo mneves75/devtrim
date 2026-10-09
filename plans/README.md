@@ -22,6 +22,7 @@ Ratatui interface and its shared safety/release boundaries.
 | 009 | Close the 0.5.0 production-readiness gaps | P0 | M | 008 | DONE |
 | 010 | Anchor deletion identity and close 0.6.0 | P0 | L | 009 | DONE |
 | 011 | Harden shared boundaries and ship 0.6.1 | P0 | L | 010 | DONE |
+| 013 | Fix five adversarial-review findings and release 0.10.9 | P1 | M | 012 | IN PROGRESS |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 

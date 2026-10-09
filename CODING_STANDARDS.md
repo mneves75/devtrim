@@ -185,10 +185,13 @@ Fix: `pub(crate)`. A fuzz target gets a thin bool-returning re-export in
 **Hard.** An integration test touching the developer's real `HOME`, real
 `PATH`, or the network.
 
-Fix: use the `Sandbox` harness (`tests/cli.rs`): a unique temp directory,
+Fix: use the `Sandbox` harness (`tests/support/mod.rs`): a unique temp directory,
 `env!("CARGO_BIN_EXE_devtrim")`, `HOME` and `PATH` pinned to the sandbox,
 `XDG_STATE_HOME` removed, and every external binary stubbed with
-`sandbox.script(…)`. A new `proptest!` block pins `rng_seed` and sets
+`sandbox.script(…)` — or, where only the real tool can prove the claim (Git
+activity, tracked files, hostile configuration), a stub that execs it by
+absolute path with the sandbox `HOME`, as the project evals in
+`tests/evals.rs` do. A new `proptest!` block pins `rng_seed` and sets
 `failure_persistence: None`, as the block in `src/safety.rs` does.
 
 ### S11 — A change lands with its docs and its justification

@@ -33,6 +33,9 @@ or a fully compromised host.
 
 Non-negotiable boundaries:
 
+- Both project cleanup categories exclude roots at or below ASCII-case variants of `.git`, or below `node_modules`, including explicit/configured roots. A root exactly at a top-level `node_modules` install may offer that install; independent apply checks remain required.
+- Localized scan errors are non-actionable and preserve a cumulative nonzero TUI exit status even after a later successful scan.
+- `status` reads the Data-volume metric when layout inspection finds its directory. Root fallback requires typed absence; inspection failure, a non-directory layout or a failed/malformed present Data metric stays unavailable with its reason and nonzero status.
 - Every mutation requires `--apply`.
 - Apply uses only exact previewed findings and preserves their exact non-lossy path identity.
 - Xcode and Swift toolchain apply reassert that every target still has the exact direct-child category shape its scanner authorized before the shared deletion sink can consume it. The one deeper Xcode shape is a directory of a DerivedData folder that still holds Swift package checkouts and is not itself a Git repository, never its `SourcePackages`.
@@ -148,7 +151,10 @@ Non-negotiable boundaries:
   to their folder by spelling, real path and identity.
   That refusal, like a folder whose age cannot be read, is an error entry that
   blocks only DerivedData or that folder. A working-directory name that `lsof` escapes ambiguously
-  refuses rather than matching nothing. Liveness probes use fixed
+  refuses rather than matching nothing. Every decoded build working-directory
+  name must be absolute: Darwin diagnostics such as `no more information`
+  refuse the probe at preview and apply instead of implying inactivity.
+  Liveness probes use fixed
   argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
   `lsof` exiting 1 is accepted only when every process it did not report is
   absent from a fresh `pgrep`, so a build that exited between the probes does
@@ -172,6 +178,12 @@ Non-negotiable boundaries:
   legacy records across generations, reverse-scans only a bounded newest tail,
   caps each line and total scanned bytes, and reports genuinely unmatched
   attempts as interrupted.
+  Trash ownership uses a separate complete-history read of all four retained
+  generations, not the display tail. It refuses the entire narrowed purge on
+  malformed or unreadable input, records over 64 KiB, or a snapshot above
+  42,205,188 bytes (about 40.25 MiB). This explicit resource ceiling is not
+  permission to return partial ownership evidence. Rotation still discards old
+  evidence; items with no successful retained Trash identity remain excluded.
   Rotation is writer-owned, shift-and-rename under an advisory flock that dies
   with its process, re-checks size while holding the lock, and happens only at
   journal-open time — never mid-apply, never by truncation. An apply holds
@@ -181,14 +193,18 @@ Non-negotiable boundaries:
   corroboration (or an exact `CACHEDIR.TAG` signature) and a conclusively stale
   owning Git repo; corroboration, ownership, staleness, liveness, tracked
   files, program keypairs, and Terraform state (`*.tfstate`), which no rebuild
-  restores, are all re-verified at apply time.
+  restores, are all re-verified at apply time: for the whole plan before
+  anything changes, and again for each finding just before its own removal.
+- A repository at or above the home folder never owns a project: a project
+  with no repository of its own under a home folder kept as a repository is
+  not judged by `node_modules`, `artifacts` or `purge`.
 - Incomplete directory traversal, metadata, or numeric parsing is not size authority for an actionable plan.
 - Unknown configuration fields are rejected so a misspelled safety setting cannot appear active.
 - Docker volumes and Xcode Archives are never pruned.
 - Docker cleanup refuses remote contexts and pins the previewed absolute local
   Unix-socket endpoint into the command authority.
 - Simulator cleanup creates one finding and command authority per validated
-  UDID, then rechecks that exact device is still unavailable before deletion.
+  UDID — a UUID; `simctl`'s set words such as `all` are refused — then rechecks that exact device is still unavailable before deletion.
   Working simulators appear only in one report-only finding that carries no
   authority.
 - A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize a typed Docker or simulator operation with validated arguments, and apply must match both representations exactly.
@@ -229,7 +245,8 @@ Non-negotiable boundaries:
    parent-directory handle; identity drift refuses the deletion.
    Every directory action first walks the opened tree and refuses device
    crossings and Git markers before a path-based Trash call or permanent
-   mutation. Permanent deletes quarantine the verified leaf under a private
+   mutation; in both modes a target on another device than its parent (a
+   mount point) is refused. Permanent deletes quarantine the verified leaf under a private
    unpredictable name with an atomic no-replace rename (so a refused target is
    never restored over a file recreated at its name), re-verify, repeat those checks, and drive recursive
    deletion through open handles.
@@ -303,6 +320,12 @@ Non-negotiable boundaries:
 - Shipped HTML uses a deny-by-default CSP; inline scripts are admitted only by exact SHA-256 hashes.
 
 ## Known limitations
+
+- Feature evals use disposable homes and controlled external-tool output.
+  Named mutation controls prove individual assertions, not every feature or
+  race. The shared removal-root device check has a same-device control and a
+  foreign-parent-device refusal using injected observed metadata; that test
+  does not mount a volume or invoke Finder's Trash move.
 
 - Directory sizes are measured with one `stat` per file. macOS `getattrlistbulk`
   would collapse that into roughly one syscall per hundred entries, but it has no

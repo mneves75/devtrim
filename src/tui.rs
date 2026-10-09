@@ -367,7 +367,12 @@ impl App {
         self.sections.clear();
         self.errors = errors;
         self.warnings = warnings;
-        if !self.errors.is_empty() {
+        if !self.errors.is_empty()
+            || self
+                .findings
+                .iter()
+                .any(|finding| finding.scan_error().is_some())
+        {
             self.failed = true;
         }
         self.summary = None;
@@ -1732,6 +1737,34 @@ mod tests {
                 target.as_str()
             );
         }
+    }
+
+    #[test]
+    fn scan_error_results_preserve_failure_across_every_route() {
+        for operation in [
+            Operation::ScanAll,
+            Operation::Purge,
+            Operation::Clean(Target::NodeModules),
+            Operation::Clean(Target::Artifacts),
+        ] {
+            let mut app = App::default();
+            app.finish_results(
+                operation,
+                vec![
+                    Finding::new("not judged", None, 0, "failed", 0, Action::Info)
+                        .with_scan_error("synthetic failure".into()),
+                ],
+                Vec::new(),
+                Vec::new(),
+            );
+            assert!(app.failed, "PV tui/scan-error-results");
+            assert!(!app.has_actionable_findings());
+            app.finish_results(operation, Vec::new(), Vec::new(), Vec::new());
+            assert!(app.failed, "PV tui/scan-error-results");
+        }
+        let mut control = App::default();
+        control.finish_results(Operation::Purge, Vec::new(), Vec::new(), Vec::new());
+        assert!(!control.failed);
     }
 
     /// The results title counts findings, not the error entries beside them,

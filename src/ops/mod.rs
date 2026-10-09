@@ -373,18 +373,11 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
         .with_context(|| format!("cannot open target parent: {}", parent.display()))?;
     let actual = file_identity_at(&dir, leaf)
         .with_context(|| format!("cannot inspect deletion target: {}", path.display()))?;
-    if actual != expected {
-        anyhow::bail!("target identity changed after preview; refusing");
-    }
-
-    let deletion_device = if permanent {
-        let parent_identity = file_identity_for_dir(&dir)
-            .with_context(|| format!("cannot inspect target parent: {}", parent.display()))?;
-        ensure_same_device(actual, parent_identity.dev, &path)?;
-        parent_identity.dev
-    } else {
-        expected.dev
-    };
+    // Both modes hold the target to its parent's device, so a target that is
+    // itself a mount point is refused before Trash or permanent removal.
+    let parent_identity = file_identity_for_dir(&dir)
+        .with_context(|| format!("cannot inspect target parent: {}", parent.display()))?;
+    let deletion_device = checked_removal_root(actual, expected, parent_identity.dev, &path)?;
 
     if !permanent {
         let metadata = dir
@@ -667,6 +660,21 @@ fn ensure_same_device(identity: FileIdentity, expected_device: u64, path: &Path)
         );
     }
     Ok(())
+}
+
+/// Root authorization is shared by Trash and permanent removal, before their
+/// paths diverge. The target's own device cannot authorize a mount point.
+fn checked_removal_root(
+    actual: FileIdentity,
+    expected: FileIdentity,
+    parent_device: u64,
+    path: &Path,
+) -> Result<u64> {
+    if actual != expected {
+        anyhow::bail!("target identity changed after preview; refusing");
+    }
+    ensure_same_device(actual, parent_device, path)?;
+    Ok(parent_device)
 }
 
 /// The Git-marker exceptions one deletion was granted, fixed for its tree.
@@ -1016,7 +1024,7 @@ pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
 pub fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>> {
     use crate::journal::TrashedIdentity;
 
-    let history = crate::journal::read_history(&ctx.journal_path, usize::MAX)
+    let history = crate::journal::read_complete_history(&ctx.journal_path)
         .context("cannot read the apply journal that records what devtrim moved to the Trash")?;
     // A history read only in part could be missing the very record that tells
     // an item apart, so nothing is offered rather than a part.
@@ -1839,6 +1847,31 @@ mod tests {
         assert!(error.to_string().contains("foreign filesystem device"));
         assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
         remove_test_path(home);
+    }
+
+    #[test]
+    fn both_removal_modes_refuse_a_root_on_a_foreign_parent_device() {
+        let fixture = TestFixture::new("devtrim-root-device");
+        let target = fixture.path().join("cache");
+        std::fs::create_dir_all(&target).unwrap();
+        let sentinel = target.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let parent =
+            cap_std::fs::Dir::open_ambient_dir(fixture.path(), cap_std::ambient_authority())
+                .unwrap();
+        let actual = file_identity_at(&parent, Path::new("cache")).unwrap();
+        let parent_device = file_identity_for_dir(&parent).unwrap().dev;
+        assert_eq!(
+            checked_removal_root(actual, actual, parent_device, &target).unwrap(),
+            parent_device,
+            "a same-device root with the previewed identity remains eligible",
+        );
+        // Supply a foreign observed parent device, while the preview identity
+        // still matches exactly. No mounted volume or Finder move is exercised.
+        let refusal = checked_removal_root(actual, actual, actual.dev.wrapping_add(1), &target)
+            .expect_err("PV sink/removal-root-device: a foreign root was authorized");
+        assert!(format!("{refusal:#}").contains("foreign filesystem device"));
+        assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
     }
 
     #[cfg(target_os = "macos")]

@@ -1,6 +1,32 @@
 # Project Memory
 
-## Current state (0.10.7)
+## Current source work (0.10.9, not released)
+
+Plan `plans/013-adversarial-review-fixes.md` scopes five confirmed fixes:
+absolute decoded build CWDs, complete bounded retained Trash ownership,
+cumulative TUI scan failures, fail-closed Data-volume metrics, and excluded
+project-root namespaces. Source and packaged documentation target 0.10.9;
+the preceding 0.10.8 work was not released. Production remains the verified
+0.10.7 below; the landing page stays on that version.
+
+The main session witnessed regression failures before the fixes. The full Rust
+suite passed 508 tests, and fresh-context Astra black-box acceptance passed
+all five bug criteria. Fuzzing, fresh audits, secret scans and video gates passed.
+Rust 1.88 also passed all 508 tests. Optional page timing budgets failed with
+the corrected measurement tool. Split mutation proof accounts for all 149 cases
+and 150 tagged assertions; the single full run failed its unchanged rebuild
+deadline and still requires exact-candidate hosted verification. Local
+autoreview was waived by the owner on 2026-10-09; Git/CI delivery and release
+proof remain pending. Details in
+`memory/2026-10-08.md`; these checks are not release evidence.
+The final measurement collected 120 valid samples after the mutation workers
+finished; all four page/viewport combinations still failed the unchanged 50 ms
+budget. The owner explicitly waived that timing release gate and instructed us
+to ignore the blocked external review export on 2026-10-09. Neither waived
+check is reported as passed; the remaining CI/provenance/install gates apply.
+Homebrew and the visible Mac binary still report 0.10.7.
+
+## Current production state (0.10.7)
 
 Production is verified. `v0.10.7-beta1` and `v0.10.7` both point at `0b71b18`;
 production reused the beta archive byte for byte (ZIP SHA-256

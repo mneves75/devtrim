@@ -195,7 +195,7 @@ class Session:
         while time.monotonic() < end:
             self.read_output()
 
-    def quit(self):
+    def quit(self, expected_status=0):
         self.send(b"q")
         while self.process.poll() is None:
             self.read_output()
@@ -203,8 +203,43 @@ class Session:
         while select.select([self.master], [], [], 0)[0]:
             if not self.read_output():
                 break
-        if self.process.returncode != 0:
-            raise AssertionError(f"TUI exited with status {self.process.returncode}")
+        if self.process.returncode != expected_status:
+            raise AssertionError(
+                f"PV tui/scan-error: TUI exited with status {self.process.returncode},"
+                f" expected {expected_status}"
+            )
+
+
+def verify_scan_error_exit(binary):
+    """A visible per-repository error must survive into the process status;
+    the same category with a valid Git answer is the exit-zero control."""
+    for failed in (False, True):
+        with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+            home = Path(directory).resolve()
+            project = home / "dev" / "fixture"
+            (project / ".git").mkdir(parents=True)
+            (project / "node_modules").mkdir()
+            (project / "node_modules" / "index.js").write_text("fixture")
+            (project / "package.json").write_text("{}")
+            (home / "bin").mkdir()
+            write_script(home / "bin" / "pgrep", "exit 1")
+            write_script(
+                home / "bin" / "git",
+                "printf 'synthetic-git-failure\\n' >&2; exit 1" if failed else
+                "case \"$*\" in *ls-files*) ;; *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;"
+                " *) printf '2020-01-01\\n' ;; esac",
+            )
+            with Session(binary, home) as session:
+                session.wait_for("Scan everything")
+                session.send(b"3")
+                session.wait_for_screen("synthetic-git-failure" if failed else "Review every finding")
+                session.settle(0.25)
+                if failed:
+                    session.send(b"a")
+                    session.wait_for_screen("This result has no actionable findings.")
+                session.quit(expected_status=1 if failed else 0)
+                if termios.tcgetattr(session.master) != session.original:
+                    raise AssertionError("PV tui/scan-error: terminal was not restored")
 
 
 def verify_menu(binary):
@@ -413,6 +448,7 @@ def main():
         verify_action_keys_explain_themselves(binary)
         verify_purge(binary)
         verify_minimum_size(binary)
+        verify_scan_error_exit(binary)
     except (AssertionError, OSError, termios.error) as error:
         print(f"tui: {error}", file=sys.stderr)
         return 1

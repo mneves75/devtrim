@@ -586,6 +586,17 @@ fn now_unix() -> Result<u64> {
         .context("system clock is before the Unix epoch")
 }
 
+fn disk_tool(data_layout: std::io::Result<bool>) -> Result<SystemTool> {
+    match data_layout {
+        Ok(true) => Ok(SystemTool::DataVolume),
+        Ok(false) => anyhow::bail!("/System/Volumes/Data is not a directory"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(SystemTool::RootFilesystem)
+        }
+        Err(error) => Err(error).context("cannot inspect /System/Volumes/Data"),
+    }
+}
+
 fn collect() -> StatusReport {
     let mut unavailable = Vec::new();
 
@@ -637,14 +648,17 @@ fn collect() -> StatusReport {
     //
     // `statfs`, which is what `df` uses, is the only thing that separates the
     // two: `st_dev` is identical across `/`, `/System/Volumes/Data` and
-    // `/Users`, so no metadata comparison can find this boundary. The Data
-    // volume is preferred and the root is the fallback for older layouts; a
-    // Data-volume failure is not recorded when the fallback succeeds.
-    let disk = match capture(SystemTool::DataVolume).and_then(|output| parse_df(&output)) {
-        Ok(disk) => Some(disk),
-        Err(_) => read(&mut unavailable, SystemTool::RootFilesystem, |output| {
-            parse_df(&output)
-        }),
+    // `/Users`, so no metadata comparison can find this boundary. Metadata
+    // establishes only the layout: root is valid only when Data is absent.
+    // A present Data volume whose metric fails must remain unavailable.
+    let disk = match disk_tool(
+        std::fs::metadata("/System/Volumes/Data").map(|metadata| metadata.is_dir()),
+    ) {
+        Ok(tool) => read(&mut unavailable, tool, |output| parse_df(&output)),
+        Err(error) => {
+            unavailable.push(format!("disk: {error:#}"));
+            None
+        }
     };
     // The parser distinguishes "no battery" (a desktop) from "unreadable"; only
     // the second is an unavailable metric.
@@ -1141,6 +1155,20 @@ lo0        16384 <Link#1>                       3727486     0 5479580870  372748
 lo0        16384 127           localhost        3727486     - 5479580870  3727486     - 5479580870     -\n\
 lo0        16384 localhost   ::1                3727486     - 5479580870  3727486     - 5479580870     -\n\
 en0        1500  <Link#12>   a4:83:e7:11:22:33     50000     0    1000000    40000     0     900000     0\n";
+
+    #[test]
+    fn disk_layout_selection_fails_closed_except_for_absence() {
+        assert_eq!(disk_tool(Ok(true)).unwrap(), SystemTool::DataVolume);
+        assert_eq!(
+            disk_tool(Err(std::io::ErrorKind::NotFound.into())).unwrap(),
+            SystemTool::RootFilesystem
+        );
+        assert!(
+            disk_tool(Err(std::io::ErrorKind::PermissionDenied.into())).is_err(),
+            "PV status/disk-layout"
+        );
+        assert!(disk_tool(Ok(false)).is_err(), "PV status/disk-layout");
+    }
 
     #[test]
     fn parses_load_average() {
