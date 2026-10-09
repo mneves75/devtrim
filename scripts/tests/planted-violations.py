@@ -1455,8 +1455,8 @@ CASES = (
     Case(
         name="process/descendants",
         relative_path="src/process.rs",
-        before="        rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();\n",
-        after="        let _ = group;\n",
+        before="    if let Some(group) = group {\n        rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();\n    }\n",
+        after="    if let Some(group) = group {\n        let _ = group;\n    }\n",
         tests=("process::tests::a_timed_out_command_takes_its_descendants_with_it",),
         marker="PV process/descendants",
     ),
