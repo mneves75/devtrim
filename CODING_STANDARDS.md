@@ -237,7 +237,8 @@ The bounded-subprocess tests add uniquely named symlinks to `/bin/sleep` in
 `src/safety.rs`, which stand in for the coding agents' process names, and run
 literal system programs (`/bin/sleep`, `/usr/bin/seq`, `/bin/cat`,
 `/usr/bin/false`, `/bin/kill`). A shell appears only where it is the thing
-under test: four scripts in `src/process.rs` (one records its own pid, one
+under test: five scripts in `src/process.rs` (two record their own pid, one
+that blocks and one that exits at once, one
 writes to stderr and exits 3, one leaves a background `sleep` holding the
 pipes, one starts a background `sleep` and waits for it) and a `git` stand-in in `src/ops/project.rs` that ignores Git's
 arguments and sleeps.

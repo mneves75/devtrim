@@ -291,6 +291,15 @@ Non-negotiable boundaries:
 ## Supply chain
 
 - `Cargo.lock` is committed and release builds use `--locked`.
+- `signal-hook` 0.3 (iterator feature, default features off) runs the interrupt
+  handler: it receives SIGINT and SIGTERM on a thread, so the kill-and-exit
+  code is ordinary safe Rust. It adds no crate: crossterm's event support
+  already pulls it (and `signal-hook-registry`, `libc`) into `Cargo.lock`, so
+  `cargo audit` already covers it, and its minimum Rust version is far below the
+  1.88 MSRV. Alternatives rejected: `ctrlc` (a new crate with its own
+  dependencies, SIGINT/SIGTERM only through a feature) and rustix, which has no
+  safe way to install a handler; installing one by hand needs unsafe, which
+  the crate forbids. There is no `deny.toml`; `cargo audit` is the gate.
 - `rustix` already supplies the directory-anchored file operations; its `process`
   feature adds the safe `kill_process_group`, which `process::BoundedCommand`
   needs to kill a timed-out command's group. It adds no crate to the lockfile;
@@ -400,13 +409,22 @@ Non-negotiable boundaries:
   the leader (while it is unreaped its id cannot be reused), so a helper the
   tool spawned, such as `docker`'s buildx plugin, does not outlive the
   reported failure. A descendant still holding the output after the command
-  exited cleanly is abandoned, not killed. The price of the group is that the
-  terminal's Ctrl-C reaches devtrim only (devtrim installs no signal handler,
-  and the TUI runs in raw mode, where Ctrl-C is a key): a read or probe in
-  flight ends when it finishes or on SIGPIPE, and one that is stuck stays running
-  until it ends; a typed mutation command runs on
-  after an interrupted CLI run, and the journal shows its attempt without a
-  result. `status`
+  exited cleanly is abandoned, not killed. Because a group of its own never
+  receives the terminal's Ctrl-C, every non-TUI run installs a handler
+  (`process::exit_on_interrupt`) for SIGINT and SIGTERM. Live groups are kept
+  in one registry in `src/process.rs`, registered under its lock as part of
+  the spawn and removed in the same critical section that reaps the leader,
+  so the handler never signals a group whose leader was reaped (its id could
+  then name an unrelated process). On a signal the handler waits for spawns in
+  flight, kills every registered group while holding the lock, writes a
+  line to stderr and exits 130 (SIGINT) or 143 (SIGTERM); later spawns are
+  refused. It cannot reap the leaders, whose handles belong to other threads;
+  the kernel reparents and reaps them at exit. An apply attempt in flight
+  stays in the journal without a result, and `history` reports it as
+  interrupted. The TUI installs no handler: it runs in raw mode, where Ctrl-C
+  is a key, and restores its own terminal, so its behaviour is unchanged; a
+  SIGTERM sent to the TUI does not stop the commands it started. A devtrim
+  killed by SIGKILL cannot run the handler and leaves them running. `status`
   and `uninstall` (report-only, outside scan and apply) are not bounded.
 - Liveness probes are point-in-time snapshots. A process can start after the
   final check; apply therefore still relies on immutable targets, identity

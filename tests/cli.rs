@@ -9,7 +9,7 @@ mod support;
 
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use support::{Sandbox, git_activity, json, run};
 
@@ -585,4 +585,199 @@ fn human_apply_prints_data_loss_warning_before_action() {
 
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("DATA-LOSS WARNING"));
+}
+
+/// A stub command that records its own pid, starts a descendant that outlives
+/// any polite exit, records that pid, and blocks: the shape of `docker` running
+/// a prune through a plugin child. Every process it started is killed when the
+/// guard drops, so a failing test cannot leave a 400-second `sleep` behind.
+struct BlockingFamily {
+    stub: PathBuf,
+    descendant: PathBuf,
+    devtrim: Option<std::process::Child>,
+}
+
+impl BlockingFamily {
+    fn new(sandbox: &Sandbox) -> Self {
+        Self {
+            stub: sandbox.path().join("stub.pid"),
+            descendant: sandbox.path().join("descendant.pid"),
+            devtrim: None,
+        }
+    }
+
+    /// The shell lines that make a stub block as a family.
+    fn body(&self) -> String {
+        format!(
+            "echo $$ > '{}'\n/bin/sleep 400 &\necho $! > '{}'\nwait",
+            self.stub.display(),
+            self.descendant.display()
+        )
+    }
+
+    fn start(&mut self, sandbox: &Sandbox, args: &[&str]) {
+        self.devtrim = Some(
+            Command::new(env!("CARGO_BIN_EXE_devtrim"))
+                .args(args)
+                .env_clear()
+                .env("HOME", sandbox.path())
+                .env("PATH", sandbox.bin())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+
+    fn pid(path: &Path) -> Option<String> {
+        let pid = std::fs::read_to_string(path).ok()?;
+        let pid = pid.trim();
+        (!pid.is_empty()).then(|| pid.to_owned())
+    }
+
+    fn alive(pid: &str) -> bool {
+        Command::new("/bin/kill")
+            .args(["-0", pid])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+
+    /// Waits until the stub and its descendant are both running.
+    fn running(&self) -> (String, String) {
+        for _ in 0..600 {
+            if let (Some(stub), Some(descendant)) =
+                (Self::pid(&self.stub), Self::pid(&self.descendant))
+            {
+                return (stub, descendant);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("the stub command never started its descendant");
+    }
+
+    /// Sends `signal` to devtrim and returns its exit code and stderr.
+    fn interrupt(&mut self, signal: &str) -> (Option<i32>, String) {
+        let devtrim = self.devtrim.as_mut().unwrap();
+        Command::new("/bin/kill")
+            .args(["-s", signal, &devtrim.id().to_string()])
+            .output()
+            .unwrap();
+        for _ in 0..300 {
+            if let Some(status) = devtrim.try_wait().unwrap() {
+                let mut stderr = String::new();
+                std::io::Read::read_to_string(devtrim.stderr.as_mut().unwrap(), &mut stderr)
+                    .unwrap();
+                return (status.code(), stderr);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("devtrim did not exit within 30 s of {signal}");
+    }
+
+    /// Whether the process is gone within ten seconds. A killed process is
+    /// reaped by launchd, which can take a moment.
+    fn gone(pid: &str) -> bool {
+        for _ in 0..100 {
+            if !Self::alive(pid) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
+    }
+}
+
+impl Drop for BlockingFamily {
+    fn drop(&mut self) {
+        for path in [&self.stub, &self.descendant] {
+            if let Some(pid) = Self::pid(path) {
+                Command::new("/bin/kill").args(["-9", &pid]).output().ok();
+            }
+        }
+        if let Some(devtrim) = self.devtrim.as_mut() {
+            devtrim.kill().ok();
+            devtrim.wait().ok();
+        }
+    }
+}
+
+/// Interrupting a plain CLI run stops every command it started. The scan's
+/// `docker` query blocks as a family; devtrim must exit with the conventional
+/// status and leave neither the stub nor its descendant running.
+fn an_interrupted_scan_kills_the_commands_it_started(signal: &str, status: i32) {
+    let sandbox = Sandbox::new("interrupt-scan");
+    let mut family = BlockingFamily::new(&sandbox);
+    sandbox.script("docker", &family.body());
+    family.start(&sandbox, &["scan", "--json"]);
+    let (stub, descendant) = family.running();
+    // Control: before the signal, both are running.
+    assert!(BlockingFamily::alive(&stub) && BlockingFamily::alive(&descendant));
+
+    let (code, stderr) = family.interrupt(signal);
+
+    assert_eq!(code, Some(status), "{stderr}");
+    assert!(stderr.contains("interrupted by"), "{stderr}");
+    assert!(
+        BlockingFamily::gone(&stub),
+        "PV process/interrupt-kill: the stub command {stub} survived {signal}"
+    );
+    assert!(
+        BlockingFamily::gone(&descendant),
+        "PV process/interrupt-kill: the stub's descendant {descendant} survived {signal}"
+    );
+}
+
+#[test]
+fn sigint_kills_every_command_a_scan_started_and_exits_130() {
+    an_interrupted_scan_kills_the_commands_it_started("INT", 130);
+}
+
+#[test]
+fn sigterm_kills_every_command_a_scan_started_and_exits_143() {
+    an_interrupted_scan_kills_the_commands_it_started("TERM", 143);
+}
+
+/// A typed mutation command in flight: `docker image prune` blocks as a
+/// family. Interrupted, devtrim kills it and exits 130, and the journal keeps
+/// the attempt with no result, which `history` reports as interrupted.
+#[test]
+fn an_interrupted_apply_kills_the_prune_and_leaves_an_interrupted_journal_entry() {
+    let sandbox = Sandbox::new("interrupt-apply");
+    let mut family = BlockingFamily::new(&sandbox);
+    let host = "unix:///var/run/docker.sock";
+    sandbox.script(
+        "docker",
+        &format!(
+            "case \"$*\" in\n  'context inspect') printf '[{{\"Endpoints\":{{\"docker\":{{\"Host\":\"{host}\"}}}}}}]\\n' ;;\n  '--host {host} version') printf 'Docker version 28.0.0\\n' ;;\n  '--host {host} system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\t0\\n' ;;\n  '--host {host} image prune -a -f')\n{}\n ;;\n  *) exit 1 ;;\nesac",
+            family.body()
+        ),
+    );
+    family.start(
+        &sandbox,
+        &["clean", "docker", "--apply", "--yolo", "--json"],
+    );
+    let (stub, descendant) = family.running();
+
+    let (code, stderr) = family.interrupt("INT");
+
+    assert_eq!(code, Some(130), "{stderr}");
+    assert!(
+        BlockingFamily::gone(&stub),
+        "PV process/interrupt-kill: the prune {stub} survived"
+    );
+    assert!(
+        BlockingFamily::gone(&descendant),
+        "PV process/interrupt-kill: the prune's child {descendant} survived"
+    );
+    let journal = std::fs::read_to_string(sandbox.journal()).unwrap();
+    let phases = journal
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap()["phase"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(phases, vec![Value::from("attempt")], "{journal}");
+    let history = json(&run(&sandbox, &["history", "--json"]));
+    assert_eq!(history["entries"][0]["status"], "interrupted", "{history}");
 }

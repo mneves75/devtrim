@@ -1460,6 +1460,29 @@ CASES = (
         tests=("process::tests::a_timed_out_command_takes_its_descendants_with_it",),
         marker="PV process/descendants",
     ),
+    # An interrupted devtrim must kill every command it started, and must
+    # never signal a group whose leader was already reaped.
+    Case(
+        name="process/interrupt-kill",
+        relative_path="src/process.rs",
+        before="            if let Some(group) = rustix::process::Pid::from_raw(*group) {\n                rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();\n            }\n",
+        after="            let _ = group;\n",
+        tests=(
+            "sigint_kills_every_command_a_scan_started_and_exits_130",
+            "sigterm_kills_every_command_a_scan_started_and_exits_143",
+            "an_interrupted_apply_kills_the_prune_and_leaves_an_interrupted_journal_entry",
+        ),
+        marker="PV process/interrupt-kill",
+        target="cli",
+    ),
+    Case(
+        name="process/unregister",
+        relative_path="src/process.rs",
+        before="        registry.groups.remove(&group);\n",
+        after="        let _ = group;\n",
+        tests=("process::tests::a_command_is_registered_while_it_runs_and_unregistered_once_reaped",),
+        marker="PV process/unregister",
+    ),
     Case(
         name="liveness/probe-timeout",
         relative_path="src/safety.rs",

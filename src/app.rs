@@ -1,9 +1,10 @@
 //! CLI application flow.
 
 use crate::{
-    analyze, cli, journal, largest, ops, report, safety, status, tui, uninstall, worktrees,
+    analyze, cli, journal, largest, ops, process, report, safety, status, tui, uninstall,
+    worktrees,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use colored::Colorize;
 use std::ffi::{OsStr, OsString};
@@ -318,6 +319,11 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
     }
     let ctx = safety::Ctx::from_cli(&cli)?;
     let command = cli.command.take().unwrap_or(cli::Command::Tui);
+    // The TUI runs in raw mode, where Ctrl-C is a key, and restores its own
+    // terminal; every other run kills the commands it started when interrupted.
+    if !matches!(command, cli::Command::Tui) {
+        process::exit_on_interrupt().context("cannot install the interrupt handler")?;
+    }
 
     match command {
         cli::Command::Tui => tui::run(&ctx),
