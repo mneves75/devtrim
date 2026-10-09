@@ -998,6 +998,55 @@ fn purge_contains_each_failure_to_where_it_happened() {
     assert_eq!(targets(&json(&healed)), expected);
 }
 
+/// One cache the scan cannot measure must not take the rest of the category
+/// with it. The unreadable cache is named in one error finding, so the run
+/// still exits nonzero, and is never offered; the readable cache listed before
+/// it and the one listed after it are. Once it is readable again the same run
+/// offers all three.
+#[test]
+fn one_unreadable_cache_does_not_fail_the_caches_category() {
+    let sandbox = Sandbox::in_target("caches-unreadable");
+    let home = sandbox.path().canonicalize().unwrap();
+    let before = home.join(".cache/huggingface/hub");
+    let broken = home.join(".cache/node");
+    let after = home.join(".cache/gh");
+    for cache in [&before, &broken, &after] {
+        support::write(&cache.join("entry"), "cached");
+    }
+    let locked = Unreadable::new(broken.join("corepack"));
+
+    let output = run(&sandbox, &["clean", "caches", "--json"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let value = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    let mut offered = value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|finding| finding["path"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    offered.sort();
+    let mut expected = vec![before.display().to_string(), after.display().to_string()];
+    expected.sort();
+    assert_eq!(offered, expected, "PV caches/unreadable-cache: {value}");
+    let errors = value["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    let error = errors[0].as_str().unwrap();
+    assert!(
+        error.contains("could not be read") && error.contains(&broken.display().to_string()),
+        "{error}"
+    );
+
+    drop(locked);
+    let healed = run(&sandbox, &["clean", "caches", "--json"]);
+    assert!(
+        healed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&healed.stderr)
+    );
+    assert_eq!(finding_paths(&json(&healed)).len(), 3);
+}
+
 /// A build directory holding a file its repository tracks is part of the
 /// repository, not build output, so neither `purge` half offers it. The
 /// untracked `node_modules` beside it is the positive control.

@@ -1412,6 +1412,15 @@ CASES = (
         marker="PV sink/trash-no-finder",
     ),
     Case(
+        name="caches/unreadable-cache",
+        relative_path="src/ops/caches.rs",
+        before='        if !unread.is_empty() {\n            findings.push(unread_folders_finding("caches", &unread));\n        }\n        Ok(findings)',
+        after='        if !unread.is_empty() {\n            anyhow::bail!("unreadable cache");\n        }\n        Ok(findings)',
+        tests=("one_unreadable_cache_does_not_fail_the_caches_category",),
+        marker="PV caches/unreadable-cache",
+        target="cli",
+    ),
+    Case(
         name="liveness/agent-processes",
         relative_path="src/safety.rs",
         before='const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\\\.[0-9]+\\\\.[0-9]+";' + "\n",
