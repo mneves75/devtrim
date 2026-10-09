@@ -17,7 +17,7 @@ violates one cannot merge, so reporting it wastes the review.
 | --- | --- |
 | `cargo fmt --all -- --check` | all formatting |
 | `cargo clippy --all-targets --all-features -- -D warnings` | every default clippy lint, plus `unsafe_code = "forbid"`, `unwrap_used`, `expect_used`, `panic`, `unreachable`, `todo`, `unimplemented`, `dbg_macro`, and `allow_attributes_without_reason` |
-| `ast-grep scan --config sgconfig.yml` | `no-direct-filesystem-delete` and `no-unowned-filesystem-delete-in-owner-module` (which pin the sink signature `fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity)` and sanction `crate::ops::remove_test_path` and the file's `#[cfg(test)] mod tests` as the test escape hatches); `no-shell-invocation`; `no-abbreviated-bindings` |
+| `ast-grep scan --config sgconfig.yml` | `no-direct-filesystem-delete` and `no-unowned-filesystem-delete-in-owner-module` (which pin the sink signature `fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity)` and sanction `crate::ops::remove_test_path` and the file's `#[cfg(test)] mod tests` as the test escape hatches); `no-shell-invocation`; `no-unbounded-subprocess` (an `output`, `status` or `spawn` outside `src/process.rs`, tests, and the unbounded report-only `src/status.rs` and `src/uninstall.rs`); `no-abbreviated-bindings` |
 | `cargo test --all-targets --all-features` | unit and CLI integration coverage |
 | `rustup run 1.88.0 cargo test` | MSRV |
 | `python3 scripts/tests/tui.py target/debug/devtrim` | real PTY menu/help/cancel/quit with isolated HOME/PATH, explicit dimensions, visible-content assertions, and restored terminal state; release-policy tests reject a non-rendering executable |
@@ -233,6 +233,14 @@ The only other variable programs in the tree are inside `#[cfg(test)] mod
 tests`: `std::env::current_exe()` re-invoking the test binary in
 `src/journal.rs`, and a uniquely named symlink to `/usr/bin/time` that makes a
 known ancestor of `pgrep` in `src/safety.rs`. Neither takes a shell or a script.
+The bounded-subprocess tests add uniquely named symlinks to `/bin/sleep` in
+`src/safety.rs`, which stand in for the coding agents' process names, and run
+literal system programs (`/bin/sleep`, `/usr/bin/seq`, `/bin/cat`,
+`/usr/bin/false`, `/bin/kill`). A shell appears only where it is the thing
+under test: four scripts in `src/process.rs` (one records its own pid, one
+writes to stderr and exits 3, one leaves a background `sleep` holding the
+pipes, one starts a background `sleep` and waits for it) and a `git` stand-in in `src/ops/project.rs` that ignores Git's
+arguments and sleeps.
 A fifth production site is a finding.
 
 ## Adding a rule

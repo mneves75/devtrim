@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::process::{BoundedCommand as _, MUTATION_TIMEOUT};
 pub use crate::report::{Action, Finding, Summary};
 pub use crate::safety::dir_size;
 use crate::safety::{Ctx, FileIdentity, MarkerGrant, VerifiedTarget, is_git_metadata_name};
@@ -80,7 +81,9 @@ pub(crate) fn run_command_authority(
     )?;
     let command = format!("`{program} {}`", args.join(" "));
     let result = successful_output(
-        std::process::Command::new(program).args(&args).output(),
+        std::process::Command::new(program)
+            .args(&args)
+            .output_within(MUTATION_TIMEOUT),
         &command,
     )
     .map(|_| note(&command));
@@ -356,6 +359,27 @@ fn apply_verified_finding(
     attempt.finish(ctx, result)
 }
 
+/// The Trash move devtrim uses: `NSFileManager.trashItemAtURL`, never Finder.
+///
+/// The crate's default asks Finder through AppleScript, which needs Automation
+/// permission for whatever process runs devtrim (it failed with that
+/// permission error on 2026-10-02) and queues behind Finder on a busy machine.
+/// `NSFileManager` needs no extra permission. The cost is Finder's "Put Back":
+/// the item is in the Trash but may not remember where it came from.
+#[cfg(target_os = "macos")]
+fn trash_context() -> trash::TrashContext {
+    use trash::macos::{DeleteMethod, TrashContextExtMacos as _};
+
+    let mut context = trash::TrashContext::new();
+    context.set_delete_method(DeleteMethod::NsFileManager);
+    context
+}
+
+#[cfg(not(target_os = "macos"))]
+fn trash_context() -> trash::TrashContext {
+    trash::TrashContext::new()
+}
+
 fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
     let (path, markers) = target.into_parts();
     let parent = path
@@ -408,7 +432,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
         }
         // macOS Trash has no descriptor-relative API; a residual rename window
         // remains after this final parent-anchored identity check.
-        trash::delete(&path)?;
+        trash_context().delete(&path)?;
         return Ok(());
     }
 
@@ -1197,6 +1221,56 @@ pub(crate) fn remove_test_path(path: impl AsRef<Path>) {
 mod tests {
     use super::*;
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
+
+    /// Finder's AppleScript path failed on 2026-10-02 for lack of Automation
+    /// permission and is slow on a loaded machine. Moving a real item would put
+    /// it in the developer's actual Trash, whatever `HOME` says, so this pins
+    /// the method the sink hands to the crate; the move itself stays unproven
+    /// here, as Finder's was.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_trash_move_uses_nsfilemanager_never_finder() {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos as _};
+
+        assert!(
+            matches!(
+                trash::TrashContext::new().delete_method(),
+                DeleteMethod::Finder
+            ),
+            "control: the crate default is the Finder method this replaces"
+        );
+        assert!(
+            matches!(trash_context().delete_method(), DeleteMethod::NsFileManager),
+            "PV sink/trash-no-finder: the Trash move still goes through Finder"
+        );
+    }
+
+    /// A tool that hangs is not a tool that is absent: only `NotFound` may
+    /// become "not installed", so `docker` or `xcrun` timing out must fail its
+    /// category instead of reading as a clean machine.
+    #[test]
+    fn a_command_that_outlives_its_limit_is_an_error_not_an_absent_tool() {
+        let absent = optional_command_stdout(
+            std::process::Command::new("/nonexistent/devtrim-no-such-program")
+                .output_within(std::time::Duration::from_millis(400)),
+            "`docker version`",
+        )
+        .unwrap();
+        assert_eq!(absent, None, "control: a missing program is absent");
+
+        let result = optional_command_stdout(
+            std::process::Command::new("/bin/sleep")
+                .arg("10")
+                .output_within(std::time::Duration::from_millis(400)),
+            "`docker version`",
+        );
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("`docker version`"), "{message}");
+        assert!(
+            message.contains("/bin/sleep timed out after 400ms"),
+            "{message}"
+        );
+    }
 
     /// A fixture outlives a failing test only as clutter a later `purge` of
     /// this checkout would find, so the guard must clean up while unwinding.

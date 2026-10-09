@@ -5,6 +5,7 @@ valid:
       fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
           dir.remove_file(&path)?;
           trash::delete(&path)?;
+          trash_context().delete(&path)?;
           Ok(())
       }
   - |
@@ -28,6 +29,11 @@ invalid:
   - |
       fn accidental_method_sink(dir: &Dir, path: &Path) -> Result<()> {
           dir.remove_dir_all(path)?;
+          Ok(())
+      }
+  - |
+      fn accidental_trash_sink(context: &TrashContext, path: &Path) -> Result<()> {
+          context.delete(path)?;
           Ok(())
       }
   - |

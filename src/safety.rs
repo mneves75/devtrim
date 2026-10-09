@@ -7,11 +7,13 @@ use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use crate::cli::Cli;
 use crate::ops::Finding;
+use crate::process::{BoundedCommand as _, PROBE_TIMEOUT};
 
 pub const DATA_LOSS_NOTICE: &str = "Applying this plan can delete data. devtrim is provided AS IS, without warranties; you assume the risk for the exact targets shown. Keep backups and grant macOS permissions manually only when you understand the request.";
 
@@ -1314,7 +1316,17 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTim
     Ok((bytes, newest))
 }
 
-const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake";
+/// Process names that protect the repository holding their working directory, as `pgrep -x` reads
+/// them: an anchored extended regex over the exact process name. The coding
+/// agents belong here because they build and test in a worktree for hours:
+/// Codex runs as `codex` under a `node` wrapper, and Claude Code's process
+/// name is its version number (`2.1.294` for `~/.local/share/claude/versions/2.1.294`),
+/// matched as a whole dotted triple of digits with an optional SemVer
+/// pre-release suffix (`2.2.0-beta.1`). Any process named like that
+/// qualifies, which can only protect or refuse more; on the development
+/// machine only Claude Code matched.
+/// `rust-analyzer` keeps a workspace's `target` busy through its own checks.
+const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|python|python3|Python|gradle|java|xcodebuild|swift|swiftc|make|ninja|cmake|codex|claude|rust-analyzer|[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?";
 
 /// `pgrep` matching shared by every liveness probe. `-a` keeps devtrim's own
 /// ancestors in the list: pgrep omits them by default, and a `make` or
@@ -1322,23 +1334,41 @@ const BUILD_PROCESS_PATTERN: &str = "node|npm|pnpm|yarn|bun|deno|cargo|rustc|go|
 /// whose repository must not lose its dependencies.
 const PGREP_MATCH_ARGS: [&str; 2] = ["-a", "-x"];
 
-pub(crate) fn build_process_cwds() -> Result<Vec<PathBuf>> {
-    let running_build_pids = || -> Result<BTreeSet<u32>> {
-        let pgrep = Command::new("pgrep")
+/// One probe subprocess under `limit`. A probe that cannot finish is an error
+/// that names the program and the limit, so no caller can read it as "nothing
+/// is running": every liveness decision goes through here.
+fn probe_output(command: &mut Command, limit: Duration, probe: &str) -> Result<Output> {
+    command
+        .output_within(limit)
+        .with_context(|| format!("cannot run {probe}"))
+}
+
+/// The processes `pgrep` matched. Exit 1 (no match) is an empty list; a probe
+/// that did not finish is an error, never an empty list.
+fn pgrep_pids(command: &mut Command, limit: Duration, probe: &str) -> Result<Vec<u32>> {
+    let output = probe_output(command, limit, probe)?;
+    parse_pgrep_pids(&output.stdout, output.status.code())
+}
+
+fn build_process_pids() -> Result<BTreeSet<u32>> {
+    Ok(pgrep_pids(
+        Command::new("pgrep")
             .args(PGREP_MATCH_ARGS)
-            .arg(BUILD_PROCESS_PATTERN)
-            .output()
-            .context("cannot run build-process pgrep probe")?;
-        Ok(parse_pgrep_pids(&pgrep.stdout, pgrep.status.code())?
-            .into_iter()
-            .collect())
-    };
-    let pids = running_build_pids()?;
+            .arg(BUILD_PROCESS_PATTERN),
+        PROBE_TIMEOUT,
+        "build-process pgrep probe",
+    )?
+    .into_iter()
+    .collect())
+}
+
+pub(crate) fn build_process_cwds() -> Result<Vec<PathBuf>> {
+    let pids = build_process_pids()?;
     if pids.is_empty() {
         return Ok(Vec::new());
     }
     let first = lsof_cwds_of(&pids)?;
-    resolve_build_process_cwds(&pids, first, running_build_pids, lsof_cwds_of)
+    resolve_build_process_cwds(&pids, first, build_process_pids, lsof_cwds_of)
 }
 
 /// The comma-separated process list `lsof -p` takes.
@@ -1352,10 +1382,11 @@ fn lsof_pid_list<'a>(pids: impl IntoIterator<Item = &'a u32>) -> String {
 /// One `lsof` run for the working directories of exactly these processes.
 fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
     let pid_list = lsof_pid_list(pids);
-    let lsof = Command::new("lsof")
-        .args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"])
-        .output()
-        .context("cannot run build-process cwd probe")?;
+    let lsof = probe_output(
+        Command::new("lsof").args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"]),
+        PROBE_TIMEOUT,
+        "build-process cwd probe",
+    )?;
     parse_lsof_cwds(&lsof.stdout, lsof.status.code())
 }
 
@@ -1371,10 +1402,11 @@ fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
 pub(crate) fn executable_mappings() -> Result<Vec<PathBuf>> {
     // lsof after 4.93.2 omits `f` unless requested; the parser needs it to
     // reject a mapped file whose name is missing.
-    let lsof = Command::new("lsof")
-        .args(["-w", "-d", "txt", "-F", "fn"])
-        .output()
-        .context("cannot run executable-mapping probe")?;
+    let lsof = probe_output(
+        Command::new("lsof").args(["-w", "-d", "txt", "-F", "fn"]),
+        PROBE_TIMEOUT,
+        "executable-mapping probe",
+    )?;
     parse_lsof_mappings(&lsof.stdout, lsof.status.code())
 }
 
@@ -1517,20 +1549,22 @@ pub(crate) struct OpenFile {
 /// Whether an Xcode-family process runs and, if so, every file the running
 /// ones hold open, from one `lsof` that must report them all.
 pub(crate) fn xcode_activity() -> Result<XcodeActivity> {
-    let output = Command::new("pgrep")
-        .args(PGREP_MATCH_ARGS)
-        .arg(XCODE_BUILD_PATTERN)
-        .output()
-        .context("cannot run Xcode build liveness probe")?;
-    let pids = parse_pgrep_pids(&output.stdout, output.status.code())?;
+    let pids = pgrep_pids(
+        Command::new("pgrep")
+            .args(PGREP_MATCH_ARGS)
+            .arg(XCODE_BUILD_PATTERN),
+        PROBE_TIMEOUT,
+        "Xcode build liveness probe",
+    )?;
     if pids.is_empty() {
         return Ok(XcodeActivity::Idle);
     }
     let pid_list = lsof_pid_list(&pids);
-    let lsof = Command::new("lsof")
-        .args(["-p", &pid_list, "-F", "tDn"])
-        .output()
-        .context("cannot run the probe of files Xcode holds open")?;
+    let lsof = probe_output(
+        Command::new("lsof").args(["-p", &pid_list, "-F", "tDn"]),
+        PROBE_TIMEOUT,
+        "the probe of files Xcode holds open",
+    )?;
     Ok(XcodeActivity::Active {
         open_files: parse_lsof_open_files(&lsof.stdout, lsof.status.code())?,
     })
@@ -2655,6 +2689,102 @@ mod tests {
         assert_eq!(with, Some(0), "ancestor not matched");
         // Control: pgrep's default excludes the same ancestor.
         assert_eq!(without, Some(1), "control failed");
+    }
+
+    /// Kills and reaps a long-lived fixture process when the test ends or fails.
+    struct Reaped(std::process::Child);
+
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            self.0.kill().ok();
+            self.0.wait().ok();
+        }
+    }
+
+    /// Codex runs as `codex`; Claude Code's process name is its version number,
+    /// and a launcher may call itself `claude`. Each protects the repository it
+    /// works in. The invoked name becomes the process name (as in the ancestor
+    /// test above), so a symlink to `sleep` stands in for each agent, and the
+    /// production probe must report exactly the ones that qualify.
+    #[test]
+    fn coding_agents_protect_the_repository_holding_their_working_directory() {
+        let directory = temp("agent-names");
+        let names = [
+            ("2.1.999", true),
+            ("codex", true),
+            ("claude", true),
+            ("rust-analyzer", true),
+            // A pre-release build of Claude Code is named with its suffix.
+            ("2.2.0-beta.1", true),
+            ("2.1.0-rc1", true),
+            // Near misses: the version pattern is a whole dotted triple with
+            // at most a well-formed pre-release suffix, and an agent's helper
+            // or a lookalike name is not an agent.
+            ("2.1", false),
+            ("1.2.3.4", false),
+            ("2.2.0-", false),
+            ("2.2.0-beta..1", false),
+            ("codex-code-mode", false),
+            ("claudette", false),
+        ];
+        let mut spawned = Vec::new();
+        for (name, expected) in names {
+            let link = directory.join(name);
+            symlink("/bin/sleep", &link).unwrap();
+            let child = Command::new(&link).arg("60").spawn().unwrap();
+            spawned.push((name, expected, Reaped(child)));
+        }
+
+        let running = build_process_pids().unwrap();
+        for (name, expected, child) in &spawned {
+            let tag = if name.contains("-beta") || name.contains("-rc") || name.ends_with('-') {
+                "PV liveness/agent-prerelease"
+            } else {
+                "PV liveness/agent-processes"
+            };
+            assert_eq!(
+                running.contains(&child.0.id()),
+                *expected,
+                "{tag}: process named {name}"
+            );
+        }
+        drop(spawned);
+        crate::ops::remove_test_path(&directory);
+    }
+
+    /// A probe that cannot finish is not "no process runs". `pgrep` exiting 1
+    /// is the only empty answer, and a hung one must refuse instead.
+    #[test]
+    fn a_probe_that_cannot_finish_refuses_instead_of_reporting_nothing_running() {
+        let hung = || {
+            let mut command = Command::new("/bin/sleep");
+            command.arg("30");
+            command
+        };
+        let limit = Duration::from_millis(400);
+
+        let none = pgrep_pids(
+            &mut Command::new("/usr/bin/false"),
+            Duration::from_secs(60),
+            "probe",
+        );
+        assert_eq!(none.unwrap(), Vec::<u32>::new(), "control: exit 1 is empty");
+
+        let result = pgrep_pids(&mut hung(), limit, "build-process pgrep probe");
+        assert!(
+            result.is_err(),
+            "PV liveness/probe-timeout: a pgrep that never answered read as nothing running"
+        );
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("build-process pgrep probe"), "{message}");
+        assert!(
+            message.contains("/bin/sleep timed out after 400ms"),
+            "{message}"
+        );
+
+        // The lsof probes share the bound: a hung one is an error too.
+        let lsof = probe_output(&mut hung(), limit, "build-process cwd probe");
+        assert!(lsof.is_err(), "a hung lsof returned output");
     }
 
     #[test]

@@ -155,7 +155,17 @@ Non-negotiable boundaries:
   name must be absolute: Darwin diagnostics such as `no more information`
   refuse the probe at preview and apply instead of implying inactivity.
   Liveness probes use fixed
-  argv `pgrep`/`lsof`; a probe that cannot complete blocks instead of passing.
+  argv `pgrep`/`lsof`; a probe that cannot complete, or does not answer within
+  its three-minute limit, blocks instead of passing. The build-process names are
+  matched by `pgrep -x` as an anchored extended regex over the exact process
+  name, which includes the coding agents: `codex` (native, under a `node`
+  wrapper), `claude`, and Claude Code's own process name, its version number
+  (`2.1.294`), matched only as a whole dotted triple of digits with an
+  optional SemVer pre-release suffix (`2.2.0-beta.1`). Protection follows the
+  process's own working directory: the repository containing it is
+  protected, not every repository the agent edits by absolute path. As with
+  any build process, one `lsof` cannot read, another user's for example,
+  refuses the probe.
   `lsof` exiting 1 is accepted only when every process it did not report is
   absent from a fresh `pgrep`, so a build that exited between the probes does
   not block while one it could not read still does; a build process first seen
@@ -280,6 +290,10 @@ Non-negotiable boundaries:
 ## Supply chain
 
 - `Cargo.lock` is committed and release builds use `--locked`.
+- `rustix` already supplies the directory-anchored file operations; its `process`
+  feature adds the safe `kill_process_group`, which `process::BoundedCommand`
+  needs to kill a timed-out command's group. It adds no crate to the lockfile;
+  std has no group kill and the crate forbids unsafe code.
 - Rust 1.98.1 is pinned in `rust-toolchain.toml` and hosted workflows; `rust-version` records the separate MSRV. This avoids the vtable-generation miscompilation documented in the [Rust 1.98.1 advisory](https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/).
 - GitHub Actions are pinned to immutable commit SHAs.
 - Dependabot checks the root and fuzz Cargo graphs, the demo video's npm graph,
@@ -325,7 +339,7 @@ Non-negotiable boundaries:
   Named mutation controls prove individual assertions, not every feature or
   race. The shared removal-root device check has a same-device control and a
   foreign-parent-device refusal using injected observed metadata; that test
-  does not mount a volume or invoke Finder's Trash move.
+  does not mount a volume or perform a real Trash move.
 
 - Directory sizes are measured with one `stat` per file. macOS `getattrlistbulk`
   would collapse that into roughly one syscall per hundred entries, but it has no
@@ -349,20 +363,50 @@ Non-negotiable boundaries:
   Trash API). Identity is re-verified immediately before the call, but removal
   is not atomic against a concurrent rename in that final window. Directory
   targets are fully preflighted for foreign devices and nested Git markers
-  before the Trash call, but that preflight cannot make Finder's path-based move
-  atomic. devtrim is a single-user local tool; when identity cannot be proven
+  before the Trash call, but that preflight cannot make the path-based
+  `NSFileManager` move atomic. devtrim is a single-user local tool; when identity cannot be proven
   it refuses. Permanent non-directory targets are finally unlinked by their
   private unpredictable quarantine name because macOS has no general
   remove-by-open-file API. Recursive deletion rechecks each entry, device, Git
   marker, and open directory identity, but a concurrent post-preflight change
   can still stop a partially completed tree; there is no rollback after
   deletion begins.
-- The `trash` crate and Finder behavior depend on macOS permissions and volume
-  support. Files & Folders, App Management, Automation, or Full Disk Access
-  authorization is a manual user decision in System Settings; devtrim does not
-  bypass it. Trash purge is permanent once explicitly applied.
-- External commands can hang or change behavior across installed tool versions;
-  broad timeout/process frameworks are deferred until a measured need exists.
+- The `trash` crate depends on macOS permissions and volume support. devtrim
+  moves items with `NSFileManager.trashItemAtURL` (`DeleteMethod::NsFileManager`),
+  never through Finder's AppleScript, which needed Automation permission for
+  the calling process and failed without it (2026-10-02). The crate documents
+  one cost: Finder's "Put Back" may not remember where an item came from, so
+  restoring means dragging it out of the Trash. Files & Folders, App
+  Management, or Full Disk Access authorization is a manual user decision in
+  System Settings; devtrim does not bypass it. Trash purge is permanent once
+  explicitly applied.
+- External commands can change behavior across installed tool versions, and on
+  a machine running dozens of agent worktrees (load average 300 to 950, about
+  1,700 processes, a system-wide `lsof` taking 16 s at load 300, observed
+  2026-10-08) they can stall. Every scan and apply subprocess therefore runs
+  through `process::BoundedCommand::output_within`, enforced by the
+  `no-unbounded-subprocess` ast-grep rule: standard input is null, both output
+  streams are drained while it runs, and past its limit the child is killed and
+  reaped and the call fails with `TimedOut`, naming the program and the limit.
+  Limits: two minutes for Git, `simctl`, `docker`, `npm` and `brew` queries;
+  three for the `pgrep` and `lsof` probes (the observed 16 s scaled linearly to
+  the worst observed load, about 50 s, with a margin of more than three);
+  fifteen for the typed Docker, simulator and maintenance commands an apply
+  runs, which do real work and are only backstopped. A timeout is never an absent program and
+  never an empty probe: it fails the repository, category or safety check that
+  asked, and the other categories still complete. Each command leads a
+  process group of its own and a timeout kills the whole group before reaping
+  the leader (while it is unreaped its id cannot be reused), so a helper the
+  tool spawned, such as `docker`'s buildx plugin, does not outlive the
+  reported failure. A descendant still holding the output after the command
+  exited cleanly is abandoned, not killed. The price of the group is that the
+  terminal's Ctrl-C reaches devtrim only (devtrim installs no signal handler,
+  and the TUI runs in raw mode, where Ctrl-C is a key): a read or probe in
+  flight ends when it finishes or on SIGPIPE, and one that is stuck stays running
+  until it ends; a typed mutation command runs on
+  after an interrupted CLI run, and the journal shows its attempt without a
+  result. `status`
+  and `uninstall` (report-only, outside scan and apply) are not bounded.
 - Liveness probes are point-in-time snapshots. A process can start after the
   final check; apply therefore still relies on immutable targets, identity
   checks, and conservative refusal rather than treating liveness as a lock.

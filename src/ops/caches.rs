@@ -3,11 +3,12 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use super::project::has_git_marker;
+use super::project::{UnreadFolder, has_git_marker, unread_folders_finding};
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, apply_uv_cache_finding, dir_size,
     removal_note,
 };
+use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
 use crate::report::TargetAuthority;
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
@@ -106,21 +107,24 @@ impl Op for Caches {
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
+        // A cache whose size cannot be measured offers nothing and is named in
+        // one error finding (S8): it must not stop the caches listed after it.
+        let mut unread = Vec::new();
         for entry in CACHES {
             let path = ctx.home.join(entry.relative);
-            let size = dir_size(&path)?;
+            let size = measured(&path, &mut unread);
             if size > 0 {
                 findings.push(cache_finding(entry.label, path, size, 3));
             }
         }
         for (label, path) in library_caches(&ctx.home) {
-            let size = dir_size(&path)?;
+            let size = measured(&path, &mut unread);
             if size > 0 {
                 findings.push(cache_finding(label, path, size, 3));
             }
         }
         if let Some(path) = owner_cache_path("npm", &["config", "get", "cache"], ctx)? {
-            let size = dir_size(&path)?;
+            let size = measured(&path, &mut unread);
             if size > 0 {
                 findings.push(
                     cache_finding("npm download cache", path, size, 2)
@@ -129,7 +133,13 @@ impl Op for Caches {
             }
         }
         if let Some(path) = owner_cache_path("brew", &["--cache"], ctx)? {
-            findings.extend(brew_cache_findings(&path, &ctx.home)?);
+            match brew_cache_findings(&path, &ctx.home, &mut unread) {
+                Ok(brew) => findings.extend(brew),
+                Err(error) => unread.push(UnreadFolder::new(&path, &error)),
+            }
+        }
+        if !unread.is_empty() {
+            findings.push(unread_folders_finding("caches", &unread));
         }
         Ok(findings)
     }
@@ -175,7 +185,11 @@ impl Op for Caches {
 /// its Git marker rather than its name, stays; every other non-empty child is
 /// offered. A top-level link into `downloads` is left in place: Homebrew's own
 /// `brew cleanup` removes links it finds dangling.
-fn brew_cache_findings(cache: &Path, home: &Path) -> Result<Vec<Finding>> {
+fn brew_cache_findings(
+    cache: &Path,
+    home: &Path,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<Vec<Finding>> {
     const LABEL: &str = "homebrew downloads cache";
     let entries = match std::fs::read_dir(cache) {
         Ok(entries) => entries,
@@ -206,7 +220,7 @@ fn brew_cache_findings(cache: &Path, home: &Path) -> Result<Vec<Finding>> {
     // its direct child; a relocated `HOMEBREW_CACHE` stays one finding, which
     // the sink refuses whole while it holds a clone.
     if clones == 0 || !is_standard_brew_cache(cache, home) {
-        let size = dir_size(cache)?;
+        let size = measured(cache, unread);
         return Ok((size > 0)
             .then(|| {
                 cache_finding(LABEL, cache.to_path_buf(), size, 1)
@@ -218,7 +232,7 @@ fn brew_cache_findings(cache: &Path, home: &Path) -> Result<Vec<Finding>> {
     children.sort();
     let mut findings = Vec::new();
     for child in children {
-        let size = dir_size(&child)?;
+        let size = measured(&child, unread);
         if size == 0 {
             continue;
         }
@@ -244,6 +258,16 @@ fn brew_cache_findings(cache: &Path, home: &Path) -> Result<Vec<Finding>> {
         );
     }
     Ok(findings)
+}
+
+/// A cache's size, or 0 with the cache recorded in `unread` when it cannot be
+/// measured: an unreadable folder, or a size that overflows. Only a cache that
+/// does not exist (`dir_size` yields 0) is an ordinary empty one.
+fn measured(path: &Path, unread: &mut Vec<UnreadFolder>) -> u64 {
+    dir_size(path).unwrap_or_else(|error| {
+        unread.push(UnreadFolder::new(path, &error));
+        0
+    })
 }
 
 fn cache_finding(label: &str, path: PathBuf, size: u64, danger: u8) -> Finding {
@@ -387,7 +411,7 @@ fn command_path(program: &str, args: &[&str], home: &Path) -> Result<Option<Path
     let output = std::process::Command::new(program)
         .args(args)
         .current_dir(home)
-        .output();
+        .output_within(QUERY_TIMEOUT);
     let Some(value) = super::optional_command_stdout(output, &command)? else {
         return Ok(None);
     };
@@ -515,7 +539,7 @@ mod tests {
         )
         .unwrap();
 
-        let findings = brew_cache_findings(&cache, &home).unwrap();
+        let findings = brew_cache_findings(&cache, &home, &mut Vec::new()).unwrap();
         let mut offered = findings
             .iter()
             .filter_map(Finding::target)
@@ -538,7 +562,7 @@ mod tests {
         let plain = home.join("plain/Library/Caches/Homebrew");
         std::fs::create_dir_all(plain.join("downloads")).unwrap();
         std::fs::write(plain.join("downloads/a.tar.gz"), "x").unwrap();
-        let whole = brew_cache_findings(&plain, &home.join("plain")).unwrap();
+        let whole = brew_cache_findings(&plain, &home.join("plain"), &mut Vec::new()).unwrap();
         assert_eq!(
             whole.iter().filter_map(Finding::target).collect::<Vec<_>>(),
             vec![plain.as_path()]

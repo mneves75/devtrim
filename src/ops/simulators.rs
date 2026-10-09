@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use super::{Action, ApplyOutcome, Finding, Op, command_stdout, dir_size, optional_command_stdout};
+use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
 use crate::report::CommandAuthority;
 use crate::safety::{Ctx, escalate};
 
@@ -51,7 +52,10 @@ struct DisclosedDevice {
 fn simctl(args: &[&str]) -> Result<String> {
     let command = format!("`xcrun simctl {}`", args.join(" "));
     command_stdout(
-        Command::new("xcrun").arg("simctl").args(args).output(),
+        Command::new("xcrun")
+            .arg("simctl")
+            .args(args)
+            .output_within(QUERY_TIMEOUT),
         &command,
     )
 }
@@ -220,7 +224,9 @@ impl Op for Simulators {
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
         let Some(version) = optional_command_stdout(
-            Command::new("xcrun").arg("--version").output(),
+            Command::new("xcrun")
+                .arg("--version")
+                .output_within(QUERY_TIMEOUT),
             "`xcrun --version`",
         )?
         else {

@@ -18,6 +18,8 @@ rule:
         - pattern: remove_dir_all($TARGET)
         - pattern: $MODULE::delete($TARGET)
         - pattern: delete($TARGET)
+        - pattern: $RECV.delete($$$ARGS)
+        - pattern: $RECV.delete_all($$$ARGS)
         - pattern: $RECV.remove_file($$$ARGS)
         - pattern: $RECV.remove_dir($$$ARGS)
         - pattern: $RECV.remove_dir_all($$$ARGS)

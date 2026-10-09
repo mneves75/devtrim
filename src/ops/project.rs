@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
 use crate::report::{Action, Finding};
 use crate::safety::is_git_metadata_name;
 
@@ -396,7 +397,7 @@ fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
 /// first line of explanation, so a refusal it causes can be diagnosed.
 fn hardened_output(mut command: Command, failure: impl Fn() -> String) -> Result<Vec<u8>> {
     let output = command
-        .output()
+        .output_within(QUERY_TIMEOUT)
         .with_context(|| format!("{}: cannot run Git", failure()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -558,7 +559,7 @@ pub(crate) fn unborn_branch(repo: &Path) -> bool {
     let git_output = |arguments: &[&str]| {
         let mut command = hardened_git(repo, "git");
         command.args(arguments);
-        command.output().ok()
+        command.output_within(QUERY_TIMEOUT).ok()
     };
     git_output(&["symbolic-ref", "-q", "HEAD"]).is_some_and(|symbolic| symbolic.status.success())
         && git_output(&["refs", "verify"]).is_some_and(|verified| verified.status.success())
@@ -1002,6 +1003,29 @@ mod tests {
         assert!(is_directory_if_present(&readable).unwrap());
         assert!(!is_directory_if_present(&base.join("missing-root")).unwrap());
         assert!(is_directory_if_present(&broken).is_err());
+        crate::ops::remove_test_path(base);
+    }
+
+    /// A Git query that never answers fails that repository, naming the
+    /// program and the limit, instead of hanging the scan that asked.
+    #[test]
+    fn a_hung_git_query_fails_closed_naming_the_command_and_limit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = temp("git-hang");
+        std::fs::create_dir_all(base.join(".git")).unwrap();
+        let hung = base.join("hung-git");
+        std::fs::write(&hung, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&hung, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _cap = crate::process::LimitCap::new(std::time::Duration::from_millis(400));
+        let error = repo_last_activity_with(&base, hung.to_str().unwrap()).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("hung-git timed out after 400ms"),
+            "{message}"
+        );
+        assert!(message.contains("Git activity check failed"), "{message}");
         crate::ops::remove_test_path(base);
     }
 

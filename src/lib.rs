@@ -18,6 +18,7 @@ mod cli;
 mod journal;
 mod largest;
 mod ops;
+mod process;
 mod report;
 mod safety;
 mod status;

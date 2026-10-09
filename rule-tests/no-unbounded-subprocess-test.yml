@@ -1,0 +1,33 @@
+id: no-unbounded-subprocess
+valid:
+  - Command::new("git").args(["log"]).output_within(QUERY_TIMEOUT)?;
+  - command.output_within(PROBE_TIMEOUT)
+  - |
+      #[cfg(test)]
+      mod tests {
+          fn fixture() {
+              Command::new("git").output().unwrap();
+              Command::new("mkfifo").status().unwrap();
+          }
+      }
+  - |
+      #[cfg(test)]
+      pub(crate) fn init_fixture(repo: &Path) -> Result<()> {
+          Command::new("git").arg("init").status()?;
+          Ok(())
+      }
+invalid:
+  - Command::new("git").args(["log"]).output()?;
+  - std::process::Command::new(program).args(&args).output()
+  - command.status()?;
+  - Command::new("lsof").spawn()?;
+  - |
+      #[cfg(feature = "other")]
+      fn not_a_test_helper() {
+          Command::new("git").output().unwrap();
+      }
+  - |
+      fn production(repo: &Path) -> Result<()> {
+          Command::new("git").arg("init").status()?;
+          Ok(())
+      }
