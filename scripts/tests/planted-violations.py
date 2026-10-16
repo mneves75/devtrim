@@ -1364,7 +1364,7 @@ CASES = (
         before="        let metadata = std::fs::symlink_metadata(&candidate).with_context(|| {\n            format!(\n                \"codex_homes entry `{entry}` is not an existing directory: {}\",\n                candidate.display()\n            )\n        })?;\n",
         after="        let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {\n            continue;\n        };\n",
         tests=("eval_a_malformed_codex_homes_setting_refuses_the_run",),
-        marker="PV eval/codex-homes-closed",
+        marker="PV eval/codex-homes-closed-plan",
         target="eval_system",
     ),
     Case(
@@ -1374,7 +1374,7 @@ CASES = (
         before="        if candidate == default || default_identity == Some((metadata.dev(), metadata.ino())) {\n",
         after="        if candidate == default {\n",
         tests=("eval_a_malformed_codex_homes_setting_refuses_the_run",),
-        marker="PV eval/codex-homes-closed",
+        marker="PV eval/codex-homes-closed-plan",
         target="eval_system",
     ),
     Case(

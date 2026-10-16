@@ -1018,7 +1018,7 @@ fn eval_a_malformed_codex_homes_setting_refuses_the_run() {
         let preview = run(&sandbox, &["clean", "agents", "--json"]);
         assert!(
             !preview.status.success(),
-            "PV eval/codex-homes-closed: {name} was accepted: {}",
+            "PV eval/codex-homes-closed-plan: {name} was accepted: {}",
             String::from_utf8_lossy(&preview.stdout)
         );
         let apply = run(
