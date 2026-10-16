@@ -318,8 +318,9 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
     }
     let ctx = safety::Ctx::from_cli(&cli)?;
     let command = cli.command.take().unwrap_or(cli::Command::Tui);
-    // The TUI runs in raw mode, where Ctrl-C is a key, and restores its own
-    // terminal; every other run kills the commands it started when interrupted.
+    // The TUI runs in raw mode, where Ctrl-C is a key, and must restore its
+    // terminal before it exits, so `tui::run` installs its own forwarding
+    // handler; every other run kills the commands it started and exits at once.
     if !matches!(command, cli::Command::Tui) {
         process::exit_on_interrupt().context("cannot install the interrupt handler")?;
     }
