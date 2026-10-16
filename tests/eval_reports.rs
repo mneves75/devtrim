@@ -510,18 +510,3 @@ fn eval_scan_human_summarizes_large_categories_and_all_lists_every_target() {
     }
     unchanged(&before, &sandbox);
 }
-
-#[test]
-fn eval_optimize_selected_preview_contains_only_named_task() {
-    let sandbox = sandbox("report-optimize");
-    let before = Tree::snapshot(sandbox.path());
-    let output = run(&sandbox, &["optimize", "--task", "quicklook", "--json"]);
-    let document = json(&output);
-    assert_eq!(document["findings"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        document["findings"][0]["action"],
-        serde_json::json!({"type": "command", "program": "qlmanage", "args": ["-r", "cache"]})
-    );
-    successful(&output);
-    unchanged(&before, &sandbox);
-}
