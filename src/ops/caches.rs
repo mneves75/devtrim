@@ -42,11 +42,16 @@ const CACHES: &[DeletionEntry] = &[
                    tolerates in exactly that shape.",
     },
     DeletionEntry {
-        label: "node core cache",
-        relative: ".cache/node",
-        evidence: "Node's XDG cache. Corepack keeps its downloaded \
-                   package-manager versions in `.cache/node/corepack`, so this \
-                   one entry covers both and neither is listed twice.",
+        label: "Corepack package-manager cache",
+        relative: ".cache/node/corepack",
+        evidence: "Corepack's README (nodejs/corepack d4dcb1f, v0.36.0): \
+                   `COREPACK_HOME` is where Corepack installs the package \
+                   managers it downloads and defaults to \
+                   `$HOME/.cache/node/corepack` outside Windows; `corepack \
+                   cache clean` clears it. Only this child is listed: Node \
+                   itself documents nothing under `~/.cache/node` (its compile \
+                   cache defaults to the system temporary directory), so the \
+                   parent has no owner to vouch for it.",
     },
     DeletionEntry {
         label: "bun package cache",
@@ -126,10 +131,16 @@ impl Op for Caches {
         if let Some(path) = owner_cache_path("npm", &["config", "get", "cache"], ctx)? {
             let size = measured(&path, &mut unread);
             if size > 0 {
-                findings.push(
-                    cache_finding("npm download cache", path, size, 2)
-                        .with_authority(TargetAuthority::NpmCache),
-                );
+                // `npm config get cache` names npm's whole cache folder, not
+                // only the content store `npm cache clean` empties.
+                let mut finding = cache_finding("npm cache folder", path, size, 2)
+                    .with_authority(TargetAuthority::NpmCache);
+                finding.note =
+                    "npm's whole cache folder: downloaded packages (`_cacache`) and npx \
+                                installs (`_npx`) are fetched again on next use; its logs \
+                                (`_logs`) do not come back"
+                        .to_string();
+                findings.push(finding);
             }
         }
         if let Some(path) = owner_cache_path("brew", &["--cache"], ctx)? {

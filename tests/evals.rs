@@ -162,7 +162,7 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     let targets: Vec<PathBuf> = [
         ".cache/huggingface/hub",
         ".cache/uv",
-        ".cache/node",
+        ".cache/node/corepack",
         ".bun/install/cache",
         ".cache/gh",
         ".cargo/registry/cache",
@@ -186,12 +186,13 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     for relative in [
         ".cache/huggingface/token", // HF tokens and settings are never authority
         ".cache/huggingface/settings",
+        ".cache/node/compile-cache/entry", // only Corepack's child of `.cache/node` is listed
         "Library/pnpm/store/v10/index.json", // the pnpm store, unlike its metadata cache
         "Library/Caches/JetBrains/IDEA/LocalHistory/changes", // IDE system dir with LocalHistory
         "Library/Caches/deno/location_data/kv", // DENO_DIR holds KV databases
         "Library/Caches/ms-playwright-extra/x", // a neighbour sharing a listed prefix
         "Library/Caches/com.apple.Safari/x", // an unlisted Library cache
-        ".cargo/registry/index/x",           // cargo's index is not listed
+        ".cargo/registry/index/x",         // cargo's index is not listed
         ".cargo/bin/cargo",
         "Library/Caches/Homebrew/omlx--git/.git/HEAD", // a Homebrew Git clone stays
         "Library/Caches/Homebrew/omlx--git/README",
@@ -296,7 +297,7 @@ fn eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview() {
     let sandbox = Sandbox::in_target("eval-drift");
     let home = sandbox.path();
     for relative in [
-        ".cache/node",
+        ".cache/node/corepack",
         ".cache/huggingface/hub",
         "Library/Caches/pip",
     ] {
@@ -310,9 +311,9 @@ fn eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview() {
         &home.join(".cache/gh/appeared.bin"),
         "appeared after preview",
     );
-    std::fs::remove_dir_all(home.join(".cache/node")).unwrap();
+    std::fs::remove_dir_all(home.join(".cache/node/corepack")).unwrap();
     write(
-        &home.join(".cache/node/payload.bin"),
+        &home.join(".cache/node/corepack/payload.bin"),
         "replaced after preview",
     );
 
@@ -326,7 +327,7 @@ fn eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview() {
         "PV eval/drift-new-target: a target found after the preview was removed:\n{output}"
     );
     assert_eq!(
-        std::fs::read_to_string(home.join(".cache/node/payload.bin"))
+        std::fs::read_to_string(home.join(".cache/node/corepack/payload.bin"))
             .ok()
             .as_deref(),
         Some("replaced after preview"),

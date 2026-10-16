@@ -175,7 +175,7 @@ fn eval_trash_retained_snapshot_over_resource_budget_refuses_everything() {
 fn eval_busy_uv_cache_is_kept_while_later_caches_are_removed() {
     let sandbox = Sandbox::in_target("eval-uv-lock");
     let uv = cache(&sandbox, ".cache/uv");
-    let node = cache(&sandbox, ".cache/node");
+    let node = cache(&sandbox, ".cache/node/corepack");
     let lock = std::fs::File::create(uv.join(".lock")).unwrap();
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockShared).unwrap();
     let pristine = Tree::snapshot(sandbox.path());
@@ -278,7 +278,7 @@ fn eval_agents_continues_after_a_cache_holding_a_repository_is_refused() {
 fn eval_a_symlinked_journal_refuses_apply_without_touching_its_destination() {
     for link_parent in [false, true] {
         let sandbox = Sandbox::in_target("eval-journal-link");
-        let target = cache(&sandbox, ".cache/node");
+        let target = cache(&sandbox, ".cache/node/corepack");
         let outside = sandbox.path().join("outside");
         write(&outside.join("journal.jsonl"), "keep\n");
         let journal = sandbox.journal();
@@ -311,7 +311,7 @@ fn eval_a_symlinked_journal_refuses_apply_without_touching_its_destination() {
         assert!(!json(&result)["errors"].as_array().unwrap().is_empty());
     }
     let sandbox = Sandbox::in_target("eval-journal-link-control");
-    let target = cache(&sandbox, ".cache/node");
+    let target = cache(&sandbox, ".cache/node/corepack");
     let result = apply(&sandbox, "caches");
     assert!(result.status.success(), "{}", json(&result));
     assert!(!target.exists());
