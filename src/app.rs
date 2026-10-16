@@ -1,8 +1,7 @@
 //! CLI application flow.
 
 use crate::{
-    analyze, cli, journal, largest, ops, process, report, safety, status, tui, uninstall,
-    worktrees,
+    analyze, cli, journal, largest, ops, process, report, safety, status, tui, uninstall, worktrees,
 };
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, error::ErrorKind};
