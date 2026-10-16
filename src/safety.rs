@@ -1669,13 +1669,16 @@ fn resolve_build_process_cwds(
         }
         paths.append(&mut answer.paths);
         reported.extend(answer.reported.iter().copied());
-        if answer.complete {
-            break;
-        }
+        // An exit 0 is trusted only when it reported every PID asked about;
+        // one it left out is judged like any unreported PID below.
         let unreported: BTreeSet<u32> = asked.difference(&answer.reported).copied().collect();
         if unreported.is_empty() {
+            if answer.complete {
+                break;
+            }
             bail!("lsof cwd probe exited with status 1 after reporting every process");
         }
+        answer.complete = false;
         let running = running_now().context("cannot recheck the processes lsof did not report")?;
         if let Some(pid) = unreported.intersection(&running).next() {
             bail!("lsof could not read the working directory of running build process {pid}");
@@ -2643,6 +2646,19 @@ mod tests {
             resolve_build_process_cwds(&pid_set(&[12, 34]), lsof(), || Ok(pid_set(&[12])), unused)
                 .unwrap();
         assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+
+        // An exit 0 that leaves a running PID out proves nothing about it.
+        let silent = || parse_lsof_cwds(b"p12\nfcwd\nn/work/live\n", Some(0)).unwrap();
+        assert!(
+            resolve_build_process_cwds(
+                &pid_set(&[12, 34]),
+                silent(),
+                || Ok(pid_set(&[12, 34])),
+                unused
+            )
+            .is_err(),
+            "PV liveness/lsof-silent-omission: an exit 0 without PID 34 was accepted while it runs"
+        );
 
         // PID 34 is still running and lsof could not read it.
         match resolve_build_process_cwds(

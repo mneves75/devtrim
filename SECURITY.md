@@ -129,7 +129,11 @@ Non-negotiable boundaries:
   permission to such a folder the current user owns, through that folder's open
   handle and just before emptying it, so a Go module cache moved to the Trash can
   be purged; a folder owned by another user still refuses. This is the sink's
-  only permission change, and only on a tree it is about to delete.
+  only permission change, and only on a tree it is about to delete. It adds
+  owner bits only, to a folder the current user already owns and could change
+  itself; a process running as that same user could move a folder out of the
+  quarantined tree after its handle is opened and before the change, which the
+  handle-based walk cannot rule out, and the impact is limited to those bits.
 - Every directory deletion preflights foreign filesystem devices and Git
   repository/worktree markers at any depth before either Trash or permanent
   mutation. Git metadata matching is ASCII-case-insensitive, and permanent
@@ -194,7 +198,8 @@ Non-negotiable boundaries:
   protected, not every repository the agent edits by absolute path. As with
   any build process, one `lsof` cannot read, another user's for example,
   refuses the probe.
-  `lsof` exiting 1 is accepted only when every process it did not report is
+  `lsof` exiting 0 is trusted only when it reported every requested process; one
+  it left out is judged as below. `lsof` exiting 1 is accepted only when every process it did not report is
   absent from a fresh `pgrep`, so a build that exited between the probes does
   not block while one it could not read still does; a build process first seen
   in that recheck has its directory read and judged by the same rule, up to

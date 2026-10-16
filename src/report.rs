@@ -317,7 +317,7 @@ pub fn terminal_safe_text(value: &str) -> String {
 }
 
 /// `char::escape_debug` for every character, except those `keep` names and a
-/// Latin combining accent (U+0300–U+036F) right after a base character, at
+/// Latin combining accent (U+0300–U+036F but the invisible U+034F) right after a base character, at
 /// most two in a row: a name stored decomposed, as NFD volumes and some tools
 /// write `café`, then reads as written. Controls, bidirectional overrides,
 /// joiners, variation selectors and a mark with nothing to sit on stay escaped.
@@ -325,7 +325,8 @@ fn escape_for_terminal(value: &str, keep: impl Fn(char) -> bool) -> String {
     let mut output = String::with_capacity(value.len());
     let mut marks_after_base: Option<u8> = None;
     for character in value.chars() {
-        let accent = ('\u{300}'..='\u{36f}').contains(&character);
+        // U+034F, the combining grapheme joiner, draws nothing.
+        let accent = ('\u{300}'..='\u{36f}').contains(&character) && character != '\u{34f}';
         let literal = keep(character)
             || character.escape_debug().nth(1).is_none()
             || (accent && marks_after_base.is_some_and(|marks| marks < 2));
@@ -729,6 +730,8 @@ mod tests {
             "a\u{301}\u{301}\\u{301}"
         );
         assert_eq!(terminal_safe("a\u{fe0f}"), "a\\u{fe0f}");
+        // U+034F sits among the accents but draws nothing: it stays escaped.
+        assert_eq!(terminal_safe("backup\u{34f}-old"), "backup\\u{34f}-old");
         assert_eq!(terminal_safe_text("cafe\u{301}\n"), "cafe\u{301}\n");
     }
 

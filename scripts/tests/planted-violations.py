@@ -71,6 +71,15 @@ class Case:
 
 CASES = (
     Case(
+        name="liveness/lsof-silent-omission",
+        relative_path="src/safety.rs",
+        # An lsof exit 0 that leaves a running PID out is trusted again.
+        before="        if unreported.is_empty() {\n",
+        after="        if unreported.is_empty() || answer.complete {\n",
+        tests=("safety::tests::lsof_exit_one_passes_only_when_every_unreported_process_is_gone",),
+        marker="PV liveness/lsof-silent-omission",
+    ),
+    Case(
         name="caches/gradle-repository",
         relative_path="src/ops/caches.rs",
         # A Gradle user home inside a Git repository is judged a Gradle home.
