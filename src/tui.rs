@@ -1362,7 +1362,7 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     );
     let label = report::terminal_safe(&finding.label);
     let used = 2 + check.len() + danger.len() + size.len() + Span::raw(label.as_str()).width() + 2;
-    let path = report::terminal_safe(finding.path.as_deref().unwrap_or("command action"));
+    let path = report::terminal_safe(&finding_place(&finding));
     Line::from(vec![
         marker,
         Span::raw(check),
@@ -1374,6 +1374,17 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
             app.theme.style(Token::Muted),
         ),
     ])
+}
+
+/// Where a finding acts: its path, or for a typed command that has none, that
+/// it is a command. Anything else without a path — a report row, or an error
+/// entry for something that could not be judged — names no place at all.
+fn finding_place(finding: &Finding) -> String {
+    match (&finding.path, &finding.action) {
+        (Some(path), _) => path.clone(),
+        (None, Action::Command { .. }) => "command action".into(),
+        (None, _) => String::new(),
+    }
 }
 
 /// A finding as the current Trash/permanent mode would apply it — its action
@@ -1425,10 +1436,10 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 app.theme.style(Token::Warning),
             ));
         }
-        lines.push((
-            report::terminal_safe(finding.path.as_deref().unwrap_or("command action")),
-            Style::default(),
-        ));
+        let place = finding_place(&finding);
+        if !place.is_empty() {
+            lines.push((report::terminal_safe(&place), Style::default()));
+        }
         lines.push((
             report::terminal_safe(&finding.note),
             app.theme.style(Token::Muted),
