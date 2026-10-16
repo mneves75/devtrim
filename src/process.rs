@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 ///
 /// A margin, not a measurement. On the development machine at load average 300
 /// to 950 with about 1,700 processes (2026-10-08) only a system-wide `lsof` was
-/// timed (16 s at load 300); no Git, `simctl`, `docker`, `npm` or `brew` query
+/// timed (16 s at load 300); no Git, `simctl`, `docker`, `npm`, `brew` or `go` query
 /// was. A query that takes milliseconds when idle gets two minutes, which a
 /// loaded machine should not exhaust, while a wedged tool still fails the
 /// affected repository or category instead of hanging the whole scan.

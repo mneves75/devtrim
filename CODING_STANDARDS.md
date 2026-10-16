@@ -223,8 +223,8 @@ exactly four:
   the simulator UDID must be validated and carried by that closed authority.
 - `capture` in `src/status.rs` — `SystemTool::parts()`, the same closed-enum
   shape.
-- `command_path` in `src/ops/caches.rs` — `"npm"` or `"brew"` from its two
-  callers, trusted only inside that owner's cache namespace.
+- `command_path` in `src/ops/caches.rs` — `"npm"`, `"brew"` or `"go"` from its
+  three callers, trusted only inside that owner's cache namespace.
 - `hardened_git` in `src/ops/project.rs` — `"git"`, from `repo_last_activity`
   through `hardened_git_log`, and as a literal from `TrackedIndex::list` and
   `unborn_branch`, its only production callers.

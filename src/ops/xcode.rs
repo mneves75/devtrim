@@ -1252,7 +1252,7 @@ mod tests {
                 real.join("Library/Developer/Xcode/DerivedData/Old-a")
                     .as_path()
             ],
-            "PV xcode/active-identity: a folder held open under another spelling was offered"
+            "PV xcode/active-identity-spelling: a folder held open under another spelling was offered"
         );
     }
 

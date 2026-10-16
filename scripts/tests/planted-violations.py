@@ -1079,7 +1079,7 @@ CASES = (
         before="        || held_open_by_identity(folder, &same_volume)?\n",
         after="        || (held_open_by_identity(folder, &same_volume)? && false)\n",
         tests=("ops::xcode::tests::an_open_file_is_matched_by_the_folders_identity",),
-        marker="PV xcode/active-identity",
+        marker="PV xcode/active-identity-spelling",
     ),
     Case(
         name="xcode/active-identity-every-component",
@@ -1754,6 +1754,14 @@ def run_cases(scratch: Path) -> int:
     if len(sys.argv) > 2:
         fail("usage: planted-violations.py [PREFIX]")
     prefix = sys.argv[1] if len(sys.argv) == 2 else ""
+    # The marker check is a substring match, so one marker that prefixes
+    # another would let a failure tagged for one guard prove the other.
+    markers = sorted({case.marker for case in CASES})
+    for shorter in markers:
+        for longer in markers:
+            if longer != shorter and longer.startswith(shorter):
+                fail(f"ERROR: marker {shorter!r} is a prefix of {longer!r}")
+
     cases = [case for case in CASES if case.name.startswith(prefix)]
     if not cases:
         fail(f"ERROR: no case name starts with {prefix!r}")
