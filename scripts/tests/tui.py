@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Exercise the real TUI in an isolated, sized PTY.
 
-Five flows: menu/help/quit with terminal restoration; the type-ahead
+The flows: menu/help/quit with terminal restoration; the type-ahead
 boundary — keys typed before a plan is displayed must never approve it;
 selection narrowing a plan; the project purge view applying through the
-real node-modules and artifacts owners; and the detail pane at the minimum
-size, where a long path cannot fit and the pane must say what it hides.
+real node-modules and artifacts owners; the detail pane at the minimum
+size, where a long path cannot fit and the pane must say what it hides;
+a scan blocked on a probe that does not answer, which must keep the screen
+alive and stop promptly on a key or a signal; and an apply blocked the same
+way, which must refuse a quit key yet stop on SIGTERM.
 """
 
 import argparse
@@ -16,6 +19,7 @@ from pathlib import Path
 import pty
 import re
 import select
+import signal
 import struct
 import subprocess
 import sys
@@ -279,14 +283,14 @@ def verify_type_ahead(binary):
         with Session(binary, home) as session:
             session.wait_for("Scan everything")
             session.send(b"2sa0\r")
-            session.wait_for("Review every finding")
+            session.wait_for_screen("Review every finding")
             session.settle(1.0)
             if not cache.exists():
                 raise AssertionError("type-ahead approved a plan before it was displayed")
             if b"permanentlydeleted" in b"".join(session.output.split()):
                 raise AssertionError("type-ahead reached the apply summary")
             session.send(b"sa0\r")
-            session.wait_for("permanently deleted uv package cache")
+            session.wait_for_screen("permanently deleted uv package cache")
             if cache.exists():
                 raise AssertionError("positive control: the same keys after preview did not apply")
             session.quit()
@@ -307,13 +311,13 @@ def verify_selection(binary):
         with Session(binary, home) as session:
             session.wait_for("Scan everything")
             session.send(b"2")
-            session.wait_for("Review every finding")
+            session.wait_for_screen("Review every finding")
             session.send(b" ")
             # Ratatui redraws only changed cells, so the title's "2 of 2" turning
             # into "1 of 2" emits one character; the detail line is drawn whole.
             session.wait_for("Left out of this plan")
             session.send(b"sa0\r")
-            session.wait_for("permanently deleted node core cache")
+            session.wait_for_screen("permanently deleted node core cache")
             if not kept.exists():
                 raise AssertionError("a cache left out of the plan was deleted")
             if removed.exists():
@@ -357,13 +361,13 @@ def write_script(path, body):
     path.chmod(0o755)
 
 
-def stale_project(home):
+def stale_project(home, pgrep="exit 1"):
     """A stale repository offering a `target` and a `node_modules`, under a
     directory name long enough that its paths wrap in the detail pane."""
     (home / "bin").mkdir()
-    # No build process is running, the repository's history is old, and it
-    # tracks nothing under either directory.
-    write_script(home / "bin" / "pgrep", "exit 1")
+    # By default no build process is running; the repository's history is
+    # old, and it tracks nothing under either directory.
+    write_script(home / "bin" / "pgrep", pgrep)
     write_script(
         home / "bin" / "git",
         "case \"$*\" in\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n"
@@ -394,13 +398,13 @@ def verify_purge(binary):
         with Session(binary, home) as session:
             session.wait_for("Scan everything")
             session.send(b"p")
-            session.wait_for("Review every finding")
+            session.wait_for_screen("Review every finding")
             # The larger `target` is first; move to `node_modules` and leave it out.
             session.send(b"j ")
             session.wait_for_screen("Left out of this plan", str(project / "node_modules"))
             session.send(b"sa0\r")
             # The note names the full path, which can wrap; the headline cannot.
-            session.wait_for("purge: 1 item(s)")
+            session.wait_for_screen("purge: 1 item(s)")
             if (project / "target").exists():
                 raise AssertionError("positive control: the selected target was not removed")
             if not (project / "node_modules" / "pkg" / "index.js").exists():
@@ -419,7 +423,7 @@ def verify_minimum_size(binary):
         with Session(binary, home, rows=18, columns=64) as session:
             session.wait_for("Scan everything")
             session.send(b"p")
-            session.wait_for("Review every finding")
+            session.wait_for_screen("Review every finding")
             session.send(b"j ")
             session.wait_for_screen("Left out of this plan", "more line(s); Enter shows all")
             session.send(b"\r")
@@ -436,6 +440,168 @@ def verify_minimum_size(binary):
             session.quit()
 
 
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def elapsed_on_screen(session):
+    """The working screen's clock, in whole seconds, once it is drawn."""
+    while True:
+        visible = screen_text(render_screen(session.output, session.rows, session.columns))
+        found = re.search(r"(\d+) s elapsed", visible)
+        if found:
+            return int(found.group(1))
+        session.read_output()
+
+
+def verify_slow_scan_stops(binary):
+    """A liveness probe that does not answer must not freeze the TUI. The
+    stubbed `pgrep` records its pid and sleeps for two minutes. With no key
+    pressed the working screen's clock must move; then each way of stopping
+    must end the run promptly with the terminal restored and the probe killed:
+    q and Ctrl+C typed during the scan exit 130, as SIGINT does, and SIGTERM
+    exits 143. The probe still running just before the stop is the positive
+    control that the scan was blocked on it. Returns the seconds each stop
+    took, measured from the key or signal to the exit."""
+    stops = (
+        ("q", b"q", 130),
+        ("ctrl-c", b"\x03", 130),
+        ("sigint", signal.SIGINT, 130),
+        ("sigterm", signal.SIGTERM, 143),
+    )
+    timings = {}
+    for name, stop, expected in stops:
+        with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+            home = Path(directory).resolve()
+            marker = home / "pgrep.pid"
+            stale_project(home, pgrep=f"echo $$ > '{marker}'\nexec /bin/sleep 120")
+            probe = None
+            try:
+                with Session(binary, home, rows=18, columns=64) as session:
+                    # A loaded machine starts devtrim and the stub slowly.
+                    session.deadline = time.monotonic() + 90
+                    session.wait_for("Scan everything")
+                    session.send(b"3")
+                    session.wait_for_screen("Scanning node-modules")
+                    while not marker.exists() or not marker.read_text().endswith("\n"):
+                        session.read_output()
+                    probe = int(marker.read_text())
+                    first = elapsed_on_screen(session)
+                    while elapsed_on_screen(session) == first:
+                        session.read_output()
+                    if not alive(probe):
+                        raise AssertionError("positive control: the stubbed probe is not running")
+                    mark = len(session.output)
+                    started = time.monotonic()
+                    if isinstance(stop, bytes):
+                        session.send(stop)
+                    else:
+                        session.process.send_signal(stop)
+                    while session.process.poll() is None:
+                        session.read_output()
+                    timings[name] = round(time.monotonic() - started, 2)
+                    while select.select([session.master], [], [], 0)[0]:
+                        if not session.read_output():
+                            break
+                    if session.process.returncode != expected:
+                        raise AssertionError(
+                            f"{name} during a scan exited {session.process.returncode},"
+                            f" expected {expected}"
+                        )
+                    # Generous for a machine at load 100; the report states the measured time.
+                    if timings[name] > 10:
+                        raise AssertionError(f"{name} took {timings[name]} s to stop the scan")
+                    restored = session.output[mark:]
+                    if termios.tcgetattr(session.master) != session.original:
+                        raise AssertionError(f"{name}: terminal attributes were not restored")
+                    if b"\x1b[?1049l" not in restored or b"\x1b[?25h" not in restored:
+                        raise AssertionError(f"{name}: screen and cursor were not restored")
+                # The killed probe is reaped once devtrim is gone; a loaded
+                # machine can take a while, so the bound is wall-clock.
+                gone_by = time.monotonic() + 60
+                while alive(probe) and time.monotonic() < gone_by:
+                    time.sleep(0.1)
+                if alive(probe):
+                    raise AssertionError(f"{name}: the probe the scan started still runs")
+            finally:
+                if probe is not None and alive(probe):
+                    os.kill(probe, signal.SIGKILL)
+    return timings
+
+
+def verify_blocked_apply_refuses_quit(binary):
+    """Quitting mid-apply could leave a target half removed, so q and Ctrl+C
+    are refused until an apply returns, while SIGTERM still stops it. The
+    stubbed `pgrep` answers the scan at once, then blocks the apply's own
+    liveness preflight, which runs before anything is removed. Both keys must
+    leave devtrim running with the refusal on screen; SIGTERM must then exit
+    143 with the terminal restored and the probe killed. The probe running is
+    the positive control that the apply was blocked on it, and the
+    `node_modules` surviving shows the stop came before any removal."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        scanned = home / "pgrep.scanned"
+        marker = home / "pgrep.pid"
+        project = stale_project(
+            home,
+            pgrep=(
+                f"if [ ! -e '{scanned}' ]; then : > '{scanned}'; exit 1; fi\n"
+                f"echo $$ > '{marker}'\nexec /bin/sleep 120"
+            ),
+        )
+        probe = None
+        try:
+            with Session(binary, home, rows=18, columns=64) as session:
+                session.deadline = time.monotonic() + 90
+                session.wait_for("Scan everything")
+                session.send(b"3")
+                session.wait_for_screen("Review every finding")
+                session.send(b"a")
+                session.wait_for_screen("Press y to apply this exact plan")
+                session.send(b"y")
+                session.wait_for_screen("Applying only the exact previewed findings")
+                while not marker.exists() or not marker.read_text().endswith("\n"):
+                    session.read_output()
+                probe = int(marker.read_text())
+                if not alive(probe):
+                    raise AssertionError("positive control: the stubbed apply probe is not running")
+                session.send(b"q\x03")
+                session.settle(1.5)
+                if session.process.poll() is not None:
+                    raise AssertionError("q or Ctrl+C quit in the middle of an apply")
+                session.wait_for_screen("Quitting is refused until this apply returns.")
+                mark = len(session.output)
+                session.process.send_signal(signal.SIGTERM)
+                while session.process.poll() is None:
+                    session.read_output()
+                while select.select([session.master], [], [], 0)[0]:
+                    if not session.read_output():
+                        break
+                if session.process.returncode != 143:
+                    raise AssertionError(
+                        f"SIGTERM during an apply exited {session.process.returncode}, expected 143"
+                    )
+                restored = session.output[mark:]
+                if termios.tcgetattr(session.master) != session.original:
+                    raise AssertionError("SIGTERM during an apply left the terminal attributes")
+                if b"\x1b[?1049l" not in restored or b"\x1b[?25h" not in restored:
+                    raise AssertionError("SIGTERM during an apply left the screen and cursor")
+            gone_by = time.monotonic() + 60
+            while alive(probe) and time.monotonic() < gone_by:
+                time.sleep(0.1)
+            if alive(probe):
+                raise AssertionError("the probe the apply started still runs")
+            if not (project / "node_modules" / "pkg" / "index.js").exists():
+                raise AssertionError("an apply stopped in its preflight removed a target")
+        finally:
+            if probe is not None and alive(probe):
+                os.kill(probe, signal.SIGKILL)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -449,14 +615,18 @@ def main():
         verify_purge(binary)
         verify_minimum_size(binary)
         verify_scan_error_exit(binary)
+        stop_seconds = verify_slow_scan_stops(binary)
+        verify_blocked_apply_refuses_quit(binary)
     except (AssertionError, OSError, termios.error) as error:
         print(f"tui: {error}", file=sys.stderr)
         return 1
     print(
         "tui: menu, help, cancel, quit, terminal restoration, type-ahead discard,"
-        " selection, action-key explanations, project purge, and the minimum-size"
-        " detail pane and view passed"
+        " selection, action-key explanations, project purge, the minimum-size"
+        " detail pane and view, stopping a scan blocked on its probe, and refusing to"
+        " quit an apply blocked on its probe passed"
     )
+    print(f"tui: seconds from stop to exit during a blocked scan: {stop_seconds}")
     return 0
 
 

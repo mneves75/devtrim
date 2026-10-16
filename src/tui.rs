@@ -2,6 +2,8 @@
 
 use std::io::{self, IsTerminal};
 use std::process::ExitCode;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
@@ -13,6 +15,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::cli::Target;
 use crate::ops::{self, Action, ApplyOutcome, Finding, Op};
+use crate::process::{self, Interrupts};
 use crate::report::{self, Summary};
 use crate::safety::{self, ConfirmationRequirement, Ctx};
 use crate::theme::{Theme, Token, danger_token};
@@ -21,6 +24,8 @@ const MIN_WIDTH: u16 = 64;
 const MIN_HEIGHT: u16 = 18;
 /// Rows PgUp and PgDn move, in every list and scrolling view.
 const PAGE_ROWS: u16 = 8;
+/// The Error screen's status: nothing was authorized, and `r` scans again.
+const FAILED_CLOSED: &str = "Failed closed; no new action was authorized. r rescans.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
@@ -177,6 +182,13 @@ struct ApprovedPlan {
     approval: Approval,
 }
 
+/// What runs on the worker thread while the working screen shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Work {
+    Scan,
+    Apply,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Intent {
     None,
@@ -216,9 +228,12 @@ struct App {
     theme: Theme,
     /// Whether the full keybinding reference is open over the current screen.
     help: bool,
-    /// The furthest the detail view can scroll, measured when it was last
-    /// drawn, so a key never scrolls past its content.
-    detail_limit: std::cell::Cell<u16>,
+    /// The furthest the detail, outcome or error view can scroll, measured
+    /// when it was last drawn, so a key never scrolls past its content.
+    scroll_limit: std::cell::Cell<u16>,
+    /// The scan or apply running on the worker thread, and when it started,
+    /// for the working screen's clock.
+    working: Option<(Work, Instant)>,
 }
 
 impl Default for App {
@@ -243,7 +258,8 @@ impl Default for App {
             failed: false,
             theme: Theme::from_env(),
             help: false,
-            detail_limit: std::cell::Cell::new(0),
+            scroll_limit: std::cell::Cell::new(0),
+            working: None,
         }
     }
 }
@@ -271,12 +287,16 @@ impl App {
             .any(|finding| finding.action.is_actionable())
     }
 
+    /// Whether `s` acts. Turning permanent mode on needs a selected item that
+    /// moves to Trash; turning it off always works, so leaving every such item
+    /// out never strands the operator in permanent mode.
     fn can_toggle_shred(&self) -> bool {
-        matches!(self.operation, Some(Operation::Clean(_) | Operation::Purge))
-            && self
-                .selected_findings()
-                .iter()
-                .any(|finding| finding.action == Action::Trash)
+        self.shred
+            || matches!(self.operation, Some(Operation::Clean(_) | Operation::Purge))
+                && self
+                    .selected_findings()
+                    .iter()
+                    .any(|finding| finding.action == Action::Trash)
     }
 
     /// Whether the finding at `index` is a choice the operator can make: only
@@ -352,6 +372,49 @@ impl App {
         self.confirmation = None;
         self.input.clear();
         self.status = format!("Scanning {}…", operation.name());
+        self.working = Some((Work::Scan, Instant::now()));
+    }
+
+    fn begin_apply(&mut self) {
+        self.screen = Screen::Loading;
+        self.status = "Applying only the exact previewed findings…".into();
+        self.working = Some((Work::Apply, Instant::now()));
+    }
+
+    /// Whole seconds the scan or apply on the worker thread has run.
+    fn elapsed_seconds(&self) -> Option<u64> {
+        self.working.map(|(_, started)| started.elapsed().as_secs())
+    }
+
+    fn finish_load(&mut self, operation: Operation, loaded: Loaded) {
+        match loaded {
+            Loaded::Scan(result, warnings) => self.finish_scan(result, warnings),
+            Loaded::Findings(findings, warnings) => {
+                self.finish_results(operation, findings, Vec::new(), warnings);
+            }
+            Loaded::Failed(error, warnings) => {
+                self.fail(error);
+                self.warnings = warnings;
+            }
+        }
+    }
+
+    fn finish_apply(&mut self, result: Result<ApplyOutcome>) {
+        match result {
+            Ok(outcome) => {
+                if !outcome.errors.is_empty() {
+                    self.failed = true;
+                }
+                self.status =
+                    outcome_status(!outcome.errors.is_empty(), outcome.summary.items_touched)
+                        .into();
+                self.summary = Some(outcome.summary);
+                self.errors = outcome.errors;
+                self.scroll = 0;
+                self.screen = Screen::Outcome;
+            }
+            Err(error) => self.fail(error),
+        }
     }
 
     fn finish_results(
@@ -361,10 +424,32 @@ impl App {
         errors: Vec<String>,
         warnings: Vec<String>,
     ) {
+        self.show_results(operation, findings, Vec::new(), errors, warnings);
+    }
+
+    /// A Scan everything result, keeping each category's slice for routing.
+    fn finish_scan(&mut self, result: ops::ScanResult, warnings: Vec<String>) {
+        self.show_results(
+            Operation::ScanAll,
+            result.findings,
+            result.sections,
+            result.errors,
+            warnings,
+        );
+    }
+
+    fn show_results(
+        &mut self,
+        operation: Operation,
+        findings: Vec<Finding>,
+        sections: Vec<report::ScanSection>,
+        errors: Vec<String>,
+        warnings: Vec<String>,
+    ) {
         self.operation = Some(operation);
         self.reset_selection();
         self.findings = findings;
-        self.sections.clear();
+        self.sections = sections;
         self.errors = errors;
         self.warnings = warnings;
         if !self.errors.is_empty()
@@ -377,7 +462,9 @@ impl App {
         }
         self.summary = None;
         self.screen = Screen::Results;
-        self.status = if self.findings.is_empty() {
+        self.status = if let Some(failure) = self.failure_status() {
+            failure
+        } else if self.findings.is_empty() {
             "No findings. Nothing can be applied.".into()
         } else if operation.read_only() {
             "Read-only result. No apply action is available.".into()
@@ -386,10 +473,58 @@ impl App {
         };
     }
 
-    /// A Scan everything result, keeping each category's slice for routing.
-    fn finish_scan(&mut self, result: ops::ScanResult, warnings: Vec<String>) {
-        self.finish_results(Operation::ScanAll, result.findings, result.errors, warnings);
-        self.sections = result.sections;
+    /// How many findings stand for something the scan could not judge.
+    fn unjudged_count(&self) -> usize {
+        report::finding_and_error_counts(&self.findings).1
+    }
+
+    /// How many things this result failed at. A Scan everything result lists
+    /// each category that failed outright among its errors, beside a copy of
+    /// every finding that could not be judged; other results carry only those
+    /// findings.
+    fn failure_count(&self) -> usize {
+        if self.operation == Some(Operation::ScanAll) {
+            self.errors.len().max(self.unjudged_count())
+        } else {
+            self.unjudged_count()
+        }
+    }
+
+    /// What this result failed at and what the operator can do, short enough
+    /// for the footer at the minimum width, or `None` when nothing failed. A
+    /// category whose probe failed offers nothing at all, which must never
+    /// read as a category with nothing to offer.
+    fn failure_status(&self) -> Option<String> {
+        let unjudged = self.unjudged_count();
+        let outright = if self.operation == Some(Operation::ScanAll) {
+            self.errors.len().saturating_sub(unjudged)
+        } else {
+            0
+        };
+        if outright > 0 {
+            // A category that scanned has a section, even an empty one, so the
+            // one without is the one that failed.
+            let missing: Vec<&str> = ops::all()
+                .iter()
+                .map(|op| op.name())
+                .filter(|name| {
+                    !self
+                        .sections
+                        .iter()
+                        .any(|section| section.category == *name)
+                })
+                .collect();
+            let what = match (outright, missing.as_slice()) {
+                (1, [name]) => (*name).to_string(),
+                (1, _) => "1 category".into(),
+                _ => format!("{outright} categories"),
+            };
+            return Some(format!(
+                "{what} failed to scan: error rows say why; r retries."
+            ));
+        }
+        (unjudged > 0)
+            .then(|| format!("{unjudged} item(s) not judged: their rows say why; r retries."))
     }
 
     /// Why an action key would change nothing on the results screen, so no
@@ -412,6 +547,7 @@ impl App {
             KeyCode::Char(' ') if !self.is_selectable(self.cursor) => {
                 "This row is a report; Space leaves out only items that apply."
             }
+            KeyCode::Char('s') if self.can_toggle_shred() => return None,
             KeyCode::Char('s') if operation == Operation::TrashEmpty => {
                 "Emptying the Trash is already permanent."
             }
@@ -423,9 +559,7 @@ impl App {
             {
                 "Permanent mode does not apply: nothing here moves to Trash."
             }
-            KeyCode::Char('s') if !self.can_toggle_shred() => {
-                "Permanent mode needs a selected item that moves to Trash."
-            }
+            KeyCode::Char('s') => "Permanent mode needs a selected item that moves to Trash.",
             _ => return None,
         };
         Some(reason.into())
@@ -462,8 +596,9 @@ impl App {
         self.failed = true;
         self.errors = vec![format!("{error:#}")];
         self.summary = None;
+        self.scroll = 0;
         self.screen = Screen::Error;
-        self.status = "The operation failed closed; no new action was authorized.".into();
+        self.status = FAILED_CLOSED.into();
     }
 
     fn begin_confirmation(&mut self) {
@@ -561,23 +696,15 @@ impl App {
                     self.back_to_menu();
                     Intent::None
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.scroll = self.scroll.saturating_sub(1);
+                // A failure may be transient, a probe that did not answer under
+                // load; scanning again is a fresh preview, never a retried apply.
+                KeyCode::Char('r') if self.screen == Screen::Error => {
+                    self.operation.map_or(Intent::None, Intent::Load)
+                }
+                code => {
+                    self.scroll_by(code);
                     Intent::None
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.scroll = self.scroll.saturating_add(1);
-                    Intent::None
-                }
-                KeyCode::PageUp => {
-                    self.scroll = self.scroll.saturating_sub(PAGE_ROWS);
-                    Intent::None
-                }
-                KeyCode::PageDown => {
-                    self.scroll = self.scroll.saturating_add(PAGE_ROWS);
-                    Intent::None
-                }
-                _ => Intent::None,
             },
             Screen::Loading => Intent::None,
         }
@@ -677,7 +804,7 @@ impl App {
             KeyCode::Enter if self.row_count() > 0 => {
                 self.screen = Screen::Detail;
                 self.scroll = 0;
-                self.detail_limit.set(0);
+                self.scroll_limit.set(0);
                 Intent::None
             }
             _ => Intent::None,
@@ -687,14 +814,23 @@ impl App {
     /// The detail view only reads: it scrolls within its content and closes,
     /// and no key here reaches the plan behind it.
     fn handle_detail_key(&mut self, key: KeyCode) -> Intent {
-        let limit = self.detail_limit.get();
-        let scroll = self.scroll.min(limit);
-        self.scroll = match key {
+        match key {
             KeyCode::Char('q') => return Intent::Quit,
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('b') => {
                 self.screen = Screen::Results;
-                0
+                self.scroll = 0;
             }
+            code => self.scroll_by(code),
+        }
+        Intent::None
+    }
+
+    /// Scrolls a detail, outcome or error view within its content, never past
+    /// the last line it drew.
+    fn scroll_by(&mut self, key: KeyCode) {
+        let limit = self.scroll_limit.get();
+        let scroll = self.scroll.min(limit);
+        self.scroll = match key {
             KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => scroll.saturating_add(1).min(limit),
             KeyCode::PageUp => scroll.saturating_sub(PAGE_ROWS),
@@ -703,7 +839,6 @@ impl App {
             KeyCode::End | KeyCode::Char('G') => limit,
             _ => scroll,
         };
-        Intent::None
     }
 
     fn handle_confirm_key(&mut self, key: KeyCode) -> Intent {
@@ -781,12 +916,21 @@ impl App {
     }
 }
 
+/// How long the loop waits for input before it looks again: often enough that
+/// the working screen's clock moves and a signal is acted on at once, rarely
+/// enough to cost nothing while idle.
+const TICK: Duration = Duration::from_millis(100);
+
 pub fn run(ctx: &Ctx) -> Result<ExitCode> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("the TUI requires an interactive stdin and stdout terminal");
     }
+    // Before the terminal changes, so no signal can leave it in raw mode with
+    // nothing to restore it.
+    let interrupts =
+        process::forward_interrupts().context("cannot install the interrupt handler")?;
     let mut terminal = ratatui::try_init().context("cannot initialize TUI terminal")?;
-    let result = run_loop(&mut terminal, ctx);
+    let result = run_loop(&mut terminal, ctx, &interrupts);
     let restore = ratatui::try_restore().context("cannot restore terminal after TUI exit");
     match (result, restore) {
         (Err(error), _) => Err(error),
@@ -795,20 +939,34 @@ pub fn run(ctx: &Ctx) -> Result<ExitCode> {
     }
 }
 
-/// Keys typed while a scan or apply blocked the loop were aimed at a screen
-/// that no longer exists. Delivering them afterwards would let type-ahead
-/// toggle permanent mode and approve a plan before it was ever displayed.
-fn discard_pending_input() -> Result<()> {
-    while event::poll(std::time::Duration::ZERO).context("cannot poll terminal input")? {
-        event::read().context("cannot read terminal input")?;
-    }
-    Ok(())
+/// Restores the terminal, then ends the run as an interrupt does: every
+/// command devtrim started is killed, and it exits 128 plus `signal`. Only the
+/// thread that owns the terminal calls it.
+fn stop(terminal: &mut DefaultTerminal, signal: i32) -> ! {
+    ratatui::try_restore().ok();
+    terminal.show_cursor().ok();
+    process::kill_and_exit(signal)
 }
 
-fn run_loop(terminal: &mut DefaultTerminal, ctx: &Ctx) -> Result<ExitCode> {
+fn run_loop(
+    terminal: &mut DefaultTerminal,
+    ctx: &Ctx,
+    interrupts: &Interrupts,
+) -> Result<ExitCode> {
     let mut app = App::default();
+    let mut redraw = true;
     loop {
-        terminal.draw(|frame| render(frame, &app))?;
+        if let Some(signal) = interrupts.received() {
+            stop(terminal, signal);
+        }
+        if redraw {
+            terminal.draw(|frame| render(frame, &app))?;
+        }
+        // Waking only to look for a signal changes nothing on screen.
+        redraw = event::poll(TICK).context("cannot poll terminal input")?;
+        if !redraw {
+            continue;
+        }
         let Event::Key(key) = event::read().context("cannot read terminal input")? else {
             continue;
         };
@@ -824,22 +982,118 @@ fn run_loop(terminal: &mut DefaultTerminal, ctx: &Ctx) -> Result<ExitCode> {
             }
             Intent::Load(operation) => {
                 app.begin_load(operation);
-                terminal.draw(|frame| render(frame, &app))?;
-                load_operation(&mut app, operation, ctx);
-                discard_pending_input()?;
+                let loaded =
+                    in_background(terminal, &mut app, interrupts, || run_scan(ctx, operation))?;
+                app.finish_load(operation, loaded);
+                settle(terminal, &app)?;
             }
             Intent::Apply(plan) => {
-                app.screen = Screen::Loading;
-                app.status = "Applying only the exact previewed findings…".into();
-                terminal.draw(|frame| render(frame, &app))?;
-                apply_operation(&mut app, ctx, plan);
-                discard_pending_input()?;
+                if approved_plan_matches(&app, &plan) {
+                    app.begin_apply();
+                    let result =
+                        in_background(terminal, &mut app, interrupts, || run_apply(ctx, plan))?;
+                    app.finish_apply(result);
+                } else {
+                    app.fail(anyhow::anyhow!(
+                        "confirmation does not authorize the current preview"
+                    ));
+                }
+                settle(terminal, &app)?;
             }
         }
     }
 }
 
-fn load_operation(app: &mut App, operation: Operation, ctx: &Ctx) {
+/// Runs `job`, a scan or an apply, on a worker thread while this thread keeps
+/// the terminal: the working screen redraws as its clock moves, and a signal
+/// is acted on at once.
+///
+/// Every key typed meanwhile is read and dropped, since it was aimed at a
+/// screen that does not exist yet, except a quit. During a scan, `q` or
+/// Ctrl+C ends the run the way SIGINT does: the terminal is restored, every
+/// command the scan started is killed and devtrim exits 130. A scan changes
+/// nothing, so nothing is left half done.
+///
+/// During an apply, `q` and Ctrl+C are refused until it returns, and the
+/// working screen says so: quitting could abandon a target half moved or half
+/// deleted, and the operator can wait to see what changed. A SIGINT or SIGTERM
+/// still stops it at once, as it stops the CLI, because whoever sent it wants
+/// devtrim gone and refusing would only invite SIGKILL, which restores and
+/// kills nothing. The target in progress then keeps a journal attempt without
+/// a result, which `history` reports as interrupted.
+///
+/// A terminal that fails while the worker runs ends the run once the worker
+/// returns.
+fn in_background<T: Send>(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    interrupts: &Interrupts,
+    job: impl FnOnce() -> T + Send,
+) -> Result<T> {
+    let scanning = matches!(app.working, Some((Work::Scan, _)));
+    let finished = thread::scope(|scope| -> Result<thread::Result<T>> {
+        let worker = scope.spawn(job);
+        let mut shown = None;
+        while !worker.is_finished() {
+            if let Some(signal) = interrupts.received() {
+                stop(terminal, signal);
+            }
+            let elapsed = app.elapsed_seconds();
+            if shown != Some(elapsed) {
+                terminal.draw(|frame| render(frame, app))?;
+                shown = Some(elapsed);
+            }
+            if !event::poll(TICK).context("cannot poll terminal input")? {
+                continue;
+            }
+            match event::read().context("cannot read terminal input")? {
+                Event::Key(key) if scanning && is_quit_key(key) => {
+                    stop(terminal, signal_hook::consts::SIGINT)
+                }
+                Event::Resize(..) => shown = None,
+                _ => {}
+            }
+        }
+        Ok(worker.join())
+    })?;
+    app.working = None;
+    match finished {
+        Ok(value) => Ok(value),
+        // The panic already restored the terminal through Ratatui's hook; end
+        // the run as a panic on this thread always did.
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn is_quit_key(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && (key.code == KeyCode::Char('q')
+            || key.modifiers.contains(event::KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('c'))
+}
+
+/// Shows a finished scan or apply, then drops every key still queued. Those
+/// keys were typed before the result was on screen, at a screen that no
+/// longer exists; delivering them would let type-ahead toggle permanent mode
+/// and approve a plan before it was ever displayed.
+fn settle(terminal: &mut DefaultTerminal, app: &App) -> Result<()> {
+    terminal.draw(|frame| render(frame, app))?;
+    while event::poll(Duration::ZERO).context("cannot poll terminal input")? {
+        event::read().context("cannot read terminal input")?;
+    }
+    Ok(())
+}
+
+/// What a scan produced, carried from the worker thread to the screen.
+enum Loaded {
+    Scan(ops::ScanResult, Vec<String>),
+    Findings(Vec<Finding>, Vec<String>),
+    Failed(anyhow::Error, Vec<String>),
+}
+
+/// Scans for `operation` on the worker thread, touching no screen state; the
+/// diagnostics it captured travel with the result.
+fn run_scan(ctx: &Ctx, operation: Operation) -> Loaded {
     ctx.take_diagnostics();
     let walks_roots = match operation {
         Operation::ScanAll | Operation::Purge => true,
@@ -849,60 +1103,27 @@ fn load_operation(app: &mut App, operation: Operation, ctx: &Ctx) {
     if walks_roots {
         ctx.diagnostic("info", ctx.roots_note());
     }
-    match operation {
+    let scanned = match operation {
         Operation::ScanAll => {
             let result = ops::scan_all(ctx);
-            let warnings = ctx.take_diagnostics();
-            app.finish_scan(result, warnings);
+            return Loaded::Scan(result, ctx.take_diagnostics());
         }
         Operation::Clean(target) => {
-            let cleanup = ops::for_target(target);
-            match cleanup.scan(ctx, &ops::project::ScanObservations::default()) {
-                Ok(mut findings) => {
-                    ops::filter_protected_findings(&mut findings, ctx);
-                    let warnings = ctx.take_diagnostics();
-                    app.finish_results(operation, findings, Vec::new(), warnings);
-                }
-                Err(error) => {
-                    app.fail(error);
-                    app.warnings = ctx.take_diagnostics();
-                }
-            }
+            ops::for_target(target).scan(ctx, &ops::project::ScanObservations::default())
         }
-        Operation::Purge => {
-            match ops::purge::Purge.scan(ctx, &ops::project::ScanObservations::default()) {
-                Ok(mut findings) => {
-                    ops::filter_protected_findings(&mut findings, ctx);
-                    let warnings = ctx.take_diagnostics();
-                    app.finish_results(operation, findings, Vec::new(), warnings);
-                }
-                Err(error) => {
-                    app.fail(error);
-                    app.warnings = ctx.take_diagnostics();
-                }
-            }
-        }
-        Operation::Icloud => match ops::icloud_status(ctx) {
-            Ok(findings) => {
-                let warnings = ctx.take_diagnostics();
-                app.finish_results(operation, findings, Vec::new(), warnings);
-            }
-            Err(error) => {
-                app.fail(error);
-                app.warnings = ctx.take_diagnostics();
-            }
-        },
-        Operation::TrashEmpty => match ops::trash_findings(ctx) {
-            Ok(mut findings) => {
+        Operation::Purge => ops::purge::Purge.scan(ctx, &ops::project::ScanObservations::default()),
+        Operation::Icloud => ops::icloud_status(ctx),
+        Operation::TrashEmpty => ops::trash_findings(ctx),
+    };
+    match scanned {
+        Ok(mut findings) => {
+            // iCloud status reports only; it offers nothing to protect.
+            if operation != Operation::Icloud {
                 ops::filter_protected_findings(&mut findings, ctx);
-                let warnings = ctx.take_diagnostics();
-                app.finish_results(operation, findings, Vec::new(), warnings);
             }
-            Err(error) => {
-                app.fail(error);
-                app.warnings = ctx.take_diagnostics();
-            }
-        },
+            Loaded::Findings(findings, ctx.take_diagnostics())
+        }
+        Err(error) => Loaded::Failed(error, ctx.take_diagnostics()),
     }
 }
 
@@ -946,41 +1167,24 @@ fn approved_plan_matches(app: &App, plan: &ApprovedPlan) -> bool {
         && approval_matches(plan.operation, &plan.findings, plan.approval)
 }
 
-fn apply_operation(app: &mut App, ctx: &Ctx, plan: ApprovedPlan) {
-    if !approved_plan_matches(app, &plan) {
-        app.fail(anyhow::anyhow!(
-            "confirmation does not authorize the current preview"
-        ));
-        return;
-    }
+/// Applies a plan on the worker thread. The loop matched its approval against
+/// the displayed preview before it started.
+fn run_apply(ctx: &Ctx, plan: ApprovedPlan) -> Result<ApplyOutcome> {
     let ApprovedPlan {
         operation,
         findings,
         approval,
     } = plan;
-
-    let result = match operation {
+    let mut outcome = match operation {
         Operation::Clean(target) => ops::for_target(target).apply(&findings, ctx),
         Operation::Purge => ops::purge::Purge.apply(&findings, ctx),
         Operation::TrashEmpty => apply_trash(ctx, &findings, approval),
         Operation::ScanAll | Operation::Icloud => {
             Err(anyhow::anyhow!("refusing to apply a read-only operation"))
         }
-    };
-    match result {
-        Ok(mut outcome) => {
-            outcome.errors.extend(ctx.take_journal_errors());
-            if !outcome.errors.is_empty() {
-                app.failed = true;
-            }
-            app.status =
-                outcome_status(!outcome.errors.is_empty(), outcome.summary.items_touched).into();
-            app.summary = Some(outcome.summary);
-            app.errors = outcome.errors;
-            app.screen = Screen::Outcome;
-        }
-        Err(error) => app.fail(error),
-    }
+    }?;
+    outcome.errors.extend(ctx.take_journal_errors());
+    Ok(outcome)
 }
 
 fn apply_trash(ctx: &Ctx, findings: &[Finding], approval: Approval) -> Result<ApplyOutcome> {
@@ -1022,9 +1226,9 @@ fn render(frame: &mut Frame, app: &App) {
         Screen::Menu => render_menu(frame, body, app),
         Screen::Loading => render_loading(frame, body, app),
         Screen::Results | Screen::Confirm => render_results(frame, body, app),
-        Screen::Detail => render_detail(frame, body, app),
-        Screen::Outcome => render_outcome(frame, body, app),
-        Screen::Error => render_error(frame, body, app),
+        Screen::Detail => render_scrolled(frame, body, app, "Details", detail_entries(app)),
+        Screen::Outcome => render_scrolled(frame, body, app, "Apply outcome", outcome_entries(app)),
+        Screen::Error => render_scrolled(frame, body, app, "Failed closed", error_entries(app)),
     }
     render_footer(frame, footer, app);
     if app.screen == Screen::Confirm {
@@ -1093,9 +1297,9 @@ const HELP_KEYS: &[HelpGroup] = &[
             ("↑/↓, k/j", "navigate lists and scroll output"),
             ("PgUp/PgDn", "move a page; g/G the first or last row"),
             ("Enter", "open the operation, or the item in full"),
-            ("b, Esc", "back to the results, or the menu"),
+            ("b, Esc", "back a screen; on the menu, Esc quits"),
             ("?", "open or close this reference"),
-            ("q, Ctrl+C", "quit"),
+            ("q, Ctrl+C", "quit, stopping a scan; not during an apply"),
         ],
     ),
     (
@@ -1105,7 +1309,7 @@ const HELP_KEYS: &[HelpGroup] = &[
             ("A", "select every item, or none"),
             ("a", "apply the selected items of the plan"),
             ("s", "toggle Trash-first and permanent deletion"),
-            ("r", "rescan the current operation"),
+            ("r", "rescan, or retry after a failure"),
         ],
     ),
 ];
@@ -1203,45 +1407,65 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_loading(frame: &mut Frame, area: Rect, app: &App) {
+    let mut lines = vec![Line::raw(app.status.as_str())];
+    // The clock moving is what says the scan is still alive; a probe can take
+    // minutes on a loaded machine.
+    if let Some(elapsed) = app.elapsed_seconds() {
+        lines.push(Line::styled(
+            format!("{elapsed} s elapsed"),
+            app.theme.style(Token::Muted),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(app.status.as_str())
+        Paragraph::new(Text::from(lines))
             .alignment(Alignment::Center)
             .block(Block::bordered().title(" Working ")),
         area,
     );
 }
 
-fn render_results(frame: &mut Frame, area: Rect, app: &App) {
+/// The results list's title, within `width` columns. The mode is a safety
+/// signal, so it leads: counts and sizes grow with the plan and would
+/// otherwise push it past the minimum width. A title too wide for the
+/// terminal drops its words before any number, so what failed and the danger
+/// stay whole.
+fn results_title(app: &App, width: usize) -> String {
     let plan = app.effective_findings();
-    let total = report::actionable_bytes(&plan);
+    let size = report::gb(report::actionable_bytes(&plan));
     let danger = safety::plan_danger(&plan);
     let mode = if app.shred {
         "PERMANENT"
     } else {
         "TRASH-FIRST"
     };
+    let failed = match app.failure_count() {
+        0 => String::new(),
+        failures => format!(" · {failures} failed"),
+    };
     let choices = app.choice_count();
-    // The mode is a safety signal, so it leads: counts and sizes grow with the
-    // plan and would otherwise push it past the minimum width.
-    let title = if choices > 0 {
-        format!(
-            " {mode} · {}/{choices} selected · {} · danger-{danger} ",
-            choices.saturating_sub(app.excluded.len()),
-            report::gb(total),
+    let (full, compact) = if choices > 0 {
+        let selected = choices.saturating_sub(app.excluded.len());
+        (
+            format!(" {mode} · {selected}/{choices} selected · {size} · danger-{danger}{failed} "),
+            format!(" {mode} · {selected}/{choices} · {size} · danger-{danger}{failed} "),
         )
     } else {
-        let (counted, errors) = report::finding_and_error_counts(&app.findings);
-        let errors = if errors == 0 {
-            String::new()
-        } else {
-            format!(", {errors} error(s)")
-        };
-        format!(
-            " {mode} · {counted} finding(s){errors} · {} actionable · danger-{danger} ",
-            report::gb(total),
+        let (counted, _) = report::finding_and_error_counts(&app.findings);
+        (
+            format!(
+                " {mode} · {counted} finding(s) · {size} actionable · danger-{danger}{failed} "
+            ),
+            format!(" {mode} · {counted} found · {size} · danger-{danger}{failed} "),
         )
     };
+    if Span::raw(full.as_str()).width() <= width {
+        full
+    } else {
+        compact
+    }
+}
 
+fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     // The detail pane is the only place a long path appears whole, so it grows
     // past its usual share to hold the highlighted row, leaving the list one
     // row, and says how many lines a terminal too short for it still hides and
@@ -1263,6 +1487,7 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     }
     let [list_area, detail_area] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(detail_height)]).areas(area);
+    let title = results_title(app, usize::from(list_area.width.saturating_sub(2)));
     let visible = usize::from(list_area.height.saturating_sub(2)).max(1);
     let rows = app.row_count();
     let mut offset = app.list_offset.get();
@@ -1295,20 +1520,27 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// The highlighted results row whole, scrolled within its content: nothing
-/// about a finding is hidden here, however short the terminal.
-fn render_detail(frame: &mut Frame, area: Rect, app: &App) {
-    let lines = detail_lines(app, usize::from(area.width.saturating_sub(2)));
+/// A view that scrolls within its content: the highlighted results row whole,
+/// an apply outcome, or a failure. Lines are wrapped here rather than by the
+/// renderer, so their count is known and no key scrolls past the last one.
+fn render_scrolled(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    name: &str,
+    entries: Vec<(String, Style)>,
+) {
+    let lines = wrap_lines(entries, usize::from(area.width.saturating_sub(2)));
     let visible = area.height.saturating_sub(2);
     let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let limit = total.saturating_sub(visible);
-    app.detail_limit.set(limit);
+    app.scroll_limit.set(limit);
     let scroll = app.scroll.min(limit);
     let title = if limit == 0 {
-        " Details ".to_string()
+        format!(" {name} ")
     } else {
         format!(
-            " Details · lines {}-{} of {total} ",
+            " {name} · lines {}-{} of {total} ",
             scroll + 1,
             scroll.saturating_add(visible).min(total)
         )
@@ -1359,7 +1591,7 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     );
     let label = report::terminal_safe(&finding.label);
     let used = 2 + check.len() + danger.len() + size.len() + Span::raw(label.as_str()).width() + 2;
-    let path = report::terminal_safe(finding.path.as_deref().unwrap_or("command action"));
+    let path = report::terminal_safe(&finding_place(&finding));
     Line::from(vec![
         marker,
         Span::raw(check),
@@ -1371,6 +1603,17 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
             app.theme.style(Token::Muted),
         ),
     ])
+}
+
+/// Where a finding acts: its path, or for a typed command that has none, that
+/// it is a command. Anything else without a path — a report row, or an error
+/// entry for something that could not be judged — names no place at all.
+fn finding_place(finding: &Finding) -> String {
+    match (&finding.path, &finding.action) {
+        (Some(path), _) => path.clone(),
+        (None, Action::Command { .. }) => "command action".into(),
+        (None, _) => String::new(),
+    }
 }
 
 /// A finding as the current Trash/permanent mode would apply it — its action
@@ -1394,9 +1637,14 @@ fn diagnostic_at(app: &App, row: usize) -> Option<(String, Token)> {
     }
 }
 
-/// Everything about the highlighted row, wrapped to `width` columns. The
-/// selection state precedes the path, the part most likely to run long.
+/// Everything about the highlighted row, wrapped to `width` columns.
 fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    wrap_lines(detail_entries(app), width)
+}
+
+/// Everything about the highlighted row, one entry per line before wrapping.
+/// The selection state precedes the path, the part most likely to run long.
+fn detail_entries(app: &App) -> Vec<(String, Style)> {
     let mut lines = Vec::new();
     if let Some(finding) = app
         .findings
@@ -1422,10 +1670,10 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 app.theme.style(Token::Warning),
             ));
         }
-        lines.push((
-            report::terminal_safe(finding.path.as_deref().unwrap_or("command action")),
-            Style::default(),
-        ));
+        let place = finding_place(&finding);
+        if !place.is_empty() {
+            lines.push((report::terminal_safe(&place), Style::default()));
+        }
         lines.push((
             report::terminal_safe(&finding.note),
             app.theme.style(Token::Muted),
@@ -1442,6 +1690,11 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         lines.push(("No findings.".to_string(), app.theme.style(Token::Success)));
     }
     lines
+}
+
+/// Styled entries wrapped to `width` columns, one terminal row per line.
+fn wrap_lines(entries: Vec<(String, Style)>, width: usize) -> Vec<Line<'static>> {
+    entries
         .into_iter()
         .flat_map(|(text, style)| {
             wrap_columns(&text, width)
@@ -1516,10 +1769,10 @@ fn truncate_left(text: &str, max: usize) -> String {
     format!("…{}", &text[start..])
 }
 
-fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
+fn outcome_entries(app: &App) -> Vec<(String, Style)> {
     let mut lines = Vec::new();
     if let Some(summary) = &app.summary {
-        lines.push(Line::styled(
+        lines.push((
             report::terminal_safe(&report::summary_headline(summary)),
             app.theme
                 .bold(match (app.errors.is_empty(), summary.items_touched) {
@@ -1529,7 +1782,7 @@ fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
                 }),
         ));
         if !app.excluded.is_empty() {
-            lines.push(Line::styled(
+            lines.push((
                 format!(
                     "{} left out of this plan and not touched.",
                     app.excluded.len()
@@ -1537,52 +1790,46 @@ fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
                 app.theme.style(Token::Muted),
             ));
         }
-        lines.push(Line::raw(""));
+        lines.push((String::new(), Style::default()));
         for note in &summary.notes {
-            lines.push(Line::raw(format!("• {}", report::terminal_safe(note))));
+            lines.push((
+                format!("• {}", report::terminal_safe(note)),
+                Style::default(),
+            ));
         }
     }
     if !app.errors.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled("Errors", app.theme.bold(Token::Critical)));
+        lines.push((String::new(), Style::default()));
+        lines.push(("Errors".into(), app.theme.bold(Token::Critical)));
         for error in &app.errors {
-            lines.push(Line::raw(format!("• {}", report::terminal_safe(error))));
+            lines.push((
+                format!("• {}", report::terminal_safe(error)),
+                Style::default(),
+            ));
         }
     }
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .scroll((app.scroll, 0))
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Apply outcome ")),
-        area,
-    );
+    lines
 }
 
-fn render_error(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines = vec![Line::styled(
-        "Operation refused or failed",
+fn error_entries(app: &App) -> Vec<(String, Style)> {
+    let mut lines = vec![(
+        "Operation refused or failed".to_string(),
         app.theme.bold(Token::Critical),
     )];
     for error in &app.errors {
-        lines.push(Line::raw(report::terminal_safe(error)));
+        lines.push((report::terminal_safe(error), Style::default()));
     }
     if !app.warnings.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            "Warnings captured before the failure",
+        lines.push((String::new(), Style::default()));
+        lines.push((
+            "Warnings captured before the failure".into(),
             app.theme.style(Token::Warning),
         ));
         for warning in &app.warnings {
-            lines.push(Line::raw(report::terminal_safe(warning)));
+            lines.push((report::terminal_safe(warning), Style::default()));
         }
     }
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .scroll((app.scroll, 0))
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Failed closed ")),
-        area,
-    );
+    lines
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
@@ -1610,15 +1857,20 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         }
         Screen::Detail => "↑/↓ or j/k scroll · Esc back to the results · ? keys".into(),
         Screen::Confirm => "Esc cancel · type the exact requested acknowledgment".into(),
-        Screen::Outcome | Screen::Error => "↑/↓ or j/k scroll · b back to menu · ? keys".into(),
-        Screen::Loading => "Scanning and apply are synchronous; please wait".into(),
+        Screen::Outcome => "↑/↓ or j/k scroll · b back to menu · ? keys".into(),
+        Screen::Error => "↑/↓ or j/k scroll · r rescan · b back to menu · ? keys".into(),
+        Screen::Loading if applying(app) => {
+            "Applying the approved plan · q works once it returns".into()
+        }
+        Screen::Loading => "q or Ctrl+C stops the scan and quits".into(),
     };
     // The results status names keys that act on the plan; none of them works
-    // in the detail view, so it says so instead.
-    let status = if app.screen == Screen::Detail {
-        "Reading only: nothing here changes the plan."
-    } else {
-        app.status.as_str()
+    // in the detail view or while working, so the footer says what does.
+    let status = match app.screen {
+        Screen::Detail => "Reading only: nothing here changes the plan.",
+        Screen::Loading if applying(app) => "Quitting is refused until this apply returns.",
+        Screen::Loading => "Other keys are ignored until the results appear.",
+        _ => app.status.as_str(),
     };
     frame.render_widget(
         Paragraph::new(vec![
@@ -1628,6 +1880,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         .block(Block::bordered()),
         area,
     );
+}
+
+fn applying(app: &App) -> bool {
+    matches!(app.working, Some((Work::Apply, _)))
 }
 
 fn render_confirmation(frame: &mut Frame, area: Rect, app: &App) {
@@ -1773,6 +2029,7 @@ mod tests {
                 let app = App {
                     screen,
                     help,
+                    working: Some((Work::Scan, Instant::now())),
                     theme: Theme::new(ColorSupport::None),
                     errors: vec!["a scan error".into()],
                     warnings: vec!["a warning".into()],
@@ -2058,6 +2315,7 @@ mod tests {
         let Intent::Apply(plan) = app.approve(Approval::Yes) else {
             panic!("expected a forged approved plan");
         };
+        assert!(approved_plan_matches(&app, &plan));
         let ctx = Ctx {
             yes: false,
             yolo: false,
@@ -2075,7 +2333,7 @@ mod tests {
             journal_errors: Default::default(),
         };
 
-        apply_operation(&mut app, &ctx, plan);
+        app.finish_apply(run_apply(&ctx, plan));
 
         assert_eq!(app.screen, Screen::Error);
         assert!(app.summary.is_none());
@@ -2321,6 +2579,16 @@ mod tests {
         restored.handle_key(key(KeyCode::Char('s')));
         restored.handle_key(key(KeyCode::Char('s')));
         assert!(!restored.shred);
+        // Leaving every Trash item out must not strand the view in permanent
+        // mode, where adding an item back would plan a permanent deletion.
+        let mut restored_with_nothing_selected = trash_plan();
+        restored_with_nothing_selected.handle_key(key(KeyCode::Char('s')));
+        restored_with_nothing_selected.handle_key(key(KeyCode::Char('A')));
+        restored_with_nothing_selected.handle_key(key(KeyCode::Char('s')));
+        assert!(
+            !restored_with_nothing_selected.shred,
+            "PV tui/shred-off: permanent mode cannot be turned off with nothing selected"
+        );
         // The statuses `A` and a Space on a report row leave behind.
         let mut all_left_out = trash_plan();
         all_left_out.handle_key(key(KeyCode::Char('A')));
@@ -2330,6 +2598,57 @@ mod tests {
         ]);
         report_row.handle_key(key(KeyCode::Char(' ')));
         assert!(!all_left_out.status.is_empty() && !report_row.status.is_empty());
+        // A result that failed says what failed and that r retries, so a
+        // category withheld by a failed probe is not mistaken for an empty one.
+        let failed_scan = |failed: &[&str]| {
+            let mut app = App::default();
+            app.finish_scan(
+                ops::ScanResult {
+                    findings: vec![trash("cache", 1, 2)],
+                    sections: ops::all()
+                        .iter()
+                        .map(|op| op.name())
+                        .filter(|name| !failed.contains(name))
+                        .map(|name| section(name, 0..0))
+                        .collect(),
+                    errors: failed
+                        .iter()
+                        .map(|name| format!("{name}: probe failed"))
+                        .collect(),
+                },
+                Vec::new(),
+            );
+            app
+        };
+        let one_category = failed_scan(&["node-modules"]);
+        let every_category: Vec<_> = ops::all().iter().map(|op| op.name()).collect();
+        let every_category = failed_scan(&every_category);
+        let not_judged = cleanup(
+            (0..12)
+                .map(|index| {
+                    Finding::new(
+                        format!("repo-{index} not judged"),
+                        None,
+                        0,
+                        "x",
+                        5,
+                        Action::Info,
+                    )
+                    .with_scan_error("synthetic failure".into())
+                })
+                .collect(),
+        );
+        for (app, what) in [
+            (&one_category, "node-modules failed"),
+            (&every_category, "10 categories failed"),
+            (&not_judged, "12 item(s) not judged"),
+        ] {
+            assert!(
+                app.status.starts_with(what) && app.status.contains("r retries"),
+                "the status does not say what failed: {}",
+                app.status
+            );
+        }
         for app in [
             trash_plan(),
             trash_left_out,
@@ -2338,8 +2657,12 @@ mod tests {
             nothing_selected,
             permanent,
             restored,
+            restored_with_nothing_selected,
             all_left_out,
             report_row,
+            one_category,
+            every_category,
+            not_judged,
         ] {
             let output = rendered(&app, 64, 18);
             assert!(output.contains("? keys"), "{output}");
@@ -2354,6 +2677,7 @@ mod tests {
             let status = outcome_status(failed, touched);
             assert!(status.chars().count() <= 62, "{status}");
         }
+        assert!(FAILED_CLOSED.chars().count() <= 62, "{FAILED_CLOSED}");
     }
 
     /// The rendered screen, one string per terminal row.
@@ -2572,20 +2896,65 @@ mod tests {
         assert!(output.contains("danger-9 · permanently delete"), "{output}");
     }
 
+    /// The results list's title row at the minimum size.
+    fn results_title(app: &App) -> String {
+        screen_rows(app, MIN_WIDTH, MIN_HEIGHT)
+            .into_iter()
+            .find(|row| row.starts_with("┌ TRASH-FIRST") || row.starts_with("┌ PERMANENT"))
+            .expect("the results list has a title")
+    }
+
     /// The mode is a safety signal, so it leads the title: a title that grew
-    /// with the plan's counts and size clipped TRASH-FIRST at 64 columns.
+    /// with the plan's counts and size clipped TRASH-FIRST at 64 columns. The
+    /// count of what failed must fit beside it whole, as must the danger; the
+    /// title's closing space shows nothing after it was cut.
     #[test]
-    fn the_mode_survives_the_minimum_width_on_a_large_plan() {
-        let mut app = cleanup(
-            (0..120)
-                .map(|index| trash(&format!("cache-{index}"), 1 << 30, 5))
-                .collect(),
-        );
+    fn the_title_fits_the_minimum_width_on_a_large_plan_with_failures() {
+        let mut findings: Vec<Finding> = (0..120)
+            .map(|index| trash(&format!("cache-{index}"), 1 << 30, 5))
+            .collect();
+        findings.extend((0..12).map(|index| {
+            Finding::new(
+                format!("repo-{index} not judged"),
+                None,
+                0,
+                "failed",
+                5,
+                Action::Info,
+            )
+            .with_scan_error("synthetic failure".into())
+        }));
+        let mut app = cleanup(findings);
 
-        let trash_first = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+        let trash_first = results_title(&app);
         app.handle_key(key(KeyCode::Char('s')));
-        let permanent = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+        let permanent = results_title(&app);
+        let mut scan = App::default();
+        scan.finish_scan(
+            ops::ScanResult {
+                findings: (0..999)
+                    .map(|index| trash(&format!("cache-{index}"), 1 << 30, 5))
+                    .collect(),
+                sections: Vec::new(),
+                errors: (0..10)
+                    .map(|index| format!("category-{index}: failed"))
+                    .collect(),
+            },
+            Vec::new(),
+        );
+        let read_only = results_title(&scan);
 
+        for (title, failed) in [
+            (&trash_first, "12 failed "),
+            (&permanent, "12 failed "),
+            (&read_only, "10 failed "),
+        ] {
+            assert!(title.contains(" · danger-"), "{title}");
+            assert!(
+                title.contains(failed),
+                "the failure count is cut or missing: {title}"
+            );
+        }
         assert!(trash_first.contains("TRASH-FIRST"), "{trash_first}");
         assert!(permanent.contains("PERMANENT"), "{permanent}");
     }

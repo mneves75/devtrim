@@ -646,6 +646,14 @@ CASES = (
         marker="PV tui/selection-plan",
     ),
     Case(
+        name="tui/shred-off",
+        relative_path="src/tui.rs",
+        before="        self.shred\n            || matches!(self.operation, Some(Operation::Clean(_) | Operation::Purge))\n",
+        after="        matches!(self.operation, Some(Operation::Clean(_) | Operation::Purge))\n",
+        tests=("tui::tests::every_results_footer_fits_the_minimum_width",),
+        marker="PV tui/shred-off",
+    ),
+    Case(
         name="git/utc-dates",
         relative_path="src/ops/project.rs",
         before='        .env("TZ", "UTC0")\n',
