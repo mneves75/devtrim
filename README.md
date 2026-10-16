@@ -46,7 +46,7 @@ cp target/release/devtrim /usr/local/bin/
 - **Immutable plans.** Apply consumes only paths shown in the preview; it never rescans for new deletion targets. Xcode and Swift toolchain apply reassert exact direct-child authority — for a DerivedData folder holding Swift package checkouts, its directories but `SourcePackages`; `node_modules` apply reasserts a real authorized directory leaf and rejects symlinks plus `.git`, nested dependency-tree, and non-normal ancestors.
 - **Trash-first.** Filesystem deletions go to macOS Trash. `--shred` explicitly previews permanent deletion and raises danger to critical.
 - **Untrusted repositories stay inert.** devtrim's two Git queries — the activity probe and the tracked-file check — disable every repository-configurable path by which they could run a program: hooks, fsmonitor, signature verification through `gpg.program`, and lazy fetches through a promisor remote's `uploadpack`. Previewing a directory that arrived with a hostile `.git/config` runs nothing. A `git` too old for `--no-lazy-fetch` refuses the repository.
-- **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation. A failure blocks only what it touches: a repository whose Git query or tree check fails offers nothing and is reported as an error, so the run exits nonzero, while every other repository is still judged; a folder the walk cannot read, or a cache whose size cannot be measured, is reported as an error too, and nothing in it is offered while the other caches still are. A failed liveness probe still blocks its whole category. An external command that does not answer in time is a failure too: it is killed and reaped, and the repository, category or probe that asked refuses with an error naming the command and its limit (two minutes for Git, `simctl`, `docker`, `npm` and `brew` queries, three for the `pgrep` and `lsof` probes, fifteen for the Docker, simulator and maintenance commands an apply runs; a timeout kills the command's whole process group), while the other categories still complete. Interrupting a run with Ctrl-C or SIGTERM kills every command it started before devtrim exits with 130 or 143; the TUI restores its terminal first and then does the same, and `q` or Ctrl-C typed during a TUI scan stops it the same way (exit 130).
+- **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation. A failure blocks only what it touches: a repository whose Git query or tree check fails offers nothing and is reported as an error, so the run exits nonzero, while every other repository is still judged; a folder the walk cannot read, a cache whose size cannot be measured, or an Xcode DeviceSupport or DerivedData folder that cannot be read or measured is reported as an error too, and nothing in it is offered while the other caches still are. A failed liveness probe still blocks its whole category. An external command that does not answer in time is a failure too: it is killed and reaped, and the repository, category or probe that asked refuses with an error naming the command and its limit (two minutes for Git, `simctl`, `docker`, `npm`, `brew` and `go` queries, three for the `pgrep` and `lsof` probes, fifteen for the Docker, simulator and maintenance commands an apply runs; a timeout kills the command's whole process group), while the other categories still complete. Interrupting a run with Ctrl-C or SIGTERM kills every command it started before devtrim exits with 130 or 143; the TUI restores its terminal first and then does the same, and `q` or Ctrl-C typed during a TUI scan stops it the same way (exit 130).
 - **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; while Xcode, `xcodebuild`, or the build services Xcode.app builds run through are running, `xcode` offers only DerivedData folders untouched for longer than the activity window that no Xcode process holds a file open in, and apply judges each again. A probe that cannot complete blocks instead of passing; a build tool that exited between the process list and the directory lookup is not mistaken for one.
 - **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle. Every directory action rejects foreign devices and Git repository/worktree markers at any depth before mutation; the one exception is the empty `.git` uv writes into its own source-distribution bucket, which Git itself rejects as an invalid gitfile, tolerated only in that exact shape under a tagged cache root that `clean caches` holds uv's lock on or `trash-empty` finds in the Trash. Permanent deletes additionally quarantine the verified leaf and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
 - **Write-ahead journal.** Every apply records an attempt before deletion and a result after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). Symlinked path components are refused, complete records are serialized and synced, and an unwritable journal blocks apply. Rotation (10 MiB, keep 3) cannot split an in-flight pair. `devtrim history` is read-only, waits for guarded applies before snapshotting, pairs legacy records across generations, reverse-scans only the bounded newest tail needed for the requested limit, and reports a genuinely unmatched attempt as interrupted.
@@ -87,13 +87,13 @@ devtrim scan --all                        # every finding of every category
 devtrim scan --json                       # one machine-readable envelope, always complete
 devtrim purge                             # stale node_modules + build artifacts, by project, largest first
 devtrim purge --apply                     # move that exact plan to Trash after confirmation
-devtrim clean caches --apply -y           # tool download caches (HF, uv, npm, brew, cargo, bun, gh, …)
+devtrim clean caches --apply -y           # tool download caches (HF, uv, npm, brew, cargo, bun, gh, Gradle, Go, …)
 devtrim clean node-modules --apply -y     # exact paths in Git repos with no recent activity
 devtrim clean artifacts --apply -y        # corroborated build artifacts in stale Git repos
-devtrim clean simulators --apply -y       # delete exact previewed unavailable devices; working ones are only reported
-devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData child directories; package checkouts stay
+devtrim clean simulators --apply -y       # delete exact previewed unavailable devices; working ones are only reported; no Xcode, nothing to do
+devtrim clean xcode --apply -y            # exact iOS/watchOS/tvOS/visionOS DeviceSupport and DerivedData children; package checkouts stay
 devtrim clean docker --apply -y           # local daemon images + build cache; never volumes
-devtrim clean toolchains --apply -y       # only unreferenced swift.org toolchains
+devtrim clean toolchains --apply -y       # only swift.org toolchains no symlink or swiftly references
 devtrim clean installers --apply -y       # stale installer archives in Downloads/Desktop
 devtrim clean agents --apply -y           # agent caches + older Codex releases + stale session history
 devtrim clean leftovers                   # report-only hints and ignored .scratch folders
@@ -368,6 +368,26 @@ silently shorter plan would read as nothing to reclaim — and its error names
 the image and its size, which is the one state where the cost is invisible to
 `docker` and still present.
 
+`clean caches` offers Gradle's `caches` and `wrapper/dists` under
+`GRADLE_USER_HOME` (default `~/.gradle`), never that folder itself, which holds
+`gradle.properties` and `init.d`. Gradle locks those files only among its own
+processes, so while a Gradle daemon, build or Wrapper runs they are left out of
+the preview, and apply refuses them if Gradle started after it; `gradle --stop`
+ends the daemons. The Go module cache is the folder `go env GOMODCACHE` reports,
+offered only when it lies inside the home folder and holds Go's
+`cache/download`. Go keeps that cache read-only, so a move to the Trash works
+but `--shred` refuses it whole rather than stopping half-way; `go clean
+-modcache` is Go's own way to delete it.
+
+`clean toolchains` keeps every toolchain swiftly installed. swiftly, the
+installer swift.org recommends on macOS, selects the toolchain in use through
+`~/.swiftly/config.json` (or `$SWIFTLY_HOME_DIR/config.json`) rather than a
+symlink, so each toolchain it lists, and the one it has in use, is shown as a
+report-only finding naming `swiftly uninstall <version>`, swiftly's own way to
+remove it, and apply reads the configuration again. A configuration that cannot
+be read, parsed or mapped to toolchain folders withholds the whole category
+with an error.
+
 `trash-empty` previews each current top-level Trash item as an exact target.
 `--apply` shows that set again and purges it only after the same confirmation
 every mutation requires — typed on a terminal, or `--yolo` — so an item moved
@@ -460,7 +480,20 @@ roots = ["~/dev", "~/sandbox"]    # scan roots (default: the project folders abo
 active_days = 30                  # project build output: repos with newer Git activity are active (0 means 1)
 retain_days = 30                  # agent history and installers: offered only after this many days untouched
 protect = ["~/dev/keep"]          # never delete these paths or their children
+codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by `agents` like ~/.codex
 ```
+
+`codex_homes` names additional Codex homes, folders Codex uses as its
+`CODEX_HOME`, for example one per account. `clean agents` applies every Codex
+entry to each of them exactly as to `~/.codex`: the catalog cache, the shell
+snapshots, session and archived-session history, and older standalone
+releases, at scan and again at apply, each finding labelled with its home.
+Nothing is inferred from a folder's name, so a home not listed is never
+touched. An entry must expand to an absolute path naming a real directory inside
+the home folder, reached through no link, that is neither `~/.codex` (by
+spelling or as the same folder) nor inside or around it or another entry;
+anything else, or a value that is not a list of strings, is a configuration
+error and the command refuses to run.
 
 `protect` entries expand `~`, must be absolute, and are enforced deny-only at
 the single deletion sink — a protected target is refused even if a scanner

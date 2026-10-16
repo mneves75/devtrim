@@ -84,6 +84,10 @@ impl Ctx {
             activity_windows(file_cfg.active_days, file_cfg.retain_days);
         let (protect, protect_warnings) =
             configured_protect(file_cfg.protect.unwrap_or_default(), &home)?;
+        // Validated now so a malformed setting fails every command loudly, as
+        // `protect` does; `agents` reads it again for each scan and apply.
+        codex_homes_from(file_cfg.codex_homes.as_deref().unwrap_or_default(), &home)
+            .with_context(|| format!("invalid config: {}", cfg.display()))?;
         let ResolvedRoots {
             roots,
             origin: roots_origin,
@@ -423,6 +427,7 @@ pub(crate) struct FileCfg {
     active_days: Option<u32>,
     retain_days: Option<u32>,
     protect: Option<Vec<String>>,
+    codex_homes: Option<Vec<String>>,
 }
 
 fn load_config(path: &Path) -> Result<FileCfg> {
@@ -436,6 +441,89 @@ fn load_config(path: &Path) -> Result<FileCfg> {
 
 pub(crate) fn parse_config_str(contents: &str) -> Result<FileCfg> {
     toml::from_str(contents).map_err(Into::into)
+}
+
+/// The additional Codex homes `codex_homes` names, which `agents` judges
+/// exactly as it judges `~/.codex`, read from the configuration in `home`.
+/// Read again by each `agents` scan and apply rather than kept from startup.
+pub(crate) fn configured_codex_homes(home: &Path) -> Result<Vec<PathBuf>> {
+    let path = home.join(".config/devtrim.toml");
+    let config = load_config(&path)?;
+    codex_homes_from(config.codex_homes.as_deref().unwrap_or_default(), home)
+        .with_context(|| format!("invalid config: {}", path.display()))
+}
+
+/// Validates `codex_homes`. Each entry expands `~/`, must be absolute and made
+/// only of normal components, and must name a real directory inside the home
+/// folder reached through no link (Codex requires a configured `CODEX_HOME` to
+/// exist already). It must be neither `~/.codex` itself, by spelling or by
+/// device and inode, nor inside or around `~/.codex` or another entry, so no
+/// folder is judged twice. Any entry that fails refuses the whole setting.
+fn codex_homes_from(entries: &[String], home: &Path) -> Result<Vec<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let default = home.join(".codex");
+    let default_identity = match std::fs::metadata(&default) {
+        Ok(metadata) => Some((metadata.dev(), metadata.ino())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", default.display()));
+        }
+    };
+    let mut homes: Vec<PathBuf> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let candidate = PathBuf::from(shellexpand(entry, home));
+        if !candidate.is_absolute() {
+            bail!("codex_homes entry `{entry}` must expand to an absolute candidate");
+        }
+        if candidate.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        }) {
+            bail!("codex_homes entry `{entry}` must not contain `.` or `..`");
+        }
+        if !candidate.starts_with(home) || candidate == home {
+            bail!("codex_homes entry `{entry}` must be a folder inside the home folder");
+        }
+        let metadata = std::fs::symlink_metadata(&candidate).with_context(|| {
+            format!(
+                "codex_homes entry `{entry}` is not an existing directory: {}",
+                candidate.display()
+            )
+        })?;
+        if !metadata.file_type().is_dir() {
+            bail!(
+                "codex_homes entry `{entry}` is not a real directory: {}",
+                candidate.display()
+            );
+        }
+        let resolved = candidate
+            .canonicalize()
+            .with_context(|| format!("cannot resolve codex_homes entry `{entry}`"))?;
+        if resolved != candidate {
+            bail!(
+                "codex_homes entry `{entry}` is reached through a link or another spelling: {} -> {}",
+                candidate.display(),
+                resolved.display()
+            );
+        }
+        if candidate == default || default_identity == Some((metadata.dev(), metadata.ino())) {
+            bail!("codex_homes entry `{entry}` is `~/.codex`, which is always judged");
+        }
+        if let Some(other) = std::iter::once(&default)
+            .chain(&homes)
+            .find(|other| candidate.starts_with(other) || other.starts_with(&candidate))
+        {
+            bail!(
+                "codex_homes entry `{entry}` overlaps {}, so one folder would be judged twice",
+                other.display()
+            );
+        }
+        homes.push(candidate);
+    }
+    Ok(homes)
 }
 
 fn configured_protect(entries: Vec<String>, home: &Path) -> Result<(Vec<PathBuf>, Vec<String>)> {
@@ -1090,6 +1178,18 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
                    it is the one part that returns only by fuzzing again.",
     },
     DeletionEntry {
+        label: "CocoaPods download cache",
+        relative: "CocoaPods",
+        evidence: "CocoaPods 1.17.0 `lib/cocoapods/config.rb`: `cache_root` \
+                   defaults to `~/Library/Caches/CocoaPods` (moved by \
+                   `CP_CACHE_DIR` or `CP_HOME_DIR`), and `pod cache clean \
+                   --all` removes every cached pod. `download_pod` in \
+                   `lib/cocoapods/downloader/cache.rb` downloads a pod the \
+                   cache lacks, and `copy_and_clean` copies a cached pod into \
+                   the project with `rsync -a`, so an installed `Pods` folder \
+                   never points into this cache.",
+    },
+    DeletionEntry {
         label: "TypeScript server cache",
         relative: "typescript",
         evidence: "Automatic type-acquisition cache (`<version>/node_modules/\
@@ -1101,13 +1201,18 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
 /// Managed caches their owner does not rebuild on next use, with the command
 /// that brings each back, so a finding can say what removing it costs. Every
 /// name is a [`MANAGED_LIBRARY_CACHES`] entry.
-pub(crate) const REBUILT_BY_COMMAND: &[(&str, &str)] =
-    &[("ms-playwright", "npx playwright install")];
+pub(crate) const REBUILT_BY_COMMAND: &[(&str, &str)] = &[
+    ("ms-playwright", "npx playwright install"),
+    ("CocoaPods", "pod install"),
+];
 
 fn is_managed_library_subpath(relative: &Path) -> bool {
     const MANAGED: &[&str] = &[
         "Developer/Toolchains",
         "Developer/Xcode/iOS DeviceSupport",
+        "Developer/Xcode/watchOS DeviceSupport",
+        "Developer/Xcode/tvOS DeviceSupport",
+        "Developer/Xcode/visionOS DeviceSupport",
         "Developer/Xcode/DerivedData",
         "Caches/Homebrew",
     ];

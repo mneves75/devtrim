@@ -1,11 +1,14 @@
 //! swift.org toolchains under ~/Library/Developer/Toolchains.
-//! Cleanup proceeds only when a valid swift-latest target and all symlink references are known.
+//! Cleanup proceeds only when a valid swift-latest target, every symlink
+//! reference, and every toolchain swiftly records are known; a toolchain
+//! swiftly installed is never offered.
 
 use anyhow::{Context, Result};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use super::project::is_directory_if_present;
+use super::project::{is_directory_if_present, unjudged_finding};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, escalate};
 
@@ -25,7 +28,18 @@ impl Op for Toolchains {
         if !is_directory_if_present(&directory)? {
             return Ok(Vec::new());
         }
-        let preserved = preserved_targets(&directory)?;
+        // A reference that cannot be proven withholds the whole category: the
+        // toolchain it could not name may be any of them.
+        let references = match References::read(&ctx.home, &directory) {
+            Ok(references) => references,
+            Err(error) => {
+                return Ok(vec![unjudged_finding(
+                    "Swift toolchains",
+                    &directory,
+                    &error,
+                )]);
+            }
+        };
         let mut findings = Vec::new();
         for entry in std::fs::read_dir(&directory)? {
             let entry = entry?;
@@ -38,21 +52,41 @@ impl Op for Toolchains {
             {
                 continue;
             }
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let metadata = std::fs::symlink_metadata(&path)
+                .with_context(|| format!("cannot verify toolchain {}", path.display()))?;
+            if let Some(owner) = references.swiftly.get(&(metadata.dev(), metadata.ino())) {
+                let size = dir_size(&path)?;
+                let state = if owner.in_use { " and in use" } else { "" };
+                findings.push(Finding::new(
+                    format!("Swift toolchain {name} (swiftly)"),
+                    Some(path),
+                    size,
+                    format!(
+                        "EXCLUDED: installed by swiftly{state}; `swiftly uninstall {}` removes it",
+                        owner.version
+                    ),
+                    0,
+                    Action::None,
+                ));
+                continue;
+            }
             let canonical = path
                 .canonicalize()
                 .with_context(|| format!("cannot verify toolchain {}", path.display()))?;
-            if preserved.contains(&canonical) {
+            if references.linked.contains(&canonical) {
                 continue;
             }
             let size = dir_size(&path)?;
             findings.push(Finding::new(
-                format!(
-                    "Swift toolchain {}",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                ),
+                format!("Swift toolchain {name}"),
                 Some(path),
                 size,
-                "not referenced by any verified Toolchains symlink; reinstallable from swift.org",
+                "not referenced by any verified Toolchains symlink or by swiftly; reinstallable from swift.org",
                 escalate(6, size),
                 Action::Trash,
             ));
@@ -62,7 +96,7 @@ impl Op for Toolchains {
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
         let directory = ctx.home.join("Library/Developer/Toolchains");
-        let preserved = preserved_targets(&directory)?;
+        let references = References::read(&ctx.home, &directory)?;
         let mut outcome = ApplyOutcome::new(self.name());
         for finding in findings {
             if !matches!(finding.action, Action::Trash | Action::Shred) {
@@ -72,7 +106,7 @@ impl Op for Toolchains {
                 let path = finding
                     .target()
                     .ok_or_else(|| anyhow::anyhow!("toolchain finding missing internal target"))?;
-                authorize_toolchain_target(path, &directory, &preserved)?;
+                authorize_toolchain_target(path, &directory, &references)?;
                 apply_filesystem_finding(self.name(), finding, ctx)?;
                 Ok(removal_note(finding, path.display()))
             })();
@@ -88,7 +122,26 @@ impl Op for Toolchains {
     }
 }
 
-fn preserved_targets(directory: &Path) -> Result<BTreeSet<PathBuf>> {
+/// Everything that says a toolchain is in use, read afresh by each scan and
+/// each apply.
+struct References {
+    /// Canonical targets of the verified symlinks in the Toolchains folder.
+    linked: BTreeSet<PathBuf>,
+    /// Toolchains swiftly records, by the device and inode of their folder, so
+    /// a spelling the volume folds still names the same folder.
+    swiftly: BTreeMap<(u64, u64), SwiftlyToolchain>,
+}
+
+impl References {
+    fn read(home: &Path, directory: &Path) -> Result<Self> {
+        Ok(Self {
+            linked: linked_targets(directory)?,
+            swiftly: swiftly_toolchains(home, directory)?,
+        })
+    }
+}
+
+fn linked_targets(directory: &Path) -> Result<BTreeSet<PathBuf>> {
     let canonical_directory = directory
         .canonicalize()
         .with_context(|| format!("cannot verify {}", directory.display()))?;
@@ -155,10 +208,175 @@ fn preserved_targets(directory: &Path) -> Result<BTreeSet<PathBuf>> {
     Ok(preserved)
 }
 
+/// A toolchain swiftly installed, as its configuration names it.
+struct SwiftlyToolchain {
+    /// The version swiftly's own commands take: `6.3.3`, `main-snapshot-…`.
+    version: String,
+    in_use: bool,
+}
+
+/// The two fields of swiftly's `config.json` that say which toolchains it owns
+/// (swiftlang/swiftly 1.1.4 `Sources/Swiftly/Config.swift`: `inUse:
+/// ToolchainVersion?` and `installedToolchains: Set<ToolchainVersion>`, each
+/// encoded as its `name`). swiftly's other fields are ignored.
+#[derive(serde::Deserialize)]
+struct SwiftlyConfig {
+    #[serde(rename = "inUse")]
+    in_use: Option<String>,
+    #[serde(rename = "installedToolchains")]
+    installed_toolchains: Vec<String>,
+}
+
+/// Every toolchain folder in `directory` that swiftly records.
+///
+/// swiftly, the installer swift.org recommends on macOS, selects the toolchain
+/// in use through its `config.json` and its `~/.swiftly/bin` proxies rather
+/// than a symlink here, so the symlinks alone cannot say which toolchain is in
+/// use. swiftly reads `$SWIFTLY_HOME_DIR/config.json`, by default
+/// `~/.swiftly/config.json` (swiftly 1.1.4 `Sources/SwiftlyCore/Platform.swift`
+/// `swiftlyHomeDir`, `swiftlyConfigFile`; `SWIFTLY_HOME_DIR` is documented in
+/// `Documentation/SwiftlyDocs.docc/automated-install.md`). No configuration
+/// means swiftly is not set up and records nothing. One that cannot be read,
+/// parsed, or mapped to folder names refuses: the toolchain it could not name
+/// may be the one in use.
+fn swiftly_toolchains(
+    home: &Path,
+    directory: &Path,
+) -> Result<BTreeMap<(u64, u64), SwiftlyToolchain>> {
+    let config = match std::env::var_os("SWIFTLY_HOME_DIR") {
+        Some(swiftly_home) => {
+            let swiftly_home = PathBuf::from(swiftly_home);
+            if !swiftly_home.is_absolute() {
+                anyhow::bail!(
+                    "refusing Swift toolchains: SWIFTLY_HOME_DIR is not an absolute path, so swiftly's configuration cannot be located: {}",
+                    swiftly_home.display()
+                );
+            }
+            swiftly_home.join("config.json")
+        }
+        None => home.join(".swiftly/config.json"),
+    };
+    let contents = match std::fs::read(&config) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BTreeMap::new());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("cannot read swiftly's configuration {}", config.display())
+            });
+        }
+    };
+    let parsed: SwiftlyConfig = serde_json::from_slice(&contents)
+        .with_context(|| format!("cannot parse swiftly's configuration {}", config.display()))?;
+    let mut versions = parsed.installed_toolchains;
+    // The toolchain in use is kept even when the installed list omits it.
+    versions.extend(parsed.in_use.clone());
+    let mut owned = BTreeMap::new();
+    for version in versions {
+        let names = swiftly_folder_names(&version).with_context(|| {
+            format!(
+                "refusing Swift toolchains: swiftly's configuration {} names a toolchain devtrim cannot map to a folder",
+                config.display()
+            )
+        })?;
+        for name in names {
+            let folder = directory.join(format!("{name}.xctoolchain"));
+            let metadata = match std::fs::metadata(&folder) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("cannot inspect swiftly toolchain {}", folder.display())
+                    });
+                }
+            };
+            owned.insert(
+                (metadata.dev(), metadata.ino()),
+                SwiftlyToolchain {
+                    in_use: parsed.in_use.as_deref() == Some(version.as_str()),
+                    version: version.clone(),
+                },
+            );
+        }
+    }
+    Ok(owned)
+}
+
+/// The `.xctoolchain` folder names, without the extension, swiftly has given
+/// `version` on macOS. swiftly installs `<identifier>.xctoolchain` into the
+/// Toolchains folder and uninstalls by that name (swiftly 1.1.4
+/// `Sources/MacOSPlatform/MacOS.swift` `install`, `uninstall`); the identifier
+/// is `identifier` in `Sources/SwiftlyCore/ToolchainVersion.swift`. It changed
+/// in 1.1: a stable `X.Y.0` from 6.4.0 on is `swift-X.Y.0-RELEASE`, where 1.0.0
+/// named every `X.Y.0` `swift-X.Y-RELEASE`, so both are kept for a `.0`
+/// release, and a folder that does not exist costs nothing. `xcode` is Xcode's
+/// own toolchain, which swiftly finds through `xcrun` (`findToolchainLocation`),
+/// never a folder here. Any spelling swiftly's `init(parsing:)` would reject is
+/// an error.
+fn swiftly_folder_names(version: &str) -> Result<Vec<String>> {
+    fn number(part: &str) -> Option<u64> {
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    }
+    fn is_date(part: &str) -> bool {
+        part.len() == 10
+            && part.bytes().enumerate().all(|(index, byte)| match index {
+                4 | 7 => byte == b'-',
+                _ => byte.is_ascii_digit(),
+            })
+    }
+    if version == "xcode" {
+        return Ok(Vec::new());
+    }
+    if let Some(day) = version.strip_prefix("main-snapshot-")
+        && is_date(day)
+    {
+        return Ok(vec![format!("swift-DEVELOPMENT-SNAPSHOT-{day}-a")]);
+    }
+    let release = version.strip_prefix("Swift ").unwrap_or(version);
+    if let Some((branch, day)) = release.split_once("-snapshot-")
+        && is_date(day)
+    {
+        let parts = branch.split('.').collect::<Vec<_>>();
+        let patch = match parts.as_slice() {
+            [_, _] => Some(String::new()),
+            [_, _, patch]
+                if !patch.is_empty() && patch.bytes().all(|byte| byte.is_ascii_alphanumeric()) =>
+            {
+                Some(format!(".{patch}"))
+            }
+            _ => None,
+        };
+        if let (Some(major), Some(minor), Some(patch)) = (
+            parts.first().copied().and_then(number),
+            parts.get(1).copied().and_then(number),
+            patch,
+        ) {
+            return Ok(vec![format!(
+                "swift-{major}.{minor}{patch}-DEVELOPMENT-SNAPSHOT-{day}-a"
+            )]);
+        }
+    }
+    if let [major, minor, patch] = release.split('.').collect::<Vec<_>>().as_slice()
+        && let (Some(major), Some(minor), Some(patch)) =
+            (number(major), number(minor), number(patch))
+    {
+        let mut names = vec![format!("swift-{major}.{minor}.{patch}-RELEASE")];
+        if patch == 0 {
+            names.push(format!("swift-{major}.{minor}-RELEASE"));
+        }
+        return Ok(names);
+    }
+    anyhow::bail!("unrecognized swiftly toolchain version `{version}`")
+}
+
 fn authorize_toolchain_target(
     path: &Path,
     directory: &Path,
-    preserved: &BTreeSet<PathBuf>,
+    references: &References,
 ) -> Result<PathBuf> {
     if path.parent() != Some(directory) {
         anyhow::bail!(
@@ -178,6 +396,13 @@ fn authorize_toolchain_target(
             path.display()
         );
     }
+    if let Some(owner) = references.swiftly.get(&(metadata.dev(), metadata.ino())) {
+        anyhow::bail!(
+            "refusing a toolchain swiftly installed: {}; `swiftly uninstall {}` removes it",
+            path.display(),
+            owner.version
+        );
+    }
     let canonical_directory = directory
         .canonicalize()
         .with_context(|| format!("cannot re-verify {}", directory.display()))?;
@@ -190,7 +415,7 @@ fn authorize_toolchain_target(
             path.display()
         );
     }
-    if preserved.contains(&canonical) {
+    if references.linked.contains(&canonical) {
         anyhow::bail!(
             "toolchain became referenced after preview: {}",
             path.display()

@@ -4,7 +4,9 @@ use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use super::project::{activity_window, has_git_marker, unjudged_finding};
+use super::project::{
+    UnreadFolder, activity_window, has_git_marker, unjudged_finding, unread_folders_finding,
+};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, OpenFile, XcodeActivity, escalate, xcode_activity};
 
@@ -16,11 +18,41 @@ enum XcodeTargetKind {
     DerivedData,
 }
 
+const DEVICE_SUPPORT_NOTE: &str = "debug symbols copied from a device; Xcode copies them again only from a connected device running this exact OS build, so a build no device still runs is needed only to symbolicate its crash logs";
+
+/// The folders whose direct children are offered. Apple documents none of
+/// the DeviceSupport folders; what they hold was observed for iOS (one folder
+/// of symbols per device OS build), and the other three are the same kind of
+/// folder for their platform. Their names are the ones LLVM's debugger looks
+/// for as Xcode's device support (llvm-project 82911de
+/// `lldb/source/Plugins/Platform/MacOSX/PlatformRemote{iOS,AppleWatch,AppleTV,AppleXR}.cpp`
+/// `GetDeviceSupportDirectoryNames`; for visionOS, "Xcode 27+ uses
+/// "visionOS DeviceSupport""), and Mole V1.56.0 (`lib/clean/dev.sh`) cleans
+/// the iOS, watchOS and tvOS ones the same way. `watchOS DeviceSupport` was
+/// observed on the development machine, empty; `tvOS` and `visionOS` were not.
+/// The pre-27 visionOS folder is left out: lldb spells it `XROS DeviceSupport`
+/// and Mole `xrOS DeviceSupport`, and a spelling that differs from the folder
+/// on disk only in case would be offered and then refused at the sink.
 const TARGETS: &[(&str, &str, &str)] = &[
     (
         "iOS DeviceSupport",
         "Developer/Xcode/iOS DeviceSupport",
-        "debug symbols copied from a device; Xcode copies them again only from a connected device running this exact OS build, so a build no device still runs is needed only to symbolicate its crash logs",
+        DEVICE_SUPPORT_NOTE,
+    ),
+    (
+        "watchOS DeviceSupport",
+        "Developer/Xcode/watchOS DeviceSupport",
+        DEVICE_SUPPORT_NOTE,
+    ),
+    (
+        "tvOS DeviceSupport",
+        "Developer/Xcode/tvOS DeviceSupport",
+        DEVICE_SUPPORT_NOTE,
+    ),
+    (
+        "visionOS DeviceSupport",
+        "Developer/Xcode/visionOS DeviceSupport",
+        DEVICE_SUPPORT_NOTE,
     ),
     (
         "DerivedData",
@@ -73,6 +105,9 @@ impl Xcode {
             }
         };
         let (mut recent, mut open) = (0usize, 0usize);
+        // A folder that cannot be read or measured offers nothing and is named
+        // in one error finding (S8); the folders beside it are still judged.
+        let mut unread = Vec::new();
         for (label, relative, note) in TARGETS {
             let activity = match (&activity, *label == "DerivedData") {
                 (Some(activity), _) => activity,
@@ -86,21 +121,33 @@ impl Xcode {
                 Err(error) => return Err(error.into()),
             };
             for entry in entries {
-                let entry = entry.with_context(|| {
+                let entry = match entry.with_context(|| {
                     format!(
                         "cannot read Xcode support directory {}",
                         directory.display()
                     )
-                })?;
+                }) {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        unread.push(UnreadFolder::new(&directory, &error));
+                        break;
+                    }
+                };
                 // Only a real directory is a symbol or build tree. Finder's
                 // `.DS_Store` sits beside them, and a symlink child would lend
                 // this category's authority to whatever it names.
-                let file_type = entry.file_type().with_context(|| {
+                let file_type = match entry.file_type().with_context(|| {
                     format!(
                         "cannot inspect Xcode support entry {}",
                         entry.path().display()
                     )
-                })?;
+                }) {
+                    Ok(file_type) => file_type,
+                    Err(error) => {
+                        unread.push(UnreadFolder::new(&entry.path(), &error));
+                        continue;
+                    }
+                };
                 if !file_type.is_dir() {
                     continue;
                 }
@@ -124,39 +171,14 @@ impl Xcode {
                         }
                     }
                 }
-                if *label == "DerivedData" && is_package_folder(&path)? {
-                    let folder = path.file_name().unwrap_or_default().to_string_lossy();
-                    let package_note =
-                        format!("{note}. SwiftPM package checkouts here are Git clones and stay");
-                    for child in package_folder_children(&path)? {
-                        let size = dir_size(&child)?;
-                        findings.push(Finding::new(
-                            format!(
-                                "{label}: {folder}/{}",
-                                child.file_name().unwrap_or_default().to_string_lossy()
-                            ),
-                            Some(child),
-                            size,
-                            package_note.clone(),
-                            escalate(4, size),
-                            Action::Trash,
-                        ));
-                    }
-                    continue;
+                match support_findings(label, note, &path) {
+                    Ok(offered) => findings.extend(offered),
+                    Err(error) => unread.push(UnreadFolder::new(&path, &error)),
                 }
-                let size = dir_size(&path)?;
-                findings.push(Finding::new(
-                    format!(
-                        "{label}: {}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    ),
-                    Some(path),
-                    size,
-                    *note,
-                    escalate(4, size),
-                    Action::Trash,
-                ));
             }
+        }
+        if !unread.is_empty() {
+            findings.push(unread_folders_finding("Xcode support folders", &unread));
         }
         if recent > 0 || open > 0 {
             ctx.diagnostic(
@@ -254,6 +276,45 @@ impl Xcode {
         }
         Ok(outcome)
     }
+}
+
+/// What one DeviceSupport or DerivedData folder offers: itself, or, for a
+/// DerivedData folder holding package checkouts, its directories but
+/// `SourcePackages`. Any failure to inspect or measure it offers none of it.
+fn support_findings(label: &str, note: &str, path: &Path) -> Result<Vec<Finding>> {
+    if label == "DerivedData" && is_package_folder(path)? {
+        let folder = path.file_name().unwrap_or_default().to_string_lossy();
+        let package_note =
+            format!("{note}. SwiftPM package checkouts here are Git clones and stay");
+        let mut findings = Vec::new();
+        for child in package_folder_children(path)? {
+            let size = dir_size(&child)?;
+            findings.push(Finding::new(
+                format!(
+                    "{label}: {folder}/{}",
+                    child.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                Some(child),
+                size,
+                package_note.clone(),
+                escalate(4, size),
+                Action::Trash,
+            ));
+        }
+        return Ok(findings);
+    }
+    let size = dir_size(path)?;
+    Ok(vec![Finding::new(
+        format!(
+            "{label}: {}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ),
+        Some(path.to_path_buf()),
+        size,
+        note,
+        escalate(4, size),
+        Action::Trash,
+    )])
 }
 
 /// Why a DerivedData folder is still in use while Xcode runs.
@@ -492,10 +553,15 @@ fn is_package_folder_child(path: &Path, derived_data: &Path) -> Result<bool> {
 }
 
 fn authorize_xcode_target(path: &Path, home: &Path) -> Result<XcodeTargetKind> {
-    let device_support = home.join("Library/Developer/Xcode/iOS DeviceSupport");
     let derived_data = home.join("Library/Developer/Xcode/DerivedData");
     refuse_package_checkouts(path, &derived_data)?;
-    let kind = if path.parent() == Some(device_support.as_path()) {
+    let device_support = TARGETS
+        .iter()
+        .filter(|(label, _, _)| *label != "DerivedData")
+        .any(|(_, relative, _)| {
+            path.parent() == Some(home.join("Library").join(relative).as_path())
+        });
+    let kind = if device_support {
         XcodeTargetKind::DeviceSupport
     } else if path.parent() == Some(derived_data.as_path())
         || is_package_folder_child(path, &derived_data)?

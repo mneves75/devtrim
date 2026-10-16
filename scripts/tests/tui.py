@@ -304,7 +304,7 @@ def verify_selection(binary):
     with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
         home = Path(directory).resolve()
         kept = home / ".cache" / "uv"
-        removed = home / ".cache" / "node"
+        removed = home / ".cache" / "node" / "corepack"
         for cache in (kept, removed):
             cache.mkdir(parents=True)
             (cache / "blob").write_bytes(b"x")
@@ -317,7 +317,7 @@ def verify_selection(binary):
             # into "1 of 2" emits one character; the detail line is drawn whole.
             session.wait_for("Left out of this plan")
             session.send(b"sa0\r")
-            session.wait_for_screen("permanently deleted node core cache")
+            session.wait_for_screen("permanently deleted Corepack package-manager cache")
             if not kept.exists():
                 raise AssertionError("a cache left out of the plan was deleted")
             if removed.exists():
@@ -337,7 +337,7 @@ def verify_action_keys_explain_themselves(binary):
         # the session can end with status 0.
         (home / "bin").mkdir()
         write_script(home / "bin" / "pgrep", "exit 1")
-        for name in ("uv", "node"):
+        for name in ("uv", "node/corepack"):
             cache = home / ".cache" / name
             cache.mkdir(parents=True)
             (cache / "blob").write_bytes(b"x")

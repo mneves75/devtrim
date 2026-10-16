@@ -410,8 +410,8 @@ CASES = (
     Case(
         name="agents/apply-namespace",
         relative_path="src/ops/agents.rs",
-        before="                authorize(target, ctx, release_context, mappings)?;\n",
-        after="                let _ = (release_context, mappings);\n",
+        before="                authorize(target, ctx, &extra, release_context, mappings)?;\n",
+        after="                let _ = (&extra, release_context, mappings);\n",
         tests=(
             "ops::agents::tests::the_retired_claude_trees_can_never_become_roots_again",
         ),
@@ -644,6 +644,16 @@ CASES = (
         after="                Err(error) => {\n                    outcome.fail(error);\n                    break;\n                }\n",
         tests=("ops::xcode::tests::a_refused_derived_data_folder_does_not_block_the_rest_of_the_plan",),
         marker="PV xcode/continue-past-refusal",
+    ),
+    Case(
+        name="xcode/unreadable-folder",
+        relative_path="src/ops/xcode.rs",
+        # One folder that cannot be measured fails the whole category again.
+        before="                    Err(error) => unread.push(UnreadFolder::new(&path, &error)),\n",
+        after="                    Err(error) => return Err(error),\n",
+        tests=("eval_an_unreadable_xcode_folder_blocks_only_itself",),
+        marker="PV eval/xcode-unreadable",
+        target="evals",
     ),
     Case(
         name="tui/selection-plan",
@@ -1118,8 +1128,8 @@ CASES = (
     Case(
         name="agents/retention-window",
         relative_path="src/ops/agents.rs",
-        before="history_details(&path, &ctx.home, ctx.retain_days)",
-        after="history_details(&path, &ctx.home, ctx.active_days)",
+        before="history_details(&path, &ctx.home, &extra, ctx.retain_days)",
+        after="history_details(&path, &ctx.home, &extra, ctx.active_days)",
         tests=("ops::agents::tests::history_follows_the_retention_window_not_the_project_window",),
         marker="PV agents/retention-window",
     ),
@@ -1295,10 +1305,50 @@ CASES = (
         name="eval/toolchains-drift",
         relative_path="src/ops/toolchains.rs",
         # Apply no longer rechecks that a toolchain is still unreferenced.
-        before="    if preserved.contains(&canonical) {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
-        after="    if preserved.is_empty() {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
+        before="    if references.linked.contains(&canonical) {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
+        after="    if references.linked.is_empty() {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
         tests=("eval_toolchains_apply_refuses_a_toolchain_referenced_after_preview",),
         marker="PV eval/toolchains-drift",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-scan",
+        relative_path="src/ops/toolchains.rs",
+        # swiftly's configuration is read but no listed toolchain is kept.
+        before="    let mut owned = BTreeMap::new();\n    for version in versions {\n",
+        after="    let mut owned = BTreeMap::new();\n    for version in versions.into_iter().take(0) {\n",
+        tests=("eval_toolchains_keeps_every_toolchain_swiftly_installed",),
+        marker="PV eval/toolchains-swiftly-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-apply",
+        relative_path="src/ops/toolchains.rs",
+        # Apply no longer refuses a toolchain swiftly lists.
+        before="    if let Some(owner) = references.swiftly.get(&(metadata.dev(), metadata.ino())) {\n        anyhow::bail!(",
+        after="    if let Some(owner) = references.swiftly.get(&(0, 0)) {\n        anyhow::bail!(",
+        tests=("eval_toolchains_apply_refuses_a_toolchain_swiftly_lists_after_preview",),
+        marker="PV eval/toolchains-swiftly-drift",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-unparsable",
+        relative_path="src/ops/toolchains.rs",
+        # A configuration that does not parse reads as swiftly owning nothing.
+        before="    let parsed: SwiftlyConfig = serde_json::from_slice(&contents)\n        .with_context(|| format!(\"cannot parse swiftly's configuration {}\", config.display()))?;\n",
+        after="    let Ok(parsed) = serde_json::from_slice::<SwiftlyConfig>(&contents) else {\n        return Ok(BTreeMap::new());\n    };\n",
+        tests=("eval_clean_toolchains_fails_closed_without_a_verifiable_latest",),
+        marker="PV eval/toolchains-closed-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-unmapped",
+        relative_path="src/ops/toolchains.rs",
+        # A version devtrim cannot name a folder for is skipped instead of refusing.
+        before="    anyhow::bail!(\"unrecognized swiftly toolchain version `{version}`\")\n",
+        after="    Ok(Vec::new())\n",
+        tests=("eval_clean_toolchains_fails_closed_without_a_verifiable_latest",),
+        marker="PV eval/toolchains-closed-plan",
         target="eval_system",
     ),
     Case(
@@ -1319,6 +1369,86 @@ CASES = (
         after="match current.get(udid).map(|_| &false) {",
         tests=("eval_simulators_apply_refuses_a_device_that_changed_after_preview",),
         marker="PV eval/simulators-recheck",
+        target="eval_system",
+    ),
+    Case(
+        name="agents/codex-homes-scan",
+        relative_path="src/ops/agents.rs",
+        # A configured Codex home is read but never judged.
+        before="    if relative.starts_with(CODEX_PREFIX) {\n",
+        after="    if false && relative.starts_with(CODEX_PREFIX) {\n",
+        tests=("eval_clean_agents_removes_only_regenerable_caches_and_stale_history",),
+        marker="PV eval/agents-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="agents/codex-homes-missing",
+        relative_path="src/safety.rs",
+        # A configured Codex home that does not exist is skipped instead of refused.
+        before="        let metadata = std::fs::symlink_metadata(&candidate).with_context(|| {\n            format!(\n                \"codex_homes entry `{entry}` is not an existing directory: {}\",\n                candidate.display()\n            )\n        })?;\n",
+        after="        let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {\n            continue;\n        };\n",
+        tests=("eval_a_malformed_codex_homes_setting_refuses_the_run",),
+        marker="PV eval/codex-homes-closed-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="agents/codex-homes-identity",
+        relative_path="src/safety.rs",
+        # `~/.codex` named through a link is judged a second time.
+        before="        if candidate == default || default_identity == Some((metadata.dev(), metadata.ino())) {\n",
+        after="        if candidate == default {\n",
+        tests=("eval_a_malformed_codex_homes_setting_refuses_the_run",),
+        marker="PV eval/codex-homes-closed-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="caches/gradle-running-scan",
+        relative_path="src/ops/caches.rs",
+        # A running Gradle no longer keeps its caches out of the preview.
+        before="        Ok(running) if running.is_empty() => {}\n",
+        after="        Ok(_) => {}\n",
+        tests=("eval_gradle_caches_are_kept_while_gradle_runs",),
+        marker="PV eval/gradle-running-scan",
+        target="eval_safety",
+    ),
+    Case(
+        name="caches/gradle-running-apply",
+        relative_path="src/ops/caches.rs",
+        # Apply no longer asks whether Gradle started after the preview.
+        before="                        if !running.is_empty() {\n",
+        after="                        if running.is_empty() && !running.is_empty() {\n",
+        tests=("eval_gradle_caches_are_kept_while_gradle_runs",),
+        marker="PV eval/gradle-running-apply",
+        target="eval_safety",
+    ),
+    Case(
+        name="caches/go-read-only",
+        relative_path="src/ops/caches.rs",
+        # A read-only module folder no longer refuses permanent removal.
+        before="        if entry.file_type().is_dir() && !writable(entry.path())? {\n",
+        after="        if entry.file_type().is_dir() && !writable(entry.path())? && false {\n",
+        tests=("eval_a_read_only_go_module_cache_is_refused_whole_for_permanent_removal",),
+        marker="PV eval/go-read-only",
+        target="eval_safety",
+    ),
+    Case(
+        name="caches/go-namespace",
+        relative_path="src/ops/caches.rs",
+        # Any folder inside the home `go` names becomes a module cache.
+        before="    if !(corroborated && inside_home) {\n",
+        after="    if !(corroborated || inside_home) {\n",
+        tests=("eval_a_folder_without_go_layout_is_never_a_module_cache",),
+        marker="PV eval/go-namespace",
+        target="eval_safety",
+    ),
+    Case(
+        name="simulators/no-simctl",
+        relative_path="src/ops/simulators.rs",
+        # Any simctl failure with exit 72 reads as a Mac without Xcode.
+        before="    (output.status.code() == Some(72)\n        && stderr.trim_start().starts_with(\n",
+        after="    (output.status.code() == Some(72)\n        && !stderr.trim_start().starts_with(\"(\") || stderr.trim_start().starts_with(\n",
+        tests=("eval_simulators_without_xcode_is_nothing_to_manage_not_an_error",),
+        marker="PV eval/simulators-no-xcode",
         target="eval_system",
     ),
     Case(

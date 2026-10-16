@@ -159,10 +159,16 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     let home = sandbox.path();
     sandbox.script("npm", "printf '%s\\n' \"$HOME/.npm\"");
     sandbox.script("brew", "printf '%s\\n' \"$HOME/Library/Caches/Homebrew\"");
+    // `go` must be asked with `GOTOOLCHAIN=local`, or a `go.mod` could make it
+    // download a toolchain.
+    sandbox.script(
+        "go",
+        "[ \"$*\" = 'env GOMODCACHE' ] && [ \"${GOTOOLCHAIN:-}\" = local ] || exit 3\nprintf '%s\\n' \"$HOME/go/pkg/mod\"",
+    );
     let targets: Vec<PathBuf> = [
         ".cache/huggingface/hub",
         ".cache/uv",
-        ".cache/node",
+        ".cache/node/corepack",
         ".bun/install/cache",
         ".cache/gh",
         ".cargo/registry/cache",
@@ -171,10 +177,14 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
         "Library/Caches/go-build",
         "Library/Caches/pnpm",
         "Library/Caches/org.swift.swiftpm",
+        "Library/Caches/CocoaPods",
         ".npm",
         // Homebrew's cache holds a Git clone, so it is offered as its other children.
         "Library/Caches/Homebrew/downloads",
         "Library/Caches/Homebrew/bootsnap",
+        ".gradle/caches",
+        ".gradle/wrapper/dists",
+        "go/pkg/mod",
     ]
     .iter()
     .map(|relative| home.join(relative))
@@ -186,18 +196,27 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     for relative in [
         ".cache/huggingface/token", // HF tokens and settings are never authority
         ".cache/huggingface/settings",
+        ".cache/node/compile-cache/entry", // only Corepack's child of `.cache/node` is listed
         "Library/pnpm/store/v10/index.json", // the pnpm store, unlike its metadata cache
         "Library/Caches/JetBrains/IDEA/LocalHistory/changes", // IDE system dir with LocalHistory
         "Library/Caches/deno/location_data/kv", // DENO_DIR holds KV databases
         "Library/Caches/ms-playwright-extra/x", // a neighbour sharing a listed prefix
         "Library/Caches/com.apple.Safari/x", // an unlisted Library cache
-        ".cargo/registry/index/x",           // cargo's index is not listed
+        ".cargo/registry/index/x",         // cargo's index is not listed
         ".cargo/bin/cargo",
         "Library/Caches/Homebrew/omlx--git/.git/HEAD", // a Homebrew Git clone stays
         "Library/Caches/Homebrew/omlx--git/README",
+        ".gradle/gradle.properties", // Gradle's configuration beside its caches
+        ".gradle/init.d/init.gradle",
+        ".gradle/daemon/9.8.1/registry.bin",
+        "go/bin/tool", // installed commands beside the module cache
     ] {
         write(&home.join(relative), "keep");
     }
+    write(
+        &home.join("go/pkg/mod/cache/download/example.com/m/@v/v1.0.0.zip"),
+        "module",
+    );
     let mut targets = targets;
     targets.sort();
     targets
@@ -296,7 +315,7 @@ fn eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview() {
     let sandbox = Sandbox::in_target("eval-drift");
     let home = sandbox.path();
     for relative in [
-        ".cache/node",
+        ".cache/node/corepack",
         ".cache/huggingface/hub",
         "Library/Caches/pip",
     ] {
@@ -310,9 +329,9 @@ fn eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview() {
         &home.join(".cache/gh/appeared.bin"),
         "appeared after preview",
     );
-    std::fs::remove_dir_all(home.join(".cache/node")).unwrap();
+    std::fs::remove_dir_all(home.join(".cache/node/corepack")).unwrap();
     write(
-        &home.join(".cache/node/payload.bin"),
+        &home.join(".cache/node/corepack/payload.bin"),
         "replaced after preview",
     );
 
@@ -326,7 +345,7 @@ fn eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview() {
         "PV eval/drift-new-target: a target found after the preview was removed:\n{output}"
     );
     assert_eq!(
-        std::fs::read_to_string(home.join(".cache/node/payload.bin"))
+        std::fs::read_to_string(home.join(".cache/node/corepack/payload.bin"))
             .ok()
             .as_deref(),
         Some("replaced after preview"),
@@ -954,6 +973,14 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
         &developer.join("iOS DeviceSupport/17.0 (21A329)/Symbols/dyld"),
         "symbols",
     );
+    let platforms = [
+        "watchOS DeviceSupport/Watch7,1 27.0 (24R5)",
+        "tvOS DeviceSupport/AppleTV14,1 27.0 (24J5)",
+        "visionOS DeviceSupport/RealityDevice14,1 27.0 (24N5)",
+    ];
+    for folder in platforms {
+        write(&developer.join(folder).join("Symbols/dyld"), "symbols");
+    }
     for folder in ["App-old", "App-held", "App-pkg"] {
         age(&derived.join(folder), 60);
     }
@@ -984,6 +1011,7 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
         derived.join("App-pkg/Index.noindex"),
         developer.join("iOS DeviceSupport/17.0 (21A329)"),
     ];
+    expected.extend(platforms.iter().map(|folder| developer.join(folder)));
     expected.sort();
     let pristine = Tree::snapshot(sandbox.path());
 
@@ -1016,6 +1044,60 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
     );
     assert!(apply.status.success(), "{document}");
     assert_journaled(&sandbox, "xcode", "shred", &expected);
+}
+
+/// Restores a folder's permissions when dropped, so a fixture made unreadable
+/// can still be removed after a failed assertion.
+struct Unreadable(PathBuf);
+
+impl Unreadable {
+    fn new(path: PathBuf) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
+    }
+}
+
+/// One DeviceSupport or DerivedData folder that cannot be read or measured
+/// offers nothing and is reported, so the run exits nonzero; every folder
+/// beside it is still offered. Xcode is idle (the default `pgrep` stub finds
+/// nothing), the state in which DerivedData folders are measured directly.
+#[test]
+fn eval_an_unreadable_xcode_folder_blocks_only_itself() {
+    let sandbox = Sandbox::in_target("eval-xcode-unreadable");
+    let developer = sandbox.path().join("Library/Developer/Xcode");
+    let offered = vec![
+        developer.join("DerivedData/App-readable"),
+        developer.join("iOS DeviceSupport/iPhone18,2 27.0 (24A437)"),
+    ];
+    for folder in &offered {
+        write(&folder.join("Symbols/file"), "regenerable");
+    }
+    let locked_child = developer.join("iOS DeviceSupport/iPhone17,1 26.0 (23A341)/locked");
+    write(&locked_child.join("file"), "unreadable");
+    let locked_folder = developer.join("DerivedData/App-locked");
+    write(&locked_folder.join("Build/file"), "unreadable");
+    let _child = Unreadable::new(locked_child);
+    let _folder = Unreadable::new(locked_folder);
+
+    let preview = run(&sandbox, &["clean", "xcode", "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        offered,
+        "PV eval/xcode-unreadable: an unreadable folder blocked the folders beside it"
+    );
+    assert!(
+        !preview.status.success(),
+        "an unreadable folder must fail the run: {document}"
+    );
 }
 
 // ---------- two windows: active_days and retain_days ----------

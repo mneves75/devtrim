@@ -385,12 +385,21 @@ fn eval_clean_toolchains_removes_only_unreferenced_toolchains() {
     assert_journaled(&sandbox, "toolchains", "shred", &targets);
 }
 
-/// Without a verifiable `swift-latest` nothing is offered and nothing removed:
-/// the category fails closed rather than guessing which toolchain is in use.
+/// Without a verifiable `swift-latest`, or with a swiftly configuration that
+/// cannot be read whole, nothing is offered and nothing removed: the category
+/// fails closed rather than guessing which toolchain is in use.
 #[test]
 fn eval_clean_toolchains_fails_closed_without_a_verifiable_latest() {
     type Break = fn(&Path);
-    let cases: [(&str, Break); 2] = [
+    let cases: [(&str, Break); 4] = [
+        ("unparsable swiftly configuration", |directory| {
+            let home = directory.ancestors().nth(3).unwrap();
+            swiftly_config(home, r#"{"installedToolchains": ["#);
+        }),
+        ("a swiftly version devtrim cannot map", |directory| {
+            let home = directory.ancestors().nth(3).unwrap();
+            swiftly_config(home, r#"{"installedToolchains": ["6.3.3-preview"]}"#);
+        }),
         ("missing swift-latest", |directory| {
             std::fs::remove_file(directory.join("swift-latest.xctoolchain")).unwrap();
         }),
@@ -493,6 +502,88 @@ fn eval_toolchains_apply_refuses_a_toolchain_referenced_after_preview() {
     );
     assert!(
         output.contains("became referenced after preview"),
+        "{output}"
+    );
+}
+
+/// swiftly's record of the toolchains it installed, in the fixture home.
+fn swiftly_config(home: &Path, contents: &str) {
+    write(&home.join(".swiftly/config.json"), contents);
+}
+
+/// swiftly selects the toolchain in use through its own configuration, not a
+/// symlink, so every toolchain it lists stays although no link names it: the
+/// one in use, and one swiftly 1.0 installed, which named `5.10.0`
+/// `swift-5.10-RELEASE`. The unreferenced swift.org toolchains are still offered.
+#[test]
+fn eval_toolchains_keeps_every_toolchain_swiftly_installed() {
+    let sandbox = Sandbox::in_target("eval-toolchains-swiftly");
+    let targets = toolchains_fixture(&sandbox);
+    let directory = sandbox.path().join("Library/Developer/Toolchains");
+    for name in [
+        "swift-6.3.3-RELEASE.xctoolchain",
+        "swift-5.10-RELEASE.xctoolchain",
+    ] {
+        write(&directory.join(name).join("usr/bin/swift"), "swiftly's");
+    }
+    swiftly_config(
+        sandbox.path(),
+        r#"{"installedToolchains": ["6.3.3", "5.10.0"], "inUse": "6.3.3", "version": "1.1.4"}"#,
+    );
+
+    let preview = run(&sandbox, &["clean", "toolchains", "--shred", "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        targets,
+        "PV eval/toolchains-swiftly-plan: a toolchain swiftly installed was offered"
+    );
+    assert!(preview.status.success(), "{document}");
+}
+
+/// Apply reads swiftly's configuration again: a toolchain swiftly lists after
+/// the preview is refused, not removed.
+#[test]
+fn eval_toolchains_apply_refuses_a_toolchain_swiftly_lists_after_preview() {
+    let sandbox = Sandbox::in_target("eval-toolchains-swiftly-drift");
+    let directory = sandbox.path().join("Library/Developer/Toolchains");
+    write(
+        &directory.join("swift-5.8-RELEASE.xctoolchain/usr/bin/swift"),
+        "previewed",
+    );
+    write(
+        &directory.join("swift-6.2-RELEASE.xctoolchain/usr/bin/swift"),
+        "latest",
+    );
+    symlink(
+        "swift-6.2-RELEASE.xctoolchain",
+        directory.join("swift-latest.xctoolchain"),
+    )
+    .unwrap();
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let (status, output) = drift_session(
+        &sandbox,
+        &["clean", "toolchains", "--apply", "--shred"],
+        || swiftly_config(sandbox.path(), r#"{"installedToolchains": ["5.8.0"]}"#),
+    );
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            scratch: vec![
+                sandbox.path().join(".swiftly"),
+                sandbox.path().join(".local/state/devtrim"),
+            ],
+            ..Allowed::default()
+        },
+        "PV eval/toolchains-swiftly-drift",
+    );
+    assert!(
+        !status.success(),
+        "the refusal must fail the run:\n{output}"
+    );
+    assert!(
+        output.contains("refusing a toolchain swiftly installed"),
         "{output}"
     );
 }
@@ -681,8 +772,44 @@ fn codex_release(releases: &Path, version: &str) -> PathBuf {
 /// window: agent history follows `retain_days` (30 unset), never that window.
 fn agents_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     let home = sandbox.path();
-    write(&home.join(".config/devtrim.toml"), "active_days = 1\n");
+    write(
+        &home.join(".config/devtrim.toml"),
+        "active_days = 1\ncodex_homes = [\"~/.codex-berlin\"]\n",
+    );
     let mut targets = Vec::new();
+
+    // A Codex home `codex_homes` names is judged exactly as `~/.codex` is.
+    for (relative, days) in [
+        (".codex-berlin/cache/catalog.json", 0),
+        (".codex-berlin/shell_snapshots/stale.sh", 400),
+        (".codex-berlin/archived_sessions/rollout-stale.jsonl", 400),
+        (".codex-berlin/sessions/2024/05/17/rollout-a.jsonl", 400),
+    ] {
+        write_aged(&home.join(relative), "berlin", days);
+    }
+    targets.extend(
+        [
+            ".codex-berlin/cache",
+            ".codex-berlin/shell_snapshots/stale.sh",
+            ".codex-berlin/archived_sessions/rollout-stale.jsonl",
+            ".codex-berlin/sessions/2024/05/17",
+        ]
+        .map(|relative| home.join(relative)),
+    );
+    let berlin = home.join(".codex-berlin/packages/standalone");
+    let berlin_old = codex_release(&berlin.join("releases"), "0.155.1");
+    let berlin_current = codex_release(&berlin.join("releases"), "0.156.1");
+    write(&berlin.join("install.lock"), "");
+    symlink(&berlin_current, berlin.join("current")).unwrap();
+    targets.push(berlin_old);
+    for relative in [
+        ".codex-berlin/auth.json", // credentials and configuration stay there too
+        ".codex-berlin/config.toml",
+        ".codex-other/cache/catalog.json", // a home no `codex_homes` entry names
+        ".codex-other/sessions/2024/05/17/rollout.jsonl",
+    ] {
+        write_aged(&home.join(relative), "keep", 400);
+    }
 
     for relative in [
         ".claude/cache",
@@ -818,6 +945,96 @@ fn eval_clean_agents_removes_only_regenerable_caches_and_stale_history() {
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
     assert_journaled(&sandbox, "agents", "shred", &targets);
+}
+
+/// A `codex_homes` setting that cannot be trusted whole fails the run before
+/// anything is offered: not a list of strings, a relative path, a folder that
+/// does not exist, a link, a file, `~/.codex` by spelling or by identity, or a
+/// folder inside it. A stale Codex cache in `~/.codex` is the control: the
+/// same fixture with no setting offers it.
+#[test]
+fn eval_a_malformed_codex_homes_setting_refuses_the_run() {
+    let cases = [
+        (
+            "not a list of strings",
+            r#"codex_homes = "~/.codex-berlin""#,
+        ),
+        ("a relative path", r#"codex_homes = [".codex-berlin"]"#),
+        (
+            "a folder that does not exist",
+            r#"codex_homes = ["~/.codex-missing"]"#,
+        ),
+        ("a link", r#"codex_homes = ["~/.codex-link"]"#),
+        ("a file", r#"codex_homes = ["~/.codex-file"]"#),
+        ("`~/.codex` itself", r#"codex_homes = ["~/.codex"]"#),
+        (
+            "`~/.codex` by identity",
+            r#"codex_homes = ["~/codex-real"]"#,
+        ),
+        (
+            "a folder inside `~/.codex`",
+            r#"codex_homes = ["~/.codex/profile"]"#,
+        ),
+    ];
+    let fixture = |name: &str, setting: &str| {
+        let sandbox = Sandbox::in_target(name);
+        let home = sandbox.path();
+        write(&home.join(".codex/cache/catalog.json"), "regenerable");
+        write(&home.join("codex-real/cache/catalog.json"), "regenerable");
+        write(
+            &home.join(".codex/profile/cache/catalog.json"),
+            "regenerable",
+        );
+        write(
+            &home.join(".codex-berlin/cache/catalog.json"),
+            "regenerable",
+        );
+        write(&home.join(".codex-file"), "not a folder");
+        symlink(home.join(".codex-berlin"), home.join(".codex-link")).unwrap();
+        write(&home.join(".config/devtrim.toml"), setting);
+        sandbox
+    };
+    let control = fixture("eval-codex-homes-control", "");
+    let preview = run(&control, &["clean", "agents", "--json"]);
+    assert!(preview.status.success(), "{}", json(&preview));
+    assert!(!actionable_targets(&json(&preview)).is_empty());
+
+    for (name, setting) in cases {
+        let sandbox = fixture("eval-codex-homes-closed", setting);
+        // `~/.codex` is a link to `~/codex-real` only in its own case.
+        if name == "`~/.codex` by identity" {
+            std::fs::rename(
+                sandbox.path().join(".codex"),
+                sandbox.path().join("codex-old"),
+            )
+            .unwrap();
+            symlink(
+                sandbox.path().join("codex-real"),
+                sandbox.path().join(".codex"),
+            )
+            .unwrap();
+        }
+        let pristine = Tree::snapshot(sandbox.path());
+        let preview = run(&sandbox, &["clean", "agents", "--json"]);
+        assert!(
+            !preview.status.success(),
+            "PV eval/codex-homes-closed-plan: {name} was accepted: {}",
+            String::from_utf8_lossy(&preview.stdout)
+        );
+        let apply = run(
+            &sandbox,
+            &["clean", "agents", "--apply", "--shred", "--yolo", "--json"],
+        );
+        assert!(!apply.status.success(), "{name}");
+        pristine.assert_only(
+            &Tree::snapshot(sandbox.path()),
+            &Allowed {
+                scratch: vec![sandbox.path().join(".local/state/devtrim")],
+                ..Allowed::default()
+            },
+            "PV eval/codex-homes-closed-apply",
+        );
+    }
 }
 
 // ---------- clean simulators ----------
@@ -1028,6 +1245,51 @@ fn eval_simulators_apply_refuses_a_device_that_changed_after_preview() {
         assert!(error_text(&document).contains(message), "{document}");
         assert_eq!(document["summary"]["items_touched"], 0);
         assert_no_attempts(&sandbox);
+    }
+}
+
+/// A Mac with the Command Line Tools but no Xcode has no `simctl`, and one with
+/// no developer tools has no developer directory; Apple's `xcrun` shim answers
+/// each with its own error. Those two answers mean nothing to manage, not a
+/// failure, so a scan stays clean there. Any other `simctl` failure still fails
+/// the category.
+#[test]
+fn eval_simulators_without_xcode_is_nothing_to_manage_not_an_error() {
+    let cases = [
+        (
+            "Command Line Tools without Xcode",
+            r#"case "$1" in
+  --version) printf 'xcrun version 72.\n' ;;
+  *) printf '%s\n' 'xcrun: error: unable to find utility "simctl", not a developer tool or in PATH' >&2; exit 72 ;;
+esac"#,
+            true,
+        ),
+        (
+            "no developer tools",
+            r#"printf '%s\n' 'xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), missing xcrun at: /Library/Developer/CommandLineTools/usr/bin/xcrun' >&2
+exit 1"#,
+            true,
+        ),
+        (
+            "simctl failing for another reason",
+            r#"case "$1" in
+  --version) printf 'xcrun version 72.\n' ;;
+  *) printf '%s\n' 'An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=60)' >&2; exit 72 ;;
+esac"#,
+            false,
+        ),
+    ];
+    for (name, xcrun, nothing_to_manage) in cases {
+        let sandbox = Sandbox::new("eval-simulators-no-xcode");
+        sandbox.script("xcrun", xcrun);
+        let preview = run(&sandbox, &["clean", "simulators", "--json"]);
+        let document = json(&preview);
+        assert_eq!(
+            preview.status.success(),
+            nothing_to_manage,
+            "PV eval/simulators-no-xcode: {name}: {document}"
+        );
+        assert!(planned_paths(&document).is_empty(), "{name}: {document}");
     }
 }
 

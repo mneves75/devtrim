@@ -59,7 +59,13 @@ Non-negotiable boundaries:
   cache paths; its history tier offers only children at exactly the configured
   depth below a configured root, and only once the newest regular file in the
   subtree is older than the retention window (`retain_days`). Apply re-reads that age from disk,
-  so a session resumed after preview is refused rather than deleted.
+  so a session resumed after preview is refused rather than deleted. Every
+  Codex entry, the release authority included, also applies to each folder
+  `codex_homes` names, and to no other: an entry must be an absolute, existing,
+  real directory inside the home folder reached through no link, neither
+  `~/.codex` by spelling or identity nor inside or around it or another entry,
+  or every command refuses to run; `agents` reads the setting again at scan and
+  at apply, and one it cannot read withholds only the homes it adds.
 - Codex standalone cleanup considers only installer-shaped direct children of
   `packages/standalone/releases` whose major/minor/patch version is strictly
   below the verified `current` symlink target. The package manifest, expected
@@ -91,7 +97,10 @@ Non-negotiable boundaries:
   background-session supervisor's live state, with a `pins.json` beside it
   recording which sessions are kept alive while idle. A closed category that
   must consult a liveness signal to stay safe has gone one directory too far.
-- Unknown Git activity or toolchain ownership is not deletion authority.
+- Unknown Git activity or toolchain ownership is not deletion authority. A
+  Swift toolchain swiftly lists as installed or in use is never a target,
+  at scan and again at apply; a swiftly configuration that cannot be read,
+  parsed or mapped to toolchain folders refuses the whole category.
 - Reading a scanned repository's activity or tracked files runs no program it
   configures. Both queries set fixed `-c` overrides for hooks and fsmonitor,
   pass `--no-lazy-fetch` and `--no-pager`, and clear repository-selection and
@@ -235,7 +244,7 @@ Non-negotiable boundaries:
 - The TUI accepts no CLI confirmation bypass. It runs each scan and apply on a worker thread and drops every key typed meanwhile except a quit, then discards input still queued when the result is drawn, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
 - TUI selection can only narrow a plan. The approved plan is the displayed findings minus those the operator left out; danger and the typed confirmation are computed over that subset, the confirmation states how many findings it covers and how many were left out, and a selection change invalidates an earlier approval. Read-only results and non-actionable rows cannot be selected. Each row shows the action and danger the current Trash or permanent mode gives it, through the same policy the plan uses.
 - `purge` adds no deletion authority. It is the `node-modules` and `artifacts` scanners in one plan, and each finding is applied by its own category, which reasserts its exact target shape, staleness and build liveness; a finding routed to the other category is refused.
-- Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
+- Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time. The Go module cache `go env GOMODCACHE` reports (asked with `GOTOOLCHAIN=local`, so no toolchain is downloaded) must lie inside the home folder and hold Go's `cache/download`, and `go` is asked again at apply. Go keeps the cache read-only, so a permanent removal is refused before anything changes when any folder in it is read-only, and a move to the Trash when the cache folder itself is. Gradle's `caches` and `wrapper/dists` under `GRADLE_USER_HOME`, which must be absolute and inside the home folder, are refused at scan and at each apply while a Gradle process runs (`pgrep -a -f` for the daemon, a daemon-less build and the Wrapper); a probe that fails refuses them.
 - Hugging Face cleanup is limited to `~/.cache/huggingface/hub`. Its parent contains authentication and other state and is never an authorized built-in cache target. A real-binary regression requires model data to be removed while synthetic tokens and settings survive.
 - Complete human-facing actions, findings, errors, outcome notes, and command-line parse errors (which quote argv) escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values and JSON retains its original data.
 - Failed or partial work returns nonzero; successful earlier actions remain visible in the summary.
@@ -409,7 +418,7 @@ Non-negotiable boundaries:
   `no-unbounded-subprocess` ast-grep rule: standard input is null, both output
   streams are drained while it runs, and past its limit the child is killed and
   reaped and the call fails with `TimedOut`, naming the program and the limit.
-  Limits: two minutes for Git, `simctl`, `docker`, `npm` and `brew` queries;
+  Limits: two minutes for Git, `simctl`, `docker`, `npm`, `brew` and `go` queries;
   three for the `pgrep` and `lsof` probes (the observed 16 s scaled linearly to
   the worst observed load, about 50 s, with a margin of more than three);
   fifteen for the typed Docker, simulator and maintenance commands an apply

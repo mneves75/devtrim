@@ -206,12 +206,12 @@ fn one_unreadable_cache_does_not_fail_the_caches_category() {
     let sandbox = Sandbox::in_target("caches-unreadable");
     let home = sandbox.path().canonicalize().unwrap();
     let before = home.join(".cache/huggingface/hub");
-    let broken = home.join(".cache/node");
+    let broken = home.join(".cache/node/corepack");
     let after = home.join(".cache/gh");
     for cache in [&before, &broken, &after] {
         support::write(&cache.join("entry"), "cached");
     }
-    let locked = Unreadable::new(broken.join("corepack"));
+    let locked = Unreadable::new(broken.join("v1"));
 
     let output = run(&sandbox, &["clean", "caches", "--json"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -815,7 +815,11 @@ fn an_interrupt_with_a_full_unread_stderr_still_exits_promptly_and_stops_deletin
     let home = sandbox.path().canonicalize().unwrap();
     // The first cache listed is large, so the signal lands while it is being
     // removed; the other two are small and must survive it.
-    let caches = [".cache/huggingface/hub", ".cache/node", ".cache/gh"];
+    let caches = [
+        ".cache/huggingface/hub",
+        ".cache/node/corepack",
+        ".cache/gh",
+    ];
     for directory in 0..40 {
         let folder = home.join(caches[0]).join(format!("d{directory}"));
         std::fs::create_dir_all(&folder).unwrap();
