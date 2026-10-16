@@ -1,6 +1,32 @@
 # Project Memory
 
-## Current production state (0.10.9)
+## Current production state (0.11.0)
+
+0.11.0 is the owner's 2026-10-16 request: a full source review, its fixes,
+what was missing, a test suite cut to the tests that guard something, docs,
+site and production. Story and evidence: `memory/2026-10-16.md`; review and
+gate evidence in `.scratch/review-014/`, security gate records in
+`.scratch/security-gate/d3e8691…/` (staging PASS, production WAIVED for SEC-21
+until 2026-11-30: the credential-compromise runbook goes into SECURITY.md in
+the next release).
+
+PR #37 squash-merged to `d3e86910c2e1e7e456af059709fccf871e631cf8` (tree
+`5ebe5047…`, the audited tree). Main CI `38949721395` passed. Immutable
+`v0.11.0-beta1` and stable `v0.11.0` both point at that commit; production
+reused the beta ZIP byte for byte (SHA-256
+`c12d1f898918c59108e9ac2edfa801da7a398de730fae3ce84352b4d2d3baf4f`, checked with
+`cmp`); attestations verify tag, source digest and a hosted runner, and a wrong
+digest fails. Homebrew tap `38d82f8`; `/opt/homebrew/bin/devtrim` is the sole
+binary, reports 0.11.0 and is byte-identical to the beta executable; the PTY TUI
+and read-only-view suites pass against the downloaded and the installed binary.
+A read-only live scan with the beta exits 0 with no errors (0.10.9 failed
+`node-modules` and `artifacts` on this Mac) and offers 20.75 GiB.
+
+Waived and not PASS: the 50 ms page-load budget (load p50 52–60 ms, LCP p50
+72–88 ms under load). The landing page links stable 0.11.0; `0.11.1` is the
+next Unreleased section.
+
+## Previous production state (0.10.9)
 
 Plan `plans/013-adversarial-review-fixes.md` scopes five confirmed fixes:
 absolute decoded build CWDs, complete bounded retained Trash ownership,

@@ -2,6 +2,8 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.11.1] - Unreleased
+
 ## [0.11.0] - 2026-10-16
 
 A full review of the source against this Mac's real state. The read-only scan

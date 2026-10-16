@@ -22,9 +22,9 @@
     <p class="pitch">See exactly what 40&nbsp;GB of caches costs before anything moves.
       Every action is previewed and scored 1–10 for danger. Filesystem cleanup lands
       in the Trash — recoverable until you say otherwise.</p>
-    <p class="badges">Free and open source · Apache-2.0 · macOS 13+ · latest release v0.10.9</p>
+    <p class="badges">Free and open source · Apache-2.0 · macOS 13+ · latest release v0.11.0</p>
     <div class="cta-row">
-      <a class="btn primary" href="#install">Download v0.10.9</a>
+      <a class="btn primary" href="#install">Download v0.11.0</a>
       <a class="btn ghost" href="MANUAL.html">Read the manual</a>
     </div>
     <figure class="hero-fig" data-reveal>
@@ -96,14 +96,14 @@
     <div class="feat-grid">
       <article data-reveal><h3><code>devtrim</code> / <code>tui</code></h3><p>Keyboard-first scan, preview, and confirmation with written risk labels. It reuses the same cleanup owners and rejects CLI bypass flags.</p></article>
       <article data-reveal><h3><code>scan</code></h3><p>Read-only report with estimated logical sizes, danger levels, and one-document JSON output for agents.</p></article>
-      <article data-reveal><h3><code>caches</code></h3><p>Hugging Face models, npm, Homebrew, uv, bun, cargo, Node, the GitHub CLI and a closed list of editor and toolchain caches. Regenerated on demand — devtrim tells you the bandwidth cost instead of deciding.</p></article>
+      <article data-reveal><h3><code>caches</code></h3><p>Hugging Face models, npm, Homebrew, uv, bun, cargo, Corepack, Gradle, Go modules, CocoaPods, the GitHub CLI and a closed list of editor and toolchain caches. Regenerated on demand — devtrim tells you the bandwidth cost instead of deciding.</p></article>
       <article data-reveal><h3><code>node-modules</code></h3><p>Applies exact previewed paths only when Git activity is conclusively older than 30 days. Unknown state is refused.</p></article>
       <article data-reveal><h3><code>artifacts</code></h3><p>Rust targets, virtualenvs, Pods, Gradle, Next.js, Turbo and Parcel caches — only with ecosystem corroboration, only in conclusively stale repos, never ambiguous names like <code>build</code> or <code>dist</code>.</p></article>
       <article data-reveal><h3><code>history</code></h3><p>Every apply is journaled write-ahead. Review what was attempted and what completed — interrupted applies are visible, not invisible.</p></article>
-      <article data-reveal><h3><code>xcode</code></h3><p>DeviceSupport symbols and DerivedData. Archives are always listed but never touched.</p></article>
+      <article data-reveal><h3><code>xcode</code></h3><p>iOS, watchOS, tvOS and visionOS DeviceSupport symbols and DerivedData. Archives are always listed but never touched.</p></article>
       <article data-reveal><h3><code>docker</code></h3><p>Unused images and build cache. Volumes are sacred — a volume may hold your live database.</p></article>
       <article data-reveal><h3><code>simulators</code></h3><p>Deletes devices whose runtime is gone. Confirmation flags never add an unpreviewed erase-all.</p></article>
-      <article data-reveal><h3><code>toolchains</code> + <code>leftovers</code></h3><p>Only provably unreferenced Swift toolchains are actionable; agent leftovers are report-only review hints.</p></article>
+      <article data-reveal><h3><code>toolchains</code> + <code>leftovers</code></h3><p>Only provably unreferenced Swift toolchains are actionable, never one swiftly installed. Agent leftovers, ignored <code>.scratch</code> folders and <code>devtrim worktrees</code> are report-only.</p></article>
       <article data-reveal><h3><code>icloud</code></h3><p>Large iCloud Drive files with logical and locally allocated sizes — a truthful storage inventory, not an upload-progress guess.</p></article>
     </div>
   </div>
@@ -126,14 +126,14 @@
 
 <section class="install" id="install" aria-labelledby="install-h">
   <div class="wrap">
-    <h2 id="install-h">Install v0.10.9.</h2>
+    <h2 id="install-h">Install v0.11.0.</h2>
     <div class="install-grid">
       <div data-reveal>
         <h3>Homebrew</h3>
         <pre tabindex="0"><code>brew install mneves75/devtrim/devtrim</code></pre>
         <p class="dim">Installs the attested release binary plus shell completions and the man page.</p>
-        <a class="btn primary big" href="https://github.com/mneves75/devtrim/releases/download/v0.10.9/devtrim-0.10.9-macos-arm64.zip">Download for Apple silicon</a>
-        <p class="dim mono">SHA-256 in <a href="https://github.com/mneves75/devtrim/releases/tag/v0.10.9">release assets</a>. Verify before running:</p>
+        <a class="btn primary big" href="https://github.com/mneves75/devtrim/releases/download/v0.11.0/devtrim-0.11.0-macos-arm64.zip">Download for Apple silicon</a>
+        <p class="dim mono">SHA-256 in <a href="https://github.com/mneves75/devtrim/releases/tag/v0.11.0">release assets</a>. Verify before running:</p>
         <pre tabindex="0"><code>shasum -a 256 -c SHA256SUMS.txt
 gh attestation verify devtrim-*-macos-arm64.zip \
   --repo mneves75/devtrim \
@@ -167,10 +167,10 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
 
 <footer>
   <div class="wrap foot">
-    <span class="mono">devtrim v0.10.9</span>
+    <span class="mono">devtrim v0.11.0</span>
     <span><a href="https://github.com/mneves75/devtrim">GitHub</a></span>
     <span><a href="MANUAL.html">Manual</a></span>
-    <span><a href="https://github.com/mneves75/devtrim/releases/tag/v0.10.9">Releases</a></span>
+    <span><a href="https://github.com/mneves75/devtrim/releases/tag/v0.11.0">Releases</a></span>
     <span class="dim">Apache-2.0</span>
   </div>
 </footer>
