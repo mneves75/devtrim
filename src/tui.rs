@@ -271,12 +271,16 @@ impl App {
             .any(|finding| finding.action.is_actionable())
     }
 
+    /// Whether `s` acts. Turning permanent mode on needs a selected item that
+    /// moves to Trash; turning it off always works, so leaving every such item
+    /// out never strands the operator in permanent mode.
     fn can_toggle_shred(&self) -> bool {
-        matches!(self.operation, Some(Operation::Clean(_) | Operation::Purge))
-            && self
-                .selected_findings()
-                .iter()
-                .any(|finding| finding.action == Action::Trash)
+        self.shred
+            || matches!(self.operation, Some(Operation::Clean(_) | Operation::Purge))
+                && self
+                    .selected_findings()
+                    .iter()
+                    .any(|finding| finding.action == Action::Trash)
     }
 
     /// Whether the finding at `index` is a choice the operator can make: only
@@ -412,6 +416,7 @@ impl App {
             KeyCode::Char(' ') if !self.is_selectable(self.cursor) => {
                 "This row is a report; Space leaves out only items that apply."
             }
+            KeyCode::Char('s') if self.can_toggle_shred() => return None,
             KeyCode::Char('s') if operation == Operation::TrashEmpty => {
                 "Emptying the Trash is already permanent."
             }
@@ -423,9 +428,7 @@ impl App {
             {
                 "Permanent mode does not apply: nothing here moves to Trash."
             }
-            KeyCode::Char('s') if !self.can_toggle_shred() => {
-                "Permanent mode needs a selected item that moves to Trash."
-            }
+            KeyCode::Char('s') => "Permanent mode needs a selected item that moves to Trash.",
             _ => return None,
         };
         Some(reason.into())
@@ -2321,6 +2324,16 @@ mod tests {
         restored.handle_key(key(KeyCode::Char('s')));
         restored.handle_key(key(KeyCode::Char('s')));
         assert!(!restored.shred);
+        // Leaving every Trash item out must not strand the view in permanent
+        // mode, where adding an item back would plan a permanent deletion.
+        let mut restored_with_nothing_selected = trash_plan();
+        restored_with_nothing_selected.handle_key(key(KeyCode::Char('s')));
+        restored_with_nothing_selected.handle_key(key(KeyCode::Char('A')));
+        restored_with_nothing_selected.handle_key(key(KeyCode::Char('s')));
+        assert!(
+            !restored_with_nothing_selected.shred,
+            "PV tui/shred-off: permanent mode cannot be turned off with nothing selected"
+        );
         // The statuses `A` and a Space on a report row leave behind.
         let mut all_left_out = trash_plan();
         all_left_out.handle_key(key(KeyCode::Char('A')));
@@ -2338,6 +2351,7 @@ mod tests {
             nothing_selected,
             permanent,
             restored,
+            restored_with_nothing_selected,
             all_left_out,
             report_row,
         ] {
