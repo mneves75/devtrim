@@ -337,8 +337,8 @@ CASES = (
     Case(
         name="eval/safety-noninteractive",
         relative_path="src/safety.rs",
-        before='        bail!("non-interactive run: re-run with -y to confirm danger-{max_danger} operations");\n',
-        after="        return Ok(());\n",
+        before='                bail!(\n                    "non-interactive run: re-run with -y to confirm danger-{max_danger} operations"\n                )\n',
+        after="                return Ok(())\n",
         tests=("eval_noninteractive_apply_requires_explicit_consent",),
         marker="PV eval/noninteractive-consent", target="eval_safety",
     ),
