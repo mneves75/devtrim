@@ -217,6 +217,14 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
         &home.join("go/pkg/mod/cache/download/example.com/m/@v/v1.0.0.zip"),
         "module",
     );
+    write(
+        &home.join(".gradle/caches/modules-2/files-2.1/x.jar"),
+        "module",
+    );
+    write(
+        &home.join(".gradle/wrapper/dists/gradle-9.8.1-bin/a1b2/gradle-9.8.1-bin.zip"),
+        "distribution",
+    );
     let mut targets = targets;
     targets.sort();
     targets

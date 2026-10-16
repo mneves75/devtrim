@@ -11,7 +11,7 @@
 mod support;
 
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use support::{Allowed, Sandbox, Tree, actionable_targets, assert_journaled, json, run, write};
 
 fn cache(sandbox: &Sandbox, relative: &str) -> PathBuf {
@@ -234,6 +234,69 @@ fn eval_busy_uv_cache_is_kept_while_later_caches_are_removed() {
 /// the build-process probe.
 const GRADLE_RUNNING: &str = "case \"$*\" in *GradleDaemon*) printf '4242\\n' ;; *) exit 1 ;; esac";
 
+/// `GRADLE_USER_HOME` alone never makes a folder a Gradle cache: one pointed
+/// inside a Git repository offers nothing, and a Gradle home whose folders lack
+/// Gradle's layout offers nothing either. The control is the same folders
+/// with Gradle's layout under `~/.gradle`.
+#[test]
+fn eval_gradle_caches_need_gradle_and_no_repository() {
+    let sandbox = Sandbox::in_target("eval-gradle-authority");
+    let home = sandbox.path().canonicalize().unwrap();
+    let app = home.join("dev/app");
+    write(&app.join(".git/HEAD"), "ref: refs/heads/main\n");
+    for folder in [app.join("caches"), home.join(".gradle/caches")] {
+        write(&folder.join("modules-2/files-2.1/x.jar"), "module");
+    }
+    let lookalike = home.join("look/caches");
+    write(
+        &lookalike.join("notes.txt"),
+        "a folder that only shares the name",
+    );
+    let with_gradle_home = |gradle: Option<&Path>, args: &[&str]| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"));
+        command
+            .args(args)
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", sandbox.bin());
+        if let Some(gradle) = gradle {
+            command.env("GRADLE_USER_HOME", gradle);
+        }
+        command.output().unwrap()
+    };
+    let control = json(&with_gradle_home(None, &["clean", "caches", "--json"]));
+    assert_eq!(
+        actionable_targets(&control),
+        vec![home.join(".gradle/caches")],
+        "{control}"
+    );
+    for gradle in [app.as_path(), lookalike.parent().unwrap()] {
+        let pristine = Tree::snapshot(&home);
+        let preview = json(&with_gradle_home(
+            Some(gradle),
+            &["clean", "caches", "--json"],
+        ));
+        let apply = json(&with_gradle_home(
+            Some(gradle),
+            &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+        ));
+        assert_eq!(
+            actionable_targets(&preview),
+            Vec::<PathBuf>::new(),
+            "PV eval/gradle-authority: {} was offered on GRADLE_USER_HOME alone: {preview}",
+            gradle.display()
+        );
+        pristine.assert_only(
+            &Tree::snapshot(&home),
+            &Allowed {
+                removed: Vec::new(),
+                scratch: vec![home.join(".local/state/devtrim")],
+            },
+            &format!("gradle authority {apply}"),
+        );
+    }
+}
+
 /// Gradle locks its caches only among its own processes, so they are kept
 /// while any Gradle process runs: left out of a preview taken then, and refused
 /// at apply when Gradle starts after the preview. The other caches still go.
@@ -241,6 +304,7 @@ const GRADLE_RUNNING: &str = "case \"$*\" in *GradleDaemon*) printf '4242\\n' ;;
 fn eval_gradle_caches_are_kept_while_gradle_runs() {
     let sandbox = Sandbox::in_target("eval-gradle-running");
     let gradle = cache(&sandbox, ".gradle/caches");
+    write(&gradle.join("modules-2/files-2.1/x.jar"), "module");
     let other = cache(&sandbox, ".cache/gh");
     sandbox.script("pgrep", GRADLE_RUNNING);
     let preview = run(&sandbox, &["clean", "caches", "--shred", "--json"]);

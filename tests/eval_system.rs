@@ -1778,12 +1778,11 @@ fn eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item() {
     assert!(!apply.status.success(), "{document}");
 }
 
-/// A Trash item holding a read-only folder (Go's module cache, moved there by
-/// `clean caches`) cannot be removed permanently without first changing its
-/// permissions, so it is refused whole, before anything is deleted, and the
-/// purge continues with the next item.
+/// A Trash item holding read-only folders the user owns (Go's module cache,
+/// which `clean caches` moves there) is purged whole: the confirmed purge
+/// gives each such folder its owner's write permission before emptying it.
 #[test]
-fn eval_trash_empty_refuses_a_read_only_tree_whole() {
+fn eval_trash_empty_purges_a_read_only_tree_it_owns() {
     use std::os::unix::fs::PermissionsExt;
     let sandbox = Sandbox::in_target("eval-trash-read-only");
     let trash = sandbox.path().join(".Trash");
@@ -1802,8 +1801,8 @@ fn eval_trash_empty_refuses_a_read_only_tree_whole() {
         &["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"],
     );
     let after = Tree::snapshot(sandbox.path());
-    // Whatever the run left (a red run leaves a half-removed tree under a
-    // quarantine name), make it removable for the sandbox's cleanup.
+    // A red run leaves a half-removed tree under a quarantine name; make it
+    // removable for the sandbox's cleanup.
     std::process::Command::new("/bin/chmod")
         .args(["-R", "u+w"])
         .arg(sandbox.path())
@@ -1813,13 +1812,12 @@ fn eval_trash_empty_refuses_a_read_only_tree_whole() {
     pristine.assert_only(
         &after,
         &Allowed {
-            removed: vec![other],
+            removed: vec![trash.join("a-mod"), other],
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
         "PV eval/trash-empty-read-only",
     );
-    assert!(!apply.status.success(), "{document}");
-    assert!(document.to_string().contains("not writable"), "{document}");
+    assert!(apply.status.success(), "{document}");
 }
 
 /// `--only-devtrim` offers only items whose identity the journal recorded for

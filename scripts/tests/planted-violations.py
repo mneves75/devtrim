@@ -71,11 +71,31 @@ class Case:
 
 CASES = (
     Case(
-        name="sink/read-only-tree",
+        name="caches/gradle-repository",
+        relative_path="src/ops/caches.rs",
+        # A Gradle user home inside a Git repository is judged a Gradle home.
+        before="    Ok(super::project::has_git_marker(gradle)?\n",
+        after="    Ok(false && super::project::has_git_marker(gradle)?\n",
+        tests=("eval_gradle_caches_need_gradle_and_no_repository",),
+        marker="PV eval/gradle-authority", target="eval_safety",
+    ),
+    Case(
+        name="caches/gradle-layout",
+        relative_path="src/ops/caches.rs",
+        # A folder that only shares Gradle's name is judged Gradle's cache.
+        before="        \"caches\" => real_directory(&path.join(\"modules-2\")),\n",
+        after="        \"caches\" => Ok(true),\n",
+        tests=("eval_gradle_caches_need_gradle_and_no_repository",),
+        marker="PV eval/gradle-authority", target="eval_safety",
+    ),
+    Case(
+        name="sink/trash-permission-repair",
         relative_path="src/ops/mod.rs",
-        before="    if require_writable {\n",
-        after="    if false {\n",
-        tests=("eval_trash_empty_refuses_a_read_only_tree_whole",),
+        # A confirmed Trash purge no longer gives a read-only folder its
+        # owner's write permission, so a trashed Go module cache stays.
+        before="    if writability != Writability::RepairOwned || removable_now(dir, path)? {\n",
+        after="    if true {\n",
+        tests=("eval_trash_empty_purges_a_read_only_tree_it_owns",),
         marker="PV eval/trash-empty-read-only", target="eval_system",
     ),
     Case(
@@ -1426,8 +1446,8 @@ CASES = (
         relative_path="src/ops/mod.rs",
         # The sink no longer refuses a tree with a read-only folder, so a Go
         # module cache is half removed by `clean caches --shred`.
-        before="    if require_writable {\n",
-        after="    if false {\n",
+        before="    if writability == Writability::Ignore || removable_now(dir, path)? {\n",
+        after="    if true {\n",
         tests=("eval_a_read_only_go_module_cache_is_refused_whole_for_permanent_removal",),
         marker="PV eval/go-read-only",
         target="eval_safety",

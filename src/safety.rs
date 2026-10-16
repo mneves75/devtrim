@@ -627,11 +627,21 @@ pub(crate) struct MarkerGrant {
     /// uv's empty `.git` in `sdists-v<N>`: granted while uv's cache lock on
     /// this exact root is held, or to a tree in the Trash, where no uv uses it.
     uv: bool,
+    /// Owner write and search permission added, through each folder's open
+    /// handle, to a read-only folder the current user owns, so a permanent
+    /// removal can delete its entries: granted only to a direct Trash child,
+    /// whose purge the operator confirmed by its size. Go leaves its module
+    /// cache read-only, and `clean caches` moves it to the Trash.
+    owned_permissions: bool,
 }
 
 impl MarkerGrant {
     pub(crate) fn uv(&self) -> bool {
         self.uv
+    }
+
+    pub(crate) fn owned_permissions(&self) -> bool {
+        self.owned_permissions
     }
 }
 
@@ -667,6 +677,7 @@ impl VerifiedTarget {
             );
         }
         self.markers.uv = true;
+        self.markers.owned_permissions = true;
         Ok(self)
     }
 }

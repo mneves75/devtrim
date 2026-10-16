@@ -122,6 +122,14 @@ Non-negotiable boundaries:
   Git runs only in folders the walk itself finds, never in a path because a listing named it. Neither report creates a
   finding with a target action, a deletion-list entry, a command authority or a
   journal record.
+- A permanent removal refuses, before removing anything, a tree holding a
+  folder without write and search permission, since it would otherwise stop
+  part-way. The one exception is a direct Trash child in `trash-empty`, whose
+  purge the operator confirmed by its size: the sink adds owner write and search
+  permission to such a folder the current user owns, through that folder's open
+  handle and just before emptying it, so a Go module cache moved to the Trash can
+  be purged; a folder owned by another user still refuses. This is the sink's
+  only permission change, and only on a tree it is about to delete.
 - Every directory deletion preflights foreign filesystem devices and Git
   repository/worktree markers at any depth before either Trash or permanent
   mutation. Git metadata matching is ASCII-case-insensitive, and permanent

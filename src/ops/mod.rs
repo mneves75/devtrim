@@ -490,6 +490,11 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
             // One reading of the rules serves the preflight and the removal
             // walk, so both apply the same marker rule to this tree.
             let rules = MarkerRules::new(&markers, &target_dir);
+            let writability = if markers.owned_permissions() {
+                Writability::RepairOwned
+            } else {
+                Writability::Require
+            };
             preflight_tree(
                 &target_dir,
                 deletion_device,
@@ -497,9 +502,10 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                 rules,
                 0,
                 GitMarkerScope::Strict,
-                true,
+                writability,
             )
             .context("permanent deletion preflight failed")?;
+            make_removable(&target_dir, &quarantine_path, writability)?;
             struct RemovalFrame {
                 dir: cap_std::fs::Dir,
                 path: PathBuf,
@@ -576,6 +582,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                             let names = directory_entry_names(&child, &child_path)?;
                             let scope = git_marker_scope(rules, child_depth, &name);
                             refuse_git_repository_root_names(&child, &names, &child_path, scope)?;
+                            make_removable(&child, &child_path, writability)?;
                             RemovalStep::Descend(RemovalFrame {
                                 dir: child,
                                 path: child_path,
@@ -847,7 +854,7 @@ fn preflight_same_device_tree(
         MarkerRules::new(markers, dir),
         0,
         GitMarkerScope::Strict,
-        false,
+        Writability::Ignore,
     )
 }
 
@@ -858,35 +865,12 @@ fn preflight_tree(
     rules: MarkerRules,
     depth: usize,
     scope: GitMarkerScope,
-    require_writable: bool,
+    writability: Writability,
 ) -> Result<()> {
     let root_identity = file_identity_for_dir(dir)
         .with_context(|| format!("cannot inspect open directory: {}", path.display()))?;
     ensure_same_device(root_identity, expected_device, path)?;
-    if require_writable {
-        // Removing an entry needs write and search permission on its folder.
-        // A tree with a folder that lacks them (Go makes its module cache
-        // read-only) would be refused part-way through, after the files
-        // before it were gone; refusing here restores it whole instead.
-        match rustix::fs::accessat(
-            dir,
-            ".",
-            rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK,
-            rustix::fs::AtFlags::empty(),
-        ) {
-            Ok(()) => {}
-            Err(rustix::io::Errno::ACCESS) => anyhow::bail!(
-                "{} is not writable, so it cannot be removed permanently without changing its \
-                 permissions; move it to the Trash instead",
-                path.display()
-            ),
-            Err(error) => {
-                return Err(std::io::Error::from(error)).with_context(|| {
-                    format!("cannot check whether {} is writable", path.display())
-                });
-            }
-        }
-    }
+    check_removable(dir, path, writability)?;
     let names = directory_entry_names(dir, path)?;
     refuse_git_repository_root_names(dir, &names, path, scope)?;
 
@@ -920,11 +904,87 @@ fn preflight_tree(
                 rules,
                 child_depth,
                 git_marker_scope(rules, child_depth, &name),
-                require_writable,
+                writability,
             )?;
         }
     }
     Ok(())
+}
+
+/// What a removal needs from each folder's permissions. Removing an entry
+/// needs write and search permission on its folder; a tree with a folder that
+/// lacks them would be refused part-way, after the files before it were gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Writability {
+    /// A move to the Trash renames the root alone.
+    Ignore,
+    /// A permanent removal refuses such a tree whole, before removing anything.
+    Require,
+    /// A granted Trash purge gives a folder the current user owns its owner's
+    /// write and search permission first ([`MarkerGrant::owned_permissions`]).
+    RepairOwned,
+}
+
+fn removable_now(dir: &cap_std::fs::Dir, path: &Path) -> Result<bool> {
+    match rustix::fs::accessat(
+        dir,
+        ".",
+        rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK,
+        rustix::fs::AtFlags::empty(),
+    ) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::ACCESS) => Ok(false),
+        Err(error) => Err(std::io::Error::from(error))
+            .with_context(|| format!("cannot check whether {} is writable", path.display())),
+    }
+}
+
+fn owned_by_current_user(dir: &cap_std::fs::Dir, path: &Path) -> Result<bool> {
+    let status = rustix::fs::fstat(dir)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot inspect the owner of {}", path.display()))?;
+    Ok(status.st_uid == rustix::process::geteuid().as_raw())
+}
+
+fn check_removable(dir: &cap_std::fs::Dir, path: &Path, writability: Writability) -> Result<()> {
+    if writability == Writability::Ignore || removable_now(dir, path)? {
+        return Ok(());
+    }
+    if writability == Writability::RepairOwned && owned_by_current_user(dir, path)? {
+        return Ok(());
+    }
+    let advice = if writability == Writability::RepairOwned {
+        "it belongs to another user"
+    } else {
+        "move it to the Trash instead; `devtrim trash-empty` purges it there"
+    };
+    anyhow::bail!(
+        "{} is not writable, so it cannot be removed permanently without changing its \
+         permissions; {advice}",
+        path.display()
+    )
+}
+
+/// Under [`Writability::RepairOwned`], adds owner write and search permission
+/// to a folder the preflight accepted, through its open handle, just before
+/// its entries are removed.
+fn make_removable(dir: &cap_std::fs::Dir, path: &Path, writability: Writability) -> Result<()> {
+    if writability != Writability::RepairOwned || removable_now(dir, path)? {
+        return Ok(());
+    }
+    if !owned_by_current_user(dir, path)? {
+        anyhow::bail!(
+            "{} is not writable and belongs to another user",
+            path.display()
+        );
+    }
+    let status = rustix::fs::fstat(dir)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot inspect {}", path.display()))?;
+    let mode = rustix::fs::Mode::from_raw_mode((status.st_mode & 0o7777) | 0o700);
+    rustix::fs::fchmod(dir, mode)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot make {} writable for its removal", path.display()))
 }
 
 fn next_quarantine_name(dir: &cap_std::fs::Dir) -> Result<PathBuf> {

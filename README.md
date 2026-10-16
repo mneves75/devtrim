@@ -370,14 +370,19 @@ the image and its size, which is the one state where the cost is invisible to
 
 `clean caches` offers Gradle's `caches` and `wrapper/dists` under
 `GRADLE_USER_HOME` (default `~/.gradle`), never that folder itself, which holds
-`gradle.properties` and `init.d`. Gradle locks those files only among its own
+`gradle.properties` and `init.d`, and only when each folder holds what Gradle
+writes there (`caches/modules-2`, or a `gradle-<version>-bin`/`-all`
+distribution) and the Gradle home is not inside a Git repository:
+`GRADLE_USER_HOME` alone never makes a folder a cache. Gradle locks those files only among its own
 processes, so while a Gradle daemon, build or Wrapper runs they are left out of
 the preview, and apply refuses them if Gradle started after it; `gradle --stop`
 ends the daemons. The Go module cache is the folder `go env GOMODCACHE` reports,
 offered only when it lies inside the home folder and holds Go's
 `cache/download`. Go keeps that cache read-only, so a move to the Trash works
-but `--shred` refuses it whole rather than stopping half-way; `go clean
--modcache` is Go's own way to delete it.
+but `--shred` refuses it whole rather than stopping half-way. Once it is in the
+Trash, `devtrim trash-empty` purges it: that confirmed purge gives a read-only
+folder you own its owner's write permission just before emptying it. `go clean
+-modcache` is Go's own way to delete it in place.
 
 `clean toolchains` keeps every toolchain swiftly installed. swiftly, the
 installer swift.org recommends on macOS, selects the toolchain in use through

@@ -188,9 +188,10 @@ impl Op for Caches {
                 let size = measured(&path, &mut unread);
                 if size > 0 {
                     let mut finding = cache_finding("Go module cache", path, size, 3);
-                    finding.note = "Go downloads modules again on next build; Go keeps the cache \
-                                    read-only, so permanent removal is refused and `go clean \
-                                    -modcache` is Go's own way to delete it"
+                    finding.note = "Go downloads modules again on next build; moved to the Trash, \
+                                    `devtrim trash-empty` frees it; Go keeps the cache read-only, \
+                                    so permanent removal in place is refused (`go clean -modcache` \
+                                    is Go's own way)"
                         .to_string();
                     findings.push(finding);
                 }
@@ -456,11 +457,57 @@ fn gradle_user_home(home: &Path) -> Result<Option<PathBuf>> {
 }
 
 fn is_gradle_cache(target: &Path, home: &Path) -> Result<bool> {
-    Ok(gradle_user_home(home)?.is_some_and(|gradle| {
-        GRADLE
-            .iter()
-            .any(|entry| target == gradle.join(entry.relative))
-    }))
+    let Some(gradle) = gradle_user_home(home)? else {
+        return Ok(false);
+    };
+    if gradle_home_in_repository(&gradle, home)? {
+        return Ok(false);
+    }
+    for entry in GRADLE {
+        if target == gradle.join(entry.relative) {
+            return holds_gradle_layout(entry.relative, target);
+        }
+    }
+    Ok(false)
+}
+
+/// A Gradle user home inside a Git repository holds the repository's data,
+/// not Gradle's: `GRADLE_USER_HOME` alone never makes a folder a cache.
+fn gradle_home_in_repository(gradle: &Path, home: &Path) -> Result<bool> {
+    Ok(super::project::has_git_marker(gradle)?
+        || super::project::owning_repo(gradle, home)?.is_some())
+}
+
+/// Whether one of Gradle's entries holds what Gradle writes there, per the
+/// Gradle 9.8.1 user-home layout (docs.gradle.org "Gradle User Home"):
+/// `caches/modules-2`, the shared dependency cache, and wrapper distributions
+/// named `gradle-<version>-bin` or `gradle-<version>-all` under
+/// `wrapper/dists`. A folder that only shares the name holds neither.
+fn holds_gradle_layout(relative: &str, path: &Path) -> Result<bool> {
+    let real_directory = |candidate: &Path| match std::fs::symlink_metadata(candidate) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("cannot inspect {}", candidate.display())),
+    };
+    match relative {
+        "caches" => real_directory(&path.join("modules-2")),
+        "wrapper/dists" => {
+            for entry in std::fs::read_dir(path)
+                .with_context(|| format!("cannot read {}", path.display()))?
+            {
+                let entry = entry.with_context(|| format!("cannot read {}", path.display()))?;
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let distribution = name.starts_with("gradle-")
+                    && (name.ends_with("-bin") || name.ends_with("-all"));
+                if distribution && real_directory(&entry.path())? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
 }
 
 /// Gradle's own JVM entry points, matched against the whole command line since
@@ -498,11 +545,29 @@ fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
         }
         Err(error) => return vec![not_judged("Gradle caches", &error)],
     };
+    match gradle_home_in_repository(&gradle, &ctx.home) {
+        Ok(false) => {}
+        Ok(true) => {
+            ctx.diagnostic(
+                "warn",
+                format!(
+                    "the Gradle user home {} is inside a Git repository; skipping Gradle's caches",
+                    gradle.display()
+                ),
+            );
+            return Vec::new();
+        }
+        Err(error) => return vec![not_judged("Gradle caches", &error)],
+    }
     let mut present = Vec::new();
     for entry in GRADLE {
         let path = gradle.join(entry.relative);
         match std::fs::symlink_metadata(&path) {
-            Ok(_) => present.push((entry.label, path)),
+            Ok(_) => match holds_gradle_layout(entry.relative, &path) {
+                Ok(true) => present.push((entry.label, path)),
+                Ok(false) => {}
+                Err(error) => unread.push(UnreadFolder::new(&path, &error)),
+            },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => unread.push(UnreadFolder::new(&path, &error.into())),
         }
