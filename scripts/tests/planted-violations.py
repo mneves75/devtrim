@@ -1338,6 +1338,16 @@ CASES = (
         target="eval_system",
     ),
     Case(
+        name="simulators/no-simctl",
+        relative_path="src/ops/simulators.rs",
+        # Any simctl failure with exit 72 reads as a Mac without Xcode.
+        before="    (output.status.code() == Some(72)\n        && stderr.trim_start().starts_with(\n",
+        after="    (output.status.code() == Some(72)\n        && !stderr.trim_start().starts_with(\"(\") || stderr.trim_start().starts_with(\n",
+        tests=("eval_simulators_without_xcode_is_nothing_to_manage_not_an_error",),
+        marker="PV eval/simulators-no-xcode",
+        target="eval_system",
+    ),
+    Case(
         name="eval/docker-volumes",
         relative_path="src/report.rs",
         # The build-cache command prunes volumes instead.

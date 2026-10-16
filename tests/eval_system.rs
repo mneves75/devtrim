@@ -1122,6 +1122,51 @@ fn eval_simulators_apply_refuses_a_device_that_changed_after_preview() {
     }
 }
 
+/// A Mac with the Command Line Tools but no Xcode has no `simctl`, and one with
+/// no developer tools has no developer directory; Apple's `xcrun` shim answers
+/// each with its own error. Those two answers mean nothing to manage, not a
+/// failure, so a scan stays clean there. Any other `simctl` failure still fails
+/// the category.
+#[test]
+fn eval_simulators_without_xcode_is_nothing_to_manage_not_an_error() {
+    let cases = [
+        (
+            "Command Line Tools without Xcode",
+            r#"case "$1" in
+  --version) printf 'xcrun version 72.\n' ;;
+  *) printf '%s\n' 'xcrun: error: unable to find utility "simctl", not a developer tool or in PATH' >&2; exit 72 ;;
+esac"#,
+            true,
+        ),
+        (
+            "no developer tools",
+            r#"printf '%s\n' 'xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), missing xcrun at: /Library/Developer/CommandLineTools/usr/bin/xcrun' >&2
+exit 1"#,
+            true,
+        ),
+        (
+            "simctl failing for another reason",
+            r#"case "$1" in
+  --version) printf 'xcrun version 72.\n' ;;
+  *) printf '%s\n' 'An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=60)' >&2; exit 72 ;;
+esac"#,
+            false,
+        ),
+    ];
+    for (name, xcrun, nothing_to_manage) in cases {
+        let sandbox = Sandbox::new("eval-simulators-no-xcode");
+        sandbox.script("xcrun", xcrun);
+        let preview = run(&sandbox, &["clean", "simulators", "--json"]);
+        let document = json(&preview);
+        assert_eq!(
+            preview.status.success(),
+            nothing_to_manage,
+            "PV eval/simulators-no-xcode: {name}: {document}"
+        );
+        assert!(planned_paths(&document).is_empty(), "{name}: {document}");
+    }
+}
+
 // ---------- clean docker ----------
 
 const DOCKER_HOST: &str = "unix:///var/run/docker.sock";

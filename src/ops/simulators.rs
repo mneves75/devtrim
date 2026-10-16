@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use super::{Action, ApplyOutcome, Finding, Op, command_stdout, dir_size, optional_command_stdout};
 use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
@@ -208,6 +208,36 @@ fn available_device_disclosure(output: &str, device_root: PathBuf, ctx: &Ctx) ->
     ))
 }
 
+/// Why `xcrun --version` says this Mac has no developer tools at all, or `None`
+/// for any other answer. `/usr/bin/xcrun` is a shim present on every Mac; with
+/// no developer directory selected, or one that does not exist, it exits 1 with
+/// one of these two errors (observed with Apple's shim and
+/// `DEVELOPER_DIR=/nonexistent`, and with the Command Line Tools removed). Only
+/// exactly these answers mean there is nothing to manage; any other failure
+/// still fails the category.
+fn no_developer_tools(output: &Output) -> Option<&'static str> {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim_start();
+    (output.status.code() == Some(1)
+        && (stderr.starts_with("xcrun: error: invalid active developer path")
+            || stderr.starts_with("xcrun: error: missing DEVELOPER_DIR path")))
+    .then_some("no developer tools are installed or selected (`xcrun` has no developer directory)")
+}
+
+/// Why `xcrun simctl` says there is no simulator tool, or `None` for any other
+/// answer. The Command Line Tools ship `xcrun` but not `simctl`, which only
+/// Xcode provides, and the shim then exits 72 with this error (observed with
+/// `DEVELOPER_DIR=/Library/Developer/CommandLineTools`). Any other failure of
+/// `simctl` still fails the category.
+fn no_simctl(output: &Output) -> Option<&'static str> {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    (output.status.code() == Some(72)
+        && stderr.trim_start().starts_with(
+            "xcrun: error: unable to find utility \"simctl\", not a developer tool or in PATH",
+        ))
+    .then_some("the selected developer tools have no `simctl`, which only Xcode provides")
+}
+
 /// The `YYYY-MM-DD` prefix of a simctl timestamp, if it has one.
 fn stamp_day(stamp: Option<&str>) -> Option<&str> {
     stamp.and_then(|stamp| stamp.get(..10))
@@ -223,19 +253,31 @@ impl Op for Simulators {
         ctx: &Ctx,
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
-        let Some(version) = optional_command_stdout(
-            Command::new("xcrun")
-                .arg("--version")
-                .output_within(QUERY_TIMEOUT),
-            "`xcrun --version`",
-        )?
-        else {
+        let version = Command::new("xcrun")
+            .arg("--version")
+            .output_within(QUERY_TIMEOUT);
+        if let Ok(output) = &version
+            && let Some(reason) = no_developer_tools(output)
+        {
+            ctx.diagnostic("info", format!("no simulators to manage: {reason}"));
+            return Ok(Vec::new());
+        }
+        let Some(version) = optional_command_stdout(version, "`xcrun --version`")? else {
             return Ok(Vec::new());
         };
         if version.trim().is_empty() {
             anyhow::bail!("`xcrun --version` returned empty output");
         }
-        let output = simctl(&["list", "devices", "--json"])?;
+        let list = Command::new("xcrun")
+            .args(["simctl", "list", "devices", "--json"])
+            .output_within(QUERY_TIMEOUT);
+        if let Ok(output) = &list
+            && let Some(reason) = no_simctl(output)
+        {
+            ctx.diagnostic("info", format!("no simulators to manage: {reason}"));
+            return Ok(Vec::new());
+        }
+        let output = command_stdout(list, "`xcrun simctl list devices --json`")?;
         findings_from_simctl(&output, ctx)
     }
 

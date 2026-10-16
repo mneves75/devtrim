@@ -90,7 +90,7 @@ devtrim purge --apply                     # move that exact plan to Trash after 
 devtrim clean caches --apply -y           # tool download caches (HF, uv, npm, brew, cargo, bun, gh, …)
 devtrim clean node-modules --apply -y     # exact paths in Git repos with no recent activity
 devtrim clean artifacts --apply -y        # corroborated build artifacts in stale Git repos
-devtrim clean simulators --apply -y       # delete exact previewed unavailable devices; working ones are only reported
+devtrim clean simulators --apply -y       # delete exact previewed unavailable devices; working ones are only reported; no Xcode, nothing to do
 devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData child directories; package checkouts stay
 devtrim clean docker --apply -y           # local daemon images + build cache; never volumes
 devtrim clean toolchains --apply -y       # only swift.org toolchains no symlink or swiftly references
