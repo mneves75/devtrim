@@ -458,8 +458,8 @@ CASES = (
     Case(
         name="liveness/lsof-successor",
         relative_path="src/safety.rs",
-        before="!later.complete || later.reported != successors",
-        after="false",
+        before="    if !answer.complete {\n",
+        after="    if false {\n",
         tests=("safety::tests::a_build_process_that_started_during_the_probe_is_looked_up_once",),
         marker="PV liveness/lsof-successor",
     ),

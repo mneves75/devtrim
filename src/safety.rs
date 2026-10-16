@@ -1487,43 +1487,64 @@ pub(crate) struct LsofCwds {
 ///
 /// The fresh `pgrep` can also show a build process that started after the
 /// first one — a build moving to its next step. Its directory was never looked
-/// up, so it is looked up once, and any gap in that second answer refuses
-/// rather than chasing a moving process list.
+/// up, so it is looked up, and that answer is judged by the same two rules. On
+/// the development machine (about 200 matching processes, load average 60–85)
+/// a successor exited before its own lookup in 1 probe of 10, and 40 probes
+/// settled within three lookups; a list still changing after
+/// `LIVENESS_LOOKUPS` refuses rather than chasing it.
 fn resolve_build_process_cwds(
     requested: &BTreeSet<u32>,
     lsof: LsofCwds,
-    running_now: impl FnOnce() -> Result<BTreeSet<u32>>,
-    cwds_of: impl FnOnce(&BTreeSet<u32>) -> Result<LsofCwds>,
+    mut running_now: impl FnMut() -> Result<BTreeSet<u32>>,
+    mut cwds_of: impl FnMut(&BTreeSet<u32>) -> Result<LsofCwds>,
 ) -> Result<Vec<PathBuf>> {
-    if let Some(unexpected) = lsof.reported.difference(requested).next() {
-        bail!("lsof reported process {unexpected}, which was not probed");
-    }
-    if lsof.complete {
-        return Ok(lsof.paths);
-    }
-    let unreported: BTreeSet<u32> = requested.difference(&lsof.reported).copied().collect();
-    if unreported.is_empty() {
-        bail!("lsof cwd probe exited with status 1 after reporting every process");
-    }
-    let running = running_now().context("cannot recheck the processes lsof did not report")?;
-    if let Some(pid) = unreported.intersection(&running).next() {
-        bail!("lsof could not read the working directory of running build process {pid}");
-    }
-    let mut paths = lsof.paths;
-    let successors: BTreeSet<u32> = running.difference(requested).copied().collect();
-    if !successors.is_empty() {
-        let later = cwds_of(&successors).context(
+    let mut asked = requested.clone();
+    let mut answer = lsof;
+    let mut reported = BTreeSet::new();
+    let mut paths = Vec::new();
+    for _ in 0..LIVENESS_LOOKUPS {
+        if let Some(unexpected) = answer.reported.difference(&asked).next() {
+            bail!("lsof reported process {unexpected}, which was not probed");
+        }
+        paths.append(&mut answer.paths);
+        reported.extend(answer.reported.iter().copied());
+        if answer.complete {
+            break;
+        }
+        let unreported: BTreeSet<u32> = asked.difference(&answer.reported).copied().collect();
+        if unreported.is_empty() {
+            bail!("lsof cwd probe exited with status 1 after reporting every process");
+        }
+        let running = running_now().context("cannot recheck the processes lsof did not report")?;
+        if let Some(pid) = unreported.intersection(&running).next() {
+            bail!("lsof could not read the working directory of running build process {pid}");
+        }
+        // A PID that was unreported and gone, then listed again, is a new
+        // process that took the number, so it is looked up like any other.
+        let successors: BTreeSet<u32> = running.difference(&reported).copied().collect();
+        if successors.is_empty() {
+            answer.complete = true;
+            break;
+        }
+        answer = cwds_of(&successors).context(
             "cannot read the working directories of build processes that started during the probe",
         )?;
-        if !later.complete || later.reported != successors {
-            bail!("build processes changed again while their working directories were read");
-        }
-        paths.extend(later.paths);
-        paths.sort();
-        paths.dedup();
+        asked = successors;
     }
+    if !answer.complete {
+        bail!(
+            "build processes kept changing while their working directories were read \
+             ({LIVENESS_LOOKUPS} lookups)"
+        );
+    }
+    paths.sort();
+    paths.dedup();
     Ok(paths)
 }
+
+/// `lsof` runs one probe may make before a process list that keeps changing
+/// refuses.
+const LIVENESS_LOOKUPS: usize = 5;
 
 /// Processes that write DerivedData: command-line builds, the Swift Build and
 /// legacy XCBuild services that Xcode.app builds run through (their parent is
@@ -2600,22 +2621,57 @@ mod tests {
             ]
         );
 
-        // The successor's directory could not be read, or it too vanished.
-        for (output, exit) in [(&b""[..], 1), (b"p56\nfcwd\nn/work/next-step\n", 1)] {
-            match resolve_build_process_cwds(
-                &pid_set(&[12, 34]),
-                lsof(),
-                || Ok(pid_set(&[12, 56])),
-                |_| parse_lsof_cwds(output, Some(exit)),
-            ) {
-                Ok(cwds) => panic!(
-                    "PV liveness/lsof-successor: accepted {cwds:?} without the successor's directory"
-                ),
-                Err(error) => assert!(
-                    error.to_string().contains("changed again"),
-                    "PV liveness/lsof-successor: {error:#}"
-                ),
-            }
+        // The successor exited before its own lookup, and the next recheck
+        // agrees: on a busy machine this is routine, and it runs no build.
+        let rechecks = std::cell::Cell::new(0);
+        let cwds = resolve_build_process_cwds(
+            &pid_set(&[12, 34]),
+            lsof(),
+            || {
+                rechecks.set(rechecks.get() + 1);
+                Ok(if rechecks.get() == 1 {
+                    pid_set(&[12, 56])
+                } else {
+                    pid_set(&[12])
+                })
+            },
+            |_| parse_lsof_cwds(b"", Some(1)),
+        )
+        .unwrap();
+        assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+
+        // The successor is still running but its directory could not be read.
+        let error = resolve_build_process_cwds(
+            &pid_set(&[12, 34]),
+            lsof(),
+            || Ok(pid_set(&[12, 56])),
+            |_| parse_lsof_cwds(b"", Some(1)),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("running build process 56"),
+            "{error:#}"
+        );
+
+        // Every recheck shows a new process that is gone before it is read: the
+        // list never settles, so some directory stays unknown.
+        let next_pid = std::cell::Cell::new(100);
+        match resolve_build_process_cwds(
+            &pid_set(&[12, 34]),
+            lsof(),
+            || {
+                next_pid.set(next_pid.get() + 1);
+                Ok(pid_set(&[12, next_pid.get()]))
+            },
+            |_| parse_lsof_cwds(b"", Some(1)),
+        ) {
+            Ok(cwds) => panic!(
+                "PV liveness/lsof-successor: accepted {cwds:?} from a list that never settled"
+            ),
+            Err(error) => assert!(
+                error.to_string().contains("kept changing"),
+                "PV liveness/lsof-successor: {error:#}"
+            ),
         }
 
         let error = resolve_build_process_cwds(

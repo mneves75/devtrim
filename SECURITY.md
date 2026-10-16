@@ -169,7 +169,8 @@ Non-negotiable boundaries:
   `lsof` exiting 1 is accepted only when every process it did not report is
   absent from a fresh `pgrep`, so a build that exited between the probes does
   not block while one it could not read still does; a build process first seen
-  in that recheck has its directory read once, and a gap there refuses. The
+  in that recheck has its directory read and judged by the same rule, up to
+  five `lsof` runs in all, and a list still changing after that refuses. The
   recheck compares PIDs, not process identities: a reported build that exits and
   whose PID a new build takes before the recheck keeps the first directory. That
   window is no wider than a build starting just after a clean probe, which no
