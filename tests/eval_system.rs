@@ -772,8 +772,44 @@ fn codex_release(releases: &Path, version: &str) -> PathBuf {
 /// window: agent history follows `retain_days` (30 unset), never that window.
 fn agents_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     let home = sandbox.path();
-    write(&home.join(".config/devtrim.toml"), "active_days = 1\n");
+    write(
+        &home.join(".config/devtrim.toml"),
+        "active_days = 1\ncodex_homes = [\"~/.codex-berlin\"]\n",
+    );
     let mut targets = Vec::new();
+
+    // A Codex home `codex_homes` names is judged exactly as `~/.codex` is.
+    for (relative, days) in [
+        (".codex-berlin/cache/catalog.json", 0),
+        (".codex-berlin/shell_snapshots/stale.sh", 400),
+        (".codex-berlin/archived_sessions/rollout-stale.jsonl", 400),
+        (".codex-berlin/sessions/2024/05/17/rollout-a.jsonl", 400),
+    ] {
+        write_aged(&home.join(relative), "berlin", days);
+    }
+    targets.extend(
+        [
+            ".codex-berlin/cache",
+            ".codex-berlin/shell_snapshots/stale.sh",
+            ".codex-berlin/archived_sessions/rollout-stale.jsonl",
+            ".codex-berlin/sessions/2024/05/17",
+        ]
+        .map(|relative| home.join(relative)),
+    );
+    let berlin = home.join(".codex-berlin/packages/standalone");
+    let berlin_old = codex_release(&berlin.join("releases"), "0.155.1");
+    let berlin_current = codex_release(&berlin.join("releases"), "0.156.1");
+    write(&berlin.join("install.lock"), "");
+    symlink(&berlin_current, berlin.join("current")).unwrap();
+    targets.push(berlin_old);
+    for relative in [
+        ".codex-berlin/auth.json", // credentials and configuration stay there too
+        ".codex-berlin/config.toml",
+        ".codex-other/cache/catalog.json", // a home no `codex_homes` entry names
+        ".codex-other/sessions/2024/05/17/rollout.jsonl",
+    ] {
+        write_aged(&home.join(relative), "keep", 400);
+    }
 
     for relative in [
         ".claude/cache",
@@ -909,6 +945,96 @@ fn eval_clean_agents_removes_only_regenerable_caches_and_stale_history() {
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
     assert_journaled(&sandbox, "agents", "shred", &targets);
+}
+
+/// A `codex_homes` setting that cannot be trusted whole fails the run before
+/// anything is offered: not a list of strings, a relative path, a folder that
+/// does not exist, a link, a file, `~/.codex` by spelling or by identity, or a
+/// folder inside it. A stale Codex cache in `~/.codex` is the control: the
+/// same fixture with no setting offers it.
+#[test]
+fn eval_a_malformed_codex_homes_setting_refuses_the_run() {
+    let cases = [
+        (
+            "not a list of strings",
+            r#"codex_homes = "~/.codex-berlin""#,
+        ),
+        ("a relative path", r#"codex_homes = [".codex-berlin"]"#),
+        (
+            "a folder that does not exist",
+            r#"codex_homes = ["~/.codex-missing"]"#,
+        ),
+        ("a link", r#"codex_homes = ["~/.codex-link"]"#),
+        ("a file", r#"codex_homes = ["~/.codex-file"]"#),
+        ("`~/.codex` itself", r#"codex_homes = ["~/.codex"]"#),
+        (
+            "`~/.codex` by identity",
+            r#"codex_homes = ["~/codex-real"]"#,
+        ),
+        (
+            "a folder inside `~/.codex`",
+            r#"codex_homes = ["~/.codex/profile"]"#,
+        ),
+    ];
+    let fixture = |name: &str, setting: &str| {
+        let sandbox = Sandbox::in_target(name);
+        let home = sandbox.path();
+        write(&home.join(".codex/cache/catalog.json"), "regenerable");
+        write(&home.join("codex-real/cache/catalog.json"), "regenerable");
+        write(
+            &home.join(".codex/profile/cache/catalog.json"),
+            "regenerable",
+        );
+        write(
+            &home.join(".codex-berlin/cache/catalog.json"),
+            "regenerable",
+        );
+        write(&home.join(".codex-file"), "not a folder");
+        symlink(home.join(".codex-berlin"), home.join(".codex-link")).unwrap();
+        write(&home.join(".config/devtrim.toml"), setting);
+        sandbox
+    };
+    let control = fixture("eval-codex-homes-control", "");
+    let preview = run(&control, &["clean", "agents", "--json"]);
+    assert!(preview.status.success(), "{}", json(&preview));
+    assert!(!actionable_targets(&json(&preview)).is_empty());
+
+    for (name, setting) in cases {
+        let sandbox = fixture("eval-codex-homes-closed", setting);
+        // `~/.codex` is a link to `~/codex-real` only in its own case.
+        if name == "`~/.codex` by identity" {
+            std::fs::rename(
+                sandbox.path().join(".codex"),
+                sandbox.path().join("codex-old"),
+            )
+            .unwrap();
+            symlink(
+                sandbox.path().join("codex-real"),
+                sandbox.path().join(".codex"),
+            )
+            .unwrap();
+        }
+        let pristine = Tree::snapshot(sandbox.path());
+        let preview = run(&sandbox, &["clean", "agents", "--json"]);
+        assert!(
+            !preview.status.success(),
+            "PV eval/codex-homes-closed: {name} was accepted: {}",
+            String::from_utf8_lossy(&preview.stdout)
+        );
+        let apply = run(
+            &sandbox,
+            &["clean", "agents", "--apply", "--shred", "--yolo", "--json"],
+        );
+        assert!(!apply.status.success(), "{name}");
+        pristine.assert_only(
+            &Tree::snapshot(sandbox.path()),
+            &Allowed {
+                scratch: vec![sandbox.path().join(".local/state/devtrim")],
+                ..Allowed::default()
+            },
+            "PV eval/codex-homes-closed-apply",
+        );
+    }
 }
 
 // ---------- clean simulators ----------

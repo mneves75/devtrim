@@ -394,8 +394,8 @@ CASES = (
     Case(
         name="agents/apply-namespace",
         relative_path="src/ops/agents.rs",
-        before="                authorize(target, ctx, release_context, mappings)?;\n",
-        after="                let _ = (release_context, mappings);\n",
+        before="                authorize(target, ctx, &extra, release_context, mappings)?;\n",
+        after="                let _ = (&extra, release_context, mappings);\n",
         tests=(
             "ops::agents::tests::the_retired_claude_trees_can_never_become_roots_again",
         ),
@@ -1104,8 +1104,8 @@ CASES = (
     Case(
         name="agents/retention-window",
         relative_path="src/ops/agents.rs",
-        before="history_details(&path, &ctx.home, ctx.retain_days)",
-        after="history_details(&path, &ctx.home, ctx.active_days)",
+        before="history_details(&path, &ctx.home, &extra, ctx.retain_days)",
+        after="history_details(&path, &ctx.home, &extra, ctx.active_days)",
         tests=("ops::agents::tests::history_follows_the_retention_window_not_the_project_window",),
         marker="PV agents/retention-window",
     ),
@@ -1345,6 +1345,36 @@ CASES = (
         after="match current.get(udid).map(|_| &false) {",
         tests=("eval_simulators_apply_refuses_a_device_that_changed_after_preview",),
         marker="PV eval/simulators-recheck",
+        target="eval_system",
+    ),
+    Case(
+        name="agents/codex-homes-scan",
+        relative_path="src/ops/agents.rs",
+        # A configured Codex home is read but never judged.
+        before="    if relative.starts_with(CODEX_PREFIX) {\n",
+        after="    if false && relative.starts_with(CODEX_PREFIX) {\n",
+        tests=("eval_clean_agents_removes_only_regenerable_caches_and_stale_history",),
+        marker="PV eval/agents-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="agents/codex-homes-missing",
+        relative_path="src/safety.rs",
+        # A configured Codex home that does not exist is skipped instead of refused.
+        before="        let metadata = std::fs::symlink_metadata(&candidate).with_context(|| {\n            format!(\n                \"codex_homes entry `{entry}` is not an existing directory: {}\",\n                candidate.display()\n            )\n        })?;\n",
+        after="        let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {\n            continue;\n        };\n",
+        tests=("eval_a_malformed_codex_homes_setting_refuses_the_run",),
+        marker="PV eval/codex-homes-closed",
+        target="eval_system",
+    ),
+    Case(
+        name="agents/codex-homes-identity",
+        relative_path="src/safety.rs",
+        # `~/.codex` named through a link is judged a second time.
+        before="        if candidate == default || default_identity == Some((metadata.dev(), metadata.ino())) {\n",
+        after="        if candidate == default {\n",
+        tests=("eval_a_malformed_codex_homes_setting_refuses_the_run",),
+        marker="PV eval/codex-homes-closed",
         target="eval_system",
     ),
     Case(

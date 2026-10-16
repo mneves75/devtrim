@@ -450,7 +450,20 @@ roots = ["~/dev", "~/sandbox"]    # scan roots (default: the project folders abo
 active_days = 30                  # project build output: repos with newer Git activity are active (0 means 1)
 retain_days = 30                  # agent history and installers: offered only after this many days untouched
 protect = ["~/dev/keep"]          # never delete these paths or their children
+codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by `agents` like ~/.codex
 ```
+
+`codex_homes` names additional Codex homes, folders Codex uses as its
+`CODEX_HOME`, for example one per account. `clean agents` applies every Codex
+entry to each of them exactly as to `~/.codex`: the catalog cache, the shell
+snapshots, session and archived-session history, and older standalone
+releases, at scan and again at apply, each finding labelled with its home.
+Nothing is inferred from a folder's name, so a home not listed is never
+touched. An entry must expand to an absolute path naming a real directory inside
+the home folder, reached through no link, that is neither `~/.codex` (by
+spelling or as the same folder) nor inside or around it or another entry;
+anything else, or a value that is not a list of strings, is a configuration
+error and the command refuses to run.
 
 `protect` entries expand `~`, must be absolute, and are enforced deny-only at
 the single deletion sink — a protected target is refused even if a scanner

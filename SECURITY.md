@@ -59,7 +59,13 @@ Non-negotiable boundaries:
   cache paths; its history tier offers only children at exactly the configured
   depth below a configured root, and only once the newest regular file in the
   subtree is older than the retention window (`retain_days`). Apply re-reads that age from disk,
-  so a session resumed after preview is refused rather than deleted.
+  so a session resumed after preview is refused rather than deleted. Every
+  Codex entry, the release authority included, also applies to each folder
+  `codex_homes` names, and to no other: an entry must be an absolute, existing,
+  real directory inside the home folder reached through no link, neither
+  `~/.codex` by spelling or identity nor inside or around it or another entry,
+  or every command refuses to run; `agents` reads the setting again at scan and
+  at apply, and one it cannot read withholds only the homes it adds.
 - Codex standalone cleanup considers only installer-shaped direct children of
   `packages/standalone/releases` whose major/minor/patch version is strictly
   below the verified `current` symlink target. The package manifest, expected
