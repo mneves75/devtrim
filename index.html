@@ -80,10 +80,10 @@
       </video>
       <ol class="transcript" id="demo-transcript">
         <li>Bare <code>devtrim</code> opens the Ratatui interface; every operation is labelled READ-ONLY, PREVIEW, or PERMANENT before you pick it.</li>
-        <li>Selecting <strong>Caches</strong> scans first — applying is a separate, explicit step.</li>
-        <li>The preview lists exact paths, danger scores, and sizes: 4 findings, 27.5 GB actionable, danger-3, TRASH-FIRST.</li>
-        <li>Pressing <kbd>a</kbd> raises the data-loss warning and asks to confirm that exact plan; <kbd>Esc</kbd> cancels.</li>
-        <li>The outcome reports what moved to Trash — recoverable from Finder until emptied.</li>
+        <li>Selecting <strong>Caches</strong> scans first, with a clock that shows the scan is alive; <kbd>q</kbd> stops it. Applying is a separate, explicit step.</li>
+        <li>The preview lists every finding on one row with its danger, size and path: TRASH-FIRST, 4 of 4 selected, 27.5 GB, danger-7. <kbd>Space</kbd> leaves one out; the details pane shows the highlighted path whole.</li>
+        <li>Pressing <kbd>a</kbd> raises the data-loss warning, states how many findings the plan covers, and asks to confirm that exact plan; <kbd>Esc</kbd> cancels.</li>
+        <li>The outcome reports what moved to Trash: recoverable from Finder until <code>devtrim trash-empty</code> frees the space.</li>
       </ol>
     </div>
   </div>

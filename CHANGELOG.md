@@ -4,6 +4,10 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [0.11.1] - Unreleased
 
+### Changed
+- The demo video shows the 0.11.0 interface: the Project purge entry, the scan clock that `q` stops, one row per finding with its selection box and the details pane, the plan count in the confirmation, and an outcome that says the Trash still holds the space until `devtrim trash-empty`. The landing page transcript describes it
+- Demo-video tooling: Remotion 4.0.532, React and react-dom 19.3.0 (Dependabot #33–#36). TypeScript stays at 5.9.3: 7.0.2 (#32) breaks `typescript-eslint` 8.71.1, which cannot load its new API
+
 ## [0.11.0] - 2026-10-16
 
 A full review of the source against this Mac's real state. The read-only scan

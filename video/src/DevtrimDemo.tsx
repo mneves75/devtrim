@@ -80,6 +80,7 @@ const MENU = [
   ["2", "Caches", "PREVIEW"],
   ["3", "node_modules", "PREVIEW"],
   ["4", "Build artifacts", "PREVIEW"],
+  ["p", "Project purge", "PREVIEW"],
   ["5", "Simulators", "PREVIEW"],
   ["6", "Xcode", "PREVIEW"],
   ["7", "Docker", "PREVIEW"],
@@ -98,12 +99,12 @@ const DETAIL: Record<number, string[]> = {
   0: [
     "Scan everything",
     "Read-only report across every cleanup category.",
-    "No mutation is available from this screen.",
+    "READ-ONLY: it reports and never changes anything.",
   ],
   1: [
     "Caches",
     "Regenerable package and model download caches.",
-    "Selecting this operation scans first. Apply is a separate, explicit step.",
+    "PREVIEW: it scans first; nothing changes until you select items, press a and approve.",
   ],
 };
 
@@ -117,10 +118,10 @@ const FINDINGS = [
   ],
   [
     "5",
-    "npm cache",
+    "npm cache folder",
     "3.4 GB",
-    "~/.npm/_cacache",
-    "Rebuilt by the next install.",
+    "~/.npm",
+    "Downloads and npx installs come back; its logs do not.",
   ],
   [
     "5",
@@ -145,7 +146,7 @@ const header = (operation: string): Row[] =>
   boxed(" measure · classify · trim ", COLS, 3, [
     [
       { t: " devtrim ", c: GREEN, b: true },
-      { t: "v0.9.0  ", c: DIM },
+      { t: "v0.11.0  ", c: DIM },
       { t: operation },
     ],
   ]);
@@ -180,52 +181,61 @@ const menuBody = (selected: number): Row[] => {
 };
 
 const resultsBody = (): Row[] => {
-  const lines: Row[] = [];
-  FINDINGS.forEach(([danger, label, size, path, note], i) => {
-    lines.push([
-      {
-        t: `${String(i + 1).padStart(2)}. danger-${danger}  `,
-        c: dangerColor(danger),
-        b: true,
-      },
-      { t: label, b: true },
-      { t: `  ${size}  TRASH`, c: CYAN },
-    ]);
-    lines.push([{ t: path }]);
-    lines.push([{ t: note, c: DIM }]);
-    lines.push([]);
-  });
-  return boxed(
-    " Preview · 4 finding(s) · 27.5 GB actionable · danger-7 · TRASH-FIRST ",
-    COLS,
-    17,
-    lines,
-  );
+  const list: Row[] = FINDINGS.map(([danger, label, size, path], i) => [
+    { t: i === 0 ? "› " : "  ", c: GREEN, b: true },
+    { t: "[x] " },
+    {
+      t: `${String(i + 1).padStart(3)}. danger-${danger} `,
+      c: dangerColor(danger),
+    },
+    { t: `${size.padStart(8)}  TRASH    `, c: CYAN },
+    { t: label, b: true },
+    { t: `  ${path}`, c: DIM },
+  ]);
+  const [danger, label, size, path, note] = FINDINGS[0];
+  const details: Row[] = [
+    [{ t: "[x] selected · Space leaves it out", c: MUTED }],
+    [{ t: label, c: GREEN, b: true }],
+    [{ t: `${size} · danger-${danger} · move to Trash` }],
+    [{ t: path }],
+    [{ t: note, c: DIM }],
+  ];
+  return [
+    ...boxed(
+      " TRASH-FIRST · 4/4 selected · 27.5 GB · danger-7 ",
+      COLS,
+      8,
+      list,
+    ),
+    ...boxed(" Details ", COLS, 9, details),
+  ];
 };
 
 const outcomeBody = (): Row[] =>
   boxed(" Apply outcome ", COLS, 17, [
     [
       {
-        t: "caches · 4 item(s) · ~27.5 GB reclaimed estimate",
+        t: "caches: 4 item(s), ~27.5 GB moved to Trash; it is freed once the Trash",
         c: GREEN,
         b: true,
       },
     ],
+    [{ t: "is emptied (devtrim trash-empty)", c: GREEN, b: true }],
     [],
-    [{ t: "• trashed huggingface model cache — recoverable from Finder" }],
-    [{ t: "• trashed npm cache — recoverable from Finder" }],
-    [{ t: "• trashed Homebrew downloads — recoverable from Finder" }],
-    [{ t: "• trashed uv cache — recoverable from Finder" }],
+    [{ t: "• trashed huggingface model cache" }],
+    [{ t: "• trashed npm cache folder" }],
+    [{ t: "• trashed Homebrew downloads" }],
+    [{ t: "• trashed uv cache" }],
   ]);
 
-const loadingBody = (): Row[] => {
-  const msg = "Scanning caches…";
+const centered = (text: string) =>
+  " ".repeat(Math.floor((COLS - 2 - text.length) / 2)) + text;
+
+const loadingBody = (seconds: number): Row[] => {
   const lines: Row[] = [];
-  for (let i = 0; i < 7; i++) lines.push([]);
-  lines.push([
-    { t: " ".repeat(Math.floor((COLS - 2 - msg.length) / 2)) + msg, c: AMBER },
-  ]);
+  for (let i = 0; i < 6; i++) lines.push([]);
+  lines.push([{ t: centered("Scanning caches…"), c: AMBER }]);
+  lines.push([{ t: centered(`${seconds} s elapsed`), c: DIM }]);
   return boxed(" Working ", COLS, 17, lines);
 };
 
@@ -235,6 +245,7 @@ const Popup: React.FC<{ caret: boolean }> = ({ caret }) => {
     [],
     ...NOTICE.map((t): Row => [{ t }]),
     [],
+    [{ t: "This plan: 4 of 4 selected · 0 left out" }],
     [
       {
         t: "Danger-7. Press y to apply this exact plan, or n/Esc to cancel.",
@@ -303,29 +314,29 @@ export const DevtrimDemo: React.FC = () => {
 
   if (frame < T.loading) {
     body = menuBody(selected);
-    keys = "↑/↓ navigate · Enter select · q quit";
+    keys = "↑/↓ navigate · Enter select · ? keys · q quit";
     status = "Preview first. Nothing changes until you explicitly approve.";
   } else if (frame < T.results) {
     operation = "caches";
-    body = loadingBody();
-    keys = "Scanning and apply are synchronous; please wait";
-    status = "Scanning caches…";
+    body = loadingBody(Math.floor((frame - T.loading) / 30));
+    keys = "q or Ctrl+C stops the scan and quits";
+    status = "Other keys are ignored until the results appear.";
   } else if (frame < T.outcome) {
     operation = "caches";
     body = resultsBody();
     keys =
       frame >= T.confirm
         ? "Esc cancel · type the exact requested acknowledgment"
-        : "a apply · s Trash/permanent · r rescan · b back · q quit";
+        : "Space pick · A none · a apply · s permanent · b back · ? keys";
     status =
       frame >= T.confirm
         ? "Confirm the exact previewed plan."
-        : "Preview only. Apply moves these exact paths to Trash.";
+        : "Review every finding. Space leaves one out; a applies the rest";
   } else {
     operation = "caches";
     body = outcomeBody();
-    keys = "↑/↓ or j/k scroll · b back to menu · q quit";
-    status = "Applied the exact previewed plan. Recoverable from Trash.";
+    keys = "↑/↓ or j/k scroll · b back to menu · ? keys";
+    status = "Apply completed. Review the truthful summary below.";
   }
 
   const keycap =
@@ -438,7 +449,7 @@ export const DevtrimDemo: React.FC = () => {
           dev<span style={{ color: GREEN }}>trim</span>
         </div>
         <div style={{ fontSize: 30, color: MUTED }}>
-          v0.9.0 · interactive Ratatui interface
+          v0.11.0 · interactive Ratatui interface
         </div>
         <div style={{ fontSize: 26, color: DIM }}>
           github.com/mneves75/devtrim
