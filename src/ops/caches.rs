@@ -398,13 +398,15 @@ fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
     let kind = match finding.authority() {
         TargetAuthority::Standard if is_builtin_cache_root(target, home) => Some(CacheKind::Plain),
         // Both owner roots are recomputed now, never taken from the preview.
-        TargetAuthority::Standard if is_gradle_cache(target, home)? => Some(CacheKind::Gradle),
-        // Only a folder holding Go's download cache sends devtrim to ask `go`.
+        // Go is judged first: only a folder holding Go's download cache sends
+        // devtrim to ask `go`, and a Gradle lookup that fails (an unreadable
+        // GRADLE_USER_HOME) must refuse only what Gradle could claim.
         TargetAuthority::Standard if holds_go_download_cache(target)? => {
             go_module_cache(ctx, false)?
                 .is_some_and(|cache| cache == target)
                 .then_some(CacheKind::GoModules)
         }
+        TargetAuthority::Standard if is_gradle_cache(target, home)? => Some(CacheKind::Gradle),
         TargetAuthority::Standard => None,
         TargetAuthority::NpmCache => {
             is_eligible_owner_cache("npm", target, home).then_some(CacheKind::Plain)
