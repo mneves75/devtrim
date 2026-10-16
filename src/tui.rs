@@ -21,11 +21,11 @@ use crate::safety::{self, ConfirmationRequirement, Ctx};
 use crate::theme::{Theme, Token, danger_token};
 
 const MIN_WIDTH: u16 = 64;
-/// The Error screen's status: nothing was authorized, and `r` scans again.
-const FAILED_CLOSED: &str = "Failed closed; no new action was authorized. r rescans.";
 const MIN_HEIGHT: u16 = 18;
 /// Rows PgUp and PgDn move, in every list and scrolling view.
 const PAGE_ROWS: u16 = 8;
+/// The Error screen's status: nothing was authorized, and `r` scans again.
+const FAILED_CLOSED: &str = "Failed closed; no new action was authorized. r rescans.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
