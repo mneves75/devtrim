@@ -101,6 +101,51 @@ pub(crate) fn has_git_marker(path: &Path) -> Result<bool> {
     }
 }
 
+/// Every directory under `root` holding a Git marker — a repository or a
+/// linked worktree — not entered further. Folders the walk cannot read are
+/// recorded in `unread`; only the root itself failing fails it.
+pub(crate) fn repositories_under(
+    root: &Path,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    let mut entries = walkdir::WalkDir::new(root).follow_links(false).into_iter();
+    while let Some(result) = entries.next() {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) if error.depth() > 0 => {
+                unread.push(UnreadFolder::from_walk(&error));
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot look for repositories under {}", root.display())
+                });
+            }
+        };
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        if is_git_metadata_name(entry.file_name()) || super::is_node_modules_name(entry.file_name())
+        {
+            entries.skip_current_dir();
+            continue;
+        }
+        match std::fs::symlink_metadata(entry.path().join(".git")) {
+            Ok(_) => {
+                found.push(entry.path().to_path_buf());
+                entries.skip_current_dir();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                unread.push(UnreadFolder::new(entry.path(), &error.into()));
+                entries.skip_current_dir();
+            }
+        }
+    }
+    Ok(found)
+}
+
 pub(crate) fn normalized_roots(roots: &[PathBuf]) -> Vec<&Path> {
     let mut roots = roots.iter().map(PathBuf::as_path).collect::<Vec<_>>();
     roots.sort_unstable();

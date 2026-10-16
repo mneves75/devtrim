@@ -227,7 +227,7 @@ impl Op for Caches {
                     }
                     CacheKind::GoModules => {
                         if let Some(target) = finding.target() {
-                            go_removal_preflight(target, finding.action == Action::Shred)?;
+                            go_removal_preflight(target)?;
                         }
                     }
                 }
@@ -589,10 +589,9 @@ fn holds_go_download_cache(path: &Path) -> Result<bool> {
 /// can't be removed without first making their parent directories writable"
 /// (go.dev/ref/mod "go clean -modcache"). A move to the Trash renames the cache
 /// folder alone, which needs only that folder to be writable. A permanent
-/// removal deletes every file, which a read-only folder would refuse part-way,
-/// leaving a half-removed cache; so it is refused whole when any folder in it
-/// is read-only.
-fn go_removal_preflight(target: &Path, permanent: bool) -> Result<()> {
+/// removal deletes every file; the sink's preflight refuses it whole when any
+/// folder in the tree is read-only, before anything is removed.
+fn go_removal_preflight(target: &Path) -> Result<()> {
     let writable = |path: &Path| match rustix::fs::access(path, rustix::fs::Access::WRITE_OK) {
         Ok(()) => Ok(true),
         Err(rustix::io::Errno::ACCESS) => Ok(false),
@@ -604,20 +603,6 @@ fn go_removal_preflight(target: &Path, permanent: bool) -> Result<()> {
             "refusing the Go module cache: {} is read-only, so it cannot be moved; `go clean -modcache` removes it",
             target.display()
         );
-    }
-    if !permanent {
-        return Ok(());
-    }
-    for entry in walkdir::WalkDir::new(target).follow_links(false) {
-        let entry = entry.with_context(|| format!("cannot read {}", target.display()))?;
-        if entry.file_type().is_dir() && !writable(entry.path())? {
-            anyhow::bail!(
-                "refusing permanent removal of the Go module cache: Go made {} read-only, and \
-                 permanent removal cannot delete inside it; move the cache to the Trash instead, \
-                 or run `go clean -modcache`",
-                entry.path().display()
-            );
-        }
     }
     Ok(())
 }

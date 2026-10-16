@@ -119,7 +119,7 @@ Non-negotiable boundaries:
   program even unhardened (measured on Git 2.56). A path a worktree listing names
   is repository data: it is measured only when it is a real directory inside a
   scan root whose `.git` file names a gitdir in that repository's `worktrees`, and
-  no Git command ever runs inside a listed worktree. Neither report creates a
+  Git runs only in folders the walk itself finds, never in a path because a listing named it. Neither report creates a
   finding with a target action, a deletion-list entry, a command authority or a
   journal record.
 - Every directory deletion preflights foreign filesystem devices and Git

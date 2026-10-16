@@ -197,6 +197,16 @@ pub struct ScanResult {
     pub errors: Vec<String>,
 }
 
+/// The registered categories a scan has no section for: every category that
+/// scanned has one, even an empty one, so these are the ones that failed.
+pub fn failed_categories(sections: &[crate::report::ScanSection]) -> Vec<&'static str> {
+    all()
+        .iter()
+        .map(|operation| operation.name())
+        .filter(|name| !sections.iter().any(|section| section.category == *name))
+        .collect()
+}
+
 pub fn all() -> Vec<Box<dyn Op>> {
     vec![
         Box::new(caches::Caches),
@@ -858,18 +868,24 @@ fn preflight_tree(
         // A tree with a folder that lacks them (Go makes its module cache
         // read-only) would be refused part-way through, after the files
         // before it were gone; refusing here restores it whole instead.
-        rustix::fs::accessat(
+        match rustix::fs::accessat(
             dir,
             ".",
             rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK,
             rustix::fs::AtFlags::empty(),
-        )
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "{} is not writable, so it cannot be removed permanently without changing its permissions",
+        ) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::ACCESS) => anyhow::bail!(
+                "{} is not writable, so it cannot be removed permanently without changing its \
+                 permissions; move it to the Trash instead",
                 path.display()
-            )
-        })?;
+            ),
+            Err(error) => {
+                return Err(std::io::Error::from(error)).with_context(|| {
+                    format!("cannot check whether {} is writable", path.display())
+                });
+            }
+        }
     }
     let names = directory_entry_names(dir, path)?;
     refuse_git_repository_root_names(dir, &names, path, scope)?;

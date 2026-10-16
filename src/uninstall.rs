@@ -267,7 +267,7 @@ fn measure(path: &Path) -> Result<(u64, usize)> {
     let metadata = std::fs::symlink_metadata(path)
         .with_context(|| format!("cannot inspect {}", path.display()))?;
     if metadata.file_type().is_dir() {
-        let measured = crate::worktrees::measure_lenient(path, &Default::default());
+        let measured = crate::safety::measure_lenient(path, &Default::default());
         Ok((measured.bytes, measured.unread))
     } else {
         Ok((metadata.len(), 0))

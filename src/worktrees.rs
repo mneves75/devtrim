@@ -12,10 +12,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::ops::is_node_modules_name;
-use crate::ops::project::{self, UnreadFolder};
+use crate::ops::project;
 use crate::report::{Action, Finding};
-use crate::safety::{Ctx, is_git_metadata_name};
+use crate::safety::{Ctx, measure_lenient};
 
 /// What the report cannot see, stated once with every run.
 pub(crate) const NOT_ASSESSED: &str = "not assessed: uncommitted or untracked work, ignored \
@@ -31,15 +30,22 @@ pub(crate) struct WorktreesReport {
 
 pub(crate) fn report(ctx: &Ctx) -> WorktreesReport {
     let roots = project::normalized_roots(&ctx.roots);
-    let scan_roots: Vec<PathBuf> = roots
-        .iter()
-        .filter_map(|root| std::fs::canonicalize(root).ok())
-        .collect();
     let mut report = WorktreesReport {
         findings: Vec::new(),
         errors: Vec::new(),
         notes: Vec::new(),
     };
+    let mut scan_roots = Vec::with_capacity(roots.len());
+    for root in &roots {
+        match std::fs::canonicalize(root) {
+            Ok(resolved) => scan_roots.push(resolved),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => report.errors.push(format!(
+                "cannot resolve scan root {}: {error}",
+                root.display()
+            )),
+        }
+    }
     let mut unread = Vec::new();
     let mut orphans = Vec::new();
     // Every directory already listed, by identity: a linked worktree found
@@ -48,7 +54,7 @@ pub(crate) fn report(ctx: &Ctx) -> WorktreesReport {
     for root in roots {
         let repositories = match project::is_directory_if_present(root).and_then(|present| {
             present
-                .then(|| repositories_under(root, &mut unread))
+                .then(|| project::repositories_under(root, &mut unread))
                 .transpose()
         }) {
             Ok(repositories) => repositories.unwrap_or_default(),
@@ -58,7 +64,7 @@ pub(crate) fn report(ctx: &Ctx) -> WorktreesReport {
             }
         };
         for repository in repositories {
-            if identity(&repository).is_some_and(|id| listed.contains(&id)) {
+            if identity(&repository).is_some_and(|found| listed.contains(&found)) {
                 continue;
             }
             match project::orphaned_worktree(&repository) {
@@ -209,87 +215,6 @@ fn identity(path: &Path) -> Option<(u64, u64)> {
     std::fs::metadata(path)
         .ok()
         .map(|metadata| (metadata.dev(), metadata.ino()))
-}
-
-/// Every directory under `root` holding a Git marker — a repository or a
-/// linked worktree — not entered further. Folders the walk cannot read are
-/// recorded in `unread`; only the root itself failing fails it.
-pub(crate) fn repositories_under(
-    root: &Path,
-    unread: &mut Vec<UnreadFolder>,
-) -> Result<Vec<PathBuf>> {
-    let mut found = Vec::new();
-    let mut entries = walkdir::WalkDir::new(root).follow_links(false).into_iter();
-    while let Some(result) = entries.next() {
-        let entry = match result {
-            Ok(entry) => entry,
-            Err(error) if error.depth() > 0 => {
-                unread.push(UnreadFolder::from_walk(&error));
-                continue;
-            }
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("cannot look for repositories under {}", root.display())
-                });
-            }
-        };
-        if !entry.file_type().is_dir() {
-            continue;
-        }
-        if is_git_metadata_name(entry.file_name()) || is_node_modules_name(entry.file_name()) {
-            entries.skip_current_dir();
-            continue;
-        }
-        match std::fs::symlink_metadata(entry.path().join(".git")) {
-            Ok(_) => {
-                found.push(entry.path().to_path_buf());
-                entries.skip_current_dir();
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                unread.push(UnreadFolder::new(entry.path(), &error.into()));
-                entries.skip_current_dir();
-            }
-        }
-    }
-    Ok(found)
-}
-
-/// Logical bytes under a directory for a report, and how many entries could
-/// not be read. It follows no link, stays on the directory's device, and does
-/// not enter `skip` (other worktrees nested inside this one), so a byte is
-/// counted once.
-pub(crate) struct Measured {
-    pub(crate) bytes: u64,
-    pub(crate) unread: usize,
-}
-
-pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured {
-    let mut measured = Measured {
-        bytes: 0,
-        unread: 0,
-    };
-    let mut entries = walkdir::WalkDir::new(path)
-        .follow_links(false)
-        .same_file_system(true)
-        .into_iter();
-    while let Some(result) = entries.next() {
-        let Ok(entry) = result else {
-            measured.unread = measured.unread.saturating_add(1);
-            continue;
-        };
-        if entry.depth() > 0 && entry.file_type().is_dir() && skip.contains(entry.path()) {
-            entries.skip_current_dir();
-            continue;
-        }
-        if entry.file_type().is_file() {
-            match entry.metadata() {
-                Ok(metadata) => measured.bytes = measured.bytes.saturating_add(metadata.len()),
-                Err(_) => measured.unread = measured.unread.saturating_add(1),
-            }
-        }
-    }
-    measured
 }
 
 /// One record of `git worktree list --porcelain -z`.

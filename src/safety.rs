@@ -1319,12 +1319,7 @@ pub fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
         return Ok(());
     }
     match requirement {
-        ConfirmationRequirement::TypedGigabytes { danger, expected } => {
-            if !ctx.interactive {
-                bail!(
-                    "danger-{danger} operation requires interactive typed confirmation or --yolo"
-                );
-            }
+        ConfirmationRequirement::TypedGigabytes { expected, .. } => {
             eprintln!(
                 "{} about to irreversibly remove ~{expected} GB. Type the number to continue:",
                 "CRITICAL".red().bold()
@@ -1373,6 +1368,43 @@ pub fn trash_gate(findings: &[Finding], confirm_gb: Option<u64>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Logical bytes under a directory for a report, and how many entries could
+/// not be read. It follows no link, stays on the directory's device, and does
+/// not enter `skip` (other worktrees nested inside this one), so a byte is
+/// counted once.
+pub(crate) struct Measured {
+    pub(crate) bytes: u64,
+    pub(crate) unread: usize,
+}
+
+pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured {
+    let mut measured = Measured {
+        bytes: 0,
+        unread: 0,
+    };
+    let mut entries = walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .same_file_system(true)
+        .into_iter();
+    while let Some(result) = entries.next() {
+        let Ok(entry) = result else {
+            measured.unread = measured.unread.saturating_add(1);
+            continue;
+        };
+        if entry.depth() > 0 && entry.file_type().is_dir() && skip.contains(entry.path()) {
+            entries.skip_current_dir();
+            continue;
+        }
+        if entry.file_type().is_file() {
+            match entry.metadata() {
+                Ok(metadata) => measured.bytes = measured.bytes.saturating_add(metadata.len()),
+                Err(_) => measured.unread = measured.unread.saturating_add(1),
+            }
+        }
+    }
+    measured
 }
 
 pub fn dir_size(path: &Path) -> Result<u64> {
@@ -2645,7 +2677,7 @@ mod tests {
     }
 
     #[test]
-    fn a_build_process_that_started_during_the_probe_is_looked_up_once() {
+    fn build_processes_started_during_the_probe_are_judged_until_the_list_settles() {
         let lsof = || parse_lsof_cwds(b"p12\nfcwd\nn/work/live\n", Some(1)).unwrap();
 
         // PID 34 exited; PID 56 (the build's next step) appeared in the recheck.

@@ -8,7 +8,7 @@ use std::path::Path;
 use super::project::{self, is_directory_if_present};
 use super::{Action, ApplyOutcome, Finding, Op, dir_size};
 use crate::safety::Ctx;
-use crate::worktrees::{measure_lenient, repositories_under};
+use crate::safety::measure_lenient;
 
 pub struct Leftovers;
 
@@ -44,7 +44,12 @@ impl Op for Leftovers {
             if !is_directory_if_present(root)? {
                 continue;
             }
-            for repository in repositories_under(root, &mut unread)? {
+            for repository in project::repositories_under(root, &mut unread)? {
+                // Git fails every query in a worktree whose repository is
+                // gone; there is nothing of its own to judge, as in `worktrees`.
+                if project::orphaned_worktree(&repository).unwrap_or(false) {
+                    continue;
+                }
                 if let Err(error) = scratch_findings(&repository, &mut findings) {
                     findings.push(project::unjudged_finding(".scratch", &repository, &error));
                 }
@@ -149,7 +154,8 @@ fn scratch_findings(repository: &Path, findings: &mut Vec<Finding>) -> Result<()
     children.sort();
     for child in children {
         let name = child.file_name().unwrap_or_default().to_string_lossy();
-        let linked = std::fs::symlink_metadata(child.join(".git")).is_ok_and(|meta| meta.is_file());
+        let linked =
+            std::fs::symlink_metadata(child.join(".git")).is_ok_and(|metadata| metadata.is_file());
         let label = if linked {
             format!("linked worktree in .scratch `{name}`")
         } else {

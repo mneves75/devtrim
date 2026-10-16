@@ -502,18 +502,7 @@ impl App {
             0
         };
         if outright > 0 {
-            // A category that scanned has a section, even an empty one, so the
-            // one without is the one that failed.
-            let missing: Vec<&str> = ops::all()
-                .iter()
-                .map(|op| op.name())
-                .filter(|name| {
-                    !self
-                        .sections
-                        .iter()
-                        .any(|section| section.category == *name)
-                })
-                .collect();
+            let missing = ops::failed_categories(&self.sections);
             let what = match (outright, missing.as_slice()) {
                 (1, [name]) => (*name).to_string(),
                 (1, _) => "1 category".into(),

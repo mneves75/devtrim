@@ -341,16 +341,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             if ctx.json {
                 report::print_json("scan", false, &scan.findings, None, &scan.errors)?;
             } else {
-                let failed: Vec<&str> = ops::all()
-                    .iter()
-                    .map(|operation| operation.name())
-                    .filter(|name| {
-                        !scan
-                            .sections
-                            .iter()
-                            .any(|section| section.category == *name)
-                    })
-                    .collect();
+                let failed = ops::failed_categories(&scan.sections);
                 report::print_scan_human(&scan.findings, &scan.sections, &failed, all)?;
                 for error in &scan.errors {
                     eprintln!("{} {}", "warn".yellow(), report::terminal_safe(error));
@@ -386,41 +377,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                 Ok(ExitCode::from(1))
             }
         }
-        cli::Command::Worktrees => {
-            if !ctx.json {
-                ctx.diagnostic("info", ctx.roots_note());
-            }
-            let mut report = worktrees::report(&ctx);
-            if ctx.json {
-                report.findings.push(report::Finding::new(
-                    "not assessed",
-                    None,
-                    0,
-                    worktrees::NOT_ASSESSED,
-                    1,
-                    report::Action::Info,
-                ));
-                report::print_json("worktrees", false, &report.findings, None, &report.errors)?;
-            } else {
-                for note in report.notes.drain(..) {
-                    ctx.diagnostic("info", note);
-                }
-                if report.findings.is_empty() {
-                    report::print_line("no linked worktrees under the scan roots")?;
-                } else {
-                    report::print_human(&report.findings)?;
-                }
-                ctx.diagnostic("info", worktrees::NOT_ASSESSED.to_owned());
-                for error in &report.errors {
-                    ctx.diagnostic("warn", error.clone());
-                }
-            }
-            if report.errors.is_empty() {
-                Ok(ExitCode::SUCCESS)
-            } else {
-                Ok(ExitCode::from(1))
-            }
-        }
+        cli::Command::Worktrees => run_worktrees(&ctx),
         cli::Command::Optimize { ref tasks } => {
             let operation = ops::optimize::Optimize::new(tasks, cli.apply)?;
             run_op(&operation, &cli, &ctx)
@@ -434,27 +391,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
         cli::Command::History { .. } | cli::Command::Completions { .. } | cli::Command::Manpage => {
             unreachable!("context-free commands are dispatched before configuration loads")
         }
-        cli::Command::Icloud => {
-            let findings = match ops::icloud_status(&ctx) {
-                Ok(findings) => findings,
-                Err(error) => return command_error("icloud", false, &[], &ctx, error),
-            };
-            let errors: Vec<String> = findings
-                .iter()
-                .filter_map(report::Finding::scan_error)
-                .map(str::to_owned)
-                .collect();
-            if ctx.json {
-                report::print_json("icloud", false, &findings, None, &errors)?;
-            } else {
-                report::print_human(&findings)?;
-            }
-            Ok(if errors.is_empty() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(1)
-            })
-        }
+        cli::Command::Icloud => run_icloud(&ctx),
         cli::Command::TrashEmpty {
             confirm_gb,
             only_devtrim,
@@ -510,6 +447,64 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             }
         }
     }
+}
+
+fn run_worktrees(ctx: &safety::Ctx) -> Result<ExitCode> {
+    if !ctx.json {
+        ctx.diagnostic("info", ctx.roots_note());
+    }
+    let mut report = worktrees::report(ctx);
+    if ctx.json {
+        report.findings.push(report::Finding::new(
+            "not assessed",
+            None,
+            0,
+            worktrees::NOT_ASSESSED,
+            1,
+            report::Action::Info,
+        ));
+        report::print_json("worktrees", false, &report.findings, None, &report.errors)?;
+    } else {
+        for note in report.notes.drain(..) {
+            ctx.diagnostic("info", note);
+        }
+        if report.findings.is_empty() {
+            report::print_line("no linked worktrees under the scan roots")?;
+        } else {
+            report::print_findings(&report.findings)?;
+        }
+        ctx.diagnostic("info", worktrees::NOT_ASSESSED.to_owned());
+        for error in &report.errors {
+            ctx.diagnostic("warn", error.clone());
+        }
+    }
+    if report.errors.is_empty() {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Ok(ExitCode::from(1))
+    }
+}
+
+fn run_icloud(ctx: &safety::Ctx) -> Result<ExitCode> {
+    let findings = match ops::icloud_status(ctx) {
+        Ok(findings) => findings,
+        Err(error) => return command_error("icloud", false, &[], ctx, error),
+    };
+    let errors: Vec<String> = findings
+        .iter()
+        .filter_map(report::Finding::scan_error)
+        .map(str::to_owned)
+        .collect();
+    if ctx.json {
+        report::print_json("icloud", false, &findings, None, &errors)?;
+    } else {
+        report::print_human(&findings)?;
+    }
+    Ok(if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 fn clean(target: cli::Target, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitCode> {

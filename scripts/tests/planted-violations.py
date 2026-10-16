@@ -492,7 +492,7 @@ CASES = (
         relative_path="src/safety.rs",
         before="    if !answer.complete {\n",
         after="    if false {\n",
-        tests=("safety::tests::a_build_process_that_started_during_the_probe_is_looked_up_once",),
+        tests=("safety::tests::build_processes_started_during_the_probe_are_judged_until_the_list_settles",),
         marker="PV liveness/lsof-successor",
     ),
     Case(
@@ -1422,11 +1422,12 @@ CASES = (
         target="eval_safety",
     ),
     Case(
-        name="caches/go-read-only",
-        relative_path="src/ops/caches.rs",
-        # A read-only module folder no longer refuses permanent removal.
-        before="        if entry.file_type().is_dir() && !writable(entry.path())? {\n",
-        after="        if entry.file_type().is_dir() && !writable(entry.path())? && false {\n",
+        name="sink/read-only-go-cache",
+        relative_path="src/ops/mod.rs",
+        # The sink no longer refuses a tree with a read-only folder, so a Go
+        # module cache is half removed by `clean caches --shred`.
+        before="    if require_writable {\n",
+        after="    if false {\n",
         tests=("eval_a_read_only_go_module_cache_is_refused_whole_for_permanent_removal",),
         marker="PV eval/go-read-only",
         target="eval_safety",

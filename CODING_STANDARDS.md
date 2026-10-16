@@ -226,8 +226,9 @@ exactly four:
 - `command_path` in `src/ops/caches.rs` — `"npm"`, `"brew"` or `"go"` from its
   three callers, trusted only inside that owner's cache namespace.
 - `hardened_git` in `src/ops/project.rs` — `"git"`, from `repo_last_activity`
-  through `hardened_git_log`, and as a literal from `TrackedIndex::list` and
-  `unborn_branch`, its only production callers.
+  through `hardened_git_log`, and as a literal from `TrackedIndex::list`,
+  `unborn_branch`, `worktree_listing`, `git_common_dir` and `ignores_path`, its
+  only production callers.
 
 The only other variable programs in the tree are inside `#[cfg(test)] mod
 tests`: `std::env::current_exe()` re-invoking the test binary in

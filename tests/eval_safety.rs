@@ -342,7 +342,7 @@ fn eval_a_read_only_go_module_cache_is_refused_whole_for_permanent_removal() {
     );
     let document = json(&result);
     assert!(!result.status.success(), "{document}");
-    assert!(document.to_string().contains("read-only"), "{document}");
+    assert!(document.to_string().contains("not writable"), "{document}");
 }
 
 /// `go env GOMODCACHE` is trusted only for a folder inside the home holding
