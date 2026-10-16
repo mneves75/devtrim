@@ -71,6 +71,14 @@ class Case:
 
 CASES = (
     Case(
+        name="sink/read-only-tree",
+        relative_path="src/ops/mod.rs",
+        before="    if require_writable {\n",
+        after="    if false {\n",
+        tests=("eval_trash_empty_refuses_a_read_only_tree_whole",),
+        marker="PV eval/trash-empty-read-only", target="eval_system",
+    ),
+    Case(
         name="trash/unmeasurable-item",
         relative_path="src/ops/mod.rs",
         before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",

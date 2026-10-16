@@ -487,6 +487,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                 rules,
                 0,
                 GitMarkerScope::Strict,
+                true,
             )
             .context("permanent deletion preflight failed")?;
             struct RemovalFrame {
@@ -836,6 +837,7 @@ fn preflight_same_device_tree(
         MarkerRules::new(markers, dir),
         0,
         GitMarkerScope::Strict,
+        false,
     )
 }
 
@@ -846,10 +848,29 @@ fn preflight_tree(
     rules: MarkerRules,
     depth: usize,
     scope: GitMarkerScope,
+    require_writable: bool,
 ) -> Result<()> {
     let root_identity = file_identity_for_dir(dir)
         .with_context(|| format!("cannot inspect open directory: {}", path.display()))?;
     ensure_same_device(root_identity, expected_device, path)?;
+    if require_writable {
+        // Removing an entry needs write and search permission on its folder.
+        // A tree with a folder that lacks them (Go makes its module cache
+        // read-only) would be refused part-way through, after the files
+        // before it were gone; refusing here restores it whole instead.
+        rustix::fs::accessat(
+            dir,
+            ".",
+            rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK,
+            rustix::fs::AtFlags::empty(),
+        )
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "{} is not writable, so it cannot be removed permanently without changing its permissions",
+                path.display()
+            )
+        })?;
+    }
     let names = directory_entry_names(dir, path)?;
     refuse_git_repository_root_names(dir, &names, path, scope)?;
 
@@ -883,6 +904,7 @@ fn preflight_tree(
                 rules,
                 child_depth,
                 git_marker_scope(rules, child_depth, &name),
+                require_writable,
             )?;
         }
     }

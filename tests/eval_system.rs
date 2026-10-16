@@ -1516,6 +1516,50 @@ fn eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item() {
     assert!(!apply.status.success(), "{document}");
 }
 
+/// A Trash item holding a read-only folder (Go's module cache, moved there by
+/// `clean caches`) cannot be removed permanently without first changing its
+/// permissions, so it is refused whole, before anything is deleted, and the
+/// purge continues with the next item.
+#[test]
+fn eval_trash_empty_refuses_a_read_only_tree_whole() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::in_target("eval-trash-read-only");
+    let trash = sandbox.path().join(".Trash");
+    let module = trash.join("a-mod/golang.org/x/text@v0.30.0");
+    write(&module.join("LICENSE"), "license");
+    write(&module.join("cases/cases.go"), "package cases");
+    write(&trash.join("a-mod/cache/download/list"), "v0.30.0");
+    let other = trash.join("b-notes.txt");
+    write(&other, "notes");
+    for folder in [module.join("cases"), module.clone()] {
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+    let pristine = Tree::snapshot(sandbox.path());
+    let apply = run(
+        &sandbox,
+        &["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"],
+    );
+    let after = Tree::snapshot(sandbox.path());
+    // Whatever the run left (a red run leaves a half-removed tree under a
+    // quarantine name), make it removable for the sandbox's cleanup.
+    std::process::Command::new("/bin/chmod")
+        .args(["-R", "u+w"])
+        .arg(sandbox.path())
+        .status()
+        .unwrap();
+    let document = json(&apply);
+    pristine.assert_only(
+        &after,
+        &Allowed {
+            removed: vec![other],
+            scratch: vec![sandbox.path().join(".local/state/devtrim")],
+        },
+        "PV eval/trash-empty-read-only",
+    );
+    assert!(!apply.status.success(), "{document}");
+    assert!(document.to_string().contains("not writable"), "{document}");
+}
+
 /// `--only-devtrim` offers only items whose identity the journal recorded for
 /// a successful move; names prove nothing, and an unfinished or failed move
 /// proves nothing either. The journal is written by hand because a real Trash
