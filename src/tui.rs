@@ -18,6 +18,8 @@ use crate::safety::{self, ConfirmationRequirement, Ctx};
 use crate::theme::{Theme, Token, danger_token};
 
 const MIN_WIDTH: u16 = 64;
+/// The Error screen's status: nothing was authorized, and `r` scans again.
+const FAILED_CLOSED: &str = "Failed closed; no new action was authorized. r rescans.";
 const MIN_HEIGHT: u16 = 18;
 /// Rows PgUp and PgDn move, in every list and scrolling view.
 const PAGE_ROWS: u16 = 8;
@@ -365,10 +367,32 @@ impl App {
         errors: Vec<String>,
         warnings: Vec<String>,
     ) {
+        self.show_results(operation, findings, Vec::new(), errors, warnings);
+    }
+
+    /// A Scan everything result, keeping each category's slice for routing.
+    fn finish_scan(&mut self, result: ops::ScanResult, warnings: Vec<String>) {
+        self.show_results(
+            Operation::ScanAll,
+            result.findings,
+            result.sections,
+            result.errors,
+            warnings,
+        );
+    }
+
+    fn show_results(
+        &mut self,
+        operation: Operation,
+        findings: Vec<Finding>,
+        sections: Vec<report::ScanSection>,
+        errors: Vec<String>,
+        warnings: Vec<String>,
+    ) {
         self.operation = Some(operation);
         self.reset_selection();
         self.findings = findings;
-        self.sections.clear();
+        self.sections = sections;
         self.errors = errors;
         self.warnings = warnings;
         if !self.errors.is_empty()
@@ -381,7 +405,9 @@ impl App {
         }
         self.summary = None;
         self.screen = Screen::Results;
-        self.status = if self.findings.is_empty() {
+        self.status = if let Some(failure) = self.failure_status() {
+            failure
+        } else if self.findings.is_empty() {
             "No findings. Nothing can be applied.".into()
         } else if operation.read_only() {
             "Read-only result. No apply action is available.".into()
@@ -390,10 +416,58 @@ impl App {
         };
     }
 
-    /// A Scan everything result, keeping each category's slice for routing.
-    fn finish_scan(&mut self, result: ops::ScanResult, warnings: Vec<String>) {
-        self.finish_results(Operation::ScanAll, result.findings, result.errors, warnings);
-        self.sections = result.sections;
+    /// How many findings stand for something the scan could not judge.
+    fn unjudged_count(&self) -> usize {
+        report::finding_and_error_counts(&self.findings).1
+    }
+
+    /// How many things this result failed at. A Scan everything result lists
+    /// each category that failed outright among its errors, beside a copy of
+    /// every finding that could not be judged; other results carry only those
+    /// findings.
+    fn failure_count(&self) -> usize {
+        if self.operation == Some(Operation::ScanAll) {
+            self.errors.len().max(self.unjudged_count())
+        } else {
+            self.unjudged_count()
+        }
+    }
+
+    /// What this result failed at and what the operator can do, short enough
+    /// for the footer at the minimum width, or `None` when nothing failed. A
+    /// category whose probe failed offers nothing at all, which must never
+    /// read as a category with nothing to offer.
+    fn failure_status(&self) -> Option<String> {
+        let unjudged = self.unjudged_count();
+        let outright = if self.operation == Some(Operation::ScanAll) {
+            self.errors.len().saturating_sub(unjudged)
+        } else {
+            0
+        };
+        if outright > 0 {
+            // A category that scanned has a section, even an empty one, so the
+            // one without is the one that failed.
+            let missing: Vec<&str> = ops::all()
+                .iter()
+                .map(|op| op.name())
+                .filter(|name| {
+                    !self
+                        .sections
+                        .iter()
+                        .any(|section| section.category == *name)
+                })
+                .collect();
+            let what = match (outright, missing.as_slice()) {
+                (1, [name]) => (*name).to_string(),
+                (1, _) => "1 category".into(),
+                _ => format!("{outright} categories"),
+            };
+            return Some(format!(
+                "{what} failed to scan: error rows say why; r retries."
+            ));
+        }
+        (unjudged > 0)
+            .then(|| format!("{unjudged} item(s) not judged: their rows say why; r retries."))
     }
 
     /// Why an action key would change nothing on the results screen, so no
@@ -467,7 +541,7 @@ impl App {
         self.summary = None;
         self.scroll = 0;
         self.screen = Screen::Error;
-        self.status = "The operation failed closed; no new action was authorized.".into();
+        self.status = FAILED_CLOSED.into();
     }
 
     fn begin_confirmation(&mut self) {
@@ -564,6 +638,11 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('b') => {
                     self.back_to_menu();
                     Intent::None
+                }
+                // A failure may be transient, a probe that did not answer under
+                // load; scanning again is a fresh preview, never a retried apply.
+                KeyCode::Char('r') if self.screen == Screen::Error => {
+                    self.operation.map_or(Intent::None, Intent::Load)
                 }
                 code => {
                     self.scroll_by(code);
@@ -1211,37 +1290,48 @@ fn render_loading(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn render_results(frame: &mut Frame, area: Rect, app: &App) {
+/// The results list's title, within `width` columns. The mode is a safety
+/// signal, so it leads: counts and sizes grow with the plan and would
+/// otherwise push it past the minimum width. A title too wide for the
+/// terminal drops its words before any number, so what failed and the danger
+/// stay whole.
+fn results_title(app: &App, width: usize) -> String {
     let plan = app.effective_findings();
-    let total = report::actionable_bytes(&plan);
+    let size = report::gb(report::actionable_bytes(&plan));
     let danger = safety::plan_danger(&plan);
     let mode = if app.shred {
         "PERMANENT"
     } else {
         "TRASH-FIRST"
     };
+    let failed = match app.failure_count() {
+        0 => String::new(),
+        failures => format!(" · {failures} failed"),
+    };
     let choices = app.choice_count();
-    // The mode is a safety signal, so it leads: counts and sizes grow with the
-    // plan and would otherwise push it past the minimum width.
-    let title = if choices > 0 {
-        format!(
-            " {mode} · {}/{choices} selected · {} · danger-{danger} ",
-            choices.saturating_sub(app.excluded.len()),
-            report::gb(total),
+    let (full, compact) = if choices > 0 {
+        let selected = choices.saturating_sub(app.excluded.len());
+        (
+            format!(" {mode} · {selected}/{choices} selected · {size} · danger-{danger}{failed} "),
+            format!(" {mode} · {selected}/{choices} · {size} · danger-{danger}{failed} "),
         )
     } else {
-        let (counted, errors) = report::finding_and_error_counts(&app.findings);
-        let errors = if errors == 0 {
-            String::new()
-        } else {
-            format!(", {errors} error(s)")
-        };
-        format!(
-            " {mode} · {counted} finding(s){errors} · {} actionable · danger-{danger} ",
-            report::gb(total),
+        let (counted, _) = report::finding_and_error_counts(&app.findings);
+        (
+            format!(
+                " {mode} · {counted} finding(s) · {size} actionable · danger-{danger}{failed} "
+            ),
+            format!(" {mode} · {counted} found · {size} · danger-{danger}{failed} "),
         )
     };
+    if Span::raw(full.as_str()).width() <= width {
+        full
+    } else {
+        compact
+    }
+}
 
+fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     // The detail pane is the only place a long path appears whole, so it grows
     // past its usual share to hold the highlighted row, leaving the list one
     // row, and says how many lines a terminal too short for it still hides and
@@ -1263,6 +1353,7 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     }
     let [list_area, detail_area] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(detail_height)]).areas(area);
+    let title = results_title(app, usize::from(list_area.width.saturating_sub(2)));
     let visible = usize::from(list_area.height.saturating_sub(2)).max(1);
     let rows = app.row_count();
     let mut offset = app.list_offset.get();
@@ -1567,14 +1658,20 @@ fn outcome_entries(app: &App) -> Vec<(String, Style)> {
         }
         lines.push((String::new(), Style::default()));
         for note in &summary.notes {
-            lines.push((format!("• {}", report::terminal_safe(note)), Style::default()));
+            lines.push((
+                format!("• {}", report::terminal_safe(note)),
+                Style::default(),
+            ));
         }
     }
     if !app.errors.is_empty() {
         lines.push((String::new(), Style::default()));
         lines.push(("Errors".into(), app.theme.bold(Token::Critical)));
         for error in &app.errors {
-            lines.push((format!("• {}", report::terminal_safe(error)), Style::default()));
+            lines.push((
+                format!("• {}", report::terminal_safe(error)),
+                Style::default(),
+            ));
         }
     }
     lines
@@ -1626,7 +1723,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         }
         Screen::Detail => "↑/↓ or j/k scroll · Esc back to the results · ? keys".into(),
         Screen::Confirm => "Esc cancel · type the exact requested acknowledgment".into(),
-        Screen::Outcome | Screen::Error => "↑/↓ or j/k scroll · b back to menu · ? keys".into(),
+        Screen::Outcome => "↑/↓ or j/k scroll · b back to menu · ? keys".into(),
+        Screen::Error => "↑/↓ or j/k scroll · r rescan · b back to menu · ? keys".into(),
         Screen::Loading => "Scanning and apply are synchronous; please wait".into(),
     };
     // The results status names keys that act on the plan; none of them works
@@ -2356,6 +2454,57 @@ mod tests {
         ]);
         report_row.handle_key(key(KeyCode::Char(' ')));
         assert!(!all_left_out.status.is_empty() && !report_row.status.is_empty());
+        // A result that failed says what failed and that r retries, so a
+        // category withheld by a failed probe is not mistaken for an empty one.
+        let failed_scan = |failed: &[&str]| {
+            let mut app = App::default();
+            app.finish_scan(
+                ops::ScanResult {
+                    findings: vec![trash("cache", 1, 2)],
+                    sections: ops::all()
+                        .iter()
+                        .map(|op| op.name())
+                        .filter(|name| !failed.contains(name))
+                        .map(|name| section(name, 0..0))
+                        .collect(),
+                    errors: failed
+                        .iter()
+                        .map(|name| format!("{name}: probe failed"))
+                        .collect(),
+                },
+                Vec::new(),
+            );
+            app
+        };
+        let one_category = failed_scan(&["node-modules"]);
+        let every_category: Vec<_> = ops::all().iter().map(|op| op.name()).collect();
+        let every_category = failed_scan(&every_category);
+        let not_judged = cleanup(
+            (0..12)
+                .map(|index| {
+                    Finding::new(
+                        format!("repo-{index} not judged"),
+                        None,
+                        0,
+                        "x",
+                        5,
+                        Action::Info,
+                    )
+                    .with_scan_error("synthetic failure".into())
+                })
+                .collect(),
+        );
+        for (app, what) in [
+            (&one_category, "node-modules failed"),
+            (&every_category, "10 categories failed"),
+            (&not_judged, "12 item(s) not judged"),
+        ] {
+            assert!(
+                app.status.starts_with(what) && app.status.contains("r retries"),
+                "the status does not say what failed: {}",
+                app.status
+            );
+        }
         for app in [
             trash_plan(),
             trash_left_out,
@@ -2367,6 +2516,9 @@ mod tests {
             restored_with_nothing_selected,
             all_left_out,
             report_row,
+            one_category,
+            every_category,
+            not_judged,
         ] {
             let output = rendered(&app, 64, 18);
             assert!(output.contains("? keys"), "{output}");
@@ -2381,6 +2533,7 @@ mod tests {
             let status = outcome_status(failed, touched);
             assert!(status.chars().count() <= 62, "{status}");
         }
+        assert!(FAILED_CLOSED.chars().count() <= 62, "{FAILED_CLOSED}");
     }
 
     /// The rendered screen, one string per terminal row.
@@ -2599,20 +2752,65 @@ mod tests {
         assert!(output.contains("danger-9 · permanently delete"), "{output}");
     }
 
+    /// The results list's title row at the minimum size.
+    fn results_title(app: &App) -> String {
+        screen_rows(app, MIN_WIDTH, MIN_HEIGHT)
+            .into_iter()
+            .find(|row| row.starts_with("┌ TRASH-FIRST") || row.starts_with("┌ PERMANENT"))
+            .expect("the results list has a title")
+    }
+
     /// The mode is a safety signal, so it leads the title: a title that grew
-    /// with the plan's counts and size clipped TRASH-FIRST at 64 columns.
+    /// with the plan's counts and size clipped TRASH-FIRST at 64 columns. The
+    /// count of what failed must fit beside it whole, as must the danger; the
+    /// title's closing space shows nothing after it was cut.
     #[test]
-    fn the_mode_survives_the_minimum_width_on_a_large_plan() {
-        let mut app = cleanup(
-            (0..120)
-                .map(|index| trash(&format!("cache-{index}"), 1 << 30, 5))
-                .collect(),
-        );
+    fn the_title_fits_the_minimum_width_on_a_large_plan_with_failures() {
+        let mut findings: Vec<Finding> = (0..120)
+            .map(|index| trash(&format!("cache-{index}"), 1 << 30, 5))
+            .collect();
+        findings.extend((0..12).map(|index| {
+            Finding::new(
+                format!("repo-{index} not judged"),
+                None,
+                0,
+                "failed",
+                5,
+                Action::Info,
+            )
+            .with_scan_error("synthetic failure".into())
+        }));
+        let mut app = cleanup(findings);
 
-        let trash_first = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+        let trash_first = results_title(&app);
         app.handle_key(key(KeyCode::Char('s')));
-        let permanent = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+        let permanent = results_title(&app);
+        let mut scan = App::default();
+        scan.finish_scan(
+            ops::ScanResult {
+                findings: (0..999)
+                    .map(|index| trash(&format!("cache-{index}"), 1 << 30, 5))
+                    .collect(),
+                sections: Vec::new(),
+                errors: (0..10)
+                    .map(|index| format!("category-{index}: failed"))
+                    .collect(),
+            },
+            Vec::new(),
+        );
+        let read_only = results_title(&scan);
 
+        for (title, failed) in [
+            (&trash_first, "12 failed "),
+            (&permanent, "12 failed "),
+            (&read_only, "10 failed "),
+        ] {
+            assert!(title.contains(" · danger-"), "{title}");
+            assert!(
+                title.contains(failed),
+                "the failure count is cut or missing: {title}"
+            );
+        }
         assert!(trash_first.contains("TRASH-FIRST"), "{trash_first}");
         assert!(permanent.contains("PERMANENT"), "{permanent}");
     }
