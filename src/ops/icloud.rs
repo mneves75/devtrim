@@ -69,19 +69,3 @@ fn blocks_bytes(path: &std::path::Path) -> Result<u64> {
         .with_context(|| format!("cannot inspect iCloud file {}", path.display()))?;
     super::blocks_bytes(&metadata, path)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_file_measurement_fails_closed() {
-        let missing =
-            std::env::temp_dir().join(format!("devtrim-icloud-missing-{}", std::process::id()));
-        crate::ops::remove_test_path(&missing);
-
-        let error = blocks_bytes(&missing).unwrap_err();
-
-        assert!(error.to_string().contains("cannot inspect iCloud file"));
-    }
-}

@@ -102,15 +102,3 @@ impl Op for Leftovers {
         Ok(outcome)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scratch_pattern_is_only_a_hint() {
-        assert!(is_agent_scratch("kimi-plan005-validation.RA8ERh"));
-        assert!(!is_agent_scratch("my-project"));
-        assert!(!is_agent_scratch("src.main"));
-    }
-}

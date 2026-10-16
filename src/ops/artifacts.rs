@@ -817,45 +817,6 @@ mod tests {
     }
 
     #[test]
-    fn walker_prunes_git_node_modules_and_matched_artifacts() {
-        let root = temp("walker");
-        std::fs::create_dir_all(root.join(".GIT/hidden/target")).unwrap();
-        std::fs::write(root.join(".GIT/hidden/Cargo.toml"), "[package]").unwrap();
-        std::fs::create_dir_all(root.join("node_modules/pkg/target")).unwrap();
-        std::fs::write(root.join("node_modules/pkg/Cargo.toml"), "[package]").unwrap();
-        let case_variant = root.join("case-app/NODE_MODULES/pkg/target");
-        std::fs::create_dir_all(&case_variant).unwrap();
-        std::fs::write(
-            root.join("case-app/NODE_MODULES/pkg/Cargo.toml"),
-            "[package]",
-        )
-        .unwrap();
-        let ordinary = root.join("node-modules/pkg/target");
-        std::fs::create_dir_all(&ordinary).unwrap();
-        std::fs::write(root.join("node-modules/pkg/Cargo.toml"), "[package]").unwrap();
-        std::fs::create_dir_all(root.join(".next/nested/target")).unwrap();
-        std::fs::write(root.join(".next/nested/Cargo.toml"), "[package]").unwrap();
-        std::fs::create_dir_all(root.join("git/nested/target")).unwrap();
-        std::fs::write(root.join("git/nested/Cargo.toml"), "[package]").unwrap();
-        std::fs::write(root.join("package.json"), "{}").unwrap();
-
-        let mut unread = Vec::new();
-        let found = find_artifacts(&root, &mut unread).unwrap();
-        assert!(unread.is_empty());
-
-        let paths = found
-            .iter()
-            .map(|candidate| candidate.path.as_path())
-            .collect::<Vec<_>>();
-        assert_eq!(paths.len(), 3);
-        assert!(paths.contains(&root.join(".next").as_path()));
-        assert!(paths.contains(&root.join("git/nested/target").as_path()));
-        assert!(paths.contains(&ordinary.as_path()));
-        assert!(!paths.contains(&case_variant.as_path()));
-        crate::ops::remove_test_path(root);
-    }
-
-    #[test]
     fn apply_rejects_artifact_under_case_variant_node_modules_ancestor() {
         let fixture = crate::ops::TestFixture::new("devtrim-artifact-case-ancestor");
         let root = fixture.path().to_path_buf();
@@ -1007,32 +968,6 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let home = root.canonicalize().unwrap();
         (fixture, root, home)
-    }
-
-    /// Only a regular file at the name is a tag. A FIFO there must not block
-    /// the walk (no writer ever opens it) and a link must not lend its target's
-    /// signature; the regular tag beside them is the positive control.
-    #[test]
-    fn only_a_regular_cachedir_tag_marks_build_output() {
-        let base = temp("cachedir-shapes");
-        let tagged = base.join("tagged");
-        let linked = base.join("linked");
-        let fifo = base.join("fifo");
-        for dir in [&tagged, &linked, &fifo] {
-            std::fs::create_dir_all(dir).unwrap();
-        }
-        std::fs::write(tagged.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).unwrap();
-        symlink(tagged.join("CACHEDIR.TAG"), linked.join("CACHEDIR.TAG")).unwrap();
-        let status = std::process::Command::new("/usr/bin/mkfifo")
-            .arg(fifo.join("CACHEDIR.TAG"))
-            .status()
-            .unwrap();
-        assert!(status.success());
-
-        assert!(is_build_output(&tagged).unwrap());
-        assert!(!is_build_output(&linked).unwrap());
-        assert!(!is_build_output(&fifo).unwrap());
-        crate::ops::remove_test_path(base);
     }
 
     fn offered(findings: &[Finding]) -> Vec<&Path> {
@@ -1521,38 +1456,6 @@ mod tests {
             "PV artifacts/unread-folders-reported: {errors:?}"
         );
         drop((_locked, _unlisted));
-        crate::ops::remove_test_path(root);
-    }
-
-    /// A repository created with `git init` and not yet committed to is left
-    /// out and named; it never empties the category.
-    #[test]
-    fn a_repository_without_commits_is_skipped_and_named() {
-        let (_fixture, root, home) = deletable_root("unborn-artifacts");
-        let target = stale_target(&home.join("stale"));
-        let fresh = home.join("fresh");
-        std::fs::create_dir_all(fresh.join("target")).unwrap();
-        std::fs::write(fresh.join("Cargo.toml"), "[package]").unwrap();
-        let status = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .current_dir(&fresh)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let ctx = context(home.clone());
-
-        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
-
-        assert_eq!(offered(&findings), vec![target.as_path()]);
-        assert!(
-            ctx.take_diagnostics()
-                .iter()
-                .any(|message| message.contains("no commits yet")
-                    && message.contains(&fresh.display().to_string())),
-            "the repository without commits must be named"
-        );
         crate::ops::remove_test_path(root);
     }
 

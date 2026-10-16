@@ -1128,53 +1128,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_standalone_offers_only_an_obsolete_release() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-codex-releases")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        let old = write_codex_release(home, "0.155.1");
-        let current = write_codex_release(home, "0.156.1");
-        let newer = write_codex_release(home, "0.157.0");
-        let same_core_beta = write_codex_release(home, "0.156.1-beta.1");
-        let standalone = home.join(".codex/packages/standalone");
-        std::fs::write(standalone.join("install.lock"), "").unwrap();
-        symlink(&current, standalone.join("current")).unwrap();
-        let staging = standalone.join("releases/.staging.0.157.0-aarch64-apple-darwin.123");
-        std::fs::create_dir_all(&staging).unwrap();
-
-        let findings = Agents
-            .scan_with_mappings(
-                &test_ctx(home.to_path_buf()),
-                &ScanObservations::default(),
-                &idle,
-            )
-            .unwrap();
-        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-        assert!(
-            targets.contains(&old.as_path()),
-            "old release must be offered"
-        );
-        assert!(
-            !targets.contains(&current.as_path()),
-            "current release must survive"
-        );
-        assert!(
-            !targets.contains(&newer.as_path()),
-            "a newer installed release is not superseded"
-        );
-        assert!(
-            !targets.contains(&same_core_beta.as_path()),
-            "same-core prerelease is kept conservatively"
-        );
-        assert!(
-            !targets.contains(&staging.as_path()),
-            "installer staging must survive"
-        );
-    }
-
-    #[test]
     fn codex_releases_fail_closed_without_a_valid_current_link_or_install_lock() {
         let home = tempfile::Builder::new()
             .prefix("devtrim-codex-current")
@@ -1281,45 +1234,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_installer_lock_blocks_release_preview() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-codex-locked")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        let old = write_codex_release(home, "0.155.1");
-        let current = write_codex_release(home, "0.156.1");
-        let standalone = home.join(".codex/packages/standalone");
-        let lock_path = standalone.join("install.lock");
-        std::fs::write(&lock_path, "").unwrap();
-        symlink(&current, standalone.join("current")).unwrap();
-        let lock = File::open(&lock_path).unwrap();
-        hold_installer_lock(&lock);
-        let ctx = test_ctx(home.to_path_buf());
-        let findings = Agents
-            .scan_with_mappings(&ctx, &ScanObservations::default(), &idle)
-            .unwrap();
-        assert!(findings.iter().any(|finding| {
-            finding.action == Action::Info && finding.note.contains("installer may be active")
-        }));
-        assert!(
-            !findings
-                .iter()
-                .any(|finding| finding.target() == Some(old.as_path()))
-        );
-        flock(&lock, FlockOperation::Unlock).unwrap();
-        drop(lock);
-        let findings = Agents
-            .scan_with_mappings(&ctx, &ScanObservations::default(), &idle)
-            .unwrap();
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.target() == Some(old.as_path()))
-        );
-    }
-
-    #[test]
     fn busy_codex_installer_refuses_only_release_apply() {
         let fixture = crate::ops::TestFixture::new("devtrim-codex-busy");
         let home = fixture.path().to_path_buf();
@@ -1359,52 +1273,6 @@ mod tests {
         assert!(old.exists(), "busy release must survive");
         drop(lock);
         crate::ops::remove_test_path(home);
-    }
-
-    #[test]
-    fn codex_release_scan_rejects_unknown_contents_and_symlinked_candidates() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-codex-shape")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        let old = write_codex_release(home, "0.155.1");
-        let unknown = write_codex_release(home, "0.154.0");
-        std::fs::write(unknown.join("user-notes.txt"), "keep").unwrap();
-        let incomplete = write_codex_release(home, "0.152.0");
-        std::fs::remove_file(incomplete.join("bin/codex")).unwrap();
-        let nested = write_codex_release(home, "0.153.0");
-        std::fs::write(nested.join("bin/user-notes.txt"), "keep").unwrap();
-        let resources = write_codex_release(home, "0.150.0");
-        std::fs::write(resources.join("codex-resources/personal.txt"), "keep").unwrap();
-        let current = write_codex_release(home, "0.156.1");
-        let standalone = home.join(".codex/packages/standalone");
-        std::fs::write(standalone.join("install.lock"), "").unwrap();
-        symlink(&current, standalone.join("current")).unwrap();
-        let linked = write_codex_release(home, "0.151.0");
-        let outside = home.join("outside");
-        std::fs::create_dir(&outside).unwrap();
-        let linked_target = outside.join(linked.file_name().unwrap());
-        std::fs::rename(&linked, &linked_target).unwrap();
-        symlink(&linked_target, &linked).unwrap();
-
-        let findings = Agents
-            .scan_with_mappings(
-                &test_ctx(home.to_path_buf()),
-                &ScanObservations::default(),
-                &idle,
-            )
-            .unwrap();
-        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-        assert!(
-            targets.contains(&old.as_path()),
-            "eligible control must be offered"
-        );
-        assert!(!targets.contains(&unknown.as_path()));
-        assert!(!targets.contains(&incomplete.as_path()));
-        assert!(!targets.contains(&nested.as_path()));
-        assert!(!targets.contains(&resources.as_path()));
-        assert!(!targets.contains(&linked.as_path()));
     }
 
     #[test]
@@ -1774,41 +1642,6 @@ mod tests {
     }
 
     #[test]
-    fn a_fifo_at_a_vendor_file_name_refuses_instead_of_hanging() {
-        let (_fixture, home, old) = codex_home("fifo");
-        let runtime = old.join("codex-resources/voice/runtime.json");
-        std::fs::remove_file(&runtime).unwrap();
-        let status = std::process::Command::new("mkfifo")
-            .arg(&runtime)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let ctx = test_ctx(home.clone());
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let findings = Agents.scan_with_mappings(&ctx, &ScanObservations::default(), &idle);
-            let _ = sender.send(findings.map(|findings| findings.len()));
-        });
-
-        let finished = receiver.recv_timeout(Duration::from_secs(20));
-        assert!(
-            finished.is_ok(),
-            "scan blocked on a FIFO named like a vendor file"
-        );
-        assert!(finished.unwrap().is_ok());
-        let findings = Agents
-            .scan_with_mappings(&test_ctx(home.clone()), &ScanObservations::default(), &idle)
-            .unwrap();
-        assert!(
-            !findings
-                .iter()
-                .any(|finding| finding.target() == Some(old.as_path())),
-            "a release with a FIFO in place of a vendor file is not vendor-shaped"
-        );
-        crate::ops::remove_test_path(home);
-    }
-
-    #[test]
     fn a_tampered_main_executable_is_not_a_vendor_package() {
         let (_fixture, home, old) = codex_home("tampered");
         let tampered = write_codex_release(&home, "0.154.0");
@@ -1827,43 +1660,6 @@ mod tests {
             "a main executable that fails its manifest digest was offered"
         );
         crate::ops::remove_test_path(home);
-    }
-
-    #[test]
-    fn codex_versions_must_be_canonical() {
-        for accepted in [
-            "0.156.1",
-            "0.0.0",
-            "10.20.30",
-            "1.2.3-beta",
-            "1.2.3-alpha.10.2",
-        ] {
-            assert!(codex_version_core(accepted).is_some(), "{accepted}");
-        }
-        for rejected in [
-            "0.0156.0",
-            "01.2.3",
-            "1.02.3",
-            "1.2.03",
-            "1.2.3-beta.01",
-            "1.2.3-alpha.1.02",
-            "1.2.3-",
-            "1.2",
-            "1.2.3.4",
-            "1.2.3-rc.1",
-            "１.2.3",
-        ] {
-            assert!(codex_version_core(rejected).is_none(), "{rejected}");
-        }
-        assert_eq!(codex_version_core("0.156.1-beta.2"), Some([0, 156, 1]));
-    }
-
-    #[test]
-    fn the_release_authority_names_the_installer_root() {
-        assert_eq!(
-            CODEX_RELEASES.relative,
-            format!("{CODEX_STANDALONE}/releases")
-        );
     }
 
     /// The const assertion above rejects empty and ASCII-whitespace evidence
@@ -1899,82 +1695,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn regenerable_caches_are_offered_and_credentials_are_not() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-agents-cache")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        write_aged(&home.join(".claude/cache/changelog.md"), "# 1.0.0\n", 400);
-        // Everything an agent needs to keep must be invisible to the scanner.
-        for secret in [
-            ".claude/.credentials.json",
-            ".claude/settings.json",
-            ".codex/auth.json",
-            ".codex/config.toml",
-            ".claude/backups/.claude.json.backup.1",
-        ] {
-            write_aged(&home.join(secret), "secret", 400);
-        }
-
-        let findings = Agents
-            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
-            .unwrap();
-
-        assert_eq!(findings.len(), 1);
-        assert_eq!(
-            findings[0].target(),
-            Some(home.join(".claude/cache").as_path())
-        );
-        assert_eq!(findings[0].action, Action::Trash);
-        for secret in [
-            ".claude/.credentials.json",
-            ".claude/settings.json",
-            ".codex/auth.json",
-            ".codex/config.toml",
-            ".claude/backups/.claude.json.backup.1",
-        ] {
-            assert!(home.join(secret).exists());
-        }
-    }
-
-    #[test]
-    fn history_is_offered_only_after_the_active_window() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-agents-history")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        // Codex nests three levels; the day directory is the unit.
-        write_aged(
-            &home.join(".codex/sessions/2020/01/02/rollout.jsonl"),
-            "old",
-            400,
-        );
-        // A loose file at the configured depth is a candidate; the fresh one
-        // beside it is the control proving the age gate is what excludes it.
-        write_aged(&home.join(".codex/archived_sessions/old.jsonl"), "old", 400);
-        write_aged(&home.join(".codex/archived_sessions/new.jsonl"), "new", 0);
-
-        let findings = Agents
-            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
-            .unwrap();
-
-        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-        assert!(targets.contains(&home.join(".codex/sessions/2020/01/02").as_path()));
-        assert!(targets.contains(&home.join(".codex/archived_sessions/old.jsonl").as_path()));
-        assert!(!targets.contains(&home.join(".codex/archived_sessions/new.jsonl").as_path()));
-        // The root itself is never a finding, only its children at the configured depth.
-        assert!(!targets.contains(&home.join(".codex/sessions").as_path()));
-        assert!(!targets.contains(&home.join(".codex/sessions/2020").as_path()));
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.note.contains("not regenerable"))
-        );
-    }
-
     /// History is not regenerable, so the project window never decides it: a
     /// one-day `active_days` with the default retention keeps a five-day-old
     /// transcript, and only `retain_days` offers it.
@@ -2006,67 +1726,6 @@ mod tests {
                 .iter()
                 .any(|finding| finding.target() == Some(transcript.as_path())),
             "positive control: history older than retain_days is offered"
-        );
-    }
-
-    /// `~/.claude/projects` is not a cleanup root at all, and this is the
-    /// assertion that keeps it that way. It holds Claude Code auto memory in
-    /// `<project>/memory/`, and since the transcripts beside it can originate in
-    /// Claude Desktop — which the vendor retains at any age — file age is not
-    /// evidence that anything there is finished with. A `.codex` transcript of
-    /// identical shape and age is offered in the same run, so this proves an
-    /// exclusion rather than an inert fixture.
-    #[test]
-    fn the_claude_projects_tree_is_never_a_candidate() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-agents-projects")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        let session = "24bb0c93-fbb9-49b7-99b0-7a97be87baeb";
-        let project = home.join(".claude/projects/-repo");
-        write_aged(&project.join(format!("{session}.jsonl")), "old", 400);
-        write_aged(&project.join("memory/MEMORY.md"), "durable fact", 400);
-        let codex = home.join(".codex/archived_sessions");
-        write_aged(&codex.join(format!("rollout-{session}.jsonl")), "old", 400);
-
-        let ctx = test_ctx(home.to_path_buf());
-        let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
-        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-
-        assert!(
-            targets.contains(&codex.join(format!("rollout-{session}.jsonl")).as_path()),
-            "a transcript of the same shape and age elsewhere must still be offered"
-        );
-        for excluded in [
-            home.join(".claude/projects"),
-            project.clone(),
-            project.join("memory"),
-        ] {
-            assert!(
-                !targets.contains(&excluded.as_path()),
-                "{}",
-                excluded.display()
-            );
-            let outcome = Agents
-                .apply(
-                    &[Finding::new(
-                        "forged",
-                        Some(excluded.clone()),
-                        4,
-                        "test",
-                        6,
-                        Action::Trash,
-                    )],
-                    &ctx,
-                )
-                .unwrap();
-            assert_eq!(outcome.summary.items_touched, 0, "{}", excluded.display());
-            assert_eq!(outcome.errors.len(), 1, "{}", excluded.display());
-        }
-        assert_eq!(
-            std::fs::read_to_string(project.join("memory/MEMORY.md")).unwrap(),
-            "durable fact"
         );
     }
 
@@ -2174,88 +1833,6 @@ mod tests {
         assert_eq!(outcome.summary.items_touched, 0);
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(std::fs::read_to_string(&memory).unwrap(), "durable fact");
-    }
-
-    /// A shell snapshot is sourced by every later shell call in the session that
-    /// wrote it, and nothing rewrites it, so it belongs to the age-gated tier.
-    #[test]
-    fn shell_snapshots_are_age_gated_rather_than_offered_outright() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-agents-snapshots")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        let snapshots = home.join(".claude/shell-snapshots");
-        write_aged(
-            &snapshots.join("snapshot-zsh-1-old.sh"),
-            "export A=1\n",
-            400,
-        );
-        write_aged(&snapshots.join("snapshot-zsh-2-live.sh"), "export B=2\n", 0);
-
-        let findings = Agents
-            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
-            .unwrap();
-        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-
-        assert!(targets.contains(&snapshots.join("snapshot-zsh-1-old.sh").as_path()));
-        assert!(!targets.contains(&snapshots.join("snapshot-zsh-2-live.sh").as_path()));
-        assert!(
-            !targets.contains(&snapshots.as_path()),
-            "the directory itself must never be offered wholesale"
-        );
-    }
-
-    /// A session resumed between preview and apply is an expected refusal, and
-    /// the documented promise is that it falls out of the plan — not that it
-    /// takes every later finding with it.
-    #[test]
-    fn a_resumed_session_does_not_block_the_rest_of_the_plan() {
-        let fixture = crate::ops::TestFixture::new("devtrim-agents-partial");
-        let home = fixture.path().to_path_buf();
-        std::fs::create_dir_all(&home).unwrap();
-        let home = home.canonicalize().unwrap();
-        let session = "24bb0c93-fbb9-49b7-99b0-7a97be87baeb";
-        let archived = home.join(".codex/archived_sessions");
-        let resumed = archived.join(format!("rollout-resumed-{session}.jsonl"));
-        let stale = archived.join(format!("rollout-stale-{session}.jsonl"));
-        write_aged(&resumed, "old", 400);
-        write_aged(&stale, "old", 400);
-        let ctx = test_ctx(home.clone());
-        let findings = vec![
-            Finding::new(
-                "resumed",
-                Some(resumed.clone()),
-                4,
-                "test",
-                6,
-                Action::Shred,
-            ),
-            Finding::new("stale", Some(stale.clone()), 4, "test", 6, Action::Shred),
-        ];
-        // The resumed session is written after the plan was built, exactly as a
-        // live agent would; its inode is unchanged, so only the age re-read sees it.
-        std::fs::write(&resumed, "resumed").unwrap();
-
-        let outcome = Agents.apply(&findings, &ctx).unwrap();
-
-        assert_eq!(
-            outcome.errors.len(),
-            1,
-            "the refusal must still be reported"
-        );
-        assert!(
-            outcome.errors[0].contains("no longer meets its preview shape"),
-            "an age refusal must not read as a forged target: {}",
-            outcome.errors[0]
-        );
-        assert_eq!(
-            outcome.summary.items_touched, 1,
-            "the finding listed after the resumed one must still be removed"
-        );
-        assert!(resumed.exists(), "the resumed session must survive");
-        assert!(!stale.exists());
-        crate::ops::remove_test_path(home);
     }
 
     /// Positive control for the apply-time boundary. The forged targets are

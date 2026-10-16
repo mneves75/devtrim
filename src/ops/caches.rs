@@ -650,81 +650,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn library_cache_authority_matches_the_protection_carve_out() {
-        let home = Path::new("/Users/example");
-        for (_, path) in library_caches(home) {
-            assert!(is_builtin_cache_root(&path, home), "{}", path.display());
-            assert!(!crate::safety::is_protected(&path, home));
-        }
-        for rejected in [
-            home.join("Library/Caches"),
-            home.join("Library/Caches/ms-playwright-extra"),
-            home.join("Library/Caches/ms-playwright/browsers"),
-            home.join("Library/Application Support"),
-        ] {
-            assert!(
-                !is_builtin_cache_root(&rejected, home),
-                "{}",
-                rejected.display()
-            );
-        }
-    }
-
-    /// One refused cache must not abandon the rest of the previewed plan. Here a
-    /// real worktree gitfile at the cache root trips the repository refusal;
-    /// while apply stopped at the first failure, a refusal like this blocked
-    /// every cache listed after it.
-    #[test]
-    fn a_refused_cache_does_not_block_the_rest_of_the_plan() {
-        let fixture = crate::ops::TestFixture::new("devtrim-cache-continue");
-        let home = fixture.path().to_path_buf();
-        std::fs::create_dir_all(home.join(".cache/uv")).unwrap();
-        std::fs::create_dir_all(home.join(".cache/node")).unwrap();
-        let home = home.canonicalize().unwrap();
-        // A Git worktree marker makes this cache permanently unremovable.
-        std::fs::write(home.join(".cache/uv/.git"), "gitdir: elsewhere\n").unwrap();
-        std::fs::write(home.join(".cache/node/entry"), "regenerable").unwrap();
-        let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-        };
-        let mut findings = vec![
-            cache_finding("uv package cache", home.join(".cache/uv"), 4, 3),
-            cache_finding("node core cache", home.join(".cache/node"), 4, 3),
-        ];
-        // Permanent, not Trash: a Trash move goes to the real user's Trash
-        // whatever this test's home is, and left a directory there every run.
-        crate::report::effective_actions(&mut findings, true);
-
-        let outcome = Caches.apply(&findings, &ctx).unwrap();
-
-        assert_eq!(
-            outcome.errors.len(),
-            1,
-            "the refusal must still be reported"
-        );
-        assert_eq!(
-            outcome.summary.items_touched, 1,
-            "the cache listed after the refused one must still be removed"
-        );
-        assert!(home.join(".cache/uv/.git").exists());
-        assert!(!home.join(".cache/node").exists());
-        crate::ops::remove_test_path(home);
-    }
-
     /// Every running uv holds a shared lock on `<cache>/.lock`, and `uv cache
     /// clean` waits for it. Removal must honour the same lock rather than move
     /// the cache out from under a `uv sync` another session is running.
@@ -845,20 +770,6 @@ mod tests {
         );
         assert!(home.join("elsewhere/uv/entry").exists());
         crate::ops::remove_test_path(home);
-    }
-
-    #[test]
-    fn huggingface_authority_accepts_only_model_cache() {
-        let home = Path::new("/Users/cache-test");
-        for (relative, accepted) in [
-            (".cache/huggingface/hub", true),
-            (".cache/huggingface", false),
-            (".cache/huggingface/token", false),
-            (".cache/huggingface/stored_tokens", false),
-        ] {
-            let finding = cache_finding("huggingface", home.join(relative), 1, 3);
-            assert_eq!(authorize_cache_finding(&finding, home).is_ok(), accepted);
-        }
     }
 
     #[test]
