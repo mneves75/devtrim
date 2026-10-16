@@ -1271,10 +1271,50 @@ CASES = (
         name="eval/toolchains-drift",
         relative_path="src/ops/toolchains.rs",
         # Apply no longer rechecks that a toolchain is still unreferenced.
-        before="    if preserved.contains(&canonical) {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
-        after="    if preserved.is_empty() {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
+        before="    if references.linked.contains(&canonical) {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
+        after="    if references.linked.is_empty() {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
         tests=("eval_toolchains_apply_refuses_a_toolchain_referenced_after_preview",),
         marker="PV eval/toolchains-drift",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-scan",
+        relative_path="src/ops/toolchains.rs",
+        # swiftly's configuration is read but no listed toolchain is kept.
+        before="    let mut owned = BTreeMap::new();\n    for version in versions {\n",
+        after="    let mut owned = BTreeMap::new();\n    for version in versions.into_iter().take(0) {\n",
+        tests=("eval_toolchains_keeps_every_toolchain_swiftly_installed",),
+        marker="PV eval/toolchains-swiftly-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-apply",
+        relative_path="src/ops/toolchains.rs",
+        # Apply no longer refuses a toolchain swiftly lists.
+        before="    if let Some(owner) = references.swiftly.get(&(metadata.dev(), metadata.ino())) {\n        anyhow::bail!(",
+        after="    if let Some(owner) = references.swiftly.get(&(0, 0)) {\n        anyhow::bail!(",
+        tests=("eval_toolchains_apply_refuses_a_toolchain_swiftly_lists_after_preview",),
+        marker="PV eval/toolchains-swiftly-drift",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-unparsable",
+        relative_path="src/ops/toolchains.rs",
+        # A configuration that does not parse reads as swiftly owning nothing.
+        before="    let parsed: SwiftlyConfig = serde_json::from_slice(&contents)\n        .with_context(|| format!(\"cannot parse swiftly's configuration {}\", config.display()))?;\n",
+        after="    let Ok(parsed) = serde_json::from_slice::<SwiftlyConfig>(&contents) else {\n        return Ok(BTreeMap::new());\n    };\n",
+        tests=("eval_clean_toolchains_fails_closed_without_a_verifiable_latest",),
+        marker="PV eval/toolchains-closed-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-unmapped",
+        relative_path="src/ops/toolchains.rs",
+        # A version devtrim cannot name a folder for is skipped instead of refusing.
+        before="    anyhow::bail!(\"unrecognized swiftly toolchain version `{version}`\")\n",
+        after="    Ok(Vec::new())\n",
+        tests=("eval_clean_toolchains_fails_closed_without_a_verifiable_latest",),
+        marker="PV eval/toolchains-closed-plan",
         target="eval_system",
     ),
     Case(

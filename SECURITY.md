@@ -91,7 +91,10 @@ Non-negotiable boundaries:
   background-session supervisor's live state, with a `pins.json` beside it
   recording which sessions are kept alive while idle. A closed category that
   must consult a liveness signal to stay safe has gone one directory too far.
-- Unknown Git activity or toolchain ownership is not deletion authority.
+- Unknown Git activity or toolchain ownership is not deletion authority. A
+  Swift toolchain swiftly lists as installed or in use is never a target,
+  at scan and again at apply; a swiftly configuration that cannot be read,
+  parsed or mapped to toolchain folders refuses the whole category.
 - Reading a scanned repository's activity or tracked files runs no program it
   configures. Both queries set fixed `-c` overrides for hooks and fsmonitor,
   pass `--no-lazy-fetch` and `--no-pager`, and clear repository-selection and

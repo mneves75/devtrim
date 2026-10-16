@@ -93,7 +93,7 @@ devtrim clean artifacts --apply -y        # corroborated build artifacts in stal
 devtrim clean simulators --apply -y       # delete exact previewed unavailable devices; working ones are only reported
 devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData child directories; package checkouts stay
 devtrim clean docker --apply -y           # local daemon images + build cache; never volumes
-devtrim clean toolchains --apply -y       # only unreferenced swift.org toolchains
+devtrim clean toolchains --apply -y       # only swift.org toolchains no symlink or swiftly references
 devtrim clean installers --apply -y       # stale installer archives in Downloads/Desktop
 devtrim clean agents --apply -y           # agent caches + older Codex releases + stale session history
 devtrim clean leftovers                   # report-only hints; never deletes worktrees
@@ -349,6 +349,15 @@ When `docker` is installed but its daemon is down, the category fails — a
 silently shorter plan would read as nothing to reclaim — and its error names
 the image and its size, which is the one state where the cost is invisible to
 `docker` and still present.
+
+`clean toolchains` keeps every toolchain swiftly installed. swiftly, the
+installer swift.org recommends on macOS, selects the toolchain in use through
+`~/.swiftly/config.json` (or `$SWIFTLY_HOME_DIR/config.json`) rather than a
+symlink, so each toolchain it lists, and the one it has in use, is shown as a
+report-only finding naming `swiftly uninstall <version>`, swiftly's own way to
+remove it, and apply reads the configuration again. A configuration that cannot
+be read, parsed or mapped to toolchain folders withholds the whole category
+with an error.
 
 `trash-empty` previews each current top-level Trash item as an exact target.
 `--apply` shows that set again and purges it only after the same confirmation

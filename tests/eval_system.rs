@@ -385,12 +385,21 @@ fn eval_clean_toolchains_removes_only_unreferenced_toolchains() {
     assert_journaled(&sandbox, "toolchains", "shred", &targets);
 }
 
-/// Without a verifiable `swift-latest` nothing is offered and nothing removed:
-/// the category fails closed rather than guessing which toolchain is in use.
+/// Without a verifiable `swift-latest`, or with a swiftly configuration that
+/// cannot be read whole, nothing is offered and nothing removed: the category
+/// fails closed rather than guessing which toolchain is in use.
 #[test]
 fn eval_clean_toolchains_fails_closed_without_a_verifiable_latest() {
     type Break = fn(&Path);
-    let cases: [(&str, Break); 2] = [
+    let cases: [(&str, Break); 4] = [
+        ("unparsable swiftly configuration", |directory| {
+            let home = directory.ancestors().nth(3).unwrap();
+            swiftly_config(home, r#"{"installedToolchains": ["#);
+        }),
+        ("a swiftly version devtrim cannot map", |directory| {
+            let home = directory.ancestors().nth(3).unwrap();
+            swiftly_config(home, r#"{"installedToolchains": ["6.3.3-preview"]}"#);
+        }),
         ("missing swift-latest", |directory| {
             std::fs::remove_file(directory.join("swift-latest.xctoolchain")).unwrap();
         }),
@@ -493,6 +502,88 @@ fn eval_toolchains_apply_refuses_a_toolchain_referenced_after_preview() {
     );
     assert!(
         output.contains("became referenced after preview"),
+        "{output}"
+    );
+}
+
+/// swiftly's record of the toolchains it installed, in the fixture home.
+fn swiftly_config(home: &Path, contents: &str) {
+    write(&home.join(".swiftly/config.json"), contents);
+}
+
+/// swiftly selects the toolchain in use through its own configuration, not a
+/// symlink, so every toolchain it lists stays although no link names it: the
+/// one in use, and one swiftly 1.0 installed, which named `5.10.0`
+/// `swift-5.10-RELEASE`. The unreferenced swift.org toolchains are still offered.
+#[test]
+fn eval_toolchains_keeps_every_toolchain_swiftly_installed() {
+    let sandbox = Sandbox::in_target("eval-toolchains-swiftly");
+    let targets = toolchains_fixture(&sandbox);
+    let directory = sandbox.path().join("Library/Developer/Toolchains");
+    for name in [
+        "swift-6.3.3-RELEASE.xctoolchain",
+        "swift-5.10-RELEASE.xctoolchain",
+    ] {
+        write(&directory.join(name).join("usr/bin/swift"), "swiftly's");
+    }
+    swiftly_config(
+        sandbox.path(),
+        r#"{"installedToolchains": ["6.3.3", "5.10.0"], "inUse": "6.3.3", "version": "1.1.4"}"#,
+    );
+
+    let preview = run(&sandbox, &["clean", "toolchains", "--shred", "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        targets,
+        "PV eval/toolchains-swiftly-plan: a toolchain swiftly installed was offered"
+    );
+    assert!(preview.status.success(), "{document}");
+}
+
+/// Apply reads swiftly's configuration again: a toolchain swiftly lists after
+/// the preview is refused, not removed.
+#[test]
+fn eval_toolchains_apply_refuses_a_toolchain_swiftly_lists_after_preview() {
+    let sandbox = Sandbox::in_target("eval-toolchains-swiftly-drift");
+    let directory = sandbox.path().join("Library/Developer/Toolchains");
+    write(
+        &directory.join("swift-5.8-RELEASE.xctoolchain/usr/bin/swift"),
+        "previewed",
+    );
+    write(
+        &directory.join("swift-6.2-RELEASE.xctoolchain/usr/bin/swift"),
+        "latest",
+    );
+    symlink(
+        "swift-6.2-RELEASE.xctoolchain",
+        directory.join("swift-latest.xctoolchain"),
+    )
+    .unwrap();
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let (status, output) = drift_session(
+        &sandbox,
+        &["clean", "toolchains", "--apply", "--shred"],
+        || swiftly_config(sandbox.path(), r#"{"installedToolchains": ["5.8.0"]}"#),
+    );
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            scratch: vec![
+                sandbox.path().join(".swiftly"),
+                sandbox.path().join(".local/state/devtrim"),
+            ],
+            ..Allowed::default()
+        },
+        "PV eval/toolchains-swiftly-drift",
+    );
+    assert!(
+        !status.success(),
+        "the refusal must fail the run:\n{output}"
+    );
+    assert!(
+        output.contains("refusing a toolchain swiftly installed"),
         "{output}"
     );
 }
