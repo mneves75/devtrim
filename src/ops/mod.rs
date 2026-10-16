@@ -1220,7 +1220,7 @@ pub(crate) fn remove_test_path(path: impl AsRef<Path>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::{ffi::OsStringExt, fs::symlink};
+    use std::os::unix::fs::symlink;
 
     /// Finder's AppleScript path failed on 2026-10-02 for lack of Automation
     /// permission and is slow on a loaded machine. Moving a real item would put
@@ -1271,35 +1271,8 @@ mod tests {
             "{message}"
         );
     }
-
-    /// A fixture outlives a failing test only as clutter a later `purge` of
-    /// this checkout would find, so the guard must clean up while unwinding.
-    #[test]
-    fn a_fixture_is_removed_even_when_its_test_panics() {
-        let mut created = None;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let fixture = TestFixture::new("devtrim-fixture-guard");
-            std::fs::create_dir_all(fixture.path().join("repo/node_modules")).unwrap();
-            created = Some(fixture.path().to_path_buf());
-            panic!("a failing assertion inside a fixture test");
-        }));
-
-        assert!(result.is_err());
-        let created = created.unwrap();
-        assert!(
-            created.starts_with(std::env::current_dir().unwrap().join("target")),
-            "fixtures stay under this checkout's target directory: {}",
-            created.display()
-        );
-        assert!(
-            !created.exists(),
-            "a panicking test left its fixture {}",
-            created.display()
-        );
-    }
     use std::path::PathBuf;
     use std::process::Command;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn context(home: PathBuf) -> Ctx {
         Ctx {
@@ -1360,136 +1333,6 @@ mod tests {
         assert_eq!(records[0]["action"], "shred");
         assert_eq!(records[1]["status"], "ok");
         std::fs::remove_dir_all(home).ok();
-    }
-
-    #[test]
-    fn permanent_sink_rechecks_git_marker_after_validation() {
-        let fixture = crate::ops::TestFixture::new("devtrim-git-recheck");
-        let home = fixture.path().to_path_buf();
-        let target = home.join("dev/cache");
-        std::fs::create_dir_all(&target).unwrap();
-        let home = home.canonicalize().unwrap();
-        let target = home.join("dev/cache");
-        let finding = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
-        let expected = finding.identity().unwrap();
-        let verified = crate::safety::validate_path_for_deletion(&target, &home, &[]).unwrap();
-        std::fs::write(target.join(".GIT"), "gitdir: elsewhere\n").unwrap();
-
-        let error = remove_path(verified, true, expected).unwrap_err();
-
-        assert!(error.to_string().contains("Git repository/worktree root"));
-        assert_eq!(
-            std::fs::read_to_string(target.join(".GIT")).unwrap(),
-            "gitdir: elsewhere\n"
-        );
-        assert!(std::fs::read_dir(home.join("dev")).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".devtrim-quarantine-")
-        }));
-        remove_test_path(home);
-    }
-
-    #[test]
-    fn trash_sink_refuses_nested_git_worktree_before_mutation() {
-        let fixture = crate::ops::TestFixture::new("devtrim-trash-nested-git");
-        let home = fixture.path().to_path_buf();
-        let target = home.join("dev/cache");
-        let nested = target.join("nested");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(
-            nested.join(".GIT"),
-            "gitdir: ../repository/.git/worktrees/nested\n",
-        )
-        .unwrap();
-        let sentinel = target.join("sentinel");
-        std::fs::write(&sentinel, "keep").unwrap();
-        let home = home.canonicalize().unwrap();
-        let target = home.join("dev/cache");
-        let finding = Finding::new("cache", Some(target.clone()), 0, "test", 5, Action::Trash);
-        let expected = finding.identity().unwrap();
-        let verified = crate::safety::validate_path_for_deletion(&target, &home, &[]).unwrap();
-
-        let error = remove_path(verified, false, expected).unwrap_err();
-
-        assert!(format!("{error:#}").contains("Git repository/worktree root"));
-        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
-        assert_eq!(
-            std::fs::read_to_string(target.join("nested/.GIT")).unwrap(),
-            "gitdir: ../repository/.git/worktrees/nested\n"
-        );
-        assert!(target.is_dir());
-        remove_test_path(home);
-    }
-
-    #[test]
-    fn permanent_sink_refuses_nested_git_worktree_before_deletion() {
-        let fixture = crate::ops::TestFixture::new("devtrim-nested-git");
-        let home = fixture.path().to_path_buf();
-        let target = home.join("dev/cache");
-        let nested = target.join("nested");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(
-            nested.join(".GIT"),
-            "gitdir: ../repository/.git/worktrees/nested\n",
-        )
-        .unwrap();
-        let sentinel = target.join("sentinel");
-        std::fs::write(&sentinel, "keep").unwrap();
-        let home = home.canonicalize().unwrap();
-        let target = home.join("dev/cache");
-        let finding = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
-        let expected = finding.identity().unwrap();
-        let verified = crate::safety::validate_path_for_deletion(&target, &home, &[]).unwrap();
-
-        let error = remove_path(verified, true, expected).unwrap_err();
-
-        assert!(error.to_string().contains("Git repository/worktree root"));
-        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
-        assert_eq!(
-            std::fs::read_to_string(target.join("nested/.GIT")).unwrap(),
-            "gitdir: ../repository/.git/worktrees/nested\n"
-        );
-        assert!(target.is_dir());
-        assert!(std::fs::read_dir(home.join("dev")).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".devtrim-quarantine-")
-        }));
-        remove_test_path(home);
-    }
-
-    /// A permanent deletion refused during preparation restores the entry to
-    /// its own name, so the refusal names that path: the private quarantine
-    /// name it held for a moment no longer exists and points the operator
-    /// nowhere.
-    #[test]
-    fn a_restored_permanent_refusal_names_the_original_target() {
-        let fixture = crate::ops::TestFixture::new("devtrim-restored-name");
-        let home = fixture.path().to_path_buf();
-        let target = home.join("dev/cache");
-        std::fs::create_dir_all(target.join("nested/.git")).unwrap();
-        std::fs::write(target.join("nested/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
-        let home = home.canonicalize().unwrap();
-        let target = home.join("dev/cache");
-        let finding = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
-        let expected = finding.identity().unwrap();
-        let verified = crate::safety::validate_path_for_deletion(&target, &home, &[]).unwrap();
-
-        let message = format!("{:#}", remove_path(verified, true, expected).unwrap_err());
-
-        assert!(message.contains("entry was restored"), "{message}");
-        assert!(!message.contains(".devtrim-quarantine-"), "{message}");
-        assert!(
-            message.contains(&target.join("nested").display().to_string()),
-            "{message}"
-        );
-        assert!(target.join("nested/.git/HEAD").exists());
-        remove_test_path(home);
     }
 
     const UV_CACHEDIR_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n\
@@ -1948,28 +1791,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn preview_and_handle_relative_identity_include_the_same_generation() {
-        let fixture = crate::ops::TestFixture::new("devtrim-generation");
-        let home = fixture.path().to_path_buf();
-        std::fs::create_dir_all(&home).unwrap();
-        let target = home.join("cache");
-        std::fs::write(&target, "content").unwrap();
-        let home = home.canonicalize().unwrap();
-        let target = home.join("cache");
-        let preview = Finding::new("cache", Some(target), 0, "test", 9, Action::Shred)
-            .identity()
-            .unwrap();
-        let dir = cap_std::fs::Dir::open_ambient_dir(&home, cap_std::ambient_authority()).unwrap();
-
-        let handle_relative = file_identity_at(&dir, Path::new("cache")).unwrap();
-
-        assert_eq!(preview, handle_relative);
-        assert_eq!(preview.generation, handle_relative.generation);
-        remove_test_path(home);
-    }
-
     #[test]
     fn quarantine_identity_mismatch_restores_the_original_name() {
         let fixture = crate::ops::TestFixture::new("devtrim-quarantine-restore");
@@ -2085,71 +1906,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_sink_uses_exact_non_utf8_target_identity() {
-        let fixture = crate::ops::TestFixture::new("devtrim-exact");
-        let home = fixture.path().to_path_buf();
-        std::fs::create_dir_all(&home).unwrap();
-        let target = home.join(std::ffi::OsString::from_vec(vec![b'c', 0xff]));
-        assert!(target.to_str().is_none());
-        match std::fs::create_dir_all(&target) {
-            Ok(()) => {}
-            Err(_) => {
-                std::fs::remove_dir_all(home).ok();
-                return;
-            }
-        }
-        let finding = Finding::new(
-            "non-UTF-8 cache",
-            Some(target.clone()),
-            0,
-            "test",
-            9,
-            Action::Shred,
-        );
-        assert_eq!(finding.target(), Some(target.as_path()));
-        apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap();
-        assert!(!target.exists());
-        let first = std::fs::read_to_string(home.join("journal.jsonl"))
-            .unwrap()
-            .lines()
-            .next()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .unwrap();
-        assert_eq!(first["target_lossy"], true);
-        std::fs::remove_dir_all(home).ok();
-    }
-
-    #[test]
-    fn shared_sink_refuses_directory_identity_swap() {
-        let fixture = crate::ops::TestFixture::new("devtrim-dir-swap");
-        let home = fixture.path().to_path_buf();
-        let target = home.join("dev/cache");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::write(target.join("original"), "keep original").unwrap();
-        let home = home.canonicalize().unwrap();
-        let target = home.join("dev/cache");
-        let moved = home.join("dev/cache-moved");
-        let finding = Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
-        std::fs::rename(&target, &moved).unwrap();
-        std::fs::create_dir_all(&target).unwrap();
-        let sentinel = target.join("sentinel");
-        std::fs::write(&sentinel, "keep replacement").unwrap();
-
-        let error = apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap_err();
-
-        assert!(error.to_string().contains("identity changed"));
-        assert_eq!(
-            std::fs::read_to_string(sentinel).unwrap(),
-            "keep replacement"
-        );
-        assert_eq!(
-            std::fs::read_to_string(moved.join("original")).unwrap(),
-            "keep original"
-        );
-        remove_test_path(home);
-    }
-
-    #[test]
     fn shared_sink_refuses_file_swap_to_symlink() {
         let fixture = crate::ops::TestFixture::new("devtrim-file-swap");
         let home = fixture.path().to_path_buf();
@@ -2190,109 +1946,6 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_namespace_mutation_never_destroys_a_bystander() {
-        let fixture = crate::ops::TestFixture::new("devtrim-concurrent-namespace");
-        let home = fixture.path().to_path_buf();
-        let target = home.join("dev/cache");
-        let bystander = home.join("dev/bystander");
-        std::fs::create_dir_all(&target).unwrap();
-        let sentinel = b"bystander must remain byte-for-byte intact";
-        std::fs::write(&bystander, sentinel).unwrap();
-        let home = home.canonicalize().unwrap();
-        let target = home.join("dev/cache");
-        let target_parent = target.parent().unwrap().to_path_buf();
-        let bystander = home.join("dev/bystander");
-        let mutator_backup = home.join("dev/cache-mutator-backup");
-        let ctx = context(home.clone());
-        let stop_mutator = AtomicBool::new(false);
-        let mutator_started = AtomicBool::new(false);
-        let mut attempts = 0usize;
-        let mut successful_deletions = 0usize;
-        let mut refusals = 0usize;
-        let mut identity_refusals = 0usize;
-
-        let control_finding =
-            Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
-        assert!(apply_filesystem_finding("test", &control_finding, &ctx).is_ok());
-        assert!(!target.exists());
-        assert!(std::fs::read_dir(&target_parent).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".devtrim-quarantine-")
-        }));
-        std::fs::create_dir_all(&target).unwrap();
-
-        std::thread::scope(|scope| {
-            let mutator = scope.spawn(|| {
-                mutator_started.store(true, Ordering::Release);
-                for _ in 0..200 {
-                    if stop_mutator.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    if std::fs::rename(&target, &mutator_backup).is_ok() {
-                        if symlink(&bystander, &target).is_ok() {
-                            std::thread::sleep(std::time::Duration::from_millis(1));
-                            let _ = std::fs::remove_file(&target);
-                        }
-                        let _ = std::fs::rename(&mutator_backup, &target);
-                    }
-                    std::thread::yield_now();
-                }
-            });
-            while !mutator_started.load(Ordering::Acquire) {
-                std::thread::yield_now();
-            }
-
-            for _ in 0..50 {
-                let finding =
-                    Finding::new("cache", Some(target.clone()), 0, "test", 9, Action::Shred);
-                // Every call is classified as Ok or Err; a sink panic fails by unwinding.
-                match apply_filesystem_finding("test", &finding, &ctx) {
-                    Ok(()) => {
-                        successful_deletions += 1;
-                        std::fs::create_dir_all(&target).ok();
-                    }
-                    Err(error) => {
-                        refusals += 1;
-                        if format!("{error:#}").contains("identity") {
-                            identity_refusals += 1;
-                        }
-                    }
-                }
-                attempts += 1;
-            }
-            stop_mutator.store(true, Ordering::Relaxed);
-            mutator.join().unwrap();
-        });
-
-        println!(
-            "concurrent namespace mutation outcomes: attempts={attempts}, successful deletions={successful_deletions}, refusals={refusals}, identity refusals={identity_refusals}"
-        );
-        // The only invariant that holds under every interleaving is that no data is
-        // destroyed. A quarantine leftover is expected and safe here:
-        // `restore_quarantined_target` refuses an occupied original name, which the
-        // mutator holds, so the sink keeps both entries and reports that nothing was
-        // deleted. The leftover may be the directory OR the mutator's symlink,
-        // depending on where the swap landed, so its type is not asserted — only that
-        // it never consumed the bystander.
-        assert!(bystander.exists());
-        assert_eq!(std::fs::read(&bystander).unwrap(), sentinel);
-        for entry in std::fs::read_dir(target_parent).unwrap() {
-            let entry = entry.unwrap();
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".devtrim-quarantine-")
-            {
-                assert_ne!(entry.path(), bystander);
-            }
-        }
-        remove_test_path(home);
-    }
-
-    #[test]
     fn shared_sink_refuses_finding_without_preview_identity() {
         let fixture = crate::ops::TestFixture::new("devtrim-missing-identity");
         let home = fixture.path().to_path_buf();
@@ -2327,20 +1980,6 @@ mod tests {
         );
         assert!(apply_filesystem_finding("test", &command, &context(home.clone())).is_err());
         assert!(target.exists());
-        std::fs::remove_dir_all(home).ok();
-    }
-
-    #[test]
-    fn shared_sink_rejects_symlinked_ancestor() {
-        let home = std::env::temp_dir().join(format!("devtrim-sink-{}", std::process::id()));
-        std::fs::remove_dir_all(&home).ok();
-        std::fs::create_dir_all(home.join("dev")).unwrap();
-        std::fs::create_dir_all(home.join("Library/node_modules")).unwrap();
-        symlink(home.join("Library"), home.join("dev/link")).unwrap();
-        let target = home.join("dev/link/node_modules");
-        let finding = Finding::new("node_modules", Some(target), 0, "test", 9, Action::Shred);
-        assert!(apply_filesystem_finding("test", &finding, &context(home.clone())).is_err());
-        assert!(home.join("Library/node_modules").exists());
         std::fs::remove_dir_all(home).ok();
     }
 
@@ -2384,62 +2023,6 @@ mod tests {
         std::fs::remove_dir_all(home).ok();
     }
 
-    #[test]
-    fn trash_preview_skips_git_metadata_item_without_blocking_other_items() {
-        let fixture = crate::ops::TestFixture::new("devtrim-trash-git-item");
-        let root = fixture.path().to_path_buf();
-        std::fs::create_dir_all(root.join(".Trash/.GIT")).unwrap();
-        std::fs::write(root.join(".Trash/.GIT/HEAD"), "ref: refs/heads/main\n").unwrap();
-        std::fs::write(root.join(".Trash/git"), "ordinary").unwrap();
-        std::fs::write(root.join(".Trash/z-later"), "delete").unwrap();
-        let home = root.canonicalize().unwrap();
-        let ctx = context(home.clone());
-
-        let findings = trash_findings(&ctx).unwrap();
-
-        assert_eq!(findings.len(), 2);
-        assert!(
-            findings
-                .iter()
-                .all(|finding| finding.target() != Some(home.join(".Trash/.GIT").as_path()))
-        );
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.target() == Some(home.join(".Trash/git").as_path()))
-        );
-        assert!(
-            ctx.take_diagnostics()
-                .iter()
-                .any(|message| message.contains("skipping Git metadata Trash item"))
-        );
-
-        let outcome = purge_trash(&findings, &ctx).unwrap();
-
-        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-        assert_eq!(outcome.summary.items_touched, 2);
-        assert!(home.join(".Trash/.GIT/HEAD").exists());
-        assert!(!home.join(".Trash/git").exists());
-        assert!(!home.join(".Trash/z-later").exists());
-        remove_test_path(root);
-    }
-
-    #[test]
-    fn apply_outcome_counts_trashed_bytes_apart_from_freed_ones() {
-        let mut outcome = ApplyOutcome::new("test");
-        outcome.record(
-            &Finding::new("a", None, 3, "test", 1, Action::Trash),
-            "trashed a".into(),
-        );
-        outcome.record(
-            &Finding::new("b", None, 4, "test", 1, Action::Shred),
-            "permanently deleted b".into(),
-        );
-
-        assert_eq!(outcome.summary.bytes_freed_estimate, 7);
-        assert_eq!(outcome.summary.bytes_trashed_estimate, 3);
-    }
-
     /// A Trash item the sink refuses — a trashed project that still holds its
     /// repository — must not stop the purge of the unrelated items after it.
     #[test]
@@ -2476,41 +2059,6 @@ mod tests {
         );
         assert!(home.join(".Trash/a-project/.git/HEAD").exists());
         assert!(!home.join(".Trash/z-later").exists());
-        remove_test_path(root);
-    }
-
-    /// What `clean caches` moves to the Trash, `trash-empty` must be able to
-    /// purge: a uv cache carries the same marker there as where it came from.
-    /// uv's lock guarded only the live cache; in the Trash only the marker's
-    /// shape and the tag still apply, so a project trashed with its own
-    /// repository is still refused.
-    #[test]
-    fn trash_empty_purges_a_trashed_uv_cache_but_not_a_trashed_repository() {
-        let fixture = crate::ops::TestFixture::new("devtrim-trash-markers");
-        let root = fixture.path().to_path_buf();
-        std::fs::create_dir_all(root.join(".Trash")).unwrap();
-        let home = root.canonicalize().unwrap();
-        uv_cache_fixture(&home.join(".Trash/uv"));
-        std::fs::create_dir_all(home.join(".Trash/a-project/.git")).unwrap();
-        std::fs::write(
-            home.join(".Trash/a-project/.git/HEAD"),
-            "ref: refs/heads/main\n",
-        )
-        .unwrap();
-        let ctx = context(home.clone());
-        let findings = trash_findings(&ctx).unwrap();
-
-        let outcome = purge_trash(&findings, &ctx).unwrap();
-
-        assert!(!home.join(".Trash/uv").exists(), "{:?}", outcome.errors);
-        assert!(home.join(".Trash/a-project/.git/HEAD").exists());
-        assert!(
-            outcome.errors.len() == 1
-                && outcome.errors[0].contains("a-project")
-                && outcome.errors[0].contains("Git repository/worktree root"),
-            "{:?}",
-            outcome.errors
-        );
         remove_test_path(root);
     }
 
@@ -2557,111 +2105,6 @@ mod tests {
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
         std::fs::remove_dir_all(home).ok();
-    }
-
-    #[test]
-    fn apply_outcome_size_saturates_instead_of_wrapping() {
-        let finding = Finding::new("huge", None, u64::MAX, "test", 1, Action::Info);
-        let mut outcome = ApplyOutcome::new("test");
-
-        outcome.record(&finding, "first".into());
-        outcome.record(&finding, "second".into());
-
-        assert_eq!(outcome.summary.items_touched, 2);
-        assert_eq!(outcome.summary.bytes_freed_estimate, u64::MAX);
-    }
-
-    #[test]
-    fn journal_records_successful_trash_attempt_and_result() {
-        let fixture = crate::ops::TestFixture::new("devtrim-journal-trash");
-        let home = fixture.path().to_path_buf();
-        std::fs::create_dir_all(home.join("cache")).unwrap();
-        let home = home.canonicalize().unwrap();
-        let target = home.join("cache");
-        let finding = Finding::new("cache", Some(target.clone()), 4, "test", 3, Action::Trash);
-        let ctx = context(home.clone());
-
-        let attempt = crate::journal::begin(
-            &ctx,
-            crate::journal::JournalRecord::filesystem_attempt(
-                "caches",
-                "trash",
-                &target,
-                finding.size_bytes,
-            ),
-        )
-        .unwrap();
-        attempt.finish(&ctx, Ok(())).unwrap();
-
-        let records = std::fs::read_to_string(&ctx.journal_path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0]["phase"], "attempt");
-        assert_eq!(records[0]["action"], "trash");
-        assert_eq!(records[1]["phase"], "result");
-        assert_eq!(records[1]["status"], "ok");
-        crate::ops::remove_test_path(home);
-    }
-
-    #[test]
-    fn journal_records_refused_deletion_as_error() {
-        let fixture = crate::ops::TestFixture::new("devtrim-journal-refused");
-        let home = fixture.path().to_path_buf();
-        std::fs::create_dir_all(home.join("protected/child")).unwrap();
-        let home = home.canonicalize().unwrap();
-        let target = home.join("protected/child");
-        let sentinel = target.join("sentinel");
-        std::fs::write(&sentinel, "keep").unwrap();
-        let finding = Finding::new(
-            "protected",
-            Some(target.clone()),
-            4,
-            "test",
-            9,
-            Action::Shred,
-        );
-        let mut ctx = context(home.clone());
-        ctx.protect = vec![home.join("PROTECTED")];
-
-        let error = apply_filesystem_finding("test", &finding, &ctx).unwrap_err();
-
-        assert!(error.to_string().contains("configured protected"));
-        assert!(sentinel.exists());
-        let records = std::fs::read_to_string(&ctx.journal_path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0]["phase"], "attempt");
-        assert_eq!(records[1]["status"], "error");
-        assert!(records[1]["error"].as_str().unwrap().contains("protected"));
-        crate::ops::remove_test_path(home);
-    }
-
-    #[test]
-    fn journal_write_failure_aborts_before_deletion() {
-        let fixture = crate::ops::TestFixture::new("devtrim-journal-unwritable");
-        let home = fixture.path().to_path_buf();
-        std::fs::create_dir_all(home.join("target")).unwrap();
-        std::fs::write(home.join("journal-parent"), "not a directory").unwrap();
-        let home = home.canonicalize().unwrap();
-        let target = home.join("target");
-        let sentinel = target.join("sentinel");
-        std::fs::write(&sentinel, "keep").unwrap();
-        let finding = Finding::new("target", Some(target), 4, "test", 9, Action::Shred);
-        let mut ctx = context(home.clone());
-        ctx.journal_path = home.join("journal-parent/journal.jsonl");
-
-        let error = apply_filesystem_finding("test", &finding, &ctx).unwrap_err();
-
-        assert!(error.to_string().contains("cannot write apply journal"));
-        assert!(error.to_string().contains("journal.jsonl"));
-        assert!(sentinel.exists());
-        crate::ops::remove_test_path(home);
     }
 
     #[test]

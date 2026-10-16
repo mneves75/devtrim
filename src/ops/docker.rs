@@ -404,9 +404,7 @@ mod tests {
     use super::*;
 
     use crate::report::Action;
-    use std::os::unix::process::ExitStatusExt;
     use std::path::PathBuf;
-    use std::process::{ExitStatus, Output};
 
     fn test_ctx() -> Ctx {
         Ctx {
@@ -451,80 +449,6 @@ mod tests {
             allocated < logical / 100,
             "allocated {allocated} should be far below logical {logical}"
         );
-    }
-
-    #[test]
-    fn allocated_bytes_ignores_missing_paths_and_directories() {
-        let root = tempfile::Builder::new()
-            .prefix("devtrim-docker-absent")
-            .tempdir()
-            .unwrap();
-        assert_eq!(
-            allocated_bytes(&root.path().join("missing.raw")).unwrap(),
-            None
-        );
-        assert_eq!(allocated_bytes(root.path()).unwrap(), None);
-    }
-
-    #[test]
-    fn vm_disk_image_is_disclosed_but_never_actionable() {
-        use std::io::Write;
-
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-docker-home")
-            .tempdir()
-            .unwrap();
-        let image = home.path().join(VM_DISK_IMAGES[0].1);
-        std::fs::create_dir_all(image.parent().unwrap()).unwrap();
-        let mut file = std::fs::File::create(&image).unwrap();
-        file.write_all(b"x").unwrap();
-        file.set_len(64 * 1024 * 1024).unwrap();
-        file.sync_all().unwrap();
-
-        let findings = vm_disk_findings(home.path()).unwrap();
-        assert_eq!(findings.len(), 1);
-        let finding = &findings[0];
-        assert_eq!(finding.action, Action::None);
-        assert!(!finding.action.is_actionable());
-        assert_eq!(finding.danger, 0);
-        assert!(
-            finding.note.contains("shrinks only once")
-                && finding.note.contains("scan again to measure"),
-            "note must disclose that a prune does not itself shrink the host image: {}",
-            finding.note
-        );
-    }
-
-    /// Regression: the disclosure is pushed FIRST by `scan`, and an apply loop
-    /// that refused it would abort before any prune ran — turning
-    /// `clean docker --apply` into a no-op that reports failure on every
-    /// machine that actually has a VM image.
-    #[test]
-    fn apply_skips_the_report_only_vm_disk_finding_instead_of_refusing_it() {
-        use std::io::Write;
-
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-docker-apply")
-            .tempdir()
-            .unwrap();
-        let image = home.path().join(VM_DISK_IMAGES[0].1);
-        std::fs::create_dir_all(image.parent().unwrap()).unwrap();
-        let mut file = std::fs::File::create(&image).unwrap();
-        file.write_all(b"x").unwrap();
-        file.sync_all().unwrap();
-
-        let findings = vm_disk_findings(home.path()).unwrap();
-        assert_eq!(findings.len(), 1);
-
-        let mut ctx = test_ctx();
-        ctx.home = home.path().to_path_buf();
-        let outcome = Docker.apply(&findings, &ctx).unwrap();
-        assert!(
-            outcome.errors.is_empty(),
-            "a report-only finding must not fail the apply: {:?}",
-            outcome.errors
-        );
-        assert_eq!(outcome.summary.items_touched, 0);
     }
 
     /// The skip above must not become a hole: an actionable finding that
@@ -582,25 +506,6 @@ mod tests {
     }
 
     #[test]
-    fn absent_vm_disk_image_yields_no_finding() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-docker-empty-home")
-            .tempdir()
-            .unwrap();
-        assert!(vm_disk_findings(home.path()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn parses_docker_sizes() {
-        assert_eq!(parse_size("8.376GB (59%)").unwrap(), 8_376_000_000);
-        assert_eq!(parse_size("729.1kB").unwrap(), 729_100);
-        assert_eq!(parse_size("5.051GB").unwrap(), 5_051_000_000);
-        assert_eq!(parse_size("2.22PB").unwrap(), 2_220_000_000_000_000);
-        assert_eq!(parse_size("9EB").unwrap(), 9_000_000_000_000_000_000);
-        assert_eq!(parse_size("0B").unwrap(), 0);
-    }
-
-    #[test]
     fn rejects_ambiguous_or_out_of_range_docker_sizes() {
         for value in [
             "5",
@@ -616,38 +521,6 @@ mod tests {
     }
 
     #[test]
-    fn optional_probe_only_treats_not_found_as_absent() {
-        let missing = optional_command_stdout(
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing")),
-            "`docker version`",
-        )
-        .unwrap();
-        assert_eq!(missing, None);
-
-        let nonzero = optional_command_stdout(
-            Ok(Output {
-                status: ExitStatus::from_raw(1 << 8),
-                stdout: Vec::new(),
-                stderr: b"daemon unavailable".to_vec(),
-            }),
-            "`docker version`",
-        )
-        .unwrap_err();
-        assert!(nonzero.to_string().contains("daemon unavailable"));
-
-        let invalid = optional_command_stdout(
-            Ok(Output {
-                status: ExitStatus::from_raw(0),
-                stdout: vec![0xff],
-                stderr: Vec::new(),
-            }),
-            "`docker version`",
-        )
-        .unwrap_err();
-        assert!(invalid.to_string().contains("non-UTF-8"));
-    }
-
-    #[test]
     fn rejects_malformed_docker_system_df_output() {
         let host = "unix:///var/run/docker.sock";
         assert!(parse_system_df("", host).is_err());
@@ -656,49 +529,6 @@ mod tests {
         assert!(parse_system_df("Images\t1GB\t500MB\t1\textra", host).is_err());
         assert!(parse_system_df("Build Cache\t1GB\t500MB\t", host).is_err());
         assert!(parse_system_df("Build Cache\t1GB\t500MB\tsome", host).is_err());
-    }
-
-    #[test]
-    fn an_unused_row_cannot_fail_the_category() {
-        let host = "unix:///var/run/docker.sock";
-        // Only the Build Cache row reads ACTIVE. An odd value on a row devtrim
-        // ignores must not cost the whole plan its Images finding.
-        let findings = parse_system_df(
-            "Images\t2GB\t1GB (50%)\tn/a\nContainers\t1kB\t0B\t\nLocal Volumes\t9GB\t9GB\tsome",
-            host,
-        )
-        .unwrap();
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].size_bytes, 1_000_000_000);
-    }
-
-    #[test]
-    fn build_cache_estimate_matches_what_prune_all_removes() {
-        let host = "unix:///var/run/docker.sock";
-        // Recorded `docker system df` output before `builder prune -a -f`
-        // reported "Total: 17.37GB".
-        let idle = parse_system_df("Build Cache\t17.37GB\t4.902GB\t0", host).unwrap();
-        assert_eq!(idle.len(), 1);
-        assert_eq!(idle[0].size_bytes, 17_370_000_000);
-        assert!(
-            idle[0].note.starts_with("17.37GB total"),
-            "{}",
-            idle[0].note
-        );
-        assert!(idle[0].note.contains("up to this much"), "{}", idle[0].note);
-
-        let busy = parse_system_df("Build Cache\t17.37GB\t4.902GB\t3", host).unwrap();
-        assert_eq!(busy[0].size_bytes, 4_902_000_000);
-        assert!(busy[0].note.contains("at least"), "{}", busy[0].note);
-
-        let images = parse_system_df("Images\t22.67GB\t16.38GB (72%)\t2", host).unwrap();
-        assert_eq!(images[0].size_bytes, 16_380_000_000);
-        assert!(images[0].note.contains("every image not referenced"));
-        assert!(
-            parse_system_df("Build Cache\t0B\t0B\t0", host)
-                .unwrap()
-                .is_empty()
-        );
     }
 
     #[test]

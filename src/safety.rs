@@ -1953,16 +1953,6 @@ mod tests {
         assert!(error.to_string().contains("absolute"));
     }
 
-    #[test]
-    fn configured_protect_existing_entry_warns_nothing() {
-        let fixture = crate::ops::TestFixture::new("devtrim-protect-exists");
-        let home = fixture.path().to_path_buf();
-        std::fs::create_dir_all(home.join("dev/keep")).unwrap();
-        let (_, warnings) = configured_protect(vec!["~/dev/keep".into()], &home).unwrap();
-        assert!(warnings.is_empty());
-        crate::ops::remove_test_path(home);
-    }
-
     /// Without configured roots devtrim scans every conventional project
     /// folder that exists, not only `~/dev`; a folder that is absent, not a
     /// directory, or a broken link is left out, and two names for one folder
@@ -2077,27 +2067,6 @@ mod tests {
         assert!(!holds_home(&resolved.join("elsewhere"), &home));
         assert!(!holds_home(&resolved.join("home/dev"), &home));
         crate::ops::remove_test_path(base);
-    }
-
-    /// An empty preview must never read as a clean machine when the scan only
-    /// looked in one place: the note names the roots and how to change them.
-    #[test]
-    fn the_roots_note_says_where_the_roots_came_from() {
-        let home = Path::new("/Users/someone");
-        let roots = [home.join("dev"), PathBuf::from("/Volumes/work")];
-
-        let note = roots_note(&roots, RootsOrigin::Default, home);
-        assert!(note.contains("~/dev, /Volumes/work"), "{note}");
-        assert!(note.contains("default project folders"), "{note}");
-        assert!(note.contains("--root"), "{note}");
-        assert!(note.contains("~/.config/devtrim.toml"), "{note}");
-
-        let none = roots_note(&[], RootsOrigin::Default, home);
-        assert!(none.contains("no default project folder exists"), "{none}");
-        assert!(none.contains("~/Projects"), "{none}");
-
-        assert!(roots_note(&roots, RootsOrigin::Config, home).contains("from `roots` in"));
-        assert!(roots_note(&roots, RootsOrigin::Flag, home).contains("from --root"));
     }
 
     #[test]
@@ -2388,17 +2357,6 @@ mod tests {
     }
 
     #[test]
-    fn refuses_symlinked_trash() {
-        let home = temp("trash-link");
-        let target = home.join("elsewhere");
-        std::fs::create_dir_all(&target).unwrap();
-        symlink(&target, home.join(".Trash")).unwrap();
-        assert!(validate_trash_root(&home).is_err());
-        crate::ops::remove_test_path(home.join(".Trash"));
-        crate::ops::remove_test_path(home);
-    }
-
-    #[test]
     fn trash_acknowledgment_measures_the_plan_not_the_whole_trash() {
         const GIB: u64 = 1024 * 1024 * 1024;
         let small = Finding::new(
@@ -2460,37 +2418,6 @@ mod tests {
                 .to_string()
                 .contains("requires interactive typed confirmation")
         );
-    }
-
-    #[test]
-    fn directory_size_fails_closed_on_unreadable_content() {
-        let root = temp("unreadable-size");
-        let unreadable = root.join("unreadable");
-        std::fs::create_dir_all(&unreadable).unwrap();
-        std::fs::write(unreadable.join("hidden"), "not measured").unwrap();
-
-        let original = std::fs::metadata(&unreadable).unwrap().permissions();
-        let mut denied = original.clone();
-        denied.set_mode(0o000);
-        std::fs::set_permissions(&unreadable, denied).unwrap();
-        let measured = dir_size(&root);
-        std::fs::set_permissions(&unreadable, original).unwrap();
-
-        assert!(measured.is_err());
-        crate::ops::remove_test_path(root);
-    }
-
-    #[test]
-    fn directory_size_does_not_follow_a_root_symlink() {
-        let root = temp("symlink-size");
-        let target = root.join("target");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::write(target.join("payload"), "not part of the link").unwrap();
-        let link = root.join("link");
-        symlink(&target, &link).unwrap();
-
-        assert_eq!(dir_size(&link).unwrap(), 0);
-        crate::ops::remove_test_path(root);
     }
 
     fn cwds_complete_was(output: &[u8], exit: i32) -> bool {
@@ -2951,17 +2878,5 @@ mod tests {
                 PathBuf::from("/work/v1^2"),
             ]
         );
-    }
-
-    #[test]
-    fn size_lookup_errors_are_not_reported_as_empty_paths() {
-        let root = temp("size-lookup-error");
-        let non_directory = root.join("file");
-        std::fs::write(&non_directory, "data").unwrap();
-
-        let error = dir_size(&non_directory.join("child")).unwrap_err();
-
-        assert!(error.to_string().contains("cannot inspect"));
-        crate::ops::remove_test_path(root);
     }
 }

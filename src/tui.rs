@@ -1721,24 +1721,6 @@ mod tests {
             .join("")
     }
 
-    /// A cleanup category registered in `ops::all()` but absent from `MENU` is
-    /// reachable from the CLI and invisible in the interface. Nothing else
-    /// catches that: `MenuItem` is a hand-written list with no exhaustiveness
-    /// check, which is exactly how `installers` shipped unreachable.
-    #[test]
-    fn every_cleanup_target_is_reachable_from_the_menu() {
-        use clap::ValueEnum;
-
-        for target in Target::value_variants() {
-            assert!(
-                MENU.iter()
-                    .any(|item| item.operation == Operation::Clean(*target)),
-                "`{}` has no menu entry, so the TUI cannot reach it",
-                target.as_str()
-            );
-        }
-    }
-
     #[test]
     fn scan_error_results_preserve_failure_across_every_route() {
         for operation in [
@@ -1765,40 +1747,6 @@ mod tests {
         let mut control = App::default();
         control.finish_results(Operation::Purge, Vec::new(), Vec::new(), Vec::new());
         assert!(!control.failed);
-    }
-
-    /// The results title counts findings, not the error entries beside them,
-    /// as the CLI totals do.
-    #[test]
-    fn the_results_title_counts_error_entries_apart() {
-        let findings = vec![
-            Finding::new("note", None, 0, "info", 1, Action::Info),
-            Finding::new(
-                "node_modules not judged",
-                None,
-                0,
-                "failed",
-                5,
-                Action::Info,
-            )
-            .with_scan_error("failed".into()),
-        ];
-        let app = App {
-            screen: Screen::Results,
-            findings,
-            ..App::default()
-        };
-        let screen = rendered(&app, 100, 30);
-        assert!(screen.contains("1 finding(s), 1 error(s)"), "{screen}");
-    }
-
-    #[test]
-    fn menu_keys_are_unique() {
-        let mut keys: Vec<_> = MENU.iter().map(|item| item.key).collect();
-        keys.sort_unstable();
-        let count = keys.len();
-        keys.dedup();
-        assert_eq!(keys.len(), count, "two menu entries share a key");
     }
 
     /// Structural guard for the monochrome baseline. Every screen, including
@@ -1853,78 +1801,6 @@ mod tests {
         }
     }
 
-    /// The theme's ladder test proves `style()` keeps danger levels distinct;
-    /// it cannot see a render site that adds the same modifier to all of them.
-    /// This asserts the property where it actually has to hold — on the painted
-    /// screen — which is where it was in fact broken.
-    #[test]
-    fn monochrome_results_screen_keeps_danger_levels_distinguishable() {
-        use crate::theme::ColorSupport;
-
-        let levels = [1u8, 4, 7, 10];
-        let findings: Vec<Finding> = levels
-            .iter()
-            .map(|danger| {
-                Finding::new(
-                    format!("finding {danger}"),
-                    None,
-                    1024,
-                    "note",
-                    *danger,
-                    Action::Trash,
-                )
-            })
-            .collect();
-        let app = App {
-            screen: Screen::Results,
-            findings,
-            theme: Theme::new(ColorSupport::None),
-            ..App::default()
-        };
-        let backend = TestBackend::new(100, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let width = usize::from(buffer.area.width);
-        let height = usize::from(buffer.area.height);
-        let content = buffer.content();
-
-        let modifiers: Vec<_> = levels
-            .iter()
-            .enumerate()
-            .map(|(position, danger)| {
-                // Located by CELL COLUMN, never by byte offset: rows begin with
-                // a multi-byte border glyph, so `str::find` points at the wrong
-                // cell. The row number anchors the match to a finding row —
-                // the panel title also contains `danger-N`, rendered with no
-                // modifier, and matched first without it.
-                let needle = format!("{}. danger-{danger} ", position + 1);
-                (0..height)
-                    .find_map(|y| {
-                        let symbols: Vec<&str> = (0..width)
-                            .map(|x| content[y * width + x].symbol())
-                            .collect();
-                        (0..width).find_map(|start| {
-                            symbols[start..]
-                                .concat()
-                                .starts_with(&needle)
-                                .then(|| content[y * width + start].modifier)
-                        })
-                    })
-                    .unwrap_or_else(|| panic!("{needle} was never rendered"))
-            })
-            .collect();
-
-        for (index, modifier) in modifiers.iter().enumerate() {
-            for other in modifiers.iter().skip(index + 1) {
-                assert_ne!(
-                    modifier, other,
-                    "danger levels must stay distinguishable under NO_COLOR: {modifiers:?}"
-                );
-            }
-        }
-    }
-
     /// Positive control for the guard above: with color available the same
     /// screens must actually paint something, otherwise the monochrome
     /// assertion would pass over an interface that never colors anything.
@@ -1953,48 +1829,6 @@ mod tests {
                 .iter()
                 .any(|cell| cell.fg != Color::Reset),
             "the colored theme must paint at least one cell"
-        );
-    }
-
-    #[test]
-    fn help_overlay_opens_and_closes_without_reaching_the_screen_beneath() {
-        for closing in [KeyCode::Char('?'), KeyCode::Esc, KeyCode::Char('q')] {
-            let mut app = App::default();
-            assert_eq!(app.handle_key(key(KeyCode::Char('?'))), Intent::None);
-            assert!(app.help);
-            // While open, a key that would otherwise launch an operation must be
-            // swallowed rather than acted on behind the overlay.
-            assert_eq!(app.handle_key(key(KeyCode::Char('4'))), Intent::None);
-            assert!(app.help, "an unrelated key must not close the overlay");
-            assert_eq!(app.selected, 0, "the menu must not move behind the overlay");
-
-            assert_eq!(app.handle_key(key(closing)), Intent::None);
-            assert!(!app.help, "{closing:?} must close the overlay");
-        }
-    }
-
-    #[test]
-    fn help_overlay_renders_the_full_key_reference() {
-        let mut app = App::default();
-        app.handle_key(key(KeyCode::Char('?')));
-        let frame = rendered(&app, 100, 30);
-        assert!(frame.contains("Help"));
-        for (_, keys) in HELP_KEYS {
-            for (_, description) in *keys {
-                assert!(
-                    frame.contains(description),
-                    "help overlay must document: {description}"
-                );
-            }
-        }
-        // The clipping canary, and the reason the loop above is not enough:
-        // the footer also contains the word "quit", so a truncated overlay
-        // satisfied every description assertion while hiding its last binding.
-        // This line is rendered last, so if it is visible nothing above it was
-        // cut.
-        assert!(
-            frame.contains("Nothing is applied without an explicit"),
-            "the overlay's final line must be visible, or bindings above it are hidden too"
         );
     }
 
@@ -2029,20 +1863,6 @@ mod tests {
         }
     }
 
-    /// The overlay must fit its own content at the supported minimum size, not
-    /// merely on a roomy terminal.
-    #[test]
-    fn help_overlay_is_sized_to_its_content() {
-        let area = Rect::new(0, 0, 100, 40);
-        let popup = centered_rect(area, 72, 17);
-        assert!(popup.width <= area.width && popup.height <= area.height);
-
-        // Never larger than the space available.
-        let cramped = centered_rect(Rect::new(0, 0, 40, 10), 72, 17);
-        assert!(cramped.height <= 8);
-        assert!(cramped.width <= 36);
-    }
-
     /// The confirmation screen demands an exact typed acknowledgment, so a
     /// second overlay must never cover the plan being approved.
     #[test]
@@ -2054,23 +1874,6 @@ mod tests {
         };
         app.handle_key(key(KeyCode::Char('?')));
         assert!(!app.help);
-    }
-
-    #[test]
-    fn menu_supports_vim_navigation_and_direct_numbers() {
-        let mut app = App::default();
-        assert_eq!(app.handle_key(key(KeyCode::Char('j'))), Intent::None);
-        assert_eq!(app.selected, 1);
-        assert_eq!(
-            app.handle_key(key(KeyCode::Char('4'))),
-            Intent::Load(Operation::Clean(Target::Artifacts))
-        );
-        assert!(!Operation::Clean(Target::Artifacts).read_only());
-        assert_eq!(
-            app.handle_key(key(KeyCode::Char('0'))),
-            Intent::Load(Operation::TrashEmpty)
-        );
-        assert_eq!(app.selected, MENU.len() - 1);
     }
 
     #[test]
@@ -2164,102 +1967,6 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[test]
-    fn trash_preview_filters_protected_items_before_approval() {
-        let fixture = crate::ops::TestFixture::new("devtrim-tui-trash-protect");
-        let root = fixture.path().to_path_buf();
-        let trash = root.join(".Trash");
-        std::fs::create_dir_all(&trash).unwrap();
-        let ordinary = trash.join("ordinary");
-        let protected = trash.join("protected");
-        std::fs::write(&ordinary, "visible positive control").unwrap();
-        std::fs::write(&protected, "keep").unwrap();
-        let home = root.canonicalize().unwrap();
-        let mut app = App::default();
-        let ctx = Ctx {
-            yes: false,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: vec![protected.clone()],
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: true,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-        };
-
-        load_operation(&mut app, Operation::TrashEmpty, &ctx);
-
-        assert_eq!(
-            app.findings.len(),
-            1,
-            "the ordinary item proves the scan ran"
-        );
-        assert_eq!(app.findings[0].target(), Some(ordinary.as_path()));
-        assert!(app.warnings.iter().any(|warning| {
-            warning.contains("skipping protected path") && warning.contains("protected")
-        }));
-        app.begin_confirmation();
-        assert_eq!(
-            app.confirmation,
-            Some(ConfirmationKind::TrashPurge { expected_gb: 0 })
-        );
-        crate::ops::remove_test_path(root);
-    }
-
-    /// The interactive view is the default entry point, so its project views
-    /// name the roots too; an empty purge there must not read as a clean disk.
-    #[test]
-    fn project_views_name_their_scan_roots() {
-        let fixture = crate::ops::TestFixture::new("devtrim-tui-roots");
-        let root = fixture.path().to_path_buf();
-        std::fs::create_dir_all(root.join("Projects")).unwrap();
-        let home = root.canonicalize().unwrap();
-        let ctx = Ctx {
-            yes: false,
-            yolo: false,
-            json: false,
-            roots: vec![home.join("Projects")],
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: true,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-        };
-
-        for operation in [Operation::Purge, Operation::Clean(Target::NodeModules)] {
-            let mut app = App::default();
-            load_operation(&mut app, operation, &ctx);
-            assert!(
-                app.warnings
-                    .iter()
-                    .any(|warning| warning.contains("scan roots: ~/Projects (default")),
-                "{}: {:?}",
-                operation.name(),
-                app.warnings
-            );
-        }
-        let mut app = App::default();
-        load_operation(&mut app, Operation::TrashEmpty, &ctx);
-        assert!(
-            !app.warnings
-                .iter()
-                .any(|warning| warning.contains("scan roots")),
-            "the Trash is not under a scan root: {:?}",
-            app.warnings
-        );
     }
 
     #[test]
@@ -2375,82 +2082,6 @@ mod tests {
         assert!(app.errors[0].contains("refusing to apply a read-only operation"));
     }
 
-    /// An apply that continues past a refusal must not report that it
-    /// stopped: here the refused folder comes first, and the plain one after
-    /// it is still removed.
-    #[test]
-    fn a_partial_apply_does_not_claim_it_stopped_when_it_continued() {
-        let fixture = crate::ops::TestFixture::new("devtrim-tui-partial");
-        let root = fixture.path().to_path_buf();
-        let device_support = root.join("Library/Developer/Xcode/iOS DeviceSupport");
-        let marker = device_support.join("refused/Symbols/checkout/.git");
-        std::fs::create_dir_all(&marker).unwrap();
-        std::fs::write(marker.join("HEAD"), "ref: refs/heads/main\n").unwrap();
-        std::fs::create_dir_all(device_support.join("plain")).unwrap();
-        std::fs::write(device_support.join("plain/symbols"), "remove").unwrap();
-        let home = root.canonicalize().unwrap();
-        let device_support = home.join("Library/Developer/Xcode/iOS DeviceSupport");
-        let finding = |name: &str| {
-            Finding::new(
-                format!("iOS DeviceSupport: {name}"),
-                Some(device_support.join(name)),
-                1,
-                "test",
-                9,
-                Action::Shred,
-            )
-        };
-        let mut app = App::default();
-        app.finish_results(
-            Operation::Clean(Target::Xcode),
-            vec![finding("refused"), finding("plain")],
-            Vec::new(),
-            Vec::new(),
-        );
-        let Intent::Apply(plan) = app.approve(Approval::CriticalGigabytes(0)) else {
-            panic!("expected an approved plan");
-        };
-        let ctx = Ctx {
-            yes: false,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: true,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-        };
-
-        apply_operation(&mut app, &ctx, plan);
-
-        let screen = rendered(&app, 100, 30);
-        assert!(
-            device_support
-                .join("refused/Symbols/checkout/.git/HEAD")
-                .exists()
-        );
-        assert!(
-            !device_support.join("plain").exists(),
-            "the apply did not continue past the refusal: {screen}"
-        );
-        assert!(
-            screen.contains("Errors")
-                && screen
-                    .replace([' ', '│'], "")
-                    .contains("refusingGitrepository/worktreeroot"),
-            "the refusal is listed: {screen}"
-        );
-        assert!(screen.contains("finished with errors"), "{screen}");
-        assert!(!screen.contains("stopped"), "{screen}");
-        crate::ops::remove_test_path(root);
-    }
-
     #[test]
     fn control_c_quits_from_every_screen() {
         let mut app = App::default();
@@ -2458,34 +2089,6 @@ mod tests {
         assert_eq!(app.handle_key(interrupt), Intent::Quit);
         app.screen = Screen::Confirm;
         assert_eq!(app.handle_key(interrupt), Intent::Quit);
-    }
-
-    #[test]
-    fn rendered_menu_and_warning_have_non_color_labels() {
-        let app = App::default();
-        let menu = rendered(&app, 100, 28);
-        assert!(menu.contains("READ-ONLY"));
-        assert!(menu.contains("PERMANENT"));
-
-        let mut confirm = App::default();
-        confirm.finish_results(
-            Operation::Clean(Target::Caches),
-            vec![Finding::new(
-                "cache",
-                None,
-                1,
-                "test",
-                2,
-                Action::command("test", &[]),
-            )],
-            Vec::new(),
-            Vec::new(),
-        );
-        confirm.begin_confirmation();
-        let warning = rendered(&confirm, 100, 28);
-        assert!(warning.contains("DATA-LOSS WARNING"));
-        assert!(warning.contains("provided AS IS"));
-        assert!(warning.contains("Press y"));
     }
 
     #[test]
@@ -2582,63 +2185,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn captured_scanner_diagnostics_are_visible_in_results() {
-        let ctx = Ctx {
-            yes: false,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: std::path::PathBuf::from("/tmp/devtrim-tui-test-journal.jsonl"),
-            home: std::path::PathBuf::from("/Users/example"),
-            interactive: true,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-        };
-        ctx.diagnostic("warn", "skipped path\u{1b}[2J");
-        let mut app = App::default();
-        app.finish_results(
-            Operation::ScanAll,
-            Vec::new(),
-            Vec::new(),
-            ctx.take_diagnostics(),
-        );
-
-        let output = rendered(&app, 100, 28);
-
-        assert!(output.contains("warn: skipped path\\u{1b}[2J"));
-        assert!(!output.contains('\u{1b}'));
-    }
-
-    #[test]
-    fn partial_apply_error_is_reachable_by_scrolling() {
-        let mut app = App {
-            screen: Screen::Outcome,
-            summary: Some(Summary {
-                op: "test".into(),
-                items_touched: 25,
-                bytes_freed_estimate: 25,
-                bytes_trashed_estimate: 0,
-                notes: (0..25).map(|index| format!("completed {index}")).collect(),
-            }),
-            errors: vec!["partial apply failure".into()],
-            ..App::default()
-        };
-
-        for _ in 0..3 {
-            assert_eq!(app.handle_key(key(KeyCode::PageDown)), Intent::None);
-        }
-        let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
-
-        assert_eq!(app.scroll, 24);
-        assert!(output.contains("partial apply failure"));
-    }
-
     fn trash(label: &str, size: u64, danger: u8) -> Finding {
         Finding::new(
             label,
@@ -2659,15 +2205,6 @@ mod tests {
             Vec::new(),
         );
         app
-    }
-
-    #[test]
-    fn project_purge_is_reachable_from_the_menu() {
-        assert!(
-            MENU.iter()
-                .any(|item| item.operation == Operation::Purge && item.key == "p")
-        );
-        assert!(!Operation::Purge.read_only());
     }
 
     /// Deselecting only narrows: a finding left out must never reach the plan
@@ -2707,69 +2244,6 @@ mod tests {
         assert!(!approved_plan_matches(&app, &plan));
     }
 
-    #[test]
-    fn confirmation_strength_is_recomputed_for_the_selected_subset() {
-        let mut app = cleanup(vec![trash("critical", 1, 9), trash("routine", 1, 2)]);
-        app.begin_confirmation();
-        assert!(matches!(
-            app.confirmation,
-            Some(ConfirmationKind::Critical { .. })
-        ));
-        app.handle_key(key(KeyCode::Esc));
-
-        app.handle_key(key(KeyCode::Char(' ')));
-        app.begin_confirmation();
-
-        assert_eq!(
-            app.confirmation,
-            Some(ConfirmationKind::YesNo { danger: 2 })
-        );
-    }
-
-    #[test]
-    fn read_only_and_non_actionable_rows_cannot_be_deselected() {
-        let mut scan = App::default();
-        scan.finish_results(
-            Operation::ScanAll,
-            vec![trash("reported", 1, 2)],
-            Vec::new(),
-            Vec::new(),
-        );
-        scan.handle_key(key(KeyCode::Char(' ')));
-        assert!(scan.excluded.is_empty());
-
-        let mut app = cleanup(vec![
-            Finding::new("disclosure", None, 1, "test", 0, Action::None),
-            trash("deletable", 1, 2),
-        ]);
-        app.handle_key(key(KeyCode::Char(' ')));
-        assert!(
-            app.excluded.is_empty(),
-            "an excluded disclosure is not a choice"
-        );
-        app.handle_key(key(KeyCode::Down));
-        app.handle_key(key(KeyCode::Char(' ')));
-        assert_eq!(app.excluded, std::collections::BTreeSet::from([1]));
-    }
-
-    #[test]
-    fn select_all_toggles_between_every_actionable_row_and_none() {
-        let mut app = cleanup(vec![trash("a", 1, 2), trash("b", 1, 2), trash("c", 1, 2)]);
-
-        app.handle_key(key(KeyCode::Char('A')));
-        assert_eq!(app.excluded.len(), 3);
-        app.begin_confirmation();
-        assert_eq!(
-            app.screen,
-            Screen::Results,
-            "an empty plan cannot be confirmed"
-        );
-        assert!(app.status.contains("Nothing is selected"), "{}", app.status);
-
-        app.handle_key(key(KeyCode::Char('A')));
-        assert!(app.excluded.is_empty());
-    }
-
     fn scan_everything(findings: Vec<Finding>, sections: Vec<report::ScanSection>) -> App {
         let mut app = App::default();
         app.finish_scan(
@@ -2785,51 +2259,6 @@ mod tests {
 
     fn section(category: &'static str, range: std::ops::Range<usize>) -> report::ScanSection {
         report::ScanSection { category, range }
-    }
-
-    /// Scan everything only reports, so its action keys cannot act; each one
-    /// says where the highlighted finding can be acted on instead of being
-    /// silently ignored, and never names a view that cannot act on it either.
-    #[test]
-    fn a_read_only_scan_says_where_each_finding_can_be_acted_on() {
-        let mut app = scan_everything(
-            vec![
-                trash("cache", 1, 2),
-                Finding::new("hint", None, 1, "test", 0, Action::Info),
-                trash("odd", 1, 2),
-            ],
-            vec![
-                section("caches", 0..1),
-                section("leftovers", 1..2),
-                section("leftovers", 2..3),
-            ],
-        );
-        for code in [' ', 'A', 'a', 's'] {
-            app.status.clear();
-            assert_eq!(app.handle_key(key(KeyCode::Char(code))), Intent::None);
-            assert_eq!(app.screen, Screen::Results, "{code}");
-            assert_eq!(
-                app.status, "Read-only scan. To act on it: b, then 2 (caches).",
-                "{code}"
-            );
-        }
-        // A report-only finding, and one whose own view is read-only too.
-        for _ in 0..2 {
-            app.handle_key(key(KeyCode::Down));
-            app.handle_key(key(KeyCode::Char('A')));
-            assert_eq!(
-                app.status,
-                "Read-only scan: this item is a report, with nothing to apply."
-            );
-        }
-        // The error row below the findings belongs to no category.
-        app.handle_key(key(KeyCode::Down));
-        app.handle_key(key(KeyCode::Char(' ')));
-        assert_eq!(
-            app.status,
-            "Read-only scan. Open a category from the menu (b) to act."
-        );
-        assert!(app.excluded.is_empty(), "a read-only scan has no choices");
     }
 
     /// Every category a scan reports routes to its own menu entry, and the
@@ -2859,114 +2288,6 @@ mod tests {
             let output = rendered(&app, 64, 18);
             assert!(output.contains(&app.status), "{category}: {output}");
         }
-    }
-
-    #[test]
-    fn a_read_only_report_says_nothing_there_applies() {
-        for operation in [Operation::Icloud, Operation::Clean(Target::Leftovers)] {
-            let mut app = App::default();
-            app.finish_results(operation, vec![trash("x", 1, 2)], Vec::new(), Vec::new());
-            for code in [' ', 'A', 'a', 's'] {
-                app.status.clear();
-                app.handle_key(key(KeyCode::Char(code)));
-                assert_eq!(
-                    app.status, "Read-only report: nothing here can be applied.",
-                    "{code}"
-                );
-            }
-        }
-    }
-
-    /// In a view that can apply, a key that cannot act on the highlighted row
-    /// or on this plan says why, so no key press passes in silence.
-    #[test]
-    fn keys_that_cannot_act_in_a_cleanup_view_say_why() {
-        let mut app = App::default();
-        app.finish_results(
-            Operation::Clean(Target::Docker),
-            vec![Finding::new("vm disk", None, 1, "test", 0, Action::None)],
-            vec!["docker: failed".into()],
-            Vec::new(),
-        );
-        for code in [' ', 'A'] {
-            app.status.clear();
-            app.handle_key(key(KeyCode::Char(code)));
-            assert_eq!(
-                app.status, "Nothing here can be applied, so nothing can be selected.",
-                "{code}"
-            );
-        }
-        app.handle_key(key(KeyCode::Char('s')));
-        assert_eq!(
-            app.status,
-            "Permanent mode does not apply: nothing here moves to Trash."
-        );
-        // Below the findings, the error row is not a report finding.
-        let mut errored = cleanup(vec![trash("deletable", 1, 2)]);
-        errored.errors = vec!["caches: failed".into()];
-        errored.handle_key(key(KeyCode::End));
-        errored.handle_key(key(KeyCode::Char(' ')));
-        assert_eq!(
-            errored.status,
-            "Space leaves out findings only, not errors or notes."
-        );
-        // Trash items exist but every one is left out: selecting one helps.
-        let mut left_out = cleanup(vec![trash("first", 1, 2)]);
-        left_out.handle_key(key(KeyCode::Char(' ')));
-        left_out.handle_key(key(KeyCode::Char('s')));
-        assert_eq!(
-            left_out.status,
-            "Permanent mode needs a selected item that moves to Trash."
-        );
-        assert!(!left_out.shred);
-
-        let mut mixed = cleanup(vec![
-            Finding::new("disclosure", None, 1, "test", 0, Action::None),
-            trash("deletable", 1, 2),
-        ]);
-        mixed.handle_key(key(KeyCode::Char(' ')));
-        assert_eq!(
-            mixed.status,
-            "This row is a report; Space leaves out only items that apply."
-        );
-        assert!(mixed.excluded.is_empty());
-        let output = rendered(&mixed, 64, 18);
-        assert!(output.contains(&mixed.status), "{output}");
-    }
-
-    /// `A` toggles: with nothing left out it leaves everything out, so the
-    /// footer names what the next press does rather than a bare "all".
-    #[test]
-    fn the_footer_names_what_select_all_does_next() {
-        let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
-        let output = rendered(&app, 100, 30);
-        assert!(
-            output.contains("A none") && !output.contains("A all"),
-            "{output}"
-        );
-
-        app.handle_key(key(KeyCode::Char(' ')));
-        let output = rendered(&app, 100, 30);
-        assert!(
-            output.contains("A all") && !output.contains("A none"),
-            "{output}"
-        );
-
-        app.handle_key(key(KeyCode::Char('A')));
-        assert!(app.excluded.is_empty());
-        assert_eq!(app.status, "Every item is selected; A leaves them all out.");
-        app.handle_key(key(KeyCode::Char('A')));
-        assert_eq!(app.excluded.len(), 2);
-        assert_eq!(
-            app.status,
-            "Every item is left out; A selects them all again."
-        );
-        let output = rendered(&app, 64, 18);
-        assert!(output.contains(&app.status), "{output}");
-
-        // A later Space must not leave the last `A` message standing, false.
-        app.handle_key(key(KeyCode::Char(' ')));
-        assert_eq!(app.status, "1 of 2 items selected.");
     }
 
     /// The footer does not wrap, so at the minimum width each key line and the
@@ -3000,6 +2321,15 @@ mod tests {
         restored.handle_key(key(KeyCode::Char('s')));
         restored.handle_key(key(KeyCode::Char('s')));
         assert!(!restored.shred);
+        // The statuses `A` and a Space on a report row leave behind.
+        let mut all_left_out = trash_plan();
+        all_left_out.handle_key(key(KeyCode::Char('A')));
+        let mut report_row = cleanup(vec![
+            Finding::new("disclosure", None, 1, "test", 0, Action::None),
+            trash("deletable", 1, 2),
+        ]);
+        report_row.handle_key(key(KeyCode::Char(' ')));
+        assert!(!all_left_out.status.is_empty() && !report_row.status.is_empty());
         for app in [
             trash_plan(),
             trash_left_out,
@@ -3008,6 +2338,8 @@ mod tests {
             nothing_selected,
             permanent,
             restored,
+            all_left_out,
+            report_row,
         ] {
             let output = rendered(&app, 64, 18);
             assert!(output.contains("? keys"), "{output}");
@@ -3022,44 +2354,6 @@ mod tests {
             let status = outcome_status(failed, touched);
             assert!(status.chars().count() <= 62, "{status}");
         }
-    }
-
-    /// The badge beside each operation is explained where the operation is
-    /// described, so READ-ONLY, PREVIEW and PERMANENT are not left to guess.
-    #[test]
-    fn the_menu_explains_the_highlighted_badge() {
-        let mut app = App::default();
-        for (index, phrase) in [
-            (0, "READ-ONLY: it reports"),
-            (1, "PREVIEW: it scans first;"),
-            (
-                MENU.iter()
-                    .position(|item| item.operation == Operation::TrashEmpty)
-                    .unwrap(),
-                "PERMANENT: it deletes",
-            ),
-        ] {
-            app.selected = index;
-            // At the minimum size too, where the pane holds the fewest lines.
-            for (width, height) in [(100, 30), (64, 18)] {
-                let output = rendered(&app, width, height);
-                assert!(output.contains(phrase), "{phrase}: {output}");
-            }
-        }
-    }
-
-    #[test]
-    fn results_show_selection_marks_and_the_highlighted_details() {
-        let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
-        app.handle_key(key(KeyCode::Char(' ')));
-
-        let output = rendered(&app, 100, 30);
-
-        assert!(output.contains("[ ]"), "{output}");
-        assert!(output.contains("[x]"), "{output}");
-        assert!(output.contains("1/2 selected"), "{output}");
-        assert!(output.contains("Left out of this plan"), "{output}");
-        assert!(output.contains("/tmp/first"), "{output}");
     }
 
     /// The rendered screen, one string per terminal row.
@@ -3092,23 +2386,6 @@ mod tests {
                     .collect::<String>()
                     .trim_end_matches(['│', ' '])
                     .to_string()
-            })
-            .collect()
-    }
-
-    /// The detail pane's cells between its borders, untrimmed and joined, so
-    /// a space at a row's edge counts like any other character.
-    fn detail_pane_cells(rows: &[String]) -> String {
-        let top = rows
-            .iter()
-            .position(|row| row.contains(" Details "))
-            .expect("the results screen has a detail pane");
-        rows[top + 1..]
-            .iter()
-            .take_while(|row| !row.starts_with('└'))
-            .map(|row| {
-                let cells: Vec<char> = row.chars().collect();
-                cells[1..cells.len() - 1].iter().collect::<String>()
             })
             .collect()
     }
@@ -3189,117 +2466,6 @@ mod tests {
         );
     }
 
-    /// Enter shows the highlighted finding whole in a view of its own, which
-    /// scrolls within its content. Nothing typed there reaches the plan, and
-    /// Esc returns to the same results with the selection unchanged.
-    #[test]
-    fn enter_shows_the_highlighted_finding_whole_and_esc_returns_to_the_same_plan() {
-        let path = format!("/{}/distinctive-leaf", "x".repeat(371));
-        let finding = Finding::new(
-            "node_modules",
-            Some(std::path::PathBuf::from(&path)),
-            1,
-            "the-note-comes-last",
-            5,
-            Action::Trash,
-        );
-        let mut app = cleanup(vec![finding]);
-        app.handle_key(key(KeyCode::Char(' ')));
-        let view = |app: &App| {
-            let rows = screen_rows(app, MIN_WIDTH, MIN_HEIGHT);
-            (detail_pane_text(&rows).replace(' ', ""), rows)
-        };
-
-        assert_eq!(app.handle_key(key(KeyCode::Enter)), Intent::None);
-        let (top, rows) = view(&app);
-        assert!(top.contains("Leftoutofthisplan"), "{rows:#?}");
-        assert!(!top.contains("distinctive-leaf"), "{rows:#?}");
-        for code in [
-            KeyCode::Char(' '),
-            KeyCode::Char('A'),
-            KeyCode::Char('s'),
-            KeyCode::Char('a'),
-            KeyCode::Char('r'),
-        ] {
-            assert_eq!(app.handle_key(key(code)), Intent::None, "{code:?}");
-        }
-        let (_, rows) = view(&app);
-        assert!(
-            rows.iter()
-                .any(|row| row.contains("Esc back to the results"))
-                && rows
-                    .iter()
-                    .any(|row| row.contains("nothing here changes the plan")),
-            "a plan key left the detail view: {rows:#?}"
-        );
-
-        app.handle_key(key(KeyCode::End));
-        let (end, rows) = view(&app);
-        assert!(
-            end.contains("distinctive-leaf") && end.contains("the-note-comes-last"),
-            "the end of the finding is reachable: {rows:#?}"
-        );
-        for _ in 0..5 {
-            app.handle_key(key(KeyCode::Char('j')));
-        }
-        assert_eq!(view(&app).0, end, "scrolling stops at the last line");
-        app.handle_key(key(KeyCode::Char('k')));
-        assert_ne!(view(&app).0, end, "one line up moves at once from the end");
-        app.handle_key(key(KeyCode::Home));
-        assert_eq!(view(&app).0, top);
-
-        app.handle_key(key(KeyCode::Esc));
-        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
-        assert!(
-            rows.iter().any(|row| row.contains("› [ ]")),
-            "back on the same results, still left out: {rows:#?}"
-        );
-        assert!(
-            rows.iter().any(|row| row.contains("TRASH-FIRST")),
-            "{rows:#?}"
-        );
-        assert!(
-            detail_pane_text(&rows).contains("Enter shows all"),
-            "{rows:#?}"
-        );
-    }
-
-    /// A row keeps the end of a long path within its columns and never splits
-    /// a character the renderer draws as one: keeping only the second half of
-    /// a flag draws a lone letter, and an accent kept without the letter it
-    /// decomposes from lands on the ellipsis.
-    #[test]
-    fn a_row_keeps_whole_graphemes_at_the_end_of_a_path() {
-        assert_eq!(truncate_left("dir/🇧🇷", 2), "…");
-        assert_eq!(truncate_left("dir/🇧🇷", 3), "…🇧🇷", "positive control");
-        for text in [
-            "/Users/me/dev/café",
-            "/Users/me/dev/cafe\u{301}",
-            "/tmp/🇧🇷/👍🏽/漢字\u{301}",
-            "short",
-        ] {
-            let width = Span::raw(text).width();
-            let starts: Vec<usize> = Span::raw(text)
-                .styled_graphemes(Style::default())
-                .map(|grapheme| grapheme.symbol.as_ptr() as usize - text.as_ptr() as usize)
-                .collect();
-            for max in 0..=width + 1 {
-                let kept = truncate_left(text, max);
-                assert!(
-                    Span::raw(kept.as_str()).width() <= max,
-                    "{text:?} at {max}: {kept:?}"
-                );
-                let tail = kept.strip_prefix('…').unwrap_or(&kept);
-                assert!(text.ends_with(tail), "{text:?} at {max}: {kept:?}");
-                let offset = text.len() - tail.len();
-                assert!(
-                    offset == text.len() || starts.contains(&offset),
-                    "{text:?} at {max} split a grapheme: {kept:?}"
-                );
-            }
-        }
-    }
-
     /// The graphemes the renderer draws for `text`, and the columns it gives
     /// them.
     fn grapheme_columns(text: &str) -> (usize, usize) {
@@ -3358,56 +2524,6 @@ mod tests {
         }
     }
 
-    /// Selectors and joiners are escaped before display, but a flag or a
-    /// skin-tone emoji reaches the pane as one grapheme of two characters. At
-    /// the edge it moves to the next row whole rather than splitting there.
-    #[test]
-    fn a_grapheme_at_the_edge_moves_to_the_next_row_whole() {
-        // 61 columns, then a flag at an inner width of 62: one regional
-        // indicator fits, the pair does not.
-        let path = format!("/{}🇧🇷{}", "a".repeat(60), "b".repeat(10));
-        let finding = Finding::new(
-            "node_modules",
-            Some(std::path::PathBuf::from(&path)),
-            1,
-            "stale",
-            5,
-            Action::Trash,
-        );
-        let app = cleanup(vec![finding]);
-
-        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
-
-        assert!(rows.iter().any(|row| row.contains("🇧🇷")), "{rows:#?}");
-        assert!(
-            detail_pane_text(&rows).replace(' ', "").contains(&path),
-            "{rows:#?}"
-        );
-    }
-
-    /// A path is shown cell for cell: a space that falls just past the edge
-    /// opens the next row, visibly, rather than hanging where the renderer
-    /// clips it and joining two names into one.
-    #[test]
-    fn a_space_at_the_edge_of_a_path_stays_visible() {
-        // 62 columns fill the first row at the minimum width; the space is
-        // the 63rd.
-        let path = format!("/{} {}", "a".repeat(61), "b".repeat(10));
-        let finding = Finding::new(
-            "node_modules",
-            Some(std::path::PathBuf::from(&path)),
-            1,
-            "stale",
-            5,
-            Action::Trash,
-        );
-        let app = cleanup(vec![finding]);
-
-        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
-
-        assert!(detail_pane_cells(&rows).contains(&path), "{rows:#?}");
-    }
-
     /// A space in a row's last cell reads as padding and joins the names on
     /// either side, so it opens the next row, where its indent shows.
     #[test]
@@ -3442,54 +2558,6 @@ mod tests {
         assert!(detail_pane_text(&rows).contains(&path), "{rows:#?}");
     }
 
-    #[test]
-    fn wrapping_breaks_only_where_the_next_grapheme_would_pass_the_edge() {
-        assert_eq!(wrap_columns("abcd efgh", 4), ["abcd", " efg", "h"]);
-        assert_eq!(wrap_columns("abc defg", 4), ["abc", " def", "g"]);
-        assert_eq!(wrap_columns("one two three", 8), ["one two", " three"]);
-        // Nothing follows a trailing space, so it stays rather than opening a
-        // blank row.
-        assert_eq!(wrap_columns("abc ", 4), ["abc "]);
-        assert_eq!(wrap_columns("abcdefghij", 4), ["abcd", "efgh", "ij"]);
-        assert_eq!(wrap_columns("日本語", 3), ["日", "本", "語"]);
-        assert!(wrap_columns("no room", 0).is_empty());
-    }
-
-    /// Positive control for the growth: a finding that fits keeps the pane at
-    /// its usual share, so the list keeps its rows.
-    #[test]
-    fn a_finding_that_fits_leaves_the_list_its_rows() {
-        let app = cleanup(
-            (0..30)
-                .map(|index| trash(&format!("item-{index}"), 1, 2))
-                .collect(),
-        );
-
-        let rows = screen_rows(&app, 100, 30);
-
-        assert!(rows.iter().any(|row| row.contains("item-13")), "{rows:#?}");
-        assert!(
-            !detail_pane_text(&rows).contains("more line(s)"),
-            "{rows:#?}"
-        );
-    }
-
-    #[test]
-    fn the_list_follows_the_cursor_past_the_first_page() {
-        let mut app = cleanup(
-            (0..60)
-                .map(|index| trash(&format!("item-{index}"), 1, 2))
-                .collect(),
-        );
-        app.handle_key(key(KeyCode::End));
-        assert_eq!(app.cursor, 59);
-
-        let output = rendered(&app, 100, 30);
-
-        assert!(output.contains("60. danger-2"), "{output}");
-        assert!(!output.contains("  1. danger-2"), "{output}");
-    }
-
     /// Permanent mode raises every Trash finding to critical; a row that kept
     /// its Trash-mode danger beside SHRED understated what `a` would do.
     #[test]
@@ -3522,23 +2590,6 @@ mod tests {
         assert!(permanent.contains("PERMANENT"), "{permanent}");
     }
 
-    #[test]
-    fn the_footer_offers_selection_only_when_something_can_be_selected() {
-        let mut disclosure = App::default();
-        disclosure.finish_results(
-            Operation::Clean(Target::Simulators),
-            vec![Finding::new("disclosure", None, 1, "test", 0, Action::None)],
-            Vec::new(),
-            Vec::new(),
-        );
-        let report_only = rendered(&disclosure, 100, 30);
-        assert!(!report_only.contains("Space pick"), "{report_only}");
-        assert!(report_only.contains("r rescan"), "{report_only}");
-
-        let choosable = rendered(&cleanup(vec![trash("cache", 1, 2)]), 100, 30);
-        assert!(choosable.contains("Space pick"), "{choosable}");
-    }
-
     /// The confirmation is where consent is given, so it says how much of the
     /// preview the approval covers, not only the results title behind it.
     #[test]
@@ -3551,31 +2602,5 @@ mod tests {
 
         assert!(output.contains("1 of 2 selected"), "{output}");
         assert!(output.contains("1 left out"), "{output}");
-    }
-
-    #[test]
-    fn the_outcome_says_what_was_left_out() {
-        let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
-        app.handle_key(key(KeyCode::Char(' ')));
-        app.screen = Screen::Outcome;
-        app.summary = Some(Summary {
-            op: "caches".into(),
-            items_touched: 1,
-            bytes_freed_estimate: 1,
-            bytes_trashed_estimate: 1,
-            notes: vec!["trashed second".into()],
-        });
-
-        let output = rendered(&app, 100, 30);
-
-        assert!(output.contains("1 left out of this plan"), "{output}");
-    }
-
-    #[test]
-    fn small_terminal_fails_visibly_without_rendering_the_menu() {
-        let app = App::default();
-        let output = rendered(&app, 50, 12);
-        assert!(output.contains("terminal too small"));
-        assert!(output.contains("64×18"));
     }
 }

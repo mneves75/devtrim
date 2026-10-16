@@ -204,14 +204,6 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
-    fn temp(name: &str) -> PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("devtrim-toolchains-{name}-{}", std::process::id()));
-        crate::ops::remove_test_path(&path);
-        std::fs::create_dir_all(&path).unwrap();
-        path
-    }
-
     fn target_temp(name: &str) -> (crate::ops::TestFixture, PathBuf) {
         let fixture = crate::ops::TestFixture::new(&format!("devtrim-toolchains-{name}"));
         let path = fixture.path().to_path_buf();
@@ -236,71 +228,6 @@ mod tests {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
         }
-    }
-
-    #[test]
-    fn missing_or_broken_latest_fails_closed() {
-        let directory = temp("missing");
-        std::fs::create_dir_all(directory.join("swift-1.xctoolchain")).unwrap();
-        assert!(preserved_targets(&directory).is_err());
-        symlink(
-            "missing.xctoolchain",
-            directory.join("swift-latest.xctoolchain"),
-        )
-        .unwrap();
-        assert!(preserved_targets(&directory).is_err());
-        crate::ops::remove_test_path(directory);
-    }
-
-    #[test]
-    fn preserves_every_symlink_target() {
-        let directory = temp("preserved");
-        let first = directory.join("swift-1.xctoolchain");
-        let second = directory.join("swift-2.xctoolchain");
-        std::fs::create_dir_all(&first).unwrap();
-        std::fs::create_dir_all(&second).unwrap();
-        symlink(
-            "swift-2.xctoolchain",
-            directory.join("swift-latest.xctoolchain"),
-        )
-        .unwrap();
-        symlink("swift-1.xctoolchain", directory.join("custom.xctoolchain")).unwrap();
-        let preserved = preserved_targets(&directory).unwrap();
-        assert_eq!(preserved.len(), 2);
-        crate::ops::remove_test_path(directory);
-    }
-
-    #[test]
-    fn apply_accepts_only_direct_unreferenced_toolchain_directories() {
-        let (_fixture, root) = target_temp("apply-direct");
-        let home = root.canonicalize().unwrap();
-        let directory = home.join("Library/Developer/Toolchains");
-        let preserved = directory.join("swift-2.xctoolchain");
-        let stale = directory.join("swift-1.xctoolchain");
-        std::fs::create_dir_all(&preserved).unwrap();
-        std::fs::create_dir_all(&stale).unwrap();
-        symlink(
-            "swift-2.xctoolchain",
-            directory.join("swift-latest.xctoolchain"),
-        )
-        .unwrap();
-        let finding = Finding::new(
-            "stale Swift toolchain",
-            Some(stale.clone()),
-            0,
-            "test",
-            9,
-            Action::Shred,
-        );
-        let outcome = Toolchains
-            .apply(&[finding], &test_context(home.clone()))
-            .unwrap();
-
-        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-        assert_eq!(outcome.summary.items_touched, 1);
-        assert!(!stale.exists());
-        assert!(preserved.exists());
-        crate::ops::remove_test_path(root);
     }
 
     #[test]

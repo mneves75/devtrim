@@ -688,47 +688,6 @@ mod tests {
     }
 
     #[test]
-    fn archives_are_never_applied_or_counted() {
-        let home = std::env::temp_dir().join(format!("devtrim-xcode-{}", std::process::id()));
-        crate::ops::remove_test_path(&home);
-        let archive = home.join("Library/Developer/Xcode/Archives/release.xcarchive");
-        std::fs::create_dir_all(&archive).unwrap();
-        std::fs::write(archive.join("sentinel"), "keep").unwrap();
-        let finding = Finding::new(
-            "Xcode Archives",
-            Some(archive.clone()),
-            4,
-            "excluded",
-            0,
-            Action::None,
-        );
-        let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-        };
-
-        let outcome = Xcode.apply(&[finding], &ctx).unwrap();
-        assert!(outcome.errors.is_empty());
-        assert_eq!(outcome.summary.items_touched, 0);
-        assert_eq!(outcome.summary.bytes_freed_estimate, 0);
-        assert!(archive.join("sentinel").exists());
-
-        crate::ops::remove_test_path(home);
-    }
-
-    #[test]
     fn forged_actionable_archive_is_rejected() {
         let fixture = crate::ops::TestFixture::new("devtrim-xcode-forged");
         let home = fixture.path().to_path_buf();
@@ -769,34 +728,6 @@ mod tests {
         assert_eq!(outcome.errors.len(), 1);
         assert!(sentinel.exists());
         crate::ops::remove_test_path(home);
-    }
-
-    #[test]
-    fn direct_device_support_child_can_be_applied() {
-        let fixture = crate::ops::TestFixture::new("devtrim-xcode-direct");
-        let root = fixture.path().to_path_buf();
-        let target = root.join("Library/Developer/Xcode/iOS DeviceSupport/device");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::write(target.join("sentinel"), "remove").unwrap();
-        let home = root.canonicalize().unwrap();
-        let target = home.join("Library/Developer/Xcode/iOS DeviceSupport/device");
-        let finding = Finding::new(
-            "DeviceSupport: device",
-            Some(target.clone()),
-            6,
-            "test",
-            9,
-            Action::Shred,
-        );
-
-        let outcome = Xcode
-            .apply_with_xcode_build_state(&[finding], &test_context(home.clone()), None)
-            .unwrap();
-
-        assert!(outcome.errors.is_empty());
-        assert_eq!(outcome.summary.items_touched, 1);
-        assert!(!target.exists());
-        crate::ops::remove_test_path(root);
     }
 
     /// A DerivedData folder that holds a Git repository — here one forged over

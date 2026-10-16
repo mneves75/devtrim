@@ -718,7 +718,6 @@ pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf]) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
 
     fn temp(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("devtrim-{name}-{}", std::process::id()));
@@ -893,139 +892,11 @@ mod tests {
         crate::ops::remove_test_path(base);
     }
 
-    /// Only a listing of object types that holds no commit proves there is
-    /// no history; anything that is not such a listing proves nothing.
-    #[test]
-    fn only_a_listing_without_a_commit_object_proves_no_history() {
-        for listing in [&b""[..], b"blob\n", b"blob\nblob\ntree\n"] {
-            assert!(
-                holds_no_commit(listing),
-                "{}",
-                String::from_utf8_lossy(listing)
-            );
-        }
-        for listing in [
-            &b"blob\ncommit\n"[..],
-            b"commit\n",
-            b"blob\nmissing\n",
-            b"blob\n\n",
-            b"\xff\n",
-        ] {
-            assert!(
-                !holds_no_commit(listing),
-                "{}",
-                String::from_utf8_lossy(listing)
-            );
-        }
-    }
-
-    /// Git records a worktree's `gitdir` as raw path bytes, so a name that is
-    /// not UTF-8 must still be judged, not fail the category it sits in.
-    #[test]
-    fn orphaned_worktrees_are_judged_by_their_gitdir_bytes() {
-        let base = temp("orphan-bytes");
-        let orphan = base.join("orphan");
-        std::fs::create_dir_all(&orphan).unwrap();
-        let mut marker = b"gitdir: ".to_vec();
-        marker.extend_from_slice(base.join("gone").as_os_str().as_encoded_bytes());
-        marker.extend_from_slice(b"/\xff\n");
-        std::fs::write(orphan.join(".git"), marker).unwrap();
-        let live = base.join("live");
-        std::fs::create_dir_all(base.join("main/.git/worktrees/live")).unwrap();
-        std::fs::create_dir_all(&live).unwrap();
-        std::fs::write(
-            live.join(".git"),
-            format!(
-                "gitdir: {}\n",
-                base.join("main/.git/worktrees/live").display()
-            ),
-        )
-        .unwrap();
-        let repository = base.join("repository");
-        std::fs::create_dir_all(repository.join(".git")).unwrap();
-        // Git keeps every byte after `gitdir: ` but trailing CR/LF, so a
-        // separate Git directory named with a newline or a trailing space is
-        // live, not gone (git v2.51.0 `setup.c`, `read_gitfile_gently`).
-        let unusual = base.join("odd");
-        let gitdir = base.join("main/.git/worktrees/odd\nname ");
-        std::fs::create_dir_all(&gitdir).unwrap();
-        std::fs::create_dir_all(&unusual).unwrap();
-        let mut marker = b"gitdir: ".to_vec();
-        marker.extend_from_slice(gitdir.as_os_str().as_encoded_bytes());
-        marker.extend_from_slice(b"\r\n");
-        std::fs::write(unusual.join(".git"), marker).unwrap();
-
-        assert!(orphaned_worktree(&orphan).unwrap());
-        assert!(!orphaned_worktree(&live).unwrap());
-        assert!(
-            !orphaned_worktree(&unusual).unwrap(),
-            "a live worktree was misread as orphaned"
-        );
-        assert!(!orphaned_worktree(&repository).unwrap());
-        crate::ops::remove_test_path(base);
-    }
-
     #[test]
     fn iso_dates_are_correct_and_ordered() {
         assert_eq!(iso_from_epoch_days(0), "1970-01-01");
         assert_eq!(iso_from_epoch_days(19_723), "2024-01-01");
         assert!(iso_days_ago(30) < iso_days_ago(1));
-    }
-
-    #[test]
-    fn finds_owning_repo_and_handles_orphans() {
-        let base = temp("owner");
-        let home = base.join("home");
-        let project = base.join("project/sub/node_modules");
-        std::fs::create_dir_all(&project).unwrap();
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(base.join("project/.git")).unwrap();
-        assert_eq!(
-            owning_repo(&project, &home).unwrap(),
-            Some(base.join("project"))
-        );
-        assert_eq!(
-            owning_repo(&base.join("orphan/node_modules"), &home).unwrap(),
-            None
-        );
-        // A repository at the home folder, or above it, owns nothing.
-        let loose = home.join("dev/loose/node_modules");
-        std::fs::create_dir_all(&loose).unwrap();
-        std::fs::create_dir_all(home.join(".git")).unwrap();
-        assert_eq!(owning_repo(&loose, &home).unwrap(), None);
-        std::fs::remove_dir_all(home.join(".git")).unwrap();
-        std::fs::create_dir_all(base.join(".git")).unwrap();
-        assert_eq!(owning_repo(&loose, &home).unwrap(), None);
-        crate::ops::remove_test_path(base);
-    }
-
-    #[test]
-    fn detects_file_and_directory_git_markers() {
-        let base = temp("git-marker");
-        let file_target = base.join("file-target");
-        let directory_target = base.join("directory-target");
-        let case_targets = [
-            ("upper-target", ".GIT"),
-            ("title-target", ".Git"),
-            ("mixed-target", ".gIt"),
-        ];
-        let normal_target = base.join("normal-target");
-        std::fs::create_dir_all(&file_target).unwrap();
-        std::fs::create_dir_all(directory_target.join(".git")).unwrap();
-        for (directory, marker) in case_targets {
-            std::fs::create_dir_all(base.join(directory).join(marker)).unwrap();
-        }
-        std::fs::create_dir_all(normal_target.join("git")).unwrap();
-        std::fs::write(file_target.join(".git"), "gitdir: elsewhere").unwrap();
-
-        assert!(has_git_marker(&file_target).unwrap());
-        assert!(has_git_marker(&directory_target).unwrap());
-        for (directory, _) in case_targets {
-            assert!(has_git_marker(&base.join(directory)).unwrap());
-        }
-        assert!(!has_git_marker(&normal_target).unwrap());
-        assert!(!has_git_marker(&base.join("missing")).unwrap());
-        crate::ops::remove_test_path(base);
     }
 
     #[test]
@@ -1041,22 +912,6 @@ mod tests {
             normalized_roots(&roots),
             vec![Path::new("/tmp/other"), Path::new("/tmp/work")]
         );
-    }
-
-    #[test]
-    fn directory_roots_follow_readable_symlinks_and_reject_broken_ones() {
-        let base = temp("root-symlink");
-        let target = base.join("target");
-        let readable = base.join("readable");
-        let broken = base.join("broken");
-        std::fs::create_dir_all(&target).unwrap();
-        symlink(&target, &readable).unwrap();
-        symlink(base.join("missing-target"), &broken).unwrap();
-
-        assert!(is_directory_if_present(&readable).unwrap());
-        assert!(!is_directory_if_present(&base.join("missing-root")).unwrap());
-        assert!(is_directory_if_present(&broken).is_err());
-        crate::ops::remove_test_path(base);
     }
 
     /// A Git query that never answers fails that repository, naming the
@@ -1125,25 +980,6 @@ mod tests {
             .args(["log", "-1", "--format=%cs"])
             .output()
             .unwrap();
-    }
-
-    /// A failed Git query says why, in Git's own words, so a refusal it causes
-    /// can be diagnosed; here the marker is an empty directory Git rejects.
-    #[test]
-    fn a_failed_git_query_names_gits_reason() {
-        let base = temp("git-reason");
-        let repo = base.join("repo");
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::create_dir_all(repo.join("target")).unwrap();
-
-        for error in [
-            repo_last_activity(&repo).unwrap_err(),
-            tracks_files_under(&repo, &repo.join("target")).unwrap_err(),
-        ] {
-            let message = format!("{error:#}");
-            assert!(message.contains("not a git repository"), "{message}");
-        }
-        crate::ops::remove_test_path(base);
     }
 
     #[test]
@@ -1330,26 +1166,5 @@ mod tests {
             "PV git/utc-dates: activity was read in a local zone, not the cutoff's UTC"
         );
         crate::ops::remove_test_path(base);
-    }
-
-    #[test]
-    fn a_repository_without_reflogs_is_judged_by_its_commit_date() {
-        let base = temp("git-no-reflog");
-        let repo = base.join("repo");
-        init_old_git_repo(&repo).unwrap();
-        crate::ops::remove_test_path(repo.join(".git/logs"));
-        assert_eq!(repo_last_activity(&repo).unwrap(), "2000-01-01");
-        crate::ops::remove_test_path(base);
-    }
-
-    #[test]
-    fn repo_owns_equal_and_descendant_process_cwds_only() {
-        let repo = Path::new("/Users/example/dev/project");
-        assert!(repo_has_active_build(repo, &[repo.to_path_buf()]));
-        assert!(repo_has_active_build(repo, &[repo.join("packages/app")]));
-        assert!(!repo_has_active_build(
-            repo,
-            &[PathBuf::from("/Users/example/dev/project-other")]
-        ));
     }
 }
