@@ -1210,3 +1210,244 @@ fn eval_a_repository_that_becomes_active_during_apply_keeps_its_build_output() {
         },
     );
 }
+
+// ---------- worktrees and .scratch reports ----------
+
+/// The finding for `path` in a report document, by exact path.
+fn finding_at<'a>(document: &'a serde_json::Value, path: &Path) -> &'a serde_json::Value {
+    document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["path"].as_str() == Some(path.to_str().unwrap()))
+        .unwrap_or_else(|| panic!("no finding for {}: {document}", path.display()))
+}
+
+#[test]
+fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_repository() {
+    let sandbox = Sandbox::in_target("eval-worktrees");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let dev = sandbox.path().join("dev");
+    let app = dev.join("app");
+    write(&app.join("README"), "readme");
+    repo(&sandbox, &app, STALE, &["README"]);
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &["worktree", "add", "-q", "-b", "feature", "../app-feature"],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &["worktree", "add", "-q", "--detach", "../app-detached"],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &["worktree", "add", "-q", "-b", "usb", "../app-locked"],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &["worktree", "lock", "--reason", "on usb", "../app-locked"],
+    );
+    let feature = dev.join("app-feature");
+    write(&feature.join("untracked.bin"), &"x".repeat(101));
+
+    // A worktree registered in `app` whose own `.git` leads to another
+    // repository, and a genuine one outside the scan roots: both are listed,
+    // neither is measured.
+    let other = dev.join("other");
+    write(&other.join("README"), "other");
+    repo(&sandbox, &other, STALE, &["README"]);
+    git(
+        &sandbox,
+        &other,
+        STALE,
+        &["worktree", "add", "-q", "--detach", "../decoy"],
+    );
+    let forged = dev.join("decoy");
+    write(&forged.join("payload.bin"), &"x".repeat(4096));
+    let registration = app.join(".git/worktrees/forged");
+    write(
+        &registration.join("gitdir"),
+        &format!("{}/.git\n", forged.display()),
+    );
+    write(&registration.join("commondir"), "../..\n");
+    let head = std::fs::read_to_string(app.join(".git/HEAD")).unwrap();
+    write(&registration.join("HEAD"), &head);
+    let outside = sandbox.path().join("elsewhere");
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            outside.to_str().unwrap(),
+        ],
+    );
+    write(&outside.join("payload.bin"), &"x".repeat(4096));
+
+    // A linked worktree whose repository is gone is a skip note, not a failure.
+    write(
+        &dev.join("orphan/.git"),
+        "gitdir: /nonexistent/worktrees/orphan\n",
+    );
+
+    let before = Tree::snapshot(sandbox.path());
+    let root = dev.to_str().unwrap();
+    let output = run(&sandbox, &["worktrees", "--root", root, "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document = json(&output);
+
+    let size = |path: &Path| finding_at(&document, path)["size_bytes"].as_u64().unwrap();
+    let note = |path: &Path| {
+        finding_at(&document, path)["note"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let gitfile = std::fs::metadata(feature.join(".git")).unwrap().len();
+    assert_eq!(size(&feature), 6 + 101 + gitfile, "{document}");
+    assert!(note(&feature).contains("branch feature"), "{document}");
+    assert!(
+        note(&dev.join("app-detached")).contains("detached"),
+        "{document}"
+    );
+    assert!(
+        note(&dev.join("app-locked")).contains("locked: on usb"),
+        "{document}"
+    );
+    assert_eq!(
+        size(&app),
+        0,
+        "the main worktree is the repository, not a copy"
+    );
+    for unmeasured in [&forged, &outside] {
+        assert_eq!(
+            size(unmeasured),
+            0,
+            "PV eval/worktrees-common-dir: {document}"
+        );
+        assert!(note(unmeasured).contains("not measured"), "{document}");
+    }
+    let last = document["findings"].as_array().unwrap().last().unwrap();
+    assert!(last["path"].is_null(), "{document}");
+    assert!(
+        last["note"]
+            .as_str()
+            .unwrap()
+            .contains("git worktree remove"),
+        "{document}"
+    );
+    before.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "worktrees",
+    );
+
+    let human = run(&sandbox, &["worktrees", "--root", root]);
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(human.status.success(), "{stderr}");
+    assert!(stderr.contains("orphan"), "the orphan is named: {stderr}");
+    assert!(stderr.contains("not assessed"), "{stderr}");
+    assert!(
+        run(&sandbox, &["worktrees", "--apply", "--yolo", "--json"])
+            .status
+            .code()
+            == Some(2)
+    );
+}
+
+#[test]
+fn eval_leftovers_reports_ignored_scratch_folders_only() {
+    let sandbox = Sandbox::in_target("eval-leftovers-scratch");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let dev = sandbox.path().join("dev");
+
+    let kept = dev.join("org/kept");
+    write(&kept.join(".gitignore"), ".scratch/\n");
+    repo(&sandbox, &kept, STALE, &[".gitignore"]);
+    write(&kept.join(".scratch/evidence/run.log"), &"x".repeat(13));
+    git(
+        &sandbox,
+        &kept,
+        STALE,
+        &["worktree", "add", "-q", "--detach", ".scratch/wt-review"],
+    );
+
+    // Near misses: a .scratch Git does not ignore, and one holding a tracked file.
+    let open = dev.join("open");
+    write(&open.join("README"), "readme");
+    repo(&sandbox, &open, STALE, &["README"]);
+    write(&open.join(".scratch/notes/todo.md"), "mine");
+    let tracked = dev.join("tracked");
+    write(&tracked.join(".gitignore"), ".scratch/\n");
+    write(&tracked.join(".scratch/keep/committed.txt"), "committed");
+    repo(
+        &sandbox,
+        &tracked,
+        STALE,
+        &[".gitignore", ".scratch/keep/committed.txt"],
+    );
+
+    let before = Tree::snapshot(sandbox.path());
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            dev.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document = json(&output);
+    let mut listed: Vec<PathBuf> = document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|finding| PathBuf::from(finding["path"].as_str().unwrap()))
+        .collect();
+    listed.sort();
+    assert_eq!(
+        listed,
+        vec![
+            kept.join(".scratch/evidence"),
+            kept.join(".scratch/wt-review")
+        ],
+        "PV eval/leftovers-scratch: {document}"
+    );
+    assert_eq!(
+        finding_at(&document, &kept.join(".scratch/evidence"))["size_bytes"],
+        13
+    );
+    assert!(
+        finding_at(&document, &kept.join(".scratch/wt-review"))["label"]
+            .as_str()
+            .unwrap()
+            .contains("linked worktree"),
+        "{document}"
+    );
+    before.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "leftovers",
+    );
+}

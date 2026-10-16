@@ -71,6 +71,22 @@ class Case:
 
 CASES = (
     Case(
+        name="worktrees/common-dir",
+        relative_path="src/worktrees.rs",
+        before="        Some(found) if found == common => Ok(()),\n",
+        after="        Some(_) => Ok(()),\n",
+        tests=("eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_repository",),
+        marker="PV eval/worktrees-common-dir", target="evals",
+    ),
+    Case(
+        name="leftovers/scratch-ignored",
+        relative_path="src/ops/leftovers.rs",
+        before="    if !project::ignores_path(repository, \".scratch/\")?\n",
+        after="    if false\n",
+        tests=("eval_leftovers_reports_ignored_scratch_folders_only",),
+        marker="PV eval/leftovers-scratch", target="evals",
+    ),
+    Case(
         name="review013/build-cwd-preview",
         relative_path="src/safety.rs",
         before="        if !path.is_absolute() {\n",

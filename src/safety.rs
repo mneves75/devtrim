@@ -1502,7 +1502,7 @@ fn resolve_build_process_cwds(
     let mut answer = lsof;
     let mut reported = BTreeSet::new();
     let mut paths = Vec::new();
-    for _ in 0..LIVENESS_LOOKUPS {
+    for lookup in 1..=LIVENESS_LOOKUPS {
         if let Some(unexpected) = answer.reported.difference(&asked).next() {
             bail!("lsof reported process {unexpected}, which was not probed");
         }
@@ -1526,6 +1526,9 @@ fn resolve_build_process_cwds(
             answer.complete = true;
             break;
         }
+        if lookup == LIVENESS_LOOKUPS {
+            break;
+        }
         answer = cwds_of(&successors).context(
             "cannot read the working directories of build processes that started during the probe",
         )?;
@@ -1542,8 +1545,8 @@ fn resolve_build_process_cwds(
     Ok(paths)
 }
 
-/// `lsof` runs one probe may make before a process list that keeps changing
-/// refuses.
+/// `lsof` runs one probe may make, the first included, before a process list
+/// that keeps changing refuses.
 const LIVENESS_LOOKUPS: usize = 5;
 
 /// Processes that write DerivedData: command-line builds, the Swift Build and

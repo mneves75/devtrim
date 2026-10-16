@@ -1,6 +1,8 @@
 //! CLI application flow.
 
-use crate::{analyze, cli, journal, largest, ops, report, safety, status, tui, uninstall};
+use crate::{
+    analyze, cli, journal, largest, ops, report, safety, status, tui, uninstall, worktrees,
+};
 use anyhow::Result;
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use colored::Colorize;
@@ -91,6 +93,7 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
         Some(cli::Command::Uninstall { .. }) => ("uninstall", false, false, false, false),
         Some(cli::Command::Analyze { .. }) => ("analyze", false, false, false, false),
         Some(cli::Command::Largest { .. }) => ("largest", false, false, false, false),
+        Some(cli::Command::Worktrees) => ("worktrees", false, false, false, false),
         Some(cli::Command::History { .. }) => ("history", false, false, false, false),
         Some(cli::Command::Completions { .. }) => ("completions", false, false, false, false),
         Some(cli::Command::Manpage) => ("manpage", false, false, false, false),
@@ -167,6 +170,7 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
         Some("optimize") => "optimize",
         Some("uninstall") => "uninstall",
         Some("largest") => "largest",
+        Some("worktrees") => "worktrees",
         Some("history") => "history",
         Some("completions") => "completions",
         Some("manpage") => "manpage",
@@ -356,6 +360,41 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             // Partial visibility follows the same contract as scan: disclosed
             // in errors AND in the exit status.
             if result.errors.is_empty() {
+                Ok(ExitCode::SUCCESS)
+            } else {
+                Ok(ExitCode::from(1))
+            }
+        }
+        cli::Command::Worktrees => {
+            if !ctx.json {
+                ctx.diagnostic("info", ctx.roots_note());
+            }
+            let mut report = worktrees::report(&ctx);
+            if ctx.json {
+                report.findings.push(report::Finding::new(
+                    "not assessed",
+                    None,
+                    0,
+                    worktrees::NOT_ASSESSED,
+                    1,
+                    report::Action::Info,
+                ));
+                report::print_json("worktrees", false, &report.findings, None, &report.errors)?;
+            } else {
+                for note in report.notes.drain(..) {
+                    ctx.diagnostic("info", note);
+                }
+                if report.findings.is_empty() {
+                    report::print_line("no linked worktrees under the scan roots")?;
+                } else {
+                    report::print_human(&report.findings)?;
+                }
+                ctx.diagnostic("info", worktrees::NOT_ASSESSED.to_owned());
+                for error in &report.errors {
+                    ctx.diagnostic("warn", error.clone());
+                }
+            }
+            if report.errors.is_empty() {
                 Ok(ExitCode::SUCCESS)
             } else {
                 Ok(ExitCode::from(1))

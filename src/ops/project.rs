@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
-use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -409,6 +409,63 @@ fn hardened_output(mut command: Command, failure: impl Fn() -> String) -> Result
     Ok(output.stdout)
 }
 
+/// `git worktree list --porcelain -z` for the repository holding `repo`,
+/// through the hardened invocation. Every path it lists is the repository's
+/// own data, not a fact about the disk.
+pub(crate) fn worktree_listing(repo: &Path) -> Result<Vec<u8>> {
+    let mut command = hardened_git(repo, "git");
+    command.args(["worktree", "list", "--porcelain", "-z"]);
+    hardened_output(command, || {
+        format!("cannot list the worktrees of {}", repo.display())
+    })
+}
+
+/// The absolute common directory (`.git` of the main worktree) of the
+/// repository holding `repo`.
+pub(crate) fn git_common_dir(repo: &Path) -> Result<PathBuf> {
+    let mut command = hardened_git(repo, "git");
+    command.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    let mut listed = hardened_output(command, || {
+        format!("cannot find the Git directory of {}", repo.display())
+    })?;
+    if listed.last() == Some(&b'\n') {
+        listed.pop();
+    }
+    if !listed.starts_with(b"/") {
+        anyhow::bail!(
+            "Git named no absolute common directory for {}",
+            repo.display()
+        );
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(listed)))
+}
+
+/// Whether Git ignores `relative` in the repository at `repo`
+/// (`check-ignore` exits 0 for ignored, 1 for not ignored; anything else is a
+/// failure, never an answer).
+pub(crate) fn ignores_path(repo: &Path, relative: &str) -> Result<bool> {
+    let mut command = hardened_git(repo, "git");
+    command.args(["check-ignore", "-q", "--", relative]);
+    let output = command
+        .output_within(QUERY_TIMEOUT)
+        .with_context(|| format!("cannot run Git in {}", repo.display()))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let reason = stderr.lines().map(str::trim).find(|line| !line.is_empty());
+            anyhow::bail!(
+                "cannot tell whether Git ignores {relative} in {}{}",
+                repo.display(),
+                reason
+                    .map(|reason| format!(": {reason}"))
+                    .unwrap_or_default()
+            )
+        }
+    }
+}
+
 fn iso_date(date: &str, root: &Path) -> Result<String> {
     if date.len() != 10
         || !date.chars().enumerate().all(|(index, character)| {
@@ -576,10 +633,6 @@ pub(crate) fn unborn_branch(repo: &Path) -> bool {
         })
 }
 
-/// Whether a `git count-objects -v` report describes an object store with
-/// nothing in it: zero loose objects, zero packed objects, zero packs, and no
-/// alternate store lending objects. Its keys are fixed, not translated; a
-/// report missing a count, or one that is not text, proves nothing.
 /// Whether a `cat-file --batch-all-objects --batch-check=%(objecttype)`
 /// listing holds no commit: every line names an object type, none of them
 /// `commit`. Git prints types untranslated; anything else proves nothing.
