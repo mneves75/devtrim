@@ -1018,6 +1018,60 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
     assert_journaled(&sandbox, "xcode", "shred", &expected);
 }
 
+/// Restores a folder's permissions when dropped, so a fixture made unreadable
+/// can still be removed after a failed assertion.
+struct Unreadable(PathBuf);
+
+impl Unreadable {
+    fn new(path: PathBuf) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
+    }
+}
+
+/// One DeviceSupport or DerivedData folder that cannot be read or measured
+/// offers nothing and is reported, so the run exits nonzero; every folder
+/// beside it is still offered. Xcode is idle (the default `pgrep` stub finds
+/// nothing), the state in which DerivedData folders are measured directly.
+#[test]
+fn eval_an_unreadable_xcode_folder_blocks_only_itself() {
+    let sandbox = Sandbox::in_target("eval-xcode-unreadable");
+    let developer = sandbox.path().join("Library/Developer/Xcode");
+    let offered = vec![
+        developer.join("DerivedData/App-readable"),
+        developer.join("iOS DeviceSupport/iPhone18,2 27.0 (24A437)"),
+    ];
+    for folder in &offered {
+        write(&folder.join("Symbols/file"), "regenerable");
+    }
+    let locked_child = developer.join("iOS DeviceSupport/iPhone17,1 26.0 (23A341)/locked");
+    write(&locked_child.join("file"), "unreadable");
+    let locked_folder = developer.join("DerivedData/App-locked");
+    write(&locked_folder.join("Build/file"), "unreadable");
+    let _child = Unreadable::new(locked_child);
+    let _folder = Unreadable::new(locked_folder);
+
+    let preview = run(&sandbox, &["clean", "xcode", "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        offered,
+        "PV eval/xcode-unreadable: an unreadable folder blocked the folders beside it"
+    );
+    assert!(
+        !preview.status.success(),
+        "an unreadable folder must fail the run: {document}"
+    );
+}
+
 // ---------- two windows: active_days and retain_days ----------
 
 /// `active_days` gates regenerable build output; `retain_days` gates what

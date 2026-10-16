@@ -630,6 +630,16 @@ CASES = (
         marker="PV xcode/continue-past-refusal",
     ),
     Case(
+        name="xcode/unreadable-folder",
+        relative_path="src/ops/xcode.rs",
+        # One folder that cannot be measured fails the whole category again.
+        before="                    Err(error) => unread.push(UnreadFolder::new(&path, &error)),\n",
+        after="                    Err(error) => return Err(error),\n",
+        tests=("eval_an_unreadable_xcode_folder_blocks_only_itself",),
+        marker="PV eval/xcode-unreadable",
+        target="evals",
+    ),
+    Case(
         name="tui/selection-plan",
         relative_path="src/tui.rs",
         before="            .filter(|(index, _)| !self.excluded.contains(index))\n",

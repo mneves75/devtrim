@@ -4,7 +4,9 @@ use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use super::project::{activity_window, has_git_marker, unjudged_finding};
+use super::project::{
+    UnreadFolder, activity_window, has_git_marker, unjudged_finding, unread_folders_finding,
+};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, OpenFile, XcodeActivity, escalate, xcode_activity};
 
@@ -73,6 +75,9 @@ impl Xcode {
             }
         };
         let (mut recent, mut open) = (0usize, 0usize);
+        // A folder that cannot be read or measured offers nothing and is named
+        // in one error finding (S8); the folders beside it are still judged.
+        let mut unread = Vec::new();
         for (label, relative, note) in TARGETS {
             let activity = match (&activity, *label == "DerivedData") {
                 (Some(activity), _) => activity,
@@ -86,21 +91,33 @@ impl Xcode {
                 Err(error) => return Err(error.into()),
             };
             for entry in entries {
-                let entry = entry.with_context(|| {
+                let entry = match entry.with_context(|| {
                     format!(
                         "cannot read Xcode support directory {}",
                         directory.display()
                     )
-                })?;
+                }) {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        unread.push(UnreadFolder::new(&directory, &error));
+                        break;
+                    }
+                };
                 // Only a real directory is a symbol or build tree. Finder's
                 // `.DS_Store` sits beside them, and a symlink child would lend
                 // this category's authority to whatever it names.
-                let file_type = entry.file_type().with_context(|| {
+                let file_type = match entry.file_type().with_context(|| {
                     format!(
                         "cannot inspect Xcode support entry {}",
                         entry.path().display()
                     )
-                })?;
+                }) {
+                    Ok(file_type) => file_type,
+                    Err(error) => {
+                        unread.push(UnreadFolder::new(&entry.path(), &error));
+                        continue;
+                    }
+                };
                 if !file_type.is_dir() {
                     continue;
                 }
@@ -124,39 +141,14 @@ impl Xcode {
                         }
                     }
                 }
-                if *label == "DerivedData" && is_package_folder(&path)? {
-                    let folder = path.file_name().unwrap_or_default().to_string_lossy();
-                    let package_note =
-                        format!("{note}. SwiftPM package checkouts here are Git clones and stay");
-                    for child in package_folder_children(&path)? {
-                        let size = dir_size(&child)?;
-                        findings.push(Finding::new(
-                            format!(
-                                "{label}: {folder}/{}",
-                                child.file_name().unwrap_or_default().to_string_lossy()
-                            ),
-                            Some(child),
-                            size,
-                            package_note.clone(),
-                            escalate(4, size),
-                            Action::Trash,
-                        ));
-                    }
-                    continue;
+                match support_findings(label, note, &path) {
+                    Ok(offered) => findings.extend(offered),
+                    Err(error) => unread.push(UnreadFolder::new(&path, &error)),
                 }
-                let size = dir_size(&path)?;
-                findings.push(Finding::new(
-                    format!(
-                        "{label}: {}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    ),
-                    Some(path),
-                    size,
-                    *note,
-                    escalate(4, size),
-                    Action::Trash,
-                ));
             }
+        }
+        if !unread.is_empty() {
+            findings.push(unread_folders_finding("Xcode support folders", &unread));
         }
         if recent > 0 || open > 0 {
             ctx.diagnostic(
@@ -254,6 +246,45 @@ impl Xcode {
         }
         Ok(outcome)
     }
+}
+
+/// What one DeviceSupport or DerivedData folder offers: itself, or, for a
+/// DerivedData folder holding package checkouts, its directories but
+/// `SourcePackages`. Any failure to inspect or measure it offers none of it.
+fn support_findings(label: &str, note: &str, path: &Path) -> Result<Vec<Finding>> {
+    if label == "DerivedData" && is_package_folder(path)? {
+        let folder = path.file_name().unwrap_or_default().to_string_lossy();
+        let package_note =
+            format!("{note}. SwiftPM package checkouts here are Git clones and stay");
+        let mut findings = Vec::new();
+        for child in package_folder_children(path)? {
+            let size = dir_size(&child)?;
+            findings.push(Finding::new(
+                format!(
+                    "{label}: {folder}/{}",
+                    child.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                Some(child),
+                size,
+                package_note.clone(),
+                escalate(4, size),
+                Action::Trash,
+            ));
+        }
+        return Ok(findings);
+    }
+    let size = dir_size(path)?;
+    Ok(vec![Finding::new(
+        format!(
+            "{label}: {}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ),
+        Some(path.to_path_buf()),
+        size,
+        note,
+        escalate(4, size),
+        Action::Trash,
+    )])
 }
 
 /// Why a DerivedData folder is still in use while Xcode runs.
