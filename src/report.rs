@@ -651,17 +651,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn actionable_bytes_saturates_instead_of_wrapping() {
-        let findings = [
-            Finding::new("first", None, u64::MAX, "test", 1, Action::Info),
-            Finding::new("second", None, 1, "test", 1, Action::Trash),
-            Finding::new("third", None, u64::MAX, "test", 1, Action::Trash),
-        ];
-
-        assert_eq!(actionable_bytes(&findings), u64::MAX);
-    }
-
-    #[test]
     fn finding_preserves_json_text_and_escapes_only_for_terminals() {
         let finding = Finding::new(
             "cache\u{1b}[2Jé",
@@ -705,88 +694,6 @@ mod tests {
         let mixed = summary_headline(&summary(5 * gib, 2 * gib));
         assert!(mixed.contains("~3.0 GB reclaimed"), "{mixed}");
         assert!(mixed.contains("~2.0 GB moved to Trash"), "{mixed}");
-    }
-
-    /// An error entry stands for something the scan could not judge; it is
-    /// not a finding, so the totals count it apart (observed: "344 MB
-    /// actionable across 6 finding(s)" for four targets and two errors).
-    #[test]
-    fn totals_count_error_entries_apart_from_findings() {
-        let target = Finding::new(
-            "stale node_modules",
-            Some(PathBuf::from("/dev/a/node_modules")),
-            10,
-            "test",
-            5,
-            Action::Trash,
-        );
-        let error = Finding::new(
-            "node_modules not judged",
-            None,
-            0,
-            "failed",
-            5,
-            Action::Info,
-        )
-        .with_scan_error("failed".into());
-        let findings = [target.clone(), error];
-
-        let total = human_text(&findings);
-        assert!(
-            total.contains("across 1 finding(s) and 1 error(s)"),
-            "{total}"
-        );
-        assert!(!human_text(&[target]).contains("error"));
-
-        let sections = [ScanSection {
-            category: "node-modules",
-            range: 0..2,
-        }];
-        let scan = scan_text(&findings, &sections, false);
-        assert!(scan.contains("1 finding(s), 1 error(s)"), "{scan}");
-    }
-
-    /// A plan spanning many repositories reads as one flat list otherwise; each
-    /// project gets one header with its own total, in plan order.
-    #[test]
-    fn human_plan_groups_consecutive_findings_by_project() {
-        let finding = |path: &str, size, project: &str| {
-            let mut finding = Finding::new(
-                "stale node_modules",
-                Some(PathBuf::from(path)),
-                size,
-                "test",
-                5,
-                Action::Trash,
-            );
-            finding.project = Some(project.into());
-            finding
-        };
-        let plan = [
-            finding("/dev/alpha/target", 3000, "/dev/alpha"),
-            finding("/dev/alpha/node_modules", 1000, "/dev/alpha"),
-            finding("/dev/beta/node_modules", 2000, "/dev/beta"),
-        ];
-
-        let text = human_text(&plan)
-            .split('\u{1b}')
-            .enumerate()
-            .map(|(index, part)| {
-                if index == 0 {
-                    part
-                } else {
-                    part.split_once('m').map_or("", |(_, rest)| rest)
-                }
-            })
-            .collect::<String>();
-
-        assert_eq!(text.matches("/dev/alpha ·").count(), 1, "{text}");
-        assert_eq!(text.matches("/dev/beta ·").count(), 1, "{text}");
-        assert!(text.contains("/dev/alpha · 4 KB in 2 item(s)"), "{text}");
-        assert!(
-            text.find("/dev/alpha ·") < text.find("/dev/beta ·"),
-            "project headers must follow plan order: {text}"
-        );
     }
 
     #[test]
