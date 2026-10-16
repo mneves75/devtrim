@@ -454,7 +454,7 @@ cargo test --locked</code></pre>
   <p>Manual installs can generate shell integration directly:</p>
   <pre data-copy="safe"><code>devtrim completions zsh   # bash | zsh | fish
 devtrim manpage</code></pre>
-  <p>No runtime dependencies beyond macOS itself. The current arm64 release build is about 1.5&nbsp;MB and self-contained:</p>
+  <p>No runtime dependencies beyond macOS itself. The arm64 release binary is about 2.6&nbsp;MB and self-contained:</p>
   <pre data-copy="safe"><code>cp target/release/devtrim /usr/local/bin/
 devtrim --version</code></pre>
   <div class="note">Rust ≥ 1.88 (edition 2024) to build. Runtime target: macOS 13+.</div>
@@ -473,8 +473,8 @@ devtrim clean caches</code></pre>
   <pre data-copy="safe"><code>devtrim clean caches --apply -y</code></pre>
   <div class="warn">The two blocks above are separate on purpose. Pasting preview and mutation together defeats the point of previewing.</div>
   <p>Reading the output:</p>
-  <pre data-copy="none" tabindex="0"><code>   37.5 GB  danger:7  DerivedData  /Users/you/Library/Developer/Xcode/DerivedData
-           └─ rebuilt on next build</code></pre>
+  <pre data-copy="none" tabindex="0"><code>   3.4 GB  danger:5  DerivedData: MyApp-abcdef  /Users/you/Library/Developer/Xcode/DerivedData/MyApp-abcdef
+           └─ build output; rebuilt on next build; action: move to Trash</code></pre>
   <ul class="flow">
     <li><strong>size</strong> — estimated logical bytes; actual immediately reclaimable space can differ.</li>
     <li><strong>danger:N</strong> — confirmation weight; colors go green → amber → red.</li>
@@ -504,6 +504,10 @@ devtrim clean caches</code></pre>
   <details class="card">
     <summary><span class="cmd-name">largest</span><span class="cmd-desc">biggest directories under scan roots</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>LOW</span></summary>
     <div class="card-body"><p>Read-only ranking of the largest depth-≤2 directories under your scan roots (<code>--top N</code>, default 20). Unreadable entries are skipped and disclosed as a count — totals are lower bounds, never deletion authority.</p></div>
+  </details>
+  <details class="card">
+    <summary><span class="cmd-name">worktrees</span><span class="cmd-desc">linked worktrees and their sizes</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>LOW</span></summary>
+    <div class="card-body"><p>Read-only list of every repository's linked worktrees under your scan roots, from one <code>git worktree list --porcelain -z</code> per repository through the same hardened Git invocation the scans use: branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is the repository's own claim, so it is measured only when it is a real directory inside a scan root whose <code>.git</code> file leads back to that repository; anything else is listed unsized with the reason. The main worktree is listed but not measured. Sizes follow no link, stay on one device, never count a nested worktree twice, and are lower bounds when entries cannot be read. The report never says safe, stale or removable and shows no date: uncommitted, untracked and ignored work leave none. A bare repository has no <code>.git</code> marker and is found only through one of its worktrees. <code>git worktree remove &lt;path&gt;</code> runs the repository's configured programs, so use it only in a repository you trust, after your own review.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">icloud</span><span class="cmd-desc">large files and locally allocated storage</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>LOW</span></summary>
@@ -566,7 +570,7 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">leftovers</span><span class="cmd-desc">report-only review hints</span><span class="pill g"><span class="sq"><i class="on"></i><i></i><i></i></span>INFO</span></summary>
-    <div class="card-body"><p>Lists possible agent scratch and <code>.supergoal</code> paths for manual review. It never deletes them because worktree or mission staleness cannot be proven from a name.</p></div>
+    <div class="card-body"><p>Lists possible agent scratch and <code>.supergoal</code> paths for manual review, and the folders inside a repository's top-level <code>.scratch</code> when Git ignores that folder (<code>git check-ignore</code>) and tracks nothing in it; a <code>.scratch</code> child that is a linked worktree is labelled as one. It never deletes any of them: worktree or mission staleness cannot be proven from a name, and ignored files are still somebody's data.</p></div>
   </details>
 
   <p class="group-label" id="g-nuclear">Nuclear — read twice, run once</p>
@@ -596,7 +600,7 @@ devtrim clean caches</code></pre>
       <tr><td data-th="Layer">Identity verification</td><td data-th="Rule">preview-time device/inode is re-verified through an open parent-directory handle; drift refuses</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Directory preflight</td><td data-th="Rule">foreign devices and nested Git repository/worktree markers are refused before Trash or permanent mutation; only uv's own empty marker is tolerated, where uv's lock or the Trash grants it</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
       <tr><td data-th="Layer">Command authority</td><td data-th="Rule">typed capability must match the operation and validated Docker endpoint or simulator UDID</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
-      <tr><td data-th="Layer">Risk notice</td><td data-th="Rule">every human apply warns that cleanup can cause data loss</td><td data-th="Bypass">JSON remains machine-only</td></tr>
+      <tr><td data-th="Layer">Risk notice</td><td data-th="Rule">every human apply warns that cleanup can cause data loss</td><td data-th="Bypass"><code>--json</code> prints no notice and keeps stdout one document; on a terminal an apply without <code>-y</code> or <code>--yolo</code> still asks on stderr</td></tr>
       <tr><td data-th="Layer">Danger gate</td><td data-th="Rule">every interactive mutation confirms; critical plans require typed input (see <a href="#danger">§06</a>)</td><td data-th="Bypass"><code>-y</code> skips y/N only; <code>--yolo</code> skips interactive prompts, never operation-specific acknowledgments</td></tr>
       <tr><td data-th="Layer">TUI approval</td><td data-th="Rule">a typed approval must match the current preview, its selection, and the danger requirement of the selected findings; selection only narrows</td><td data-th="Bypass"><strong>nothing</strong>; CLI bypass flags are rejected</td></tr>
       <tr><td data-th="Layer">Protected paths</td><td data-th="Rule">hard denylist below</td><td data-th="Bypass"><strong>nothing</strong></td></tr>
@@ -639,10 +643,10 @@ Developer/Xcode/DerivedData · Caches/Homebrew</code></pre>
       <tr><td data-th="Score" class="lvl-r">9–10</td><td data-th="Meaning">irreversible bulk deletion</td><td data-th="Gate">typed numeric confirm</td><td data-th="Examples"><code>trash-empty</code></td></tr>
     </tbody>
   </table></div>
-  <pre data-copy="none" tabindex="0"><code><span class="dim">$ devtrim trash-empty --confirm=14</span>
-dry-run no changes made; re-run with --apply and --confirm=14 to act
-<span class="dim">$ devtrim trash-empty --confirm=14 --apply</span>
-only the exact children from the displayed preview are eligible</code></pre>
+  <pre data-copy="none" tabindex="0"><code><span class="dim">$ devtrim trash-empty</span>
+dry-run no changes made. Re-run with --apply and --confirm=14 to act.
+<span class="dim">$ devtrim trash-empty --apply --confirm=14</span></code></pre>
+  <p>The purge acts only on the exact Trash items the preview listed. An item that cannot be measured (a folder left unreadable inside it) is named as an error and stays; the others are still purged, and the run exits nonzero.</p>
 </section>
 
 <!-- ============ 07 CONFIG ============ -->
@@ -710,6 +714,16 @@ protect = ["~/dev/keep"]         # never delete these paths or their children</c
   <h3>Pre-flight before a big clone or model download</h3>
   <pre data-copy="safe"><code>devtrim scan --json | jq '[.findings[].size_bytes] | add // 0'</code></pre>
   <pre data-copy="safe"><code>devtrim clean caches --apply -y</code></pre>
+
+  <h3>Keeping worktrees small</h3>
+  <p><code>devtrim worktrees</code> shows where linked worktrees take space; these habits keep each one from holding a full copy of what the main checkout already has:</p>
+  <ul class="flow">
+    <li><strong>Leave large tracked folders out.</strong> <code>git worktree add --no-checkout &lt;path&gt; -b &lt;branch&gt;</code>, then <code>git -C &lt;path&gt; sparse-checkout set --no-cone '/*' '!/&lt;dir&gt;/'</code> and <code>git -C &lt;path&gt; checkout &lt;branch&gt;</code>.</li>
+    <li><strong>Install dependencies per worktree.</strong> Run the package manager there (pnpm, bun, uv, Cargo reuse their own store or cache); never copy or link <code>node_modules</code>, <code>.venv</code> or <code>target</code> between worktrees.</li>
+    <li><strong>Clone data a task changes.</strong> <code>cp -cR &lt;source&gt; &lt;new-path&gt;</code> makes an APFS clone that shares blocks until a file changes; it works only on the same volume, and it copies links as links.</li>
+    <li><strong>Share read-only data once.</strong> Keep one copy and reach it through an absolute symlink.</li>
+  </ul>
+  <div class="note">devtrim reports estimated logical bytes. APFS clones share their blocks, so cloned trees look larger in every devtrim report than the space they hold.</div>
 
   <div class="note"><strong>Trash is your audit log.</strong> Everything cleaned today is restorable from Finder until you empty it.</div>
 </section>

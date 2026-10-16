@@ -96,7 +96,8 @@ devtrim clean docker --apply -y           # local daemon images + build cache; n
 devtrim clean toolchains --apply -y       # only unreferenced swift.org toolchains
 devtrim clean installers --apply -y       # stale installer archives in Downloads/Desktop
 devtrim clean agents --apply -y           # agent caches + older Codex releases + stale session history
-devtrim clean leftovers                   # report-only hints; never deletes worktrees
+devtrim clean leftovers                   # report-only hints and ignored .scratch folders
+devtrim worktrees                         # report-only: linked worktrees and their sizes
 devtrim icloud                            # large iCloud Drive files and local allocation
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
 devtrim trash-empty --confirm=14 --apply  # perform the verified purge
@@ -142,7 +143,7 @@ by an enclosing repository at or above your home folder, such as dotfiles
 kept as a repository at `~`.
 
 `purge`, `clean node-modules`, `clean artifacts`, `clean leftovers`, `largest`,
-and the project half of `scan` look only under the scan roots, never the whole
+`worktrees`, and the project half of `scan` look only under the scan roots, never the whole
 disk or the whole home folder. Without configured roots those are the
 conventional project folders that exist: `~/dev`, `~/Developer`,
 `~/Development`, `~/Projects`, `~/Code`, `~/GitHub`, `~/Repos`, `~/Workspace`,
@@ -187,7 +188,9 @@ than what apply may remove.
 containing `pyvenv.cfg`, `Pods` next to `Podfile`, `.next` next to
 `package.json`, Android's native build folder `.cxx` next to `build.gradle`,
 `.terragrunt-cache` next to `terragrunt.hcl`, Nuxt's `.output` next to
-`nuxt.config.*`, a valid `CACHEDIR.TAG` signature, and so on — inside a Git repo
+`nuxt.config.*`, a valid `CACHEDIR.TAG` signature, and so on (the Python tool caches
+`__pycache__`, `.pytest_cache`, `.mypy_cache` and `.ruff_cache` are matched by name
+alone, since no other tool writes them) — inside a Git repo
 whose last activity is conclusively stale. Ambiguous names such as `build`,
 `dist`, `vendor`, `bin`, and `obj` are deliberately never matched, and the
 scanner/apply owner refuse artifacts below every ASCII-case variant of
@@ -232,7 +235,22 @@ membership, exact depth below the configured root, no symlink, and the age gate
 re-read from disk — so a session resumed after preview falls out of the plan.
 Agent *scratch worktrees* are a different question and stay where they were:
 `clean leftovers` lists them for review and never deletes them, because a
-worktree's staleness cannot be proven from its name.
+worktree's staleness cannot be proven from its name. It also lists the folders
+inside a repository's top-level `.scratch` when Git ignores that folder and
+tracks nothing in it, labelling a linked worktree there as one.
+
+`devtrim worktrees` shows where linked worktrees take space: one
+`git worktree list --porcelain -z` per repository under the scan roots, through
+the hardened Git invocation, with the branch or detached HEAD and any lock or
+prune reason. A listed path is the repository's claim, so it is measured only
+when it is a real directory inside a scan root whose `.git` file leads back to
+that repository; the main worktree is listed unsized. Sizes follow no link,
+stay on one device, never count a nested worktree twice, and are lower bounds
+when entries cannot be read. The report never says safe, stale or removable
+and adds no deletion authority; `git worktree remove` runs the repository's
+configured programs, so use it only where you trust the repository. The manual's
+[Keeping worktrees small](MANUAL.html#recipes) recipe covers sparse checkouts,
+per-worktree installs and APFS clones.
 
 `clean agents` also offers older Codex standalone releases when the installer lock
 is available, `current` resolves to a verified package, and each candidate is a

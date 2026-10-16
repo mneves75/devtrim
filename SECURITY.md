@@ -102,6 +102,17 @@ Non-negotiable boundaries:
   HEAD's commit date and HEAD's newest reflog entry, so a clone or checkout of
   old history is active. Both dates are rendered in UTC, the clock the
   staleness cutoff counts in; the probe pins `TZ=UTC0` for `git` alone.
+- The two read-only reports add three Git queries through the same hardened
+  builder: `worktree list --porcelain -z` and `rev-parse --path-format=absolute
+  --git-common-dir` for `worktrees`, and `check-ignore -q -- .scratch/` for the
+  `.scratch` rows of `clean leftovers` (run only when that folder exists; exit 0
+  is ignored, 1 is not, anything else refuses). None of them runs a configured
+  program even unhardened (measured on Git 2.56). A path a worktree listing names
+  is repository data: it is measured only when it is a real directory inside a
+  scan root whose `.git` file names a gitdir in that repository's `worktrees`, and
+  no Git command ever runs inside a listed worktree. Neither report creates a
+  finding with a target action, a deletion-list entry, a command authority or a
+  journal record.
 - Every directory deletion preflights foreign filesystem devices and Git
   repository/worktree markers at any depth before either Trash or permanent
   mutation. Git metadata matching is ASCII-case-insensitive, and permanent
@@ -220,7 +231,7 @@ Non-negotiable boundaries:
   authority.
 - A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize a typed Docker or simulator operation with validated arguments, and apply must match both representations exactly.
 - Mutation flags are capability-scoped and rejected when the selected command cannot honor them; confirmation bypasses never add operations.
-- Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level, `trash-empty` included; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
+- Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level, `trash-empty` included; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments. `--json` keeps stdout one document and prints no notice; on a terminal an apply without `-y` or `--yolo` still asks on stderr, so automation passes one of them.
 - The TUI accepts no CLI confirmation bypass, and discards keys typed while a scan or apply blocked it, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
 - TUI selection can only narrow a plan. The approved plan is the displayed findings minus those the operator left out; danger and the typed confirmation are computed over that subset, the confirmation states how many findings it covers and how many were left out, and a selection change invalidates an earlier approval. Read-only results and non-actionable rows cannot be selected. Each row shows the action and danger the current Trash or permanent mode gives it, through the same policy the plan uses.
 - `purge` adds no deletion authority. It is the `node-modules` and `artifacts` scanners in one plan, and each finding is applied by its own category, which reasserts its exact target shape, staleness and build liveness; a finding routed to the other category is refused.
