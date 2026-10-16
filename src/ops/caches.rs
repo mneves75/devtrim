@@ -498,11 +498,15 @@ fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
         }
         Err(error) => return vec![not_judged("Gradle caches", &error)],
     };
-    let present = GRADLE
-        .iter()
-        .map(|entry| (entry.label, gradle.join(entry.relative)))
-        .filter(|(_, path)| std::fs::symlink_metadata(path).is_ok())
-        .collect::<Vec<_>>();
+    let mut present = Vec::new();
+    for entry in GRADLE {
+        let path = gradle.join(entry.relative);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => present.push((entry.label, path)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => unread.push(UnreadFolder::new(&path, &error.into())),
+        }
+    }
     if present.is_empty() {
         return Vec::new();
     }

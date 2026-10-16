@@ -109,7 +109,10 @@ pub(crate) fn repositories_under(
     unread: &mut Vec<UnreadFolder>,
 ) -> Result<Vec<PathBuf>> {
     let mut found = Vec::new();
-    let mut entries = walkdir::WalkDir::new(root).follow_links(false).into_iter();
+    let mut entries = walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter();
     while let Some(result) = entries.next() {
         let entry = match result {
             Ok(entry) => entry,

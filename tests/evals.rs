@@ -1377,6 +1377,29 @@ fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_reposit
     );
     write(&outside.join("payload.bin"), &"x".repeat(4096));
 
+    // A stray registration in `app` names another repository. It is listed
+    // unsized, and that repository is still queried for its own worktrees.
+    let zeta = dev.join("zeta");
+    write(&zeta.join("README"), "zeta");
+    repo(&sandbox, &zeta, STALE, &["README"]);
+    let zeta_outside = sandbox.path().join("zeta-elsewhere");
+    git(
+        &sandbox,
+        &zeta,
+        STALE,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            zeta_outside.to_str().unwrap(),
+        ],
+    );
+    let stray = app.join(".git/worktrees/stray");
+    write(&stray.join("gitdir"), &format!("{}/.git\n", zeta.display()));
+    write(&stray.join("commondir"), "../..\n");
+    write(&stray.join("HEAD"), &head);
+
     // A linked worktree whose repository is gone is a skip note, not a failure.
     write(
         &dev.join("orphan/.git"),
@@ -1424,6 +1447,7 @@ fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_reposit
         );
         assert!(note(unmeasured).contains("not measured"), "{document}");
     }
+    assert!(note(&zeta_outside).contains("not measured"), "{document}");
     let last = document["findings"].as_array().unwrap().last().unwrap();
     assert!(last["path"].is_null(), "{document}");
     assert!(

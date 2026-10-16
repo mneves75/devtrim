@@ -109,7 +109,8 @@ fn list_repository(
 ) -> Result<Vec<Finding>> {
     let records = parse_porcelain(&project::worktree_listing(repository)?)
         .with_context(|| format!("cannot read the worktree list of {}", repository.display()))?;
-    listed.extend(records.iter().filter_map(|record| identity(&record.path)));
+    listed.extend(identity(repository));
+    listed.extend(records.first().and_then(|main| identity(&main.path)));
     if records.len() < 2 {
         return Ok(Vec::new());
     }
@@ -138,6 +139,7 @@ fn list_repository(
         let mut note = record.describe();
         let size = match leads_back(&record.path, scan_roots, common) {
             Ok(()) => {
+                listed.extend(identity(&record.path));
                 let nested: BTreeSet<PathBuf> = paths
                     .iter()
                     .filter(|path| *path != &record.path)
