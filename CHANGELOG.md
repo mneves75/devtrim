@@ -2,9 +2,37 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.10.10] - Unreleased
+## [0.11.0] - 2026-10-16
+
+A full review of the source against this Mac's real state. The read-only scan
+offered 21.6 GiB while `node-modules` and `artifacts` failed outright on a
+busy machine, and the toolchain the developer was using was offered for
+removal. This release fixes what the review found, adds two read-only
+reports, keeps the interface responsive, and cuts the test suite to the tests
+that guard something (522 → under 300). It also ships the unpublished 0.10.10
+fixes below.
+
+### Added
+- `devtrim worktrees` lists each repository's linked worktrees under the scan roots with their sizes: one `git worktree list --porcelain -z` per repository through the hardened Git invocation, the branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is measured only when it is a real directory inside a scan root whose `.git` file leads back to that repository; anything else is listed unsized with the reason, and the main worktree is listed unsized. Sizes follow no link, stay on one device, never count a nested worktree twice and are lower bounds when entries cannot be read. The report never says safe, stale or removable, adds no deletion authority, rejects every mutation flag and writes no journal
+- `clean leftovers` also lists the folders inside a repository's top-level `.scratch` when Git ignores that folder (`git check-ignore`) and tracks nothing in it, labelling a linked worktree there as one. Repositories are found anywhere under the roots, not only one level down
+- The manual's "Keeping worktrees small" recipe: sparse checkouts, per-worktree installs from the package manager's store, APFS clones, and why cloned trees look larger than the space they hold
 
 ### Fixed
+- `node-modules`, `artifacts` and `purge` no longer fail on a busy Mac with "build processes changed again while their working directories were read". A build process that started during the liveness probe had to be read completely on one more `lsof`; a short-lived one that exited first refused the whole probe (9 of 30 read-only previews on the development machine, about 200 matching processes at load average 60–135). Each later lookup is now judged by the first round's rule — a process `lsof` did not report passes only when a fresh `pgrep` no longer lists it — up to five `lsof` runs in all; a list still changing after that refuses. The same loop then passed 30 of 30
+- `trash-empty` no longer fails, preview and apply, when one Trash item cannot be measured. That item offers nothing and is named in one error entry; the other items are listed and purged, and the run exits nonzero
+- A category whose scan failed no longer vanishes from the `scan` table, where it read as having nothing to offer. It keeps a row marked failed with the command that retries it
+- `uninstall` no longer drops its whole report when one folder inside a container is unreadable; that size is a disclosed lower bound. `icloud` names an unreadable folder as an error and still lists the files it could read
+- Names stored decomposed (NFD), such as `café` written as `cafe` plus a combining accent, print as written instead of `cafe\u{301}`. Leading marks, variation selectors, joiners, controls and bidirectional characters stay escaped
+- The non-interactive refusal of a danger-9 plan named `-y`, which cannot answer a typed size; it now names `--yolo`
+- Report-only commands (`largest`, `icloud`, `uninstall`) ended with "0 B actionable"; they now total what they report and say nothing is removed. Under `scan --shred` the table's hint names `--shred`. The CLI danger tag for 6–8 uses named ANSI red instead of a fixed RGB orange. The `largest` note claims a lower bound only when entries were skipped. `status` labels disk sizes as used and available instead of calling their sum the disk's size. A flag refusal's JSON envelope names the refusing operation (`devtrim --json` said `unknown`). `--help` says which commands honour the global mutation flags, and `completions --help` describes its argument
+- Documentation: the manual's quick-start and `trash-empty` samples now show the real output, the release binary is 2.6 MB (not 1.5 MB), the README says which Python cache names need no corroborating file, the site no longer claims "bundler outputs", and the docs say what `--json` does with a prompt on a terminal (stdout stays one document; an apply without `-y` or `--yolo` still asks on stderr)
+- Removed a stale doc comment that described a deleted `count-objects` helper
+
+### Changed
+- The test suite keeps only tests that fail when the code breaks in a way that matters to a user, to data or to security: 522 `#[test]` functions became 279 before this release's additions. Every test the mutation gate names was kept unchanged; 18 spot checks broke the production code a removed test covered and showed a kept test failing (one removal was overturned and kept)
+- New planted mutation cases: `worktrees/common-dir`, `leftovers/scratch-ignored` and `trash/unmeasurable-item`; the build-process successor case now removes the lookup bound
+
+### Fixed (unpublished 0.10.10)
 - Interrupting a CLI run with Ctrl-C (SIGINT) or SIGTERM now stops every command it started. Each command runs in a process group of its own, which the terminal's Ctrl-C never reaches, so an interrupted run used to leave a `docker` prune or a stuck query running. Every live group is now registered in `src/process.rs`; on either signal they are all killed before devtrim exits with 130 (SIGINT) or 143 (SIGTERM), and an apply attempt in flight stays in the journal without a result, which `history` reports as interrupted. A group is never signalled after its leader was reaped. The handler writes no message and a second signal exits at once, so a full or unread stderr can never stall the exit. A run started with SIGINT ignored (a background job of a non-interactive shell) now stops on SIGINT too, since there is no safe way to read the earlier disposition. The TUI keeps its own behaviour: raw mode, where Ctrl-C is a key, and its own terminal restoration. The handler uses `signal-hook`, a crate already in the lockfile through crossterm
 - A running coding agent now protects the repository containing its working directory from `node_modules` and `artifacts` cleanup, as any build process does; a repository it edits by absolute path from elsewhere is not protected. The build-process names `pgrep -x` matches gain `codex`, `claude`, `rust-analyzer` and Claude Code's real process name, its version number (`2.1.294` for `~/.local/share/claude/versions/2.1.294`), matched only as a whole dotted triple of digits with an optional SemVer pre-release suffix such as `2.2.0-beta.1` (a process named like that qualifies, which can only protect or refuse more; `2.1`, `1.2.3.4` and `codex-code-mode` do not match)
 - One cache that cannot be measured no longer fails the whole `caches` category. It is named in one error finding, as the project categories name folders their walk cannot read, so the run still exits nonzero and nothing in it is offered, while the other caches are listed as usual

@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "devtrim"
-version = "0.10.9"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "cap-std",
@@ -427,6 +427,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "signal-hook",
  "toml",
  "trash",
  "unicode-normalization",
