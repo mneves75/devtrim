@@ -216,9 +216,9 @@ struct App {
     theme: Theme,
     /// Whether the full keybinding reference is open over the current screen.
     help: bool,
-    /// The furthest the detail view can scroll, measured when it was last
-    /// drawn, so a key never scrolls past its content.
-    detail_limit: std::cell::Cell<u16>,
+    /// The furthest the detail, outcome or error view can scroll, measured
+    /// when it was last drawn, so a key never scrolls past its content.
+    scroll_limit: std::cell::Cell<u16>,
 }
 
 impl Default for App {
@@ -243,7 +243,7 @@ impl Default for App {
             failed: false,
             theme: Theme::from_env(),
             help: false,
-            detail_limit: std::cell::Cell::new(0),
+            scroll_limit: std::cell::Cell::new(0),
         }
     }
 }
@@ -465,6 +465,7 @@ impl App {
         self.failed = true;
         self.errors = vec![format!("{error:#}")];
         self.summary = None;
+        self.scroll = 0;
         self.screen = Screen::Error;
         self.status = "The operation failed closed; no new action was authorized.".into();
     }
@@ -564,23 +565,10 @@ impl App {
                     self.back_to_menu();
                     Intent::None
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.scroll = self.scroll.saturating_sub(1);
+                code => {
+                    self.scroll_by(code);
                     Intent::None
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.scroll = self.scroll.saturating_add(1);
-                    Intent::None
-                }
-                KeyCode::PageUp => {
-                    self.scroll = self.scroll.saturating_sub(PAGE_ROWS);
-                    Intent::None
-                }
-                KeyCode::PageDown => {
-                    self.scroll = self.scroll.saturating_add(PAGE_ROWS);
-                    Intent::None
-                }
-                _ => Intent::None,
             },
             Screen::Loading => Intent::None,
         }
@@ -680,7 +668,7 @@ impl App {
             KeyCode::Enter if self.row_count() > 0 => {
                 self.screen = Screen::Detail;
                 self.scroll = 0;
-                self.detail_limit.set(0);
+                self.scroll_limit.set(0);
                 Intent::None
             }
             _ => Intent::None,
@@ -690,14 +678,23 @@ impl App {
     /// The detail view only reads: it scrolls within its content and closes,
     /// and no key here reaches the plan behind it.
     fn handle_detail_key(&mut self, key: KeyCode) -> Intent {
-        let limit = self.detail_limit.get();
-        let scroll = self.scroll.min(limit);
-        self.scroll = match key {
+        match key {
             KeyCode::Char('q') => return Intent::Quit,
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('b') => {
                 self.screen = Screen::Results;
-                0
+                self.scroll = 0;
             }
+            code => self.scroll_by(code),
+        }
+        Intent::None
+    }
+
+    /// Scrolls a detail, outcome or error view within its content, never past
+    /// the last line it drew.
+    fn scroll_by(&mut self, key: KeyCode) {
+        let limit = self.scroll_limit.get();
+        let scroll = self.scroll.min(limit);
+        self.scroll = match key {
             KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => scroll.saturating_add(1).min(limit),
             KeyCode::PageUp => scroll.saturating_sub(PAGE_ROWS),
@@ -706,7 +703,6 @@ impl App {
             KeyCode::End | KeyCode::Char('G') => limit,
             _ => scroll,
         };
-        Intent::None
     }
 
     fn handle_confirm_key(&mut self, key: KeyCode) -> Intent {
@@ -980,6 +976,7 @@ fn apply_operation(app: &mut App, ctx: &Ctx, plan: ApprovedPlan) {
                 outcome_status(!outcome.errors.is_empty(), outcome.summary.items_touched).into();
             app.summary = Some(outcome.summary);
             app.errors = outcome.errors;
+            app.scroll = 0;
             app.screen = Screen::Outcome;
         }
         Err(error) => app.fail(error),
@@ -1025,9 +1022,9 @@ fn render(frame: &mut Frame, app: &App) {
         Screen::Menu => render_menu(frame, body, app),
         Screen::Loading => render_loading(frame, body, app),
         Screen::Results | Screen::Confirm => render_results(frame, body, app),
-        Screen::Detail => render_detail(frame, body, app),
-        Screen::Outcome => render_outcome(frame, body, app),
-        Screen::Error => render_error(frame, body, app),
+        Screen::Detail => render_scrolled(frame, body, app, "Details", detail_entries(app)),
+        Screen::Outcome => render_scrolled(frame, body, app, "Apply outcome", outcome_entries(app)),
+        Screen::Error => render_scrolled(frame, body, app, "Failed closed", error_entries(app)),
     }
     render_footer(frame, footer, app);
     if app.screen == Screen::Confirm {
@@ -1298,20 +1295,27 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// The highlighted results row whole, scrolled within its content: nothing
-/// about a finding is hidden here, however short the terminal.
-fn render_detail(frame: &mut Frame, area: Rect, app: &App) {
-    let lines = detail_lines(app, usize::from(area.width.saturating_sub(2)));
+/// A view that scrolls within its content: the highlighted results row whole,
+/// an apply outcome, or a failure. Lines are wrapped here rather than by the
+/// renderer, so their count is known and no key scrolls past the last one.
+fn render_scrolled(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    name: &str,
+    entries: Vec<(String, Style)>,
+) {
+    let lines = wrap_lines(entries, usize::from(area.width.saturating_sub(2)));
     let visible = area.height.saturating_sub(2);
     let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let limit = total.saturating_sub(visible);
-    app.detail_limit.set(limit);
+    app.scroll_limit.set(limit);
     let scroll = app.scroll.min(limit);
     let title = if limit == 0 {
-        " Details ".to_string()
+        format!(" {name} ")
     } else {
         format!(
-            " Details · lines {}-{} of {total} ",
+            " {name} · lines {}-{} of {total} ",
             scroll + 1,
             scroll.saturating_add(visible).min(total)
         )
@@ -1408,9 +1412,14 @@ fn diagnostic_at(app: &App, row: usize) -> Option<(String, Token)> {
     }
 }
 
-/// Everything about the highlighted row, wrapped to `width` columns. The
-/// selection state precedes the path, the part most likely to run long.
+/// Everything about the highlighted row, wrapped to `width` columns.
 fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    wrap_lines(detail_entries(app), width)
+}
+
+/// Everything about the highlighted row, one entry per line before wrapping.
+/// The selection state precedes the path, the part most likely to run long.
+fn detail_entries(app: &App) -> Vec<(String, Style)> {
     let mut lines = Vec::new();
     if let Some(finding) = app
         .findings
@@ -1456,6 +1465,11 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         lines.push(("No findings.".to_string(), app.theme.style(Token::Success)));
     }
     lines
+}
+
+/// Styled entries wrapped to `width` columns, one terminal row per line.
+fn wrap_lines(entries: Vec<(String, Style)>, width: usize) -> Vec<Line<'static>> {
+    entries
         .into_iter()
         .flat_map(|(text, style)| {
             wrap_columns(&text, width)
@@ -1530,10 +1544,10 @@ fn truncate_left(text: &str, max: usize) -> String {
     format!("…{}", &text[start..])
 }
 
-fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
+fn outcome_entries(app: &App) -> Vec<(String, Style)> {
     let mut lines = Vec::new();
     if let Some(summary) = &app.summary {
-        lines.push(Line::styled(
+        lines.push((
             report::terminal_safe(&report::summary_headline(summary)),
             app.theme
                 .bold(match (app.errors.is_empty(), summary.items_touched) {
@@ -1543,7 +1557,7 @@ fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
                 }),
         ));
         if !app.excluded.is_empty() {
-            lines.push(Line::styled(
+            lines.push((
                 format!(
                     "{} left out of this plan and not touched.",
                     app.excluded.len()
@@ -1551,52 +1565,40 @@ fn render_outcome(frame: &mut Frame, area: Rect, app: &App) {
                 app.theme.style(Token::Muted),
             ));
         }
-        lines.push(Line::raw(""));
+        lines.push((String::new(), Style::default()));
         for note in &summary.notes {
-            lines.push(Line::raw(format!("• {}", report::terminal_safe(note))));
+            lines.push((format!("• {}", report::terminal_safe(note)), Style::default()));
         }
     }
     if !app.errors.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled("Errors", app.theme.bold(Token::Critical)));
+        lines.push((String::new(), Style::default()));
+        lines.push(("Errors".into(), app.theme.bold(Token::Critical)));
         for error in &app.errors {
-            lines.push(Line::raw(format!("• {}", report::terminal_safe(error))));
+            lines.push((format!("• {}", report::terminal_safe(error)), Style::default()));
         }
     }
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .scroll((app.scroll, 0))
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Apply outcome ")),
-        area,
-    );
+    lines
 }
 
-fn render_error(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines = vec![Line::styled(
-        "Operation refused or failed",
+fn error_entries(app: &App) -> Vec<(String, Style)> {
+    let mut lines = vec![(
+        "Operation refused or failed".to_string(),
         app.theme.bold(Token::Critical),
     )];
     for error in &app.errors {
-        lines.push(Line::raw(report::terminal_safe(error)));
+        lines.push((report::terminal_safe(error), Style::default()));
     }
     if !app.warnings.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            "Warnings captured before the failure",
+        lines.push((String::new(), Style::default()));
+        lines.push((
+            "Warnings captured before the failure".into(),
             app.theme.style(Token::Warning),
         ));
         for warning in &app.warnings {
-            lines.push(Line::raw(report::terminal_safe(warning)));
+            lines.push((report::terminal_safe(warning), Style::default()));
         }
     }
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .scroll((app.scroll, 0))
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Failed closed ")),
-        area,
-    );
+    lines
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
