@@ -159,6 +159,12 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     let home = sandbox.path();
     sandbox.script("npm", "printf '%s\\n' \"$HOME/.npm\"");
     sandbox.script("brew", "printf '%s\\n' \"$HOME/Library/Caches/Homebrew\"");
+    // `go` must be asked with `GOTOOLCHAIN=local`, or a `go.mod` could make it
+    // download a toolchain.
+    sandbox.script(
+        "go",
+        "[ \"$*\" = 'env GOMODCACHE' ] && [ \"${GOTOOLCHAIN:-}\" = local ] || exit 3\nprintf '%s\\n' \"$HOME/go/pkg/mod\"",
+    );
     let targets: Vec<PathBuf> = [
         ".cache/huggingface/hub",
         ".cache/uv",
@@ -175,6 +181,9 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
         // Homebrew's cache holds a Git clone, so it is offered as its other children.
         "Library/Caches/Homebrew/downloads",
         "Library/Caches/Homebrew/bootsnap",
+        ".gradle/caches",
+        ".gradle/wrapper/dists",
+        "go/pkg/mod",
     ]
     .iter()
     .map(|relative| home.join(relative))
@@ -196,9 +205,17 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
         ".cargo/bin/cargo",
         "Library/Caches/Homebrew/omlx--git/.git/HEAD", // a Homebrew Git clone stays
         "Library/Caches/Homebrew/omlx--git/README",
+        ".gradle/gradle.properties", // Gradle's configuration beside its caches
+        ".gradle/init.d/init.gradle",
+        ".gradle/daemon/9.8.1/registry.bin",
+        "go/bin/tool", // installed commands beside the module cache
     ] {
         write(&home.join(relative), "keep");
     }
+    write(
+        &home.join("go/pkg/mod/cache/download/example.com/m/@v/v1.0.0.zip"),
+        "module",
+    );
     let mut targets = targets;
     targets.sort();
     targets

@@ -8,7 +8,7 @@ use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, apply_uv_cache_finding, dir_size,
     removal_note,
 };
-use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
+use crate::process::{BoundedCommand as _, PROBE_TIMEOUT, QUERY_TIMEOUT};
 use crate::report::TargetAuthority;
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
@@ -89,6 +89,39 @@ const _: () = assert!(
     "every built-in cache needs evidence for why it may be deleted"
 );
 
+/// The two children of Gradle's user home that are caches, relative to that
+/// home. Never the home itself, which holds `gradle.properties` and `init.d`.
+const GRADLE: &[DeletionEntry] = &[
+    DeletionEntry {
+        label: "Gradle caches",
+        relative: "caches",
+        evidence: "Gradle 9.8.1 \"Gradle User Home and Cache Cleanup\" \
+                   (docs.gradle.org/current/userguide/directory_layout.html): \
+                   version-specific caches \"are recreated on first use of that \
+                   Gradle version\", and Gradle itself deletes them after 30 \
+                   days unused and shared-cache files after 7 or 30; a \
+                   dependency missing from the cache is downloaded again \
+                   (dependency_caching.html). Source-dependency checkouts \
+                   (`vcs-1`) are build-tree scoped, never here (gradle/gradle \
+                   4c8b4c5 `VersionControlRepositoryCacheFactory`). Refused \
+                   while any Gradle process runs.",
+    },
+    DeletionEntry {
+        label: "Gradle wrapper distributions",
+        relative: "wrapper/dists",
+        evidence: "Same page: \"Distributions downloaded by the Gradle \
+                   Wrapper\", which Gradle's own cleanup deletes once unused; \
+                   the Wrapper downloads a missing distribution again before it \
+                   runs (gradle_wrapper.html, 9.8.1). Refused while any Gradle \
+                   process runs, since one may be executing from it.",
+    },
+];
+
+const _: () = assert!(
+    crate::safety::evidence_is_present(GRADLE),
+    "every Gradle cache needs evidence for why it may be deleted"
+);
+
 /// The `~/Library/Caches` half of the same list, derived from the closed
 /// carve-out in the protection boundary so a cache can never be previewed
 /// without also being deletable, or protected without also being unlisted.
@@ -149,6 +182,22 @@ impl Op for Caches {
                 Err(error) => unread.push(UnreadFolder::new(&path, &error)),
             }
         }
+        findings.extend(gradle_findings(ctx, &mut unread));
+        match go_module_cache(ctx, true) {
+            Ok(Some(path)) => {
+                let size = measured(&path, &mut unread);
+                if size > 0 {
+                    let mut finding = cache_finding("Go module cache", path, size, 3);
+                    finding.note = "Go downloads modules again on next build; Go keeps the cache \
+                                    read-only, so permanent removal is refused and `go clean \
+                                    -modcache` is Go's own way to delete it"
+                        .to_string();
+                    findings.push(finding);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => findings.push(not_judged("Go module cache", &error)),
+        }
         if !unread.is_empty() {
             findings.push(unread_folders_finding("caches", &unread));
         }
@@ -162,7 +211,26 @@ impl Op for Caches {
                 continue;
             }
             let result = (|| -> Result<()> {
-                authorize_cache_finding(finding, &ctx.home)?;
+                match authorize_cache_finding(finding, ctx)? {
+                    CacheKind::Plain => {}
+                    CacheKind::Gradle => {
+                        // Probed again at each finding: a build can start while
+                        // earlier caches are removed.
+                        let running = gradle_processes()?;
+                        if !running.is_empty() {
+                            anyhow::bail!(
+                                "refusing {} while Gradle is running ({} process(es)); `gradle --stop` ends its daemons",
+                                finding.label,
+                                running.len()
+                            );
+                        }
+                    }
+                    CacheKind::GoModules => {
+                        if let Some(target) = finding.target() {
+                            go_removal_preflight(target, finding.action == Action::Shred)?;
+                        }
+                    }
+                }
                 let uv_cache = ctx.home.join(UV_CACHE);
                 if finding.target() == Some(uv_cache.as_path()) {
                     // Held until the cache has moved, then released on drop;
@@ -312,21 +380,244 @@ fn cache_note(path: &Path) -> String {
     }
 }
 
-fn authorize_cache_finding(finding: &Finding, home: &Path) -> Result<()> {
+/// Which cache an authorized finding is, for the checks its owner needs before
+/// the sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheKind {
+    Plain,
+    Gradle,
+    GoModules,
+}
+
+fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
+    let home = &ctx.home;
     let target = finding
         .target()
         .ok_or_else(|| anyhow::anyhow!("cache finding missing internal target"))?;
-    let authorized = match finding.authority() {
-        TargetAuthority::Standard => is_builtin_cache_root(target, home),
-        TargetAuthority::NpmCache => is_eligible_owner_cache("npm", target, home),
-        TargetAuthority::BrewCache => is_eligible_owner_cache("brew", target, home),
-        TargetAuthority::BrewCacheEntry => is_brew_cache_entry(target, home)?,
+    let kind = match finding.authority() {
+        TargetAuthority::Standard if is_builtin_cache_root(target, home) => Some(CacheKind::Plain),
+        // Both owner roots are recomputed now, never taken from the preview.
+        TargetAuthority::Standard if is_gradle_cache(target, home)? => Some(CacheKind::Gradle),
+        // Only a folder holding Go's download cache sends devtrim to ask `go`.
+        TargetAuthority::Standard if holds_go_download_cache(target)? => {
+            go_module_cache(ctx, false)?
+                .is_some_and(|cache| cache == target)
+                .then_some(CacheKind::GoModules)
+        }
+        TargetAuthority::Standard => None,
+        TargetAuthority::NpmCache => {
+            is_eligible_owner_cache("npm", target, home).then_some(CacheKind::Plain)
+        }
+        TargetAuthority::BrewCache => {
+            is_eligible_owner_cache("brew", target, home).then_some(CacheKind::Plain)
+        }
+        TargetAuthority::BrewCacheEntry => {
+            is_brew_cache_entry(target, home)?.then_some(CacheKind::Plain)
+        }
     };
-    if !authorized {
-        anyhow::bail!(
+    kind.ok_or_else(|| {
+        anyhow::anyhow!(
             "cache target is outside its authorized namespace: {}",
             target.display()
+        )
+    })
+}
+
+/// A finding for a cache whose owner could not be asked: it offers nothing,
+/// and the run reports failure, while the other caches are still offered.
+fn not_judged(subject: &str, error: &anyhow::Error) -> Finding {
+    let message = format!("cannot judge the {subject}: {error:#}");
+    Finding::new(
+        format!("{subject} not judged"),
+        None,
+        0,
+        &message,
+        5,
+        Action::Info,
+    )
+    .with_scan_error(message)
+}
+
+/// Gradle's user home: `GRADLE_USER_HOME`, by default `~/.gradle` (Gradle 9.8.1
+/// "Gradle User Home"). `None` when the variable is relative, which would be
+/// read against whatever folder devtrim started in, or names a folder that is
+/// not inside the home folder. The home itself is never a target: it also
+/// holds `gradle.properties` and `init.d`.
+fn gradle_user_home(home: &Path) -> Result<Option<PathBuf>> {
+    let Some(configured) = std::env::var_os("GRADLE_USER_HOME") else {
+        return Ok(Some(home.join(".gradle")));
+    };
+    let configured = PathBuf::from(configured);
+    if !configured.is_absolute() {
+        return Ok(None);
+    }
+    let resolved = resolved_owner_path("gradle", configured)?;
+    Ok(normalized_absolute(&resolved).filter(|path| path.starts_with(home) && path != home))
+}
+
+fn is_gradle_cache(target: &Path, home: &Path) -> Result<bool> {
+    Ok(gradle_user_home(home)?.is_some_and(|gradle| {
+        GRADLE
+            .iter()
+            .any(|entry| target == gradle.join(entry.relative))
+    }))
+}
+
+/// Gradle's own JVM entry points, matched against the whole command line since
+/// every one runs as `java`: the daemon `DefaultDaemonStarter` launches
+/// (`org.gradle.launcher.daemon.bootstrap.GradleDaemon`), a build run without
+/// one (`org.gradle.launcher.GradleMain`), and the Wrapper
+/// (`org.gradle.wrapper.GradleWrapperMain`), per gradle/gradle 4c8b4c5.
+const GRADLE_PROCESS_PATTERN: &str = "org\\.gradle\\.(launcher\\.daemon\\.bootstrap\\.GradleDaemon|launcher\\.GradleMain|wrapper\\.GradleWrapperMain)";
+
+/// The Gradle processes running now. Gradle locks its caches only among its
+/// own processes and cleans them itself when its daemon stops (Gradle 9.8.1
+/// "Dependency caching", "Gradle User Home and Cache Cleanup"), so devtrim,
+/// which takes no part in that locking, refuses them while any Gradle process
+/// runs. A probe that fails refuses as well. `-a` keeps a Gradle build that
+/// started devtrim visible to the probe.
+fn gradle_processes() -> Result<Vec<u32>> {
+    let output = std::process::Command::new("pgrep")
+        .args(["-a", "-f", GRADLE_PROCESS_PATTERN])
+        .output_within(PROBE_TIMEOUT)
+        .context("cannot run the Gradle process probe")?;
+    crate::safety::parse_pgrep_pids(&output.stdout, output.status.code())
+        .context("the Gradle process probe failed")
+}
+
+/// Gradle's caches and Wrapper distributions, unless a Gradle process runs.
+fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
+    let gradle = match gradle_user_home(&ctx.home) {
+        Ok(Some(gradle)) => gradle,
+        Ok(None) => {
+            ctx.diagnostic(
+                "warn",
+                "GRADLE_USER_HOME is not a folder inside the home folder; skipping Gradle's caches",
+            );
+            return Vec::new();
+        }
+        Err(error) => return vec![not_judged("Gradle caches", &error)],
+    };
+    let present = GRADLE
+        .iter()
+        .map(|entry| (entry.label, gradle.join(entry.relative)))
+        .filter(|(_, path)| std::fs::symlink_metadata(path).is_ok())
+        .collect::<Vec<_>>();
+    if present.is_empty() {
+        return Vec::new();
+    }
+    match gradle_processes() {
+        Ok(running) if running.is_empty() => {}
+        Ok(running) => {
+            ctx.diagnostic(
+                "info",
+                format!(
+                    "Gradle is running ({} process(es)); skipping its caches until `gradle --stop` ends its daemons",
+                    running.len()
+                ),
+            );
+            return Vec::new();
+        }
+        Err(error) => return vec![not_judged("Gradle caches", &error)],
+    }
+    present
+        .into_iter()
+        .filter_map(|(label, path)| {
+            let size = measured(&path, unread);
+            (size > 0).then(|| cache_finding(label, path, size, 3))
+        })
+        .collect()
+}
+
+/// The Go module cache `go env GOMODCACHE` reports (go.dev/ref/mod "Module
+/// cache": by default `$GOPATH/pkg/mod`; `go clean -modcache` is Go's own
+/// removal, and modules missing from it are downloaded again). It is judged
+/// like the other owner-reported roots: resolved first, and trusted only inside
+/// the home folder and only when it holds Go's download cache
+/// (`cache/download`), the layout that reference documents, so a `go` answering
+/// with any other folder offers nothing. `GOTOOLCHAIN=local` keeps the query on
+/// the installed toolchain: a `go.mod` asking for a newer Go would otherwise
+/// make `go` download one (go.dev/doc/toolchain). `go` absent, or no cache yet,
+/// is nothing to offer; `go` failing is an error for this cache alone.
+fn go_module_cache(ctx: &Ctx, warn: bool) -> Result<Option<PathBuf>> {
+    let Some(path) = command_path(
+        "go",
+        &["env", "GOMODCACHE"],
+        &ctx.home,
+        &[("GOTOOLCHAIN", "local")],
+    )?
+    else {
+        return Ok(None);
+    };
+    let path = resolved_owner_path("go", path)?;
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
+        }
+        Ok(_) => {}
+    }
+    let corroborated = holds_go_download_cache(&path)?;
+    let inside_home = normalized_absolute(&path)
+        .is_some_and(|cache| cache.starts_with(&ctx.home) && cache != ctx.home);
+    if !(corroborated && inside_home) {
+        if warn {
+            ctx.diagnostic(
+                "warn",
+                format!(
+                    "`go` reports module cache {} outside the home folder or without Go's `cache/download`; skipping",
+                    path.display()
+                ),
+            );
+        }
+        return Ok(None);
+    }
+    Ok(Some(path))
+}
+
+/// Whether `path` holds Go's download cache, `cache/download`, as a real folder.
+fn holds_go_download_cache(path: &Path) -> Result<bool> {
+    let download = path.join("cache/download");
+    match std::fs::symlink_metadata(&download) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("cannot inspect {}", download.display())),
+    }
+}
+
+/// Go makes most module-cache folders read-only, so `rm -r` "fails, since files
+/// can't be removed without first making their parent directories writable"
+/// (go.dev/ref/mod "go clean -modcache"). A move to the Trash renames the cache
+/// folder alone, which needs only that folder to be writable. A permanent
+/// removal deletes every file, which a read-only folder would refuse part-way,
+/// leaving a half-removed cache; so it is refused whole when any folder in it
+/// is read-only.
+fn go_removal_preflight(target: &Path, permanent: bool) -> Result<()> {
+    let writable = |path: &Path| match rustix::fs::access(path, rustix::fs::Access::WRITE_OK) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::ACCESS) => Ok(false),
+        Err(error) => Err(std::io::Error::from(error))
+            .with_context(|| format!("cannot check whether {} is writable", path.display())),
+    };
+    if !writable(target)? {
+        anyhow::bail!(
+            "refusing the Go module cache: {} is read-only, so it cannot be moved; `go clean -modcache` removes it",
+            target.display()
         );
+    }
+    if !permanent {
+        return Ok(());
+    }
+    for entry in walkdir::WalkDir::new(target).follow_links(false) {
+        let entry = entry.with_context(|| format!("cannot read {}", target.display()))?;
+        if entry.file_type().is_dir() && !writable(entry.path())? {
+            anyhow::bail!(
+                "refusing permanent removal of the Go module cache: Go made {} read-only, and \
+                 permanent removal cannot delete inside it; move the cache to the Trash instead, \
+                 or run `go clean -modcache`",
+                entry.path().display()
+            );
+        }
     }
     Ok(())
 }
@@ -386,22 +677,25 @@ fn normalized_absolute(path: &Path) -> Option<PathBuf> {
     Some(normalized)
 }
 
+/// The home folder is resolved to its real path; an owner answers in the
+/// spelling `$HOME` gave it, which may run through a link, so its answer is
+/// resolved the same way before it is judged. A cache that does not exist yet
+/// holds nothing to offer either way.
+fn resolved_owner_path(program: &str, path: PathBuf) -> Result<PathBuf> {
+    match path.canonicalize() {
+        Ok(real) => Ok(real),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path),
+        Err(error) => {
+            Err(error).with_context(|| format!("cannot resolve the cache root `{program}` reports"))
+        }
+    }
+}
+
 fn owner_cache_path(program: &str, args: &[&str], ctx: &Ctx) -> Result<Option<PathBuf>> {
-    let Some(path) = command_path(program, args, &ctx.home)? else {
+    let Some(path) = command_path(program, args, &ctx.home, &[])? else {
         return Ok(None);
     };
-    // The home folder is resolved to its real path; an owner answers in the
-    // spelling `$HOME` gave it, which may run through a link, so its answer is
-    // resolved the same way before it is judged. A cache that does not exist
-    // yet holds nothing to offer either way.
-    let path = match path.canonicalize() {
-        Ok(real) => real,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => path,
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("cannot resolve the cache root `{program}` reports"));
-        }
-    };
+    let path = resolved_owner_path(program, path)?;
     if !is_eligible_owner_cache(program, &path, &ctx.home) {
         ctx.diagnostic(
             "warn",
@@ -415,12 +709,18 @@ fn owner_cache_path(program: &str, args: &[&str], ctx: &Ctx) -> Result<Option<Pa
     Ok(Some(path))
 }
 
-/// Runs from `$HOME` so a project-level `.npmrc` in whatever directory devtrim
-/// was started from cannot redirect the reported cache root.
-fn command_path(program: &str, args: &[&str], home: &Path) -> Result<Option<PathBuf>> {
+/// Runs from `$HOME` so a project-level `.npmrc` (or `go.mod`) in whatever
+/// directory devtrim was started from cannot redirect the reported cache root.
+fn command_path(
+    program: &str,
+    args: &[&str],
+    home: &Path,
+    envs: &[(&str, &str)],
+) -> Result<Option<PathBuf>> {
     let command = format!("`{program} {}`", args.join(" "));
     let output = std::process::Command::new(program)
         .args(args)
+        .envs(envs.iter().copied())
         .current_dir(home)
         .output_within(QUERY_TIMEOUT);
     let Some(value) = super::optional_command_stdout(output, &command)? else {

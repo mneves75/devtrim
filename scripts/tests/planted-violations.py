@@ -1348,6 +1348,46 @@ CASES = (
         target="eval_system",
     ),
     Case(
+        name="caches/gradle-running-scan",
+        relative_path="src/ops/caches.rs",
+        # A running Gradle no longer keeps its caches out of the preview.
+        before="        Ok(running) if running.is_empty() => {}\n",
+        after="        Ok(_) => {}\n",
+        tests=("eval_gradle_caches_are_kept_while_gradle_runs",),
+        marker="PV eval/gradle-running-scan",
+        target="eval_safety",
+    ),
+    Case(
+        name="caches/gradle-running-apply",
+        relative_path="src/ops/caches.rs",
+        # Apply no longer asks whether Gradle started after the preview.
+        before="                        if !running.is_empty() {\n",
+        after="                        if running.is_empty() && !running.is_empty() {\n",
+        tests=("eval_gradle_caches_are_kept_while_gradle_runs",),
+        marker="PV eval/gradle-running-apply",
+        target="eval_safety",
+    ),
+    Case(
+        name="caches/go-read-only",
+        relative_path="src/ops/caches.rs",
+        # A read-only module folder no longer refuses permanent removal.
+        before="        if entry.file_type().is_dir() && !writable(entry.path())? {\n",
+        after="        if entry.file_type().is_dir() && !writable(entry.path())? && false {\n",
+        tests=("eval_a_read_only_go_module_cache_is_refused_whole_for_permanent_removal",),
+        marker="PV eval/go-read-only",
+        target="eval_safety",
+    ),
+    Case(
+        name="caches/go-namespace",
+        relative_path="src/ops/caches.rs",
+        # Any folder inside the home `go` names becomes a module cache.
+        before="    if !(corroborated && inside_home) {\n",
+        after="    if !(corroborated || inside_home) {\n",
+        tests=("eval_a_folder_without_go_layout_is_never_a_module_cache",),
+        marker="PV eval/go-namespace",
+        target="eval_safety",
+    ),
+    Case(
         name="simulators/no-simctl",
         relative_path="src/ops/simulators.rs",
         # Any simctl failure with exit 72 reads as a Mac without Xcode.
