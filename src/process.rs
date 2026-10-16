@@ -9,8 +9,9 @@ use std::collections::BTreeSet;
 use std::io::{self, Read};
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc;
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -268,7 +269,8 @@ fn poll_exit(child: &mut Child) -> io::Result<Option<ExitStatus>> {
 /// std and rustix offer no safe way to read the earlier disposition.
 ///
 /// Not installed for the TUI, which runs in raw mode where Ctrl-C is a key and
-/// owns its terminal restoration.
+/// must restore its terminal before it exits: it installs
+/// [`forward_interrupts`] instead.
 pub(crate) fn exit_on_interrupt() -> io::Result<()> {
     use signal_hook::consts::{SIGINT, SIGTERM};
 
@@ -300,7 +302,9 @@ pub(crate) fn exit_on_interrupt() -> io::Result<()> {
 /// delaying the exit.
 const SPAWN_GRACE: Duration = Duration::from_secs(2);
 
-fn kill_and_exit(signal: i32) -> ! {
+/// Kills every registered command group and exits 128 plus `signal`, as
+/// [`exit_on_interrupt`] does on a signal.
+pub(crate) fn kill_and_exit(signal: i32) -> ! {
     let mut registry = live();
     registry.interrupted = true;
     registry = SPAWNED
@@ -337,6 +341,41 @@ fn kill_and_reap(child: &mut Child) -> bool {
             Ok(None) if Instant::now() < deadline => thread::sleep(LONGEST_POLL),
             Ok(None) | Err(_) => return false,
         }
+    }
+}
+
+/// What the TUI installs in place of [`exit_on_interrupt`]. Its terminal is in
+/// raw mode and must be restored before devtrim exits, and only the TUI's own
+/// thread writes to it, so a SIGINT or SIGTERM is recorded for that thread
+/// instead of ending the run here: the TUI restores the terminal and then
+/// calls [`kill_and_exit`] with the signal. A second signal kills every
+/// command and exits at once, leaving the terminal as it is, so a TUI that
+/// stopped polling cannot keep devtrim or its commands alive.
+pub(crate) fn forward_interrupts() -> io::Result<Interrupts> {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+
+    let received = Arc::new(AtomicI32::new(0));
+    let recorded = Arc::clone(&received);
+    let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?;
+    thread::Builder::new()
+        .name("devtrim-interrupt".into())
+        .spawn(move || {
+            for signal in signals.forever() {
+                if recorded.swap(signal, Ordering::SeqCst) != 0 {
+                    kill_and_exit(signal);
+                }
+            }
+        })?;
+    Ok(Interrupts(received))
+}
+
+/// The signal [`forward_interrupts`] recorded for the TUI to act on.
+pub(crate) struct Interrupts(Arc<AtomicI32>);
+
+impl Interrupts {
+    /// The first SIGINT or SIGTERM received, once one has been.
+    pub(crate) fn received(&self) -> Option<i32> {
+        Some(self.0.load(Ordering::SeqCst)).filter(|signal| *signal != 0)
     }
 }
 

@@ -221,7 +221,7 @@ Non-negotiable boundaries:
 - A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize a typed Docker or simulator operation with validated arguments, and apply must match both representations exactly.
 - Mutation flags are capability-scoped and rejected when the selected command cannot honor them; confirmation bypasses never add operations.
 - Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level, `trash-empty` included; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
-- The TUI accepts no CLI confirmation bypass, and discards keys typed while a scan or apply blocked it, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
+- The TUI accepts no CLI confirmation bypass. It runs each scan and apply on a worker thread and drops every key typed meanwhile except a quit, then discards input still queued when the result is drawn, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
 - TUI selection can only narrow a plan. The approved plan is the displayed findings minus those the operator left out; danger and the typed confirmation are computed over that subset, the confirmation states how many findings it covers and how many were left out, and a selection change invalidates an earlier approval. Read-only results and non-actionable rows cannot be selected. Each row shows the action and danger the current Trash or permanent mode gives it, through the same policy the plan uses.
 - `purge` adds no deletion authority. It is the `node-modules` and `artifacts` scanners in one plan, and each finding is applied by its own category, which reasserts its exact target shape, staleness and build liveness; a finding routed to the other category is refused.
 - Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
@@ -424,9 +424,13 @@ Non-negotiable boundaries:
   a second signal exits at once without waiting for the first kill. It cannot reap the leaders, whose handles belong to other threads;
   the kernel reparents and reaps them at exit. An apply attempt in flight
   stays in the journal without a result, and `history` reports it as
-  interrupted. The TUI installs no handler: it runs in raw mode, where Ctrl-C
-  is a key, and restores its own terminal, so its behaviour is unchanged; a
-  SIGTERM sent to the TUI does not stop the commands it started. A devtrim
+  interrupted. The TUI runs in raw mode, where Ctrl-C is a key, and only its
+  own thread may restore its terminal, so it installs
+  `process::forward_interrupts` instead: the signal is recorded, the TUI's loop
+  restores the terminal and then kills and exits the same way, during an apply
+  too, and a second signal kills and exits at once without restoring it. `q`
+  or Ctrl-C during a TUI scan ends the run the same way (exit 130); during an
+  apply the TUI refuses to quit on a key until the apply returns. A devtrim
   killed by SIGKILL cannot run the handler and leaves them running. Installing
   the handler also replaces a SIGINT that was ignored at startup, as in a
   background job of a non-interactive shell: such a run now stops on SIGINT
