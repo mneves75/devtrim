@@ -1193,14 +1193,27 @@ pub fn confirmation_requirement(danger: u8, findings: &[Finding]) -> Confirmatio
 }
 
 pub fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
-    if !ctx.interactive && !ctx.yes && !ctx.yolo {
-        bail!("non-interactive run: re-run with -y to confirm danger-{max_danger} operations");
+    let requirement = confirmation_requirement(max_danger, findings);
+    if !ctx.interactive && !ctx.yolo {
+        match requirement {
+            // -y cannot answer a typed size, so naming it would send the
+            // operator round a second refusal.
+            ConfirmationRequirement::TypedGigabytes { danger, .. } => bail!(
+                "non-interactive run: danger-{danger} operation requires interactive typed confirmation or --yolo"
+            ),
+            ConfirmationRequirement::YesNo { .. } if !ctx.yes => {
+                bail!(
+                    "non-interactive run: re-run with -y to confirm danger-{max_danger} operations"
+                )
+            }
+            ConfirmationRequirement::YesNo { .. } => {}
+        }
     }
     warn_data_loss(ctx);
     if ctx.yolo {
         return Ok(());
     }
-    match confirmation_requirement(max_danger, findings) {
+    match requirement {
         ConfirmationRequirement::TypedGigabytes { danger, expected } => {
             if !ctx.interactive {
                 bail!(

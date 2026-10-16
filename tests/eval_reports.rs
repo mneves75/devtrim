@@ -510,3 +510,105 @@ fn eval_scan_human_summarizes_large_categories_and_all_lists_every_target() {
     }
     unchanged(&before, &sandbox);
 }
+
+/// A category whose scan failed keeps its row in the human table, marked as
+/// failed with the command that retries it, instead of vanishing.
+#[test]
+fn eval_scan_table_keeps_a_failed_category_visible() {
+    let sandbox = sandbox("report-scan-failed");
+    sandbox.script("pgrep", "exit 3");
+    let root = sandbox.path().join("dev");
+    std::fs::create_dir_all(&root).unwrap();
+    let output = run(&sandbox, &["scan", "--root", root.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    for category in ["node-modules", "artifacts"] {
+        let row = stdout
+            .lines()
+            .find(|line| line.trim_start().starts_with(category))
+            .unwrap_or_else(|| panic!("no {category} row: {stdout}"));
+        assert!(row.contains("failed"), "{row}");
+        assert!(row.contains(&format!("devtrim clean {category}")), "{row}");
+    }
+}
+
+/// A protected folder inside an app's container lowers that one size to a
+/// disclosed lower bound; every path is still reported.
+#[test]
+fn eval_uninstall_reports_every_path_past_an_unreadable_folder() {
+    let sandbox = sandbox("report-uninstall-unreadable");
+    let app = sandbox.path().join("Applications/EvalLockedWidget.app");
+    write(&app.join("Contents/Info.plist"), "plist");
+    sandbox.script("plutil", "printf 'com.devtrim.evallocked\\n'");
+    sandbox.script("ps", "exit 0");
+    let container = sandbox
+        .path()
+        .join("Library/Containers/com.devtrim.evallocked");
+    write(&container.join("Data/readable"), "readable");
+    write(&container.join("locked/secret"), "secret");
+    let lock = |mode| {
+        std::fs::set_permissions(
+            container.join("locked"),
+            std::fs::Permissions::from_mode(mode),
+        )
+        .unwrap()
+    };
+    lock(0o000);
+    let output = run(&sandbox, &["uninstall", app.to_str().unwrap(), "--json"]);
+    lock(0o755);
+    let document = json(&output);
+    let row = document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["path"].as_str() == Some(container.to_str().unwrap()))
+        .unwrap_or_else(|| panic!("container not reported: {document}"));
+    assert!(
+        row["note"].as_str().unwrap().contains("lower bound"),
+        "{document}"
+    );
+    assert!(
+        document["findings"].as_array().unwrap().len() >= 2,
+        "{document}"
+    );
+}
+
+/// One unreadable folder in iCloud Drive is named as an error while the
+/// files that could be read are still listed.
+#[test]
+fn eval_icloud_lists_what_it_can_read_past_an_unreadable_folder() {
+    let sandbox = sandbox("report-icloud-unreadable");
+    let root = sandbox
+        .path()
+        .join("Library/Mobile Documents/com~apple~CloudDocs");
+    let large = root.join("large.dat");
+    write(&large, "x");
+    std::fs::File::options()
+        .write(true)
+        .open(&large)
+        .unwrap()
+        .set_len(100 * 1024 * 1024)
+        .unwrap();
+    write(&root.join("locked/hidden.dat"), "hidden");
+    let lock = |mode| {
+        std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(mode))
+            .unwrap()
+    };
+    lock(0o000);
+    let output = run(&sandbox, &["icloud", "--json"]);
+    lock(0o755);
+    let document = json(&output);
+    assert!(!output.status.success(), "{document}");
+    assert!(
+        document["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["path"].as_str() == Some(large.to_str().unwrap())),
+        "{document}"
+    );
+    assert!(
+        document["errors"].to_string().contains("locked"),
+        "{document}"
+    );
+}

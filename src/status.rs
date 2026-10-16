@@ -760,11 +760,10 @@ fn print_human(report: &StatusReport) -> Result<()> {
     if let Some(disk) = report.disk {
         let _ = writeln!(
             output,
-            "  disk            {} of {} used ({:.0}%), {} available",
+            "  disk            {} used, {} available ({:.0}% of used + available)",
             report::gb(disk.used_bytes),
-            report::gb(disk.total_bytes),
-            disk.used_percent(),
-            report::gb(disk.available_bytes)
+            report::gb(disk.available_bytes),
+            disk.used_percent()
         );
     }
     if let Some(battery) = &report.battery {

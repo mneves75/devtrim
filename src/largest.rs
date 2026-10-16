@@ -60,18 +60,16 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
             .then_with(|| left_path.cmp(right_path))
     });
     let limit = top.unwrap_or(20).clamp(1, 100);
+    let note = if skipped > 0 {
+        "report-only; sizes are estimated logical bytes and lower bounds: unreadable entries were skipped"
+    } else {
+        "report-only; sizes are estimated logical bytes"
+    };
     let findings = ranked
         .into_iter()
         .take(limit)
         .map(|(path, size)| {
-            Finding::new(
-                "large directory",
-                Some(path),
-                size,
-                "report-only; sizes are estimated logical bytes (lower bound when entries were skipped)",
-                1,
-                Action::Info,
-            )
+            Finding::new("large directory", Some(path), size, note, 1, Action::Info)
         })
         .collect();
     let errors = (skipped > 0)

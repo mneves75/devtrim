@@ -15,19 +15,19 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Apply the exact previewed actions; cleanup can delete data
+    /// Apply the exact previewed actions; cleanup can delete data (cleanup commands only)
     #[arg(long, global = true)]
     pub apply: bool,
 
-    /// Accept data-loss risk and skip y/N prompts; required for non-TTY mutation
+    /// Accept data-loss risk and skip y/N prompts; required for non-TTY mutation (cleanup commands only)
     #[arg(short = 'y', long, global = true)]
     pub yes: bool,
 
-    /// Accept data-loss risk and skip prompts; operation acknowledgments still apply
+    /// Accept data-loss risk and skip prompts; operation acknowledgments still apply (cleanup commands only)
     #[arg(long, global = true)]
     pub yolo: bool,
 
-    /// Permanently delete instead of moving filesystem targets to Trash
+    /// Permanently delete instead of moving filesystem targets to Trash (filesystem cleanup only)
     #[arg(long, global = true)]
     pub shred: bool,
 
@@ -96,6 +96,7 @@ pub enum Command {
     },
     /// Print a shell completion script
     Completions {
+        /// Shell to generate for: bash, zsh or fish
         #[arg(value_parser = completion_shell)]
         shell: Shell,
     },

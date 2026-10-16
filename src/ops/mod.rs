@@ -1087,6 +1087,7 @@ fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Resul
     let mut entries = std::fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     let mut findings = Vec::with_capacity(entries.len());
+    let mut unread = Vec::new();
     for entry in entries {
         if is_git_metadata_name(&entry.file_name()) {
             ctx.diagnostic(
@@ -1102,7 +1103,15 @@ fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Resul
         if !keep(&path) {
             continue;
         }
-        let size = dir_size(&path)?;
+        // One item that cannot be measured (a folder left unreadable) offers
+        // nothing and is named; the other items are unrelated to it.
+        let size = match dir_size(&path) {
+            Ok(size) => size,
+            Err(error) => {
+                unread.push(project::UnreadFolder::new(&path, &error));
+                continue;
+            }
+        };
         findings.push(Finding::new(
             format!("Trash item: {}", entry.file_name().to_string_lossy()),
             Some(path),
@@ -1112,6 +1121,9 @@ fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Resul
             Action::Shred,
         ));
     }
+    if !unread.is_empty() {
+        findings.push(project::unread_folders_finding("Trash items", &unread));
+    }
     Ok(findings)
 }
 
@@ -1119,6 +1131,11 @@ pub fn purge_trash(findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
     let directory = crate::safety::validate_trash_root(&ctx.home)?;
     let mut outcome = ApplyOutcome::new("trash-empty");
     for finding in findings {
+        // An error entry for an item that could not be measured carries no
+        // target and asks for nothing.
+        if !finding.action.is_actionable() && finding.target().is_none() {
+            continue;
+        }
         let result = (|| -> Result<()> {
             if finding.action != Action::Shred {
                 anyhow::bail!("refusing non-permanent Trash action");

@@ -38,7 +38,6 @@ use std::process::{Command, ExitCode, Output};
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
 
-use crate::ops::dir_size;
 use crate::report::{self, Action, Finding};
 use crate::safety::Ctx;
 
@@ -261,19 +260,35 @@ pub(crate) fn matches_identifier_file(name: &str, identifier: &str, extension: &
         .is_some_and(|stem| stem == identifier)
 }
 
-fn measure(path: &Path) -> Result<u64> {
+/// Logical bytes under `path` and how many entries could not be read. A
+/// protected folder inside a container lowers that one size to a disclosed
+/// lower bound instead of hiding every path the report found.
+fn measure(path: &Path) -> Result<(u64, usize)> {
     let metadata = std::fs::symlink_metadata(path)
         .with_context(|| format!("cannot inspect {}", path.display()))?;
     if metadata.file_type().is_dir() {
-        dir_size(path)
+        let measured = crate::worktrees::measure_lenient(path, &Default::default());
+        Ok((measured.bytes, measured.unread))
     } else {
-        Ok(metadata.len())
+        Ok((metadata.len(), 0))
     }
 }
 
 fn info_finding(label: impl Into<String>, path: PathBuf, note: &str) -> Result<Finding> {
-    let size = measure(&path)?;
-    Ok(Finding::new(label, Some(path), size, note, 1, Action::Info))
+    let (size, unread) = measure(&path)?;
+    let note = if unread == 0 {
+        note.to_owned()
+    } else {
+        format!("{note}; size is a lower bound: {unread} entries could not be read")
+    };
+    Ok(Finding::new(
+        label,
+        Some(path),
+        size,
+        &note,
+        1,
+        Action::Info,
+    ))
 }
 
 /// Every path that belongs to `identifier`, plus the bundle itself.

@@ -1,8 +1,7 @@
 //! CLI application flow.
 
 use crate::{
-    analyze, cli, journal, largest, ops, process, report, safety, status, tui, uninstall,
-    worktrees,
+    analyze, cli, journal, largest, ops, process, report, safety, status, tui, uninstall, worktrees,
 };
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, error::ErrorKind};
@@ -19,9 +18,9 @@ pub fn main_impl() -> ExitCode {
         Ok(cli) => cli,
         Err(error) => return clap_error(error, json_requested, operation),
     };
-    if let Some(message) = incompatible_flags(&cli) {
+    if let Some((rejecting, message)) = incompatible_flags(&cli) {
         if cli.json {
-            if let Err(error) = report::print_json(operation, false, &[], None, &[message]) {
+            if let Err(error) = report::print_json(rejecting, false, &[], None, &[message]) {
                 eprintln!(
                     "{} {}",
                     "error:".red().bold(),
@@ -74,7 +73,9 @@ pub fn main_impl() -> ExitCode {
     }
 }
 
-fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
+/// The operation that refuses, and why, when a flag reaches a command that
+/// cannot honour it.
+fn incompatible_flags(cli: &cli::Cli) -> Option<(&'static str, String)> {
     let (operation, allow_apply, allow_yes, allow_yolo, allow_shred) = match cli.command.as_ref() {
         None | Some(cli::Command::Tui) => ("tui", false, false, false, false),
         Some(cli::Command::Scan { .. }) => ("scan", false, false, false, true),
@@ -117,9 +118,12 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
         rejected.push("--json");
     }
     (!rejected.is_empty()).then(|| {
-        format!(
-            "{operation} does not accept flag(s): {}",
-            rejected.join(", ")
+        (
+            operation,
+            format!(
+                "{operation} does not accept flag(s): {}",
+                rejected.join(", ")
+            ),
         )
     })
 }
@@ -336,7 +340,17 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             if ctx.json {
                 report::print_json("scan", false, &scan.findings, None, &scan.errors)?;
             } else {
-                report::print_scan_human(&scan.findings, &scan.sections, all)?;
+                let failed: Vec<&str> = ops::all()
+                    .iter()
+                    .map(|operation| operation.name())
+                    .filter(|name| {
+                        !scan
+                            .sections
+                            .iter()
+                            .any(|section| section.category == *name)
+                    })
+                    .collect();
+                report::print_scan_human(&scan.findings, &scan.sections, &failed, all)?;
                 for error in &scan.errors {
                     eprintln!("{} {}", "warn".yellow(), report::terminal_safe(error));
                 }
@@ -424,12 +438,21 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                 Ok(findings) => findings,
                 Err(error) => return command_error("icloud", false, &[], &ctx, error),
             };
+            let errors: Vec<String> = findings
+                .iter()
+                .filter_map(report::Finding::scan_error)
+                .map(str::to_owned)
+                .collect();
             if ctx.json {
-                report::print_json("icloud", false, &findings, None, &[])?;
+                report::print_json("icloud", false, &findings, None, &errors)?;
             } else {
                 report::print_human(&findings)?;
             }
-            Ok(ExitCode::SUCCESS)
+            Ok(if errors.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
         }
         cli::Command::TrashEmpty {
             confirm_gb,

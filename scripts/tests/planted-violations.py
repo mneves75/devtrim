@@ -71,6 +71,14 @@ class Case:
 
 CASES = (
     Case(
+        name="trash/unmeasurable-item",
+        relative_path="src/ops/mod.rs",
+        before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",
+        after="            Err(_) => 0,\n",
+        tests=("eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item",),
+        marker="PV eval/trash-empty-unreadable", target="eval_system",
+    ),
+    Case(
         name="worktrees/common-dir",
         relative_path="src/worktrees.rs",
         before="        Some(found) if found == common => Ok(()),\n",

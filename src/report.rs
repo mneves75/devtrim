@@ -304,26 +304,43 @@ impl Finding {
 }
 
 pub fn terminal_safe(value: &str) -> String {
-    value.chars().flat_map(char::escape_debug).collect()
+    escape_for_terminal(value, |_| false)
 }
 
 /// Escapes what could drive or reorder the terminal while keeping line breaks,
 /// quotes and backslashes literal, for multi-line text such as a parser error
 /// that interpolates an argument from argv.
 pub fn terminal_safe_text(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|character| {
-            let keep = matches!(character, '\n' | '\'' | '"' | '\\')
-                || character.escape_debug().nth(1).is_none();
-            let escaped: Vec<char> = if keep {
-                vec![character]
-            } else {
-                character.escape_debug().collect()
-            };
-            escaped
-        })
-        .collect()
+    escape_for_terminal(value, |character| {
+        matches!(character, '\n' | '\'' | '"' | '\\')
+    })
+}
+
+/// `char::escape_debug` for every character, except those `keep` names and a
+/// Latin combining accent (U+0300–U+036F) right after a base character, at
+/// most two in a row: a name stored decomposed, as NFD volumes and some tools
+/// write `café`, then reads as written. Controls, bidirectional overrides,
+/// joiners, variation selectors and a mark with nothing to sit on stay escaped.
+fn escape_for_terminal(value: &str, keep: impl Fn(char) -> bool) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut marks_after_base: Option<u8> = None;
+    for character in value.chars() {
+        let accent = ('\u{300}'..='\u{36f}').contains(&character);
+        let literal = keep(character)
+            || character.escape_debug().nth(1).is_none()
+            || (accent && marks_after_base.is_some_and(|marks| marks < 2));
+        if literal {
+            output.push(character);
+        } else {
+            output.extend(character.escape_debug());
+        }
+        marks_after_base = match (literal, accent) {
+            (true, true) => marks_after_base.map(|marks| marks + 1),
+            (true, false) => Some(0),
+            (false, _) => None,
+        };
+    }
+    output
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -392,7 +409,7 @@ fn danger_tag(danger: u8) -> colored::ColoredString {
     match danger {
         0..=2 => format!("danger:{danger}").green(),
         3..=5 => format!("danger:{danger}").yellow(),
-        6..=8 => format!("danger:{danger}").truecolor(255, 140, 0),
+        6..=8 => format!("danger:{danger}").red(),
         _ => format!("danger:{danger}").red().bold(),
     }
 }
@@ -464,15 +481,18 @@ pub struct ScanSection {
 
 /// The scan report: one line per category with its size and the command that
 /// acts on it, largest first, then each category's largest findings.
+/// `failed` names the categories whose scan returned an error: they keep a
+/// row so a failure never reads as a category with nothing to offer.
 pub fn print_scan_human(
     findings: &[Finding],
     sections: &[ScanSection],
+    failed: &[&str],
     all: bool,
 ) -> std::io::Result<()> {
-    write_stdout(scan_text(findings, sections, all).as_bytes())
+    write_stdout(scan_text(findings, sections, failed, all).as_bytes())
 }
 
-fn scan_text(findings: &[Finding], sections: &[ScanSection], all: bool) -> String {
+fn scan_text(findings: &[Finding], sections: &[ScanSection], failed: &[&str], all: bool) -> String {
     let mut ordered: Vec<(&str, &[Finding])> = sections
         .iter()
         .filter_map(|section| {
@@ -485,12 +505,19 @@ fn scan_text(findings: &[Finding], sections: &[ScanSection], all: bool) -> Strin
     ordered.sort_by_key(|(_, part)| std::cmp::Reverse(actionable_bytes(part)));
 
     let mut output = String::new();
-    if !ordered.is_empty() {
+    if !ordered.is_empty() || !failed.is_empty() {
         output.push_str(&format!("{}\n", "Categories".bold()));
     }
     for (name, part) in &ordered {
         let next = if part.iter().any(|finding| finding.action.is_actionable()) {
-            format!("devtrim clean {name} --apply").cyan()
+            // Under `scan --shred` the rows show SHRED; the command that
+            // performs what they show must say so too.
+            let permanent = if part.iter().any(|finding| finding.action == Action::Shred) {
+                " --shred"
+            } else {
+                ""
+            };
+            format!("devtrim clean {name} --apply{permanent}").cyan()
         } else {
             "report only".dimmed()
         };
@@ -503,6 +530,13 @@ fn scan_text(findings: &[Finding], sections: &[ScanSection], all: bool) -> Strin
         output.push_str(&format!(
             "  {name:<13} {:>9}  {counted:>5} finding(s){errors}   {next}\n",
             gb(actionable_bytes(part)),
+        ));
+    }
+    for name in failed {
+        output.push_str(&format!(
+            "  {name:<13} {:>9}  nothing judged; the error is below. Retry: {}\n",
+            "failed".red().bold(),
+            format!("devtrim clean {name}").cyan()
         ));
     }
     for (name, part) in &ordered {
@@ -548,6 +582,19 @@ fn actionable_total(findings: &[Finding]) -> String {
     } else {
         format!(" and {errors} error(s)")
     };
+    if counted > 0
+        && !findings
+            .iter()
+            .any(|finding| finding.action.is_actionable())
+    {
+        let reported = findings.iter().fold(0u64, |total, finding| {
+            total.saturating_add(finding.size_bytes)
+        });
+        return format!(
+            "\n{} reported across {counted} finding(s){errors}; report only, nothing here is removed\n",
+            gb(reported).bold(),
+        );
+    }
     format!(
         "\n{} actionable across {counted} finding(s){errors}\n",
         gb(actionable_bytes(findings)).bold(),
@@ -666,6 +713,17 @@ mod tests {
         assert_eq!(serialized["path"], "/tmp/line\nnext\u{202e}");
         assert!(serialized.get("identity").is_none());
         assert_eq!(terminal_safe(&finding.label), "cache\\u{1b}[2Jé");
+        assert!(terminal_safe("/tmp/next\u{202e}").contains("\\u{202e}"));
+        // A decomposed (NFD) accent reads as written; a mark with nothing to
+        // sit on, a stack past two, and a variation selector stay escaped.
+        assert_eq!(terminal_safe("cafe\u{301}"), "cafe\u{301}");
+        assert_eq!(terminal_safe("\u{301}x"), "\\u{301}x");
+        assert_eq!(
+            terminal_safe("a\u{301}\u{301}\u{301}"),
+            "a\u{301}\u{301}\\u{301}"
+        );
+        assert_eq!(terminal_safe("a\u{fe0f}"), "a\\u{fe0f}");
+        assert_eq!(terminal_safe_text("cafe\u{301}\n"), "cafe\u{301}\n");
     }
 
     /// Trash keeps every byte on the same volume until it is emptied, so a

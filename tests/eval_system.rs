@@ -1475,6 +1475,47 @@ fn eval_trash_empty_continues_past_an_item_holding_a_repository() {
     assert_eq!(document["summary"]["items_touched"], targets.len());
 }
 
+/// One Trash item that cannot be measured is named as an error and offers
+/// nothing; every other item is still listed and purged.
+#[test]
+fn eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::in_target("eval-trash-unreadable");
+    let trash = sandbox.path().join(".Trash");
+    let readable = trash.join("b-ok");
+    write(&readable.join("payload"), "payload");
+    let locked = trash.join("a-locked");
+    write(&locked.join("inner/secret"), "secret");
+    let pristine = Tree::snapshot(sandbox.path());
+    let lock = |mode| {
+        std::fs::set_permissions(locked.join("inner"), std::fs::Permissions::from_mode(mode))
+            .unwrap()
+    };
+    lock(0o000);
+    let preview = run(&sandbox, &["trash-empty", "--json"]);
+    let apply = run(
+        &sandbox,
+        &["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"],
+    );
+    lock(0o755);
+    let (preview_document, document) = (json(&preview), json(&apply));
+    assert_eq!(
+        actionable_targets(&preview_document),
+        vec![readable.clone()],
+        "PV eval/trash-empty-unreadable: {preview_document}"
+    );
+    assert!(!preview.status.success(), "{preview_document}");
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            removed: vec![readable],
+            scratch: vec![sandbox.path().join(".local/state/devtrim")],
+        },
+        "PV eval/trash-empty-unreadable",
+    );
+    assert!(!apply.status.success(), "{document}");
+}
+
 /// `--only-devtrim` offers only items whose identity the journal recorded for
 /// a successful move; names prove nothing, and an unfinished or failed move
 /// proves nothing either. The journal is written by hand because a real Trash
