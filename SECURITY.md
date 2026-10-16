@@ -59,7 +59,13 @@ Non-negotiable boundaries:
   cache paths; its history tier offers only children at exactly the configured
   depth below a configured root, and only once the newest regular file in the
   subtree is older than the retention window (`retain_days`). Apply re-reads that age from disk,
-  so a session resumed after preview is refused rather than deleted.
+  so a session resumed after preview is refused rather than deleted. Every
+  Codex entry, the release authority included, also applies to each folder
+  `codex_homes` names, and to no other: an entry must be an absolute, existing,
+  real directory inside the home folder reached through no link, neither
+  `~/.codex` by spelling or identity nor inside or around it or another entry,
+  or every command refuses to run; `agents` reads the setting again at scan and
+  at apply, and one it cannot read withholds only the homes it adds.
 - Codex standalone cleanup considers only installer-shaped direct children of
   `packages/standalone/releases` whose major/minor/patch version is strictly
   below the verified `current` symlink target. The package manifest, expected
@@ -91,7 +97,10 @@ Non-negotiable boundaries:
   background-session supervisor's live state, with a `pins.json` beside it
   recording which sessions are kept alive while idle. A closed category that
   must consult a liveness signal to stay safe has gone one directory too far.
-- Unknown Git activity or toolchain ownership is not deletion authority.
+- Unknown Git activity or toolchain ownership is not deletion authority. A
+  Swift toolchain swiftly lists as installed or in use is never a target,
+  at scan and again at apply; a swiftly configuration that cannot be read,
+  parsed or mapped to toolchain folders refuses the whole category.
 - Reading a scanned repository's activity or tracked files runs no program it
   configures. Both queries set fixed `-c` overrides for hooks and fsmonitor,
   pass `--no-lazy-fetch` and `--no-pager`, and clear repository-selection and
@@ -102,6 +111,29 @@ Non-negotiable boundaries:
   HEAD's commit date and HEAD's newest reflog entry, so a clone or checkout of
   old history is active. Both dates are rendered in UTC, the clock the
   staleness cutoff counts in; the probe pins `TZ=UTC0` for `git` alone.
+- The two read-only reports add three Git queries through the same hardened
+  builder: `worktree list --porcelain -z` and `rev-parse --path-format=absolute
+  --git-common-dir` for `worktrees`, and `check-ignore -q -- .scratch/` for the
+  `.scratch` rows of `clean leftovers` (run only when that folder exists; exit 0
+  is ignored, 1 is not, anything else refuses). None of them runs a configured
+  program even unhardened (measured on Git 2.56). A path a worktree listing names
+  is repository data: it is measured only when it is a real directory inside a
+  scan root whose `.git` file names a gitdir in that repository's `worktrees`, and
+  Git runs only in folders the walk itself finds, never in a path because a listing named it. Neither report creates a
+  finding with a target action, a deletion-list entry, a command authority or a
+  journal record.
+- A permanent removal refuses, before removing anything, a tree holding a
+  folder without write and search permission, since it would otherwise stop
+  part-way. The one exception is a direct Trash child in `trash-empty`, whose
+  purge the operator confirmed by its size: the sink adds owner write and search
+  permission to such a folder the current user owns, through that folder's open
+  handle and just before emptying it, so a Go module cache moved to the Trash can
+  be purged; a folder owned by another user still refuses. This is the sink's
+  only permission change, and only on a tree it is about to delete. It adds
+  owner bits only, to a folder the current user already owns and could change
+  itself; a process running as that same user could move a folder out of the
+  quarantined tree after its handle is opened and before the change, which the
+  handle-based walk cannot rule out, and the impact is limited to those bits.
 - Every directory deletion preflights foreign filesystem devices and Git
   repository/worktree markers at any depth before either Trash or permanent
   mutation. Git metadata matching is ASCII-case-insensitive, and permanent
@@ -166,10 +198,12 @@ Non-negotiable boundaries:
   protected, not every repository the agent edits by absolute path. As with
   any build process, one `lsof` cannot read, another user's for example,
   refuses the probe.
-  `lsof` exiting 1 is accepted only when every process it did not report is
+  `lsof` exiting 0 is trusted only when it reported every requested process; one
+  it left out is judged as below. `lsof` exiting 1 is accepted only when every process it did not report is
   absent from a fresh `pgrep`, so a build that exited between the probes does
   not block while one it could not read still does; a build process first seen
-  in that recheck has its directory read once, and a gap there refuses. The
+  in that recheck has its directory read and judged by the same rule, up to
+  five `lsof` runs in all, and a list still changing after that refuses. The
   recheck compares PIDs, not process identities: a reported build that exits and
   whose PID a new build takes before the recheck keeps the first directory. That
   window is no wider than a build starting just after a clean probe, which no
@@ -219,11 +253,11 @@ Non-negotiable boundaries:
   authority.
 - A serialized command action is not execution authority. Only the closed internal `CommandAuthority` capability can authorize a typed Docker or simulator operation with validated arguments, and apply must match both representations exactly.
 - Mutation flags are capability-scoped and rejected when the selected command cannot honor them; confirmation bypasses never add operations.
-- Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level, `trash-empty` included; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments, and JSON stays machine-only.
-- The TUI accepts no CLI confirmation bypass, and discards keys typed while a scan or apply blocked it, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
+- Every human apply displays a data-loss warning. Interactive mutation confirms at every danger level, `trash-empty` included; `-y` skips normal y/N only, `--yolo` skips interactive prompts but not operation-specific acknowledgments. `--json` keeps stdout one document and prints no notice; on a terminal an apply without `-y` or `--yolo` still asks on stderr, so automation passes one of them.
+- The TUI accepts no CLI confirmation bypass. It runs each scan and apply on a worker thread and drops every key typed meanwhile except a quit, then discards input still queued when the result is drawn, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
 - TUI selection can only narrow a plan. The approved plan is the displayed findings minus those the operator left out; danger and the typed confirmation are computed over that subset, the confirmation states how many findings it covers and how many were left out, and a selection change invalidates an earlier approval. Read-only results and non-actionable rows cannot be selected. Each row shows the action and danger the current Trash or permanent mode gives it, through the same policy the plan uses.
 - `purge` adds no deletion authority. It is the `node-modules` and `artifacts` scanners in one plan, and each finding is applied by its own category, which reasserts its exact target shape, staleness and build liveness; a finding routed to the other category is refused.
-- Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time.
+- Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time. The Go module cache `go env GOMODCACHE` reports (asked with `GOTOOLCHAIN=local`, so no toolchain is downloaded) must lie inside the home folder and hold Go's `cache/download`, and `go` is asked again at apply. Go keeps the cache read-only, so a permanent removal is refused before anything changes when any folder in it is read-only, and a move to the Trash when the cache folder itself is. Gradle's `caches` and `wrapper/dists` under `GRADLE_USER_HOME`, which must be absolute and inside the home folder, are refused at scan and at each apply while a Gradle process runs (`pgrep -a -f` for the daemon, a daemon-less build and the Wrapper); a probe that fails refuses them.
 - Hugging Face cleanup is limited to `~/.cache/huggingface/hub`. Its parent contains authentication and other state and is never an authorized built-in cache target. A real-binary regression requires model data to be removed while synthetic tokens and settings survive.
 - Complete human-facing actions, findings, errors, outcome notes, and command-line parse errors (which quote argv) escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values and JSON retains its original data.
 - Failed or partial work returns nonzero; successful earlier actions remain visible in the summary.
@@ -290,6 +324,15 @@ Non-negotiable boundaries:
 ## Supply chain
 
 - `Cargo.lock` is committed and release builds use `--locked`.
+- `signal-hook` 0.3 (iterator feature, default features off) runs the interrupt
+  handler: it receives SIGINT and SIGTERM on a thread, so the kill-and-exit
+  code is ordinary safe Rust. It adds no crate: crossterm's event support
+  already pulls it (and `signal-hook-registry`, `libc`) into `Cargo.lock`, so
+  `cargo audit` already covers it, and its minimum Rust version is far below the
+  1.88 MSRV. Alternatives rejected: `ctrlc` (a new crate with its own
+  dependencies, SIGINT/SIGTERM only through a feature) and rustix, which has no
+  safe way to install a handler; installing one by hand needs unsafe, which
+  the crate forbids. There is no `deny.toml`; `cargo audit` is the gate.
 - `rustix` already supplies the directory-anchored file operations; its `process`
   feature adds the safe `kill_process_group`, which `process::BoundedCommand`
   needs to kill a timed-out command's group. It adds no crate to the lockfile;
@@ -388,7 +431,7 @@ Non-negotiable boundaries:
   `no-unbounded-subprocess` ast-grep rule: standard input is null, both output
   streams are drained while it runs, and past its limit the child is killed and
   reaped and the call fails with `TimedOut`, naming the program and the limit.
-  Limits: two minutes for Git, `simctl`, `docker`, `npm` and `brew` queries;
+  Limits: two minutes for Git, `simctl`, `docker`, `npm`, `brew` and `go` queries;
   three for the `pgrep` and `lsof` probes (the observed 16 s scaled linearly to
   the worst observed load, about 50 s, with a margin of more than three);
   fifteen for the typed Docker, simulator and maintenance commands an apply
@@ -399,13 +442,33 @@ Non-negotiable boundaries:
   the leader (while it is unreaped its id cannot be reused), so a helper the
   tool spawned, such as `docker`'s buildx plugin, does not outlive the
   reported failure. A descendant still holding the output after the command
-  exited cleanly is abandoned, not killed. The price of the group is that the
-  terminal's Ctrl-C reaches devtrim only (devtrim installs no signal handler,
-  and the TUI runs in raw mode, where Ctrl-C is a key): a read or probe in
-  flight ends when it finishes or on SIGPIPE, and one that is stuck stays running
-  until it ends; a typed mutation command runs on
-  after an interrupted CLI run, and the journal shows its attempt without a
-  result. `status`
+  exited cleanly is abandoned, not killed. Because a group of its own never
+  receives the terminal's Ctrl-C, every non-TUI run installs a handler
+  (`process::exit_on_interrupt`) for SIGINT and SIGTERM. Live groups are kept
+  in one registry in `src/process.rs`. The lock is not held across a spawn: a
+  counter of spawns in flight covers the gap until the new group is
+  registered, and an interrupt waits for that counter (at most two seconds)
+  before it kills. A group is removed in the same critical section that reaps
+  its leader, so the handler never signals a group whose leader was reaped (its
+  id could then name an unrelated process). On a signal the handler refuses
+  later spawns, kills every registered group while holding the lock and exits
+  130 (SIGINT) or 143 (SIGTERM). It writes no message, because a write to a
+  full or unread stderr would stall the exit while the run kept deleting, and
+  a second signal exits at once without waiting for the first kill. It cannot reap the leaders, whose handles belong to other threads;
+  the kernel reparents and reaps them at exit. An apply attempt in flight
+  stays in the journal without a result, and `history` reports it as
+  interrupted. The TUI runs in raw mode, where Ctrl-C is a key, and only its
+  own thread may restore its terminal, so it installs
+  `process::forward_interrupts` instead: the signal is recorded, the TUI's loop
+  restores the terminal and then kills and exits the same way, during an apply
+  too, and a second signal kills and exits at once without restoring it. `q`
+  or Ctrl-C during a TUI scan ends the run the same way (exit 130); during an
+  apply the TUI refuses to quit on a key until the apply returns. A devtrim
+  killed by SIGKILL cannot run the handler and leaves them running. Installing
+  the handler also replaces a SIGINT that was ignored at startup, as in a
+  background job of a non-interactive shell: such a run now stops on SIGINT
+  where it used to carry on. std and rustix offer no safe way to read the
+  earlier disposition, so the handler is not skipped in that case. `status`
   and `uninstall` (report-only, outside scan and apply) are not bounded.
 - Liveness probes are point-in-time snapshots. A process can start after the
   final check; apply therefore still relies on immutable targets, identity

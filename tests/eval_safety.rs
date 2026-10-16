@@ -11,7 +11,7 @@
 mod support;
 
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use support::{Allowed, Sandbox, Tree, actionable_targets, assert_journaled, json, run, write};
 
 fn cache(sandbox: &Sandbox, relative: &str) -> PathBuf {
@@ -175,7 +175,7 @@ fn eval_trash_retained_snapshot_over_resource_budget_refuses_everything() {
 fn eval_busy_uv_cache_is_kept_while_later_caches_are_removed() {
     let sandbox = Sandbox::in_target("eval-uv-lock");
     let uv = cache(&sandbox, ".cache/uv");
-    let node = cache(&sandbox, ".cache/node");
+    let node = cache(&sandbox, ".cache/node/corepack");
     let lock = std::fs::File::create(uv.join(".lock")).unwrap();
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockShared).unwrap();
     let pristine = Tree::snapshot(sandbox.path());
@@ -230,6 +230,206 @@ fn eval_busy_uv_cache_is_kept_while_later_caches_are_removed() {
     );
 }
 
+/// A `pgrep` that reports a Gradle daemon to the Gradle probe and nothing to
+/// the build-process probe.
+const GRADLE_RUNNING: &str = "case \"$*\" in *GradleDaemon*) printf '4242\\n' ;; *) exit 1 ;; esac";
+
+/// `GRADLE_USER_HOME` alone never makes a folder a Gradle cache: one pointed
+/// inside a Git repository offers nothing, and a Gradle home whose folders lack
+/// Gradle's layout offers nothing either. The control is the same folders
+/// with Gradle's layout under `~/.gradle`.
+#[test]
+fn eval_gradle_caches_need_gradle_and_no_repository() {
+    let sandbox = Sandbox::in_target("eval-gradle-authority");
+    let home = sandbox.path().canonicalize().unwrap();
+    let app = home.join("dev/app");
+    write(&app.join(".git/HEAD"), "ref: refs/heads/main\n");
+    for folder in [app.join("caches"), home.join(".gradle/caches")] {
+        write(&folder.join("modules-2/files-2.1/x.jar"), "module");
+    }
+    let lookalike = home.join("look/caches");
+    write(
+        &lookalike.join("notes.txt"),
+        "a folder that only shares the name",
+    );
+    let with_gradle_home = |gradle: Option<&Path>, args: &[&str]| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"));
+        command
+            .args(args)
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", sandbox.bin());
+        if let Some(gradle) = gradle {
+            command.env("GRADLE_USER_HOME", gradle);
+        }
+        command.output().unwrap()
+    };
+    let control = json(&with_gradle_home(None, &["clean", "caches", "--json"]));
+    assert_eq!(
+        actionable_targets(&control),
+        vec![home.join(".gradle/caches")],
+        "{control}"
+    );
+    for gradle in [app.as_path(), lookalike.parent().unwrap()] {
+        let pristine = Tree::snapshot(&home);
+        let preview = json(&with_gradle_home(
+            Some(gradle),
+            &["clean", "caches", "--json"],
+        ));
+        let apply = json(&with_gradle_home(
+            Some(gradle),
+            &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+        ));
+        assert_eq!(
+            actionable_targets(&preview),
+            Vec::<PathBuf>::new(),
+            "PV eval/gradle-authority: {} was offered on GRADLE_USER_HOME alone: {preview}",
+            gradle.display()
+        );
+        pristine.assert_only(
+            &Tree::snapshot(&home),
+            &Allowed {
+                removed: Vec::new(),
+                scratch: vec![home.join(".local/state/devtrim")],
+            },
+            &format!("gradle authority {apply}"),
+        );
+    }
+}
+
+/// Gradle locks its caches only among its own processes, so they are kept
+/// while any Gradle process runs: left out of a preview taken then, and refused
+/// at apply when Gradle starts after the preview. The other caches still go.
+#[test]
+fn eval_gradle_caches_are_kept_while_gradle_runs() {
+    let sandbox = Sandbox::in_target("eval-gradle-running");
+    let gradle = cache(&sandbox, ".gradle/caches");
+    write(&gradle.join("modules-2/files-2.1/x.jar"), "module");
+    let other = cache(&sandbox, ".cache/gh");
+    sandbox.script("pgrep", GRADLE_RUNNING);
+    let preview = run(&sandbox, &["clean", "caches", "--shred", "--json"]);
+    assert_eq!(
+        actionable_targets(&json(&preview)),
+        std::slice::from_ref(&other),
+        "PV eval/gradle-running-scan: Gradle's caches were offered while Gradle runs"
+    );
+    assert!(preview.status.success(), "{}", json(&preview));
+
+    sandbox.script("pgrep", "exit 1");
+    let pristine = Tree::snapshot(sandbox.path());
+    let mut session =
+        support::Interactive::start(&sandbox, &["clean", "caches", "--apply", "--shred"]);
+    session.wait_for("Type the number to continue:");
+    // Gradle starts after the preview, before consent.
+    sandbox.script("pgrep", GRADLE_RUNNING);
+    session.send("0");
+    let (status, output) = session.finish();
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            removed: vec![other],
+            scratch: vec![
+                sandbox.bin(),
+                sandbox.journal().parent().unwrap().to_path_buf(),
+            ],
+        },
+        "PV eval/gradle-running-apply",
+    );
+    assert!(gradle.join("payload").exists());
+    assert!(
+        !status.success(),
+        "the refusal must fail the run:\n{output}"
+    );
+    assert!(output.contains("while Gradle is running"), "{output}");
+}
+
+/// Makes one folder read-only, as Go makes its module cache, and on drop
+/// makes every folder under `root` writable again, wherever a failed removal
+/// left it, so the sandbox can still be removed.
+struct ReadOnly {
+    root: PathBuf,
+}
+
+impl ReadOnly {
+    fn new(folder: &std::path::Path, root: PathBuf) -> Self {
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+        Self { root }
+    }
+}
+
+impl Drop for ReadOnly {
+    fn drop(&mut self) {
+        fn writable(folder: &std::path::Path) {
+            std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o755)).ok();
+            for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    writable(&entry.path());
+                }
+            }
+        }
+        writable(&self.root);
+    }
+}
+
+/// Go keeps its module cache read-only. A permanent removal would stop inside
+/// the first read-only folder and leave a half-removed cache, so it is refused
+/// before anything changes; the caches beside it are still removed.
+#[test]
+fn eval_a_read_only_go_module_cache_is_refused_whole_for_permanent_removal() {
+    let sandbox = Sandbox::in_target("eval-go-read-only");
+    sandbox.script("go", "printf '%s\\n' \"$HOME/go/pkg/mod\"");
+    let modules = sandbox.path().join("go/pkg/mod");
+    let module = modules.join("example.com/m@v1.0.0");
+    write(&module.join("go.mod"), "module example.com/m\n");
+    write(
+        &modules.join("cache/download/example.com/m/@v/v1.0.0.zip"),
+        "zip",
+    );
+    let modules = modules.canonicalize().unwrap();
+    let other = cache(&sandbox, ".cache/gh");
+    let _read_only = ReadOnly::new(&module, sandbox.path().join("go"));
+    let preview = run(&sandbox, &["clean", "caches", "--shred", "--json"]);
+    assert_eq!(
+        actionable_targets(&json(&preview)),
+        [other.clone(), modules.clone()]
+    );
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let result = apply(&sandbox, "caches");
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            removed: vec![other],
+            scratch: vec![sandbox.journal().parent().unwrap().to_path_buf()],
+        },
+        "PV eval/go-read-only",
+    );
+    let document = json(&result);
+    assert!(!result.status.success(), "{document}");
+    assert!(document.to_string().contains("not writable"), "{document}");
+}
+
+/// `go env GOMODCACHE` is trusted only for a folder inside the home holding
+/// Go's own download cache, so a `go` that answers with a project folder offers
+/// nothing from it.
+#[test]
+fn eval_a_folder_without_go_layout_is_never_a_module_cache() {
+    let sandbox = Sandbox::in_target("eval-go-namespace");
+    sandbox.script("go", "printf '%s\\n' \"$HOME/dev/project\"");
+    write(
+        &sandbox.path().join("dev/project/main.go"),
+        "package main\n",
+    );
+    let other = cache(&sandbox, ".cache/gh");
+    let preview = run(&sandbox, &["clean", "caches", "--shred", "--json"]);
+    assert_eq!(
+        actionable_targets(&json(&preview)),
+        [other],
+        "PV eval/go-namespace: a folder without Go's layout was offered"
+    );
+    assert!(preview.status.success(), "{}", json(&preview));
+}
+
 #[test]
 fn eval_agents_continues_after_a_cache_holding_a_repository_is_refused() {
     let sandbox = Sandbox::in_target("eval-agents-continue");
@@ -278,7 +478,7 @@ fn eval_agents_continues_after_a_cache_holding_a_repository_is_refused() {
 fn eval_a_symlinked_journal_refuses_apply_without_touching_its_destination() {
     for link_parent in [false, true] {
         let sandbox = Sandbox::in_target("eval-journal-link");
-        let target = cache(&sandbox, ".cache/node");
+        let target = cache(&sandbox, ".cache/node/corepack");
         let outside = sandbox.path().join("outside");
         write(&outside.join("journal.jsonl"), "keep\n");
         let journal = sandbox.journal();
@@ -311,7 +511,7 @@ fn eval_a_symlinked_journal_refuses_apply_without_touching_its_destination() {
         assert!(!json(&result)["errors"].as_array().unwrap().is_empty());
     }
     let sandbox = Sandbox::in_target("eval-journal-link-control");
-    let target = cache(&sandbox, ".cache/node");
+    let target = cache(&sandbox, ".cache/node/corepack");
     let result = apply(&sandbox, "caches");
     assert!(result.status.success(), "{}", json(&result));
     assert!(!target.exists());

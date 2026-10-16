@@ -71,6 +71,67 @@ class Case:
 
 CASES = (
     Case(
+        name="liveness/lsof-silent-omission",
+        relative_path="src/safety.rs",
+        # An lsof exit 0 that leaves a running PID out is trusted again.
+        before="        if unreported.is_empty() {\n",
+        after="        if unreported.is_empty() || answer.complete {\n",
+        tests=("safety::tests::lsof_exit_one_passes_only_when_every_unreported_process_is_gone",),
+        marker="PV liveness/lsof-silent-omission",
+    ),
+    Case(
+        name="caches/gradle-repository",
+        relative_path="src/ops/caches.rs",
+        # A Gradle user home inside a Git repository is judged a Gradle home.
+        before="    Ok(super::project::has_git_marker(gradle)?\n",
+        after="    Ok(false && super::project::has_git_marker(gradle)?\n",
+        tests=("eval_gradle_caches_need_gradle_and_no_repository",),
+        marker="PV eval/gradle-authority", target="eval_safety",
+    ),
+    Case(
+        name="caches/gradle-layout",
+        relative_path="src/ops/caches.rs",
+        # A folder that only shares Gradle's name is judged Gradle's cache.
+        before="        \"caches\" => real_directory(&path.join(\"modules-2\")),\n",
+        after="        \"caches\" => Ok(true),\n",
+        tests=("eval_gradle_caches_need_gradle_and_no_repository",),
+        marker="PV eval/gradle-authority", target="eval_safety",
+    ),
+    Case(
+        name="sink/trash-permission-repair",
+        relative_path="src/ops/mod.rs",
+        # A confirmed Trash purge no longer gives a read-only folder its
+        # owner's write permission, so a trashed Go module cache stays.
+        before="    if writability != Writability::RepairOwned || removable_now(dir, path)? {\n",
+        after="    if true {\n",
+        tests=("eval_trash_empty_purges_a_read_only_tree_it_owns",),
+        marker="PV eval/trash-empty-read-only", target="eval_system",
+    ),
+    Case(
+        name="trash/unmeasurable-item",
+        relative_path="src/ops/mod.rs",
+        before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",
+        after="            Err(_) => 0,\n",
+        tests=("eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item",),
+        marker="PV eval/trash-empty-unreadable", target="eval_system",
+    ),
+    Case(
+        name="worktrees/common-dir",
+        relative_path="src/worktrees.rs",
+        before="        Some(found) if found == common => Ok(()),\n",
+        after="        Some(_) => Ok(()),\n",
+        tests=("eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_repository",),
+        marker="PV eval/worktrees-common-dir", target="evals",
+    ),
+    Case(
+        name="leftovers/scratch-ignored",
+        relative_path="src/ops/leftovers.rs",
+        before="    if !project::ignores_path(repository, \".scratch/\")?\n",
+        after="    if false\n",
+        tests=("eval_leftovers_reports_ignored_scratch_folders_only",),
+        marker="PV eval/leftovers-scratch", target="evals",
+    ),
+    Case(
         name="review013/build-cwd-preview",
         relative_path="src/safety.rs",
         before="        if !path.is_absolute() {\n",
@@ -305,8 +366,8 @@ CASES = (
     Case(
         name="eval/safety-noninteractive",
         relative_path="src/safety.rs",
-        before='        bail!("non-interactive run: re-run with -y to confirm danger-{max_danger} operations");\n',
-        after="        return Ok(());\n",
+        before='                bail!(\n                    "non-interactive run: re-run with -y to confirm danger-{max_danger} operations"\n                )\n',
+        after="                return Ok(())\n",
         tests=("eval_noninteractive_apply_requires_explicit_consent",),
         marker="PV eval/noninteractive-consent", target="eval_safety",
     ),
@@ -378,8 +439,8 @@ CASES = (
     Case(
         name="agents/apply-namespace",
         relative_path="src/ops/agents.rs",
-        before="                authorize(target, ctx, release_context, mappings)?;\n",
-        after="                let _ = (release_context, mappings);\n",
+        before="                authorize(target, ctx, &extra, release_context, mappings)?;\n",
+        after="                let _ = (&extra, release_context, mappings);\n",
         tests=(
             "ops::agents::tests::the_retired_claude_trees_can_never_become_roots_again",
         ),
@@ -458,9 +519,9 @@ CASES = (
     Case(
         name="liveness/lsof-successor",
         relative_path="src/safety.rs",
-        before="!later.complete || later.reported != successors",
-        after="false",
-        tests=("safety::tests::a_build_process_that_started_during_the_probe_is_looked_up_once",),
+        before="    if !answer.complete {\n",
+        after="    if false {\n",
+        tests=("safety::tests::build_processes_started_during_the_probe_are_judged_until_the_list_settles",),
         marker="PV liveness/lsof-successor",
     ),
     Case(
@@ -614,12 +675,30 @@ CASES = (
         marker="PV xcode/continue-past-refusal",
     ),
     Case(
+        name="xcode/unreadable-folder",
+        relative_path="src/ops/xcode.rs",
+        # One folder that cannot be measured fails the whole category again.
+        before="                    Err(error) => unread.push(UnreadFolder::new(&path, &error)),\n",
+        after="                    Err(error) => return Err(error),\n",
+        tests=("eval_an_unreadable_xcode_folder_blocks_only_itself",),
+        marker="PV eval/xcode-unreadable",
+        target="evals",
+    ),
+    Case(
         name="tui/selection-plan",
         relative_path="src/tui.rs",
         before="            .filter(|(index, _)| !self.excluded.contains(index))\n",
         after="            .filter(|(index, _)| !self.excluded.contains(index) || true)\n",
         tests=("tui::tests::deselected_findings_never_reach_the_approved_plan",),
         marker="PV tui/selection-plan",
+    ),
+    Case(
+        name="tui/shred-off",
+        relative_path="src/tui.rs",
+        before="        self.shred\n            || matches!(self.operation, Some(Operation::Clean(_) | Operation::Purge))\n",
+        after="        matches!(self.operation, Some(Operation::Clean(_) | Operation::Purge))\n",
+        tests=("tui::tests::every_results_footer_fits_the_minimum_width",),
+        marker="PV tui/shred-off",
     ),
     Case(
         name="git/utc-dates",
@@ -1029,7 +1108,7 @@ CASES = (
         before="        || held_open_by_identity(folder, &same_volume)?\n",
         after="        || (held_open_by_identity(folder, &same_volume)? && false)\n",
         tests=("ops::xcode::tests::an_open_file_is_matched_by_the_folders_identity",),
-        marker="PV xcode/active-identity",
+        marker="PV xcode/active-identity-spelling",
     ),
     Case(
         name="xcode/active-identity-every-component",
@@ -1078,8 +1157,8 @@ CASES = (
     Case(
         name="agents/retention-window",
         relative_path="src/ops/agents.rs",
-        before="history_details(&path, &ctx.home, ctx.retain_days)",
-        after="history_details(&path, &ctx.home, ctx.active_days)",
+        before="history_details(&path, &ctx.home, &extra, ctx.retain_days)",
+        after="history_details(&path, &ctx.home, &extra, ctx.active_days)",
         tests=("ops::agents::tests::history_follows_the_retention_window_not_the_project_window",),
         marker="PV agents/retention-window",
     ),
@@ -1255,10 +1334,50 @@ CASES = (
         name="eval/toolchains-drift",
         relative_path="src/ops/toolchains.rs",
         # Apply no longer rechecks that a toolchain is still unreferenced.
-        before="    if preserved.contains(&canonical) {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
-        after="    if preserved.is_empty() {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
+        before="    if references.linked.contains(&canonical) {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
+        after="    if references.linked.is_empty() {\n        anyhow::bail!(\n            \"toolchain became referenced after preview: {}\",",
         tests=("eval_toolchains_apply_refuses_a_toolchain_referenced_after_preview",),
         marker="PV eval/toolchains-drift",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-scan",
+        relative_path="src/ops/toolchains.rs",
+        # swiftly's configuration is read but no listed toolchain is kept.
+        before="    let mut owned = BTreeMap::new();\n    for version in versions {\n",
+        after="    let mut owned = BTreeMap::new();\n    for version in versions.into_iter().take(0) {\n",
+        tests=("eval_toolchains_keeps_every_toolchain_swiftly_installed",),
+        marker="PV eval/toolchains-swiftly-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-apply",
+        relative_path="src/ops/toolchains.rs",
+        # Apply no longer refuses a toolchain swiftly lists.
+        before="    if let Some(owner) = references.swiftly.get(&(metadata.dev(), metadata.ino())) {\n        anyhow::bail!(",
+        after="    if let Some(owner) = references.swiftly.get(&(0, 0)) {\n        anyhow::bail!(",
+        tests=("eval_toolchains_apply_refuses_a_toolchain_swiftly_lists_after_preview",),
+        marker="PV eval/toolchains-swiftly-drift",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-unparsable",
+        relative_path="src/ops/toolchains.rs",
+        # A configuration that does not parse reads as swiftly owning nothing.
+        before="    let parsed: SwiftlyConfig = serde_json::from_slice(&contents)\n        .with_context(|| format!(\"cannot parse swiftly's configuration {}\", config.display()))?;\n",
+        after="    let Ok(parsed) = serde_json::from_slice::<SwiftlyConfig>(&contents) else {\n        return Ok(BTreeMap::new());\n    };\n",
+        tests=("eval_clean_toolchains_fails_closed_without_a_verifiable_latest",),
+        marker="PV eval/toolchains-closed-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="toolchains/swiftly-unmapped",
+        relative_path="src/ops/toolchains.rs",
+        # A version devtrim cannot name a folder for is skipped instead of refusing.
+        before="    anyhow::bail!(\"unrecognized swiftly toolchain version `{version}`\")\n",
+        after="    Ok(Vec::new())\n",
+        tests=("eval_clean_toolchains_fails_closed_without_a_verifiable_latest",),
+        marker="PV eval/toolchains-closed-plan",
         target="eval_system",
     ),
     Case(
@@ -1279,6 +1398,87 @@ CASES = (
         after="match current.get(udid).map(|_| &false) {",
         tests=("eval_simulators_apply_refuses_a_device_that_changed_after_preview",),
         marker="PV eval/simulators-recheck",
+        target="eval_system",
+    ),
+    Case(
+        name="agents/codex-homes-scan",
+        relative_path="src/ops/agents.rs",
+        # A configured Codex home is read but never judged.
+        before="    if relative.starts_with(CODEX_PREFIX) {\n",
+        after="    if false && relative.starts_with(CODEX_PREFIX) {\n",
+        tests=("eval_clean_agents_removes_only_regenerable_caches_and_stale_history",),
+        marker="PV eval/agents-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="agents/codex-homes-missing",
+        relative_path="src/safety.rs",
+        # A configured Codex home that does not exist is skipped instead of refused.
+        before="        let metadata = std::fs::symlink_metadata(&candidate).with_context(|| {\n            format!(\n                \"codex_homes entry `{entry}` is not an existing directory: {}\",\n                candidate.display()\n            )\n        })?;\n",
+        after="        let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {\n            continue;\n        };\n",
+        tests=("eval_a_malformed_codex_homes_setting_refuses_the_run",),
+        marker="PV eval/codex-homes-closed-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="agents/codex-homes-identity",
+        relative_path="src/safety.rs",
+        # `~/.codex` named through a link is judged a second time.
+        before="        if candidate == default || default_identity == Some((metadata.dev(), metadata.ino())) {\n",
+        after="        if candidate == default {\n",
+        tests=("eval_a_malformed_codex_homes_setting_refuses_the_run",),
+        marker="PV eval/codex-homes-closed-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="caches/gradle-running-scan",
+        relative_path="src/ops/caches.rs",
+        # A running Gradle no longer keeps its caches out of the preview.
+        before="        Ok(running) if running.is_empty() => {}\n",
+        after="        Ok(_) => {}\n",
+        tests=("eval_gradle_caches_are_kept_while_gradle_runs",),
+        marker="PV eval/gradle-running-scan",
+        target="eval_safety",
+    ),
+    Case(
+        name="caches/gradle-running-apply",
+        relative_path="src/ops/caches.rs",
+        # Apply no longer asks whether Gradle started after the preview.
+        before="                        if !running.is_empty() {\n",
+        after="                        if running.is_empty() && !running.is_empty() {\n",
+        tests=("eval_gradle_caches_are_kept_while_gradle_runs",),
+        marker="PV eval/gradle-running-apply",
+        target="eval_safety",
+    ),
+    Case(
+        name="sink/read-only-go-cache",
+        relative_path="src/ops/mod.rs",
+        # The sink no longer refuses a tree with a read-only folder, so a Go
+        # module cache is half removed by `clean caches --shred`.
+        before="    if writability == Writability::Ignore || removable_now(dir, path)? {\n",
+        after="    if true {\n",
+        tests=("eval_a_read_only_go_module_cache_is_refused_whole_for_permanent_removal",),
+        marker="PV eval/go-read-only",
+        target="eval_safety",
+    ),
+    Case(
+        name="caches/go-namespace",
+        relative_path="src/ops/caches.rs",
+        # Any folder inside the home `go` names becomes a module cache.
+        before="    if !(corroborated && inside_home) {\n",
+        after="    if !(corroborated || inside_home) {\n",
+        tests=("eval_a_folder_without_go_layout_is_never_a_module_cache",),
+        marker="PV eval/go-namespace",
+        target="eval_safety",
+    ),
+    Case(
+        name="simulators/no-simctl",
+        relative_path="src/ops/simulators.rs",
+        # Any simctl failure with exit 72 reads as a Mac without Xcode.
+        before="    (output.status.code() == Some(72)\n        && stderr.trim_start().starts_with(\n",
+        after="    (output.status.code() == Some(72)\n        && !stderr.trim_start().starts_with(\"(\") || stderr.trim_start().starts_with(\n",
+        tests=("eval_simulators_without_xcode_is_nothing_to_manage_not_an_error",),
+        marker="PV eval/simulators-no-xcode",
         target="eval_system",
     ),
     Case(
@@ -1439,10 +1639,44 @@ CASES = (
     Case(
         name="process/descendants",
         relative_path="src/process.rs",
-        before="        rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();\n",
-        after="        let _ = group;\n",
+        before="    if let Some(group) = group {\n        rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();\n    }\n",
+        after="    if let Some(group) = group {\n        let _ = group;\n    }\n",
         tests=("process::tests::a_timed_out_command_takes_its_descendants_with_it",),
         marker="PV process/descendants",
+    ),
+    # An interrupted devtrim must kill every command it started, and must
+    # never signal a group whose leader was already reaped.
+    Case(
+        name="process/interrupt-kill",
+        relative_path="src/process.rs",
+        before="            if let Some(group) = rustix::process::Pid::from_raw(*group) {\n                rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();\n            }\n",
+        after="            let _ = group;\n",
+        tests=(
+            "sigint_kills_every_command_a_scan_started_and_exits_130",
+            "sigterm_kills_every_command_a_scan_started_and_exits_143",
+            "an_interrupted_apply_kills_the_prune_and_leaves_an_interrupted_journal_entry",
+        ),
+        marker="PV process/interrupt-kill",
+        target="cli",
+    ),
+    # The interrupt must exit without waiting on anything outside devtrim: a
+    # message written to a full, unread stderr stalled it while the run went on.
+    Case(
+        name="process/interrupt-prompt",
+        relative_path="src/process.rs",
+        before="    registry.kill_all();\n    // The lock stays held",
+        after="    registry.kill_all();\n    io::Write::write_all(&mut io::stderr(), b\"interrupted\\n\").ok();\n    // The lock stays held",
+        tests=("an_interrupt_with_a_full_unread_stderr_still_exits_promptly_and_stops_deleting",),
+        marker="PV process/interrupt-prompt",
+        target="cli",
+    ),
+    Case(
+        name="process/unregister",
+        relative_path="src/process.rs",
+        before="        registry.groups.remove(&group);\n",
+        after="        let _ = group;\n",
+        tests=("process::tests::a_command_is_registered_while_it_runs_and_unregistered_once_reaped",),
+        marker="PV process/unregister",
     ),
     Case(
         name="liveness/probe-timeout",
@@ -1550,6 +1784,14 @@ def run_cases(scratch: Path) -> int:
     if len(sys.argv) > 2:
         fail("usage: planted-violations.py [PREFIX]")
     prefix = sys.argv[1] if len(sys.argv) == 2 else ""
+    # The marker check is a substring match, so one marker that prefixes
+    # another would let a failure tagged for one guard prove the other.
+    markers = sorted({case.marker for case in CASES})
+    for shorter in markers:
+        for longer in markers:
+            if longer != shorter and longer.startswith(shorter):
+                fail(f"ERROR: marker {shorter!r} is a prefix of {longer!r}")
+
     cases = [case for case in CASES if case.name.startswith(prefix)]
     if not cases:
         fail(f"ERROR: no case name starts with {prefix!r}")

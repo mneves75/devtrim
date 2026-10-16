@@ -121,6 +121,10 @@ const REGENERABLE_DANGER: u8 = 2;
 /// The standalone installer's root: `install.lock`, `current` and `releases`.
 const CODEX_STANDALONE: &str = ".codex/packages/standalone";
 
+/// The prefix of every Codex entry. In an additional Codex home the same entry
+/// lives under that home instead of `~/.codex`.
+const CODEX_PREFIX: &str = ".codex/";
+
 /// Older Codex standalone packages, a closed authority of its own beside the
 /// regenerable and history tiers: only verified direct children strictly older
 /// than `current`, never the whole packages tree or a legacy layout.
@@ -197,9 +201,10 @@ struct CodexReleases {
 }
 
 impl CodexReleases {
-    fn open(home: &Path, mappings: &dyn Fn() -> Result<Vec<PathBuf>>) -> Result<Option<Self>> {
-        let standalone = home.join(CODEX_STANDALONE);
-        let root = home.join(CODEX_RELEASES.relative);
+    /// The releases of the Codex home `codex` (`~/.codex` or a configured one).
+    fn open(codex: &Path, mappings: &dyn Fn() -> Result<Vec<PathBuf>>) -> Result<Option<Self>> {
+        let standalone = in_codex_home(codex, CODEX_STANDALONE);
+        let root = in_codex_home(codex, CODEX_RELEASES.relative);
         match fs::symlink_metadata(&root) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
@@ -733,22 +738,78 @@ impl Agents {
         mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        for entry in REGENERABLE {
-            let path = ctx.home.join(entry.relative);
-            let size = dir_size(&path)?;
-            if size > 0 {
-                findings.push(Finding::new(
-                    entry.label,
-                    Some(path),
-                    size,
-                    "rebuilt on demand; cleanup may interrupt an active session, so close agents first",
-                    escalate(REGENERABLE_DANGER, size),
-                    Action::Trash,
+        // A configuration that cannot be judged withholds only the homes it
+        // adds; `~/.codex` and every other entry are still judged.
+        let extra = match crate::safety::configured_codex_homes(&ctx.home) {
+            Ok(extra) => extra,
+            Err(error) => {
+                findings.push(super::project::unjudged_finding(
+                    "additional Codex homes",
+                    &ctx.home.join(".config/devtrim.toml"),
+                    &error,
                 ));
+                Vec::new()
+            }
+        };
+        for entry in REGENERABLE {
+            for (path, suffix) in placements(entry.relative, &ctx.home, &extra) {
+                let size = dir_size(&path)?;
+                if size > 0 {
+                    findings.push(Finding::new(
+                        format!("{}{suffix}", entry.label),
+                        Some(path),
+                        size,
+                        "rebuilt on demand; cleanup may interrupt an active session, so close agents first",
+                        escalate(REGENERABLE_DANGER, size),
+                        Action::Trash,
+                    ));
+                }
             }
         }
+        for codex in codex_homes(&ctx.home, &extra) {
+            findings.extend(self.release_findings(ctx, &codex, mappings));
+        }
+        for root in HISTORY {
+            for (base, suffix) in placements(root.relative, &ctx.home, &extra) {
+                let mut candidates = Vec::new();
+                collect_at_depth(&base, root.depth, &mut candidates)?;
+                candidates.sort();
+                for path in candidates {
+                    let Some((age, size)) =
+                        history_details(&path, &ctx.home, &extra, ctx.retain_days)?
+                    else {
+                        continue;
+                    };
+                    if size == 0 {
+                        continue;
+                    }
+                    findings.push(Finding::new(
+                        format!("{}{suffix}: {}", root.label, relative_display(&path, &base)),
+                        Some(path),
+                        size,
+                        format!(
+                            "untouched for {age} days; agent history is not regenerable and cannot be re-downloaded"
+                        ),
+                        escalate(6, size),
+                        Action::Trash,
+                    ));
+                }
+            }
+        }
+        Ok(findings)
+    }
+
+    /// The obsolete standalone releases of one Codex home, or the one error
+    /// finding that withholds them.
+    fn release_findings(
+        &self,
+        ctx: &Ctx,
+        codex: &Path,
+        mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
+    ) -> Vec<Finding> {
+        let suffix = codex_home_suffix(codex, &ctx.home);
         let release_findings = (|| -> Result<Vec<Finding>> {
-            let Some(releases) = CodexReleases::open(&ctx.home, mappings)? else {
+            let Some(releases) = CodexReleases::open(codex, mappings)? else {
                 return Ok(Vec::new());
             };
             let mut release_findings = Vec::new();
@@ -766,7 +827,7 @@ impl Agents {
                     ctx.diagnostic(
                         "info",
                         format!(
-                            "{} {name} is still executing in a running process; close it to reclaim the release",
+                            "{}{suffix} {name} is still executing in a running process; close it to reclaim the release",
                             CODEX_RELEASES.label
                         ),
                     );
@@ -777,7 +838,7 @@ impl Agents {
                     continue;
                 }
                 release_findings.push(Finding::new(
-                    format!("{} {name}", CODEX_RELEASES.label),
+                    format!("{}{suffix} {name}", CODEX_RELEASES.label),
                     Some(path),
                     size,
                     "reinstallable previous release; close Codex first; Trash does not free disk space until purged",
@@ -788,12 +849,12 @@ impl Agents {
             Ok(release_findings)
         })();
         match release_findings {
-            Ok(releases) => findings.extend(releases),
+            Ok(releases) => releases,
             Err(error) => {
                 let message = format!("Codex release cleanup refused: {error:#}");
-                findings.push(
+                vec![
                     Finding::new(
-                        "Codex standalone releases unavailable",
+                        format!("Codex standalone releases unavailable{suffix}"),
                         None,
                         0,
                         &message,
@@ -801,34 +862,9 @@ impl Agents {
                         Action::Info,
                     )
                     .with_scan_error(message),
-                );
+                ]
             }
         }
-        for root in HISTORY {
-            let base = ctx.home.join(root.relative);
-            let mut candidates = Vec::new();
-            collect_at_depth(&base, root.depth, &mut candidates)?;
-            candidates.sort();
-            for path in candidates {
-                let Some((age, size)) = history_details(&path, &ctx.home, ctx.retain_days)? else {
-                    continue;
-                };
-                if size == 0 {
-                    continue;
-                }
-                findings.push(Finding::new(
-                    format!("{}: {}", root.label, relative_display(&path, &base)),
-                    Some(path),
-                    size,
-                    format!(
-                        "untouched for {age} days; agent history is not regenerable and cannot be re-downloaded"
-                    ),
-                    escalate(6, size),
-                    Action::Trash,
-                ));
-            }
-        }
-        Ok(findings)
     }
 
     /// [`Op::apply`] with the probe supplied; see [`Self::scan_with_mappings`].
@@ -838,16 +874,29 @@ impl Agents {
         ctx: &Ctx,
         mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
     ) -> Result<ApplyOutcome> {
-        let releases = if findings
-            .iter()
-            .filter_map(Finding::target)
-            .any(|target| is_codex_release_child(target, &ctx.home))
-        {
-            Some(CodexReleases::open(&ctx.home, mappings))
-        } else {
-            None
-        };
         let mut outcome = ApplyOutcome::new(self.name());
+        // Read again, never taken from the preview. A configuration that
+        // cannot be read refuses only the findings in the homes it adds.
+        let extra = match crate::safety::configured_codex_homes(&ctx.home) {
+            Ok(extra) => extra,
+            Err(error) => {
+                outcome.fail(error.context(
+                    "cannot read `codex_homes`; findings in additional Codex homes are refused",
+                ));
+                Vec::new()
+            }
+        };
+        // Each Codex home with a release in the plan is opened once, and its
+        // installer lock is held for the whole apply.
+        let mut releases = Vec::new();
+        for codex in codex_homes(&ctx.home, &extra) {
+            if findings.iter().filter_map(Finding::target).any(|target| {
+                codex_release_home(target, &ctx.home, &extra).as_ref() == Some(&codex)
+            }) {
+                let opened = CodexReleases::open(&codex, mappings);
+                releases.push((codex, opened));
+            }
+        }
         for finding in findings {
             if !matches!(finding.action, Action::Trash | Action::Shred) {
                 continue;
@@ -856,14 +905,19 @@ impl Agents {
                 let target = finding
                     .target()
                     .ok_or_else(|| anyhow::anyhow!("agent finding missing internal target"))?;
-                let release_context = match releases.as_ref() {
+                let release_home = codex_release_home(target, &ctx.home, &extra);
+                let opened = releases
+                    .iter()
+                    .find(|(codex, _)| Some(codex) == release_home.as_ref())
+                    .map(|(_, opened)| opened);
+                let release_context = match opened {
                     Some(Ok(Some(releases))) => Some(releases),
-                    Some(Err(error)) if is_codex_release_child(target, &ctx.home) => {
+                    Some(Err(error)) => {
                         anyhow::bail!("Codex release cannot be removed while its installer is active or unverifiable: {error:#}");
                     }
                     _ => None,
                 };
-                authorize(target, ctx, release_context, mappings)?;
+                authorize(target, ctx, &extra, release_context, mappings)?;
                 apply_filesystem_finding(self.name(), finding, ctx)
             })()
             .with_context(|| format!("failed to remove {}", finding.label));
@@ -894,13 +948,14 @@ impl Agents {
 fn authorize(
     target: &Path,
     ctx: &Ctx,
+    extra: &[PathBuf],
     releases: Option<&CodexReleases>,
     mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
 ) -> Result<()> {
-    if is_regenerable_target(target, &ctx.home) {
+    if is_regenerable_target(target, &ctx.home, extra) {
         return Ok(());
     }
-    if is_codex_release_child(target, &ctx.home) {
+    if codex_release_home(target, &ctx.home, extra).is_some() {
         let Some(releases) = releases else {
             anyhow::bail!(
                 "Codex release authority was not verified for {}",
@@ -925,13 +980,13 @@ fn authorize(
         }
         return Ok(());
     }
-    if !is_history_child(target, &ctx.home) {
+    if !is_history_child(target, &ctx.home, extra) {
         anyhow::bail!(
             "agent target is outside its authorized namespace: {}",
             target.display()
         );
     }
-    if history_details(target, &ctx.home, ctx.retain_days)?.is_some() {
+    if history_details(target, &ctx.home, extra, ctx.retain_days)?.is_some() {
         return Ok(());
     }
     anyhow::bail!(
@@ -940,21 +995,80 @@ fn authorize(
     )
 }
 
-fn is_codex_release_child(path: &Path, home: &Path) -> bool {
-    path.parent() == Some(home.join(CODEX_RELEASES.relative).as_path())
+/// Every Codex home this run judges: `~/.codex`, then each `codex_homes` entry
+/// `safety::configured_codex_homes` accepted. Codex keeps all its state under
+/// one home, `CODEX_HOME`, by default `~/.codex` ("the root for Codex state,
+/// including config, auth, logs, sessions, skills, and standalone package
+/// metadata": ChatGPT Learn, "Environment variables",
+/// learn.chatgpt.com/docs/config-file/environment-variables, read 2026-10-16),
+/// and the standalone installer writes to `${CODEX_HOME:-$HOME/.codex}/packages/standalone`
+/// (`scripts/install/install.sh:19-20` at the commit `CODEX_RELEASES` cites),
+/// so each listed home is judged by every Codex entry exactly as `~/.codex`
+/// is. A home is only ever named in the configuration, never inferred.
+fn codex_homes(home: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
+    std::iter::once(home.join(".codex"))
+        .chain(extra.iter().cloned())
+        .collect()
 }
 
-fn is_regenerable_target(path: &Path, home: &Path) -> bool {
-    REGENERABLE
-        .iter()
-        .any(|entry| path == home.join(entry.relative))
+/// A `.codex/` entry inside the Codex home `codex`.
+fn in_codex_home(codex: &Path, relative: &str) -> PathBuf {
+    codex.join(relative.strip_prefix(CODEX_PREFIX).unwrap_or(relative))
+}
+
+/// What a finding's label adds for an additional Codex home: nothing for
+/// `~/.codex`, so two homes never show two findings under one label.
+fn codex_home_suffix(codex: &Path, home: &Path) -> String {
+    if codex == home.join(".codex") {
+        return String::new();
+    }
+    match codex.strip_prefix(home) {
+        Ok(relative) => format!(" (~/{})", relative.display()),
+        Err(_) => format!(" ({})", codex.display()),
+    }
+}
+
+/// Where an entry relative to `$HOME` lives, with the label suffix of each
+/// place: under the home folder, and for a Codex entry also in each
+/// additional Codex home.
+fn placements(relative: &str, home: &Path, extra: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    let mut found = vec![(home.join(relative), String::new())];
+    if relative.starts_with(CODEX_PREFIX) {
+        found.extend(extra.iter().map(|codex| {
+            (
+                in_codex_home(codex, relative),
+                codex_home_suffix(codex, home),
+            )
+        }));
+    }
+    found
+}
+
+/// The Codex home whose standalone releases folder holds `path` directly.
+fn codex_release_home(path: &Path, home: &Path, extra: &[PathBuf]) -> Option<PathBuf> {
+    codex_homes(home, extra).into_iter().find(|codex| {
+        path.parent() == Some(in_codex_home(codex, CODEX_RELEASES.relative).as_path())
+    })
+}
+
+fn is_regenerable_target(path: &Path, home: &Path, extra: &[PathBuf]) -> bool {
+    REGENERABLE.iter().any(|entry| {
+        placements(entry.relative, home, extra)
+            .iter()
+            .any(|(candidate, _)| path == candidate)
+    })
 }
 
 /// Age in days and logical size for an eligible history child, or `None` when
 /// the path is not a direct child of a configured root at its configured depth,
 /// is a symlink, has the wrong file type, or is still inside the retention window.
-fn history_details(path: &Path, home: &Path, retain_days: u32) -> Result<Option<(u64, u64)>> {
-    if !is_history_child(path, home) {
+fn history_details(
+    path: &Path,
+    home: &Path,
+    extra: &[PathBuf],
+    retain_days: u32,
+) -> Result<Option<(u64, u64)>> {
+    if !is_history_child(path, home, extra) {
         return Ok(None);
     }
     let metadata = match std::fs::symlink_metadata(path) {
@@ -993,16 +1107,19 @@ fn history_details(path: &Path, home: &Path, retain_days: u32) -> Result<Option<
 /// Matching is structural rather than by prefix: the path must be `root` plus
 /// exactly `depth` normal components, so neither a shallower ancestor (the root
 /// itself) nor a deeper descendant can borrow the root's authority.
-fn is_history_child(path: &Path, home: &Path) -> bool {
+fn is_history_child(path: &Path, home: &Path, extra: &[PathBuf]) -> bool {
     HISTORY.iter().any(|root| {
-        let base = home.join(root.relative);
-        let Ok(relative) = path.strip_prefix(&base) else {
-            return false;
-        };
-        relative.components().count() == root.depth
-            && relative
-                .components()
-                .all(|component| matches!(component, std::path::Component::Normal(_)))
+        placements(root.relative, home, extra)
+            .iter()
+            .any(|(base, _)| {
+                let Ok(relative) = path.strip_prefix(base) else {
+                    return false;
+                };
+                relative.components().count() == root.depth
+                    && relative
+                        .components()
+                        .all(|component| matches!(component, std::path::Component::Normal(_)))
+            })
     })
 }
 
@@ -1128,53 +1245,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_standalone_offers_only_an_obsolete_release() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-codex-releases")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        let old = write_codex_release(home, "0.155.1");
-        let current = write_codex_release(home, "0.156.1");
-        let newer = write_codex_release(home, "0.157.0");
-        let same_core_beta = write_codex_release(home, "0.156.1-beta.1");
-        let standalone = home.join(".codex/packages/standalone");
-        std::fs::write(standalone.join("install.lock"), "").unwrap();
-        symlink(&current, standalone.join("current")).unwrap();
-        let staging = standalone.join("releases/.staging.0.157.0-aarch64-apple-darwin.123");
-        std::fs::create_dir_all(&staging).unwrap();
-
-        let findings = Agents
-            .scan_with_mappings(
-                &test_ctx(home.to_path_buf()),
-                &ScanObservations::default(),
-                &idle,
-            )
-            .unwrap();
-        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-        assert!(
-            targets.contains(&old.as_path()),
-            "old release must be offered"
-        );
-        assert!(
-            !targets.contains(&current.as_path()),
-            "current release must survive"
-        );
-        assert!(
-            !targets.contains(&newer.as_path()),
-            "a newer installed release is not superseded"
-        );
-        assert!(
-            !targets.contains(&same_core_beta.as_path()),
-            "same-core prerelease is kept conservatively"
-        );
-        assert!(
-            !targets.contains(&staging.as_path()),
-            "installer staging must survive"
-        );
-    }
-
-    #[test]
     fn codex_releases_fail_closed_without_a_valid_current_link_or_install_lock() {
         let home = tempfile::Builder::new()
             .prefix("devtrim-codex-current")
@@ -1281,45 +1351,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_installer_lock_blocks_release_preview() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-codex-locked")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        let old = write_codex_release(home, "0.155.1");
-        let current = write_codex_release(home, "0.156.1");
-        let standalone = home.join(".codex/packages/standalone");
-        let lock_path = standalone.join("install.lock");
-        std::fs::write(&lock_path, "").unwrap();
-        symlink(&current, standalone.join("current")).unwrap();
-        let lock = File::open(&lock_path).unwrap();
-        hold_installer_lock(&lock);
-        let ctx = test_ctx(home.to_path_buf());
-        let findings = Agents
-            .scan_with_mappings(&ctx, &ScanObservations::default(), &idle)
-            .unwrap();
-        assert!(findings.iter().any(|finding| {
-            finding.action == Action::Info && finding.note.contains("installer may be active")
-        }));
-        assert!(
-            !findings
-                .iter()
-                .any(|finding| finding.target() == Some(old.as_path()))
-        );
-        flock(&lock, FlockOperation::Unlock).unwrap();
-        drop(lock);
-        let findings = Agents
-            .scan_with_mappings(&ctx, &ScanObservations::default(), &idle)
-            .unwrap();
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.target() == Some(old.as_path()))
-        );
-    }
-
-    #[test]
     fn busy_codex_installer_refuses_only_release_apply() {
         let fixture = crate::ops::TestFixture::new("devtrim-codex-busy");
         let home = fixture.path().to_path_buf();
@@ -1359,52 +1390,6 @@ mod tests {
         assert!(old.exists(), "busy release must survive");
         drop(lock);
         crate::ops::remove_test_path(home);
-    }
-
-    #[test]
-    fn codex_release_scan_rejects_unknown_contents_and_symlinked_candidates() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-codex-shape")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        let old = write_codex_release(home, "0.155.1");
-        let unknown = write_codex_release(home, "0.154.0");
-        std::fs::write(unknown.join("user-notes.txt"), "keep").unwrap();
-        let incomplete = write_codex_release(home, "0.152.0");
-        std::fs::remove_file(incomplete.join("bin/codex")).unwrap();
-        let nested = write_codex_release(home, "0.153.0");
-        std::fs::write(nested.join("bin/user-notes.txt"), "keep").unwrap();
-        let resources = write_codex_release(home, "0.150.0");
-        std::fs::write(resources.join("codex-resources/personal.txt"), "keep").unwrap();
-        let current = write_codex_release(home, "0.156.1");
-        let standalone = home.join(".codex/packages/standalone");
-        std::fs::write(standalone.join("install.lock"), "").unwrap();
-        symlink(&current, standalone.join("current")).unwrap();
-        let linked = write_codex_release(home, "0.151.0");
-        let outside = home.join("outside");
-        std::fs::create_dir(&outside).unwrap();
-        let linked_target = outside.join(linked.file_name().unwrap());
-        std::fs::rename(&linked, &linked_target).unwrap();
-        symlink(&linked_target, &linked).unwrap();
-
-        let findings = Agents
-            .scan_with_mappings(
-                &test_ctx(home.to_path_buf()),
-                &ScanObservations::default(),
-                &idle,
-            )
-            .unwrap();
-        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-        assert!(
-            targets.contains(&old.as_path()),
-            "eligible control must be offered"
-        );
-        assert!(!targets.contains(&unknown.as_path()));
-        assert!(!targets.contains(&incomplete.as_path()));
-        assert!(!targets.contains(&nested.as_path()));
-        assert!(!targets.contains(&resources.as_path()));
-        assert!(!targets.contains(&linked.as_path()));
     }
 
     #[test]
@@ -1604,11 +1589,13 @@ mod tests {
         let probe = mapping_while(&running, &old);
         // Opened while nothing runs from the release, as apply opens it before
         // working through earlier findings.
-        let releases = CodexReleases::open(&home, &probe).unwrap().unwrap();
+        let releases = CodexReleases::open(&home.join(".codex"), &probe)
+            .unwrap()
+            .unwrap();
         assert!(!releases.running(&old).unwrap(), "control: idle snapshot");
 
         running.set(true);
-        let error = authorize(&old, &ctx, Some(&releases), &probe).expect_err(
+        let error = authorize(&old, &ctx, &[], Some(&releases), &probe).expect_err(
             "PV agents/codex-running-release: a release started after the snapshot was authorized",
         );
         assert!(
@@ -1617,7 +1604,7 @@ mod tests {
         );
         running.set(false);
         assert!(
-            authorize(&old, &ctx, Some(&releases), &probe).is_ok(),
+            authorize(&old, &ctx, &[], Some(&releases), &probe).is_ok(),
             "control: idle again"
         );
         drop(releases);
@@ -1774,41 +1761,6 @@ mod tests {
     }
 
     #[test]
-    fn a_fifo_at_a_vendor_file_name_refuses_instead_of_hanging() {
-        let (_fixture, home, old) = codex_home("fifo");
-        let runtime = old.join("codex-resources/voice/runtime.json");
-        std::fs::remove_file(&runtime).unwrap();
-        let status = std::process::Command::new("mkfifo")
-            .arg(&runtime)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let ctx = test_ctx(home.clone());
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let findings = Agents.scan_with_mappings(&ctx, &ScanObservations::default(), &idle);
-            let _ = sender.send(findings.map(|findings| findings.len()));
-        });
-
-        let finished = receiver.recv_timeout(Duration::from_secs(20));
-        assert!(
-            finished.is_ok(),
-            "scan blocked on a FIFO named like a vendor file"
-        );
-        assert!(finished.unwrap().is_ok());
-        let findings = Agents
-            .scan_with_mappings(&test_ctx(home.clone()), &ScanObservations::default(), &idle)
-            .unwrap();
-        assert!(
-            !findings
-                .iter()
-                .any(|finding| finding.target() == Some(old.as_path())),
-            "a release with a FIFO in place of a vendor file is not vendor-shaped"
-        );
-        crate::ops::remove_test_path(home);
-    }
-
-    #[test]
     fn a_tampered_main_executable_is_not_a_vendor_package() {
         let (_fixture, home, old) = codex_home("tampered");
         let tampered = write_codex_release(&home, "0.154.0");
@@ -1827,43 +1779,6 @@ mod tests {
             "a main executable that fails its manifest digest was offered"
         );
         crate::ops::remove_test_path(home);
-    }
-
-    #[test]
-    fn codex_versions_must_be_canonical() {
-        for accepted in [
-            "0.156.1",
-            "0.0.0",
-            "10.20.30",
-            "1.2.3-beta",
-            "1.2.3-alpha.10.2",
-        ] {
-            assert!(codex_version_core(accepted).is_some(), "{accepted}");
-        }
-        for rejected in [
-            "0.0156.0",
-            "01.2.3",
-            "1.02.3",
-            "1.2.03",
-            "1.2.3-beta.01",
-            "1.2.3-alpha.1.02",
-            "1.2.3-",
-            "1.2",
-            "1.2.3.4",
-            "1.2.3-rc.1",
-            "１.2.3",
-        ] {
-            assert!(codex_version_core(rejected).is_none(), "{rejected}");
-        }
-        assert_eq!(codex_version_core("0.156.1-beta.2"), Some([0, 156, 1]));
-    }
-
-    #[test]
-    fn the_release_authority_names_the_installer_root() {
-        assert_eq!(
-            CODEX_RELEASES.relative,
-            format!("{CODEX_STANDALONE}/releases")
-        );
     }
 
     /// The const assertion above rejects empty and ASCII-whitespace evidence
@@ -1899,82 +1814,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn regenerable_caches_are_offered_and_credentials_are_not() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-agents-cache")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        write_aged(&home.join(".claude/cache/changelog.md"), "# 1.0.0\n", 400);
-        // Everything an agent needs to keep must be invisible to the scanner.
-        for secret in [
-            ".claude/.credentials.json",
-            ".claude/settings.json",
-            ".codex/auth.json",
-            ".codex/config.toml",
-            ".claude/backups/.claude.json.backup.1",
-        ] {
-            write_aged(&home.join(secret), "secret", 400);
-        }
-
-        let findings = Agents
-            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
-            .unwrap();
-
-        assert_eq!(findings.len(), 1);
-        assert_eq!(
-            findings[0].target(),
-            Some(home.join(".claude/cache").as_path())
-        );
-        assert_eq!(findings[0].action, Action::Trash);
-        for secret in [
-            ".claude/.credentials.json",
-            ".claude/settings.json",
-            ".codex/auth.json",
-            ".codex/config.toml",
-            ".claude/backups/.claude.json.backup.1",
-        ] {
-            assert!(home.join(secret).exists());
-        }
-    }
-
-    #[test]
-    fn history_is_offered_only_after_the_active_window() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-agents-history")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        // Codex nests three levels; the day directory is the unit.
-        write_aged(
-            &home.join(".codex/sessions/2020/01/02/rollout.jsonl"),
-            "old",
-            400,
-        );
-        // A loose file at the configured depth is a candidate; the fresh one
-        // beside it is the control proving the age gate is what excludes it.
-        write_aged(&home.join(".codex/archived_sessions/old.jsonl"), "old", 400);
-        write_aged(&home.join(".codex/archived_sessions/new.jsonl"), "new", 0);
-
-        let findings = Agents
-            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
-            .unwrap();
-
-        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-        assert!(targets.contains(&home.join(".codex/sessions/2020/01/02").as_path()));
-        assert!(targets.contains(&home.join(".codex/archived_sessions/old.jsonl").as_path()));
-        assert!(!targets.contains(&home.join(".codex/archived_sessions/new.jsonl").as_path()));
-        // The root itself is never a finding, only its children at the configured depth.
-        assert!(!targets.contains(&home.join(".codex/sessions").as_path()));
-        assert!(!targets.contains(&home.join(".codex/sessions/2020").as_path()));
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.note.contains("not regenerable"))
-        );
-    }
-
     /// History is not regenerable, so the project window never decides it: a
     /// one-day `active_days` with the default retention keeps a five-day-old
     /// transcript, and only `retain_days` offers it.
@@ -2006,67 +1845,6 @@ mod tests {
                 .iter()
                 .any(|finding| finding.target() == Some(transcript.as_path())),
             "positive control: history older than retain_days is offered"
-        );
-    }
-
-    /// `~/.claude/projects` is not a cleanup root at all, and this is the
-    /// assertion that keeps it that way. It holds Claude Code auto memory in
-    /// `<project>/memory/`, and since the transcripts beside it can originate in
-    /// Claude Desktop — which the vendor retains at any age — file age is not
-    /// evidence that anything there is finished with. A `.codex` transcript of
-    /// identical shape and age is offered in the same run, so this proves an
-    /// exclusion rather than an inert fixture.
-    #[test]
-    fn the_claude_projects_tree_is_never_a_candidate() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-agents-projects")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        let session = "24bb0c93-fbb9-49b7-99b0-7a97be87baeb";
-        let project = home.join(".claude/projects/-repo");
-        write_aged(&project.join(format!("{session}.jsonl")), "old", 400);
-        write_aged(&project.join("memory/MEMORY.md"), "durable fact", 400);
-        let codex = home.join(".codex/archived_sessions");
-        write_aged(&codex.join(format!("rollout-{session}.jsonl")), "old", 400);
-
-        let ctx = test_ctx(home.to_path_buf());
-        let findings = Agents.scan(&ctx, &ScanObservations::default()).unwrap();
-        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-
-        assert!(
-            targets.contains(&codex.join(format!("rollout-{session}.jsonl")).as_path()),
-            "a transcript of the same shape and age elsewhere must still be offered"
-        );
-        for excluded in [
-            home.join(".claude/projects"),
-            project.clone(),
-            project.join("memory"),
-        ] {
-            assert!(
-                !targets.contains(&excluded.as_path()),
-                "{}",
-                excluded.display()
-            );
-            let outcome = Agents
-                .apply(
-                    &[Finding::new(
-                        "forged",
-                        Some(excluded.clone()),
-                        4,
-                        "test",
-                        6,
-                        Action::Trash,
-                    )],
-                    &ctx,
-                )
-                .unwrap();
-            assert_eq!(outcome.summary.items_touched, 0, "{}", excluded.display());
-            assert_eq!(outcome.errors.len(), 1, "{}", excluded.display());
-        }
-        assert_eq!(
-            std::fs::read_to_string(project.join("memory/MEMORY.md")).unwrap(),
-            "durable fact"
         );
     }
 
@@ -2176,88 +1954,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&memory).unwrap(), "durable fact");
     }
 
-    /// A shell snapshot is sourced by every later shell call in the session that
-    /// wrote it, and nothing rewrites it, so it belongs to the age-gated tier.
-    #[test]
-    fn shell_snapshots_are_age_gated_rather_than_offered_outright() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-agents-snapshots")
-            .tempdir()
-            .unwrap();
-        let home = home.path();
-        let snapshots = home.join(".claude/shell-snapshots");
-        write_aged(
-            &snapshots.join("snapshot-zsh-1-old.sh"),
-            "export A=1\n",
-            400,
-        );
-        write_aged(&snapshots.join("snapshot-zsh-2-live.sh"), "export B=2\n", 0);
-
-        let findings = Agents
-            .scan(&test_ctx(home.to_path_buf()), &ScanObservations::default())
-            .unwrap();
-        let targets: Vec<_> = findings.iter().filter_map(Finding::target).collect();
-
-        assert!(targets.contains(&snapshots.join("snapshot-zsh-1-old.sh").as_path()));
-        assert!(!targets.contains(&snapshots.join("snapshot-zsh-2-live.sh").as_path()));
-        assert!(
-            !targets.contains(&snapshots.as_path()),
-            "the directory itself must never be offered wholesale"
-        );
-    }
-
-    /// A session resumed between preview and apply is an expected refusal, and
-    /// the documented promise is that it falls out of the plan — not that it
-    /// takes every later finding with it.
-    #[test]
-    fn a_resumed_session_does_not_block_the_rest_of_the_plan() {
-        let fixture = crate::ops::TestFixture::new("devtrim-agents-partial");
-        let home = fixture.path().to_path_buf();
-        std::fs::create_dir_all(&home).unwrap();
-        let home = home.canonicalize().unwrap();
-        let session = "24bb0c93-fbb9-49b7-99b0-7a97be87baeb";
-        let archived = home.join(".codex/archived_sessions");
-        let resumed = archived.join(format!("rollout-resumed-{session}.jsonl"));
-        let stale = archived.join(format!("rollout-stale-{session}.jsonl"));
-        write_aged(&resumed, "old", 400);
-        write_aged(&stale, "old", 400);
-        let ctx = test_ctx(home.clone());
-        let findings = vec![
-            Finding::new(
-                "resumed",
-                Some(resumed.clone()),
-                4,
-                "test",
-                6,
-                Action::Shred,
-            ),
-            Finding::new("stale", Some(stale.clone()), 4, "test", 6, Action::Shred),
-        ];
-        // The resumed session is written after the plan was built, exactly as a
-        // live agent would; its inode is unchanged, so only the age re-read sees it.
-        std::fs::write(&resumed, "resumed").unwrap();
-
-        let outcome = Agents.apply(&findings, &ctx).unwrap();
-
-        assert_eq!(
-            outcome.errors.len(),
-            1,
-            "the refusal must still be reported"
-        );
-        assert!(
-            outcome.errors[0].contains("no longer meets its preview shape"),
-            "an age refusal must not read as a forged target: {}",
-            outcome.errors[0]
-        );
-        assert_eq!(
-            outcome.summary.items_touched, 1,
-            "the finding listed after the resumed one must still be removed"
-        );
-        assert!(resumed.exists(), "the resumed session must survive");
-        assert!(!stale.exists());
-        crate::ops::remove_test_path(home);
-    }
-
     /// Positive control for the apply-time boundary. The forged targets are
     /// exactly the shapes a compromised or buggy preview could produce: a path
     /// outside every root, the root itself, and a descendant below the
@@ -2283,11 +1979,20 @@ mod tests {
             "old",
             400,
         );
+        // A Codex home no `codex_homes` names is never inferred from its name.
+        write_aged(&home.join(".codex-other/cache/catalog.json"), "x", 400);
+        write_aged(
+            &home.join(".codex-other/archived_sessions/rollout-old.jsonl"),
+            "old",
+            400,
+        );
         let ctx = test_ctx(home.clone());
 
         for forged in [
             home.join(".ssh"),
             home.join(".codex"),
+            home.join(".codex-other/cache"),
+            home.join(".codex-other/archived_sessions/rollout-old.jsonl"),
             home.join(".codex/archived_sessions"),
             home.join(".codex/archived_sessions/nested/rollout-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl"),
         ] {
@@ -2333,12 +2038,12 @@ mod tests {
         let home = home.path();
         let session = home.join(".codex/sessions/2020/01/02");
         write_aged(&session.join("rollout.jsonl"), "old", 400);
-        assert!(history_details(&session, home, 30).unwrap().is_some());
+        assert!(history_details(&session, home, &[], 30).unwrap().is_some());
 
         std::fs::write(session.join("rollout.jsonl"), "resumed").unwrap();
 
         assert!(
-            history_details(&session, home, 30).unwrap().is_none(),
+            history_details(&session, home, &[], 30).unwrap().is_none(),
             "a resumed session must fall out of the plan"
         );
     }
@@ -2392,9 +2097,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(is_history_child(&link, home), "the fixture must be scanned");
         assert!(
-            history_details(&link, home, 30).unwrap().is_none(),
+            is_history_child(&link, home, &[]),
+            "the fixture must be scanned"
+        );
+        assert!(
+            history_details(&link, home, &[], 30).unwrap().is_none(),
             "PV agents/history-symlink: a symlink must not be eligible"
         );
 

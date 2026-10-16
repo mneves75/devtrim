@@ -25,16 +25,28 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
     }
 
     let mut findings = Vec::new();
+    // A folder the walk cannot read hides only what is inside it: it is named
+    // in one error entry and the files that could be read are still listed.
+    let mut unread = Vec::new();
     for result in WalkDir::new(&cloud_docs)
         .follow_links(false)
         .follow_root_links(false)
     {
-        let entry = result.with_context(|| {
-            format!(
-                "cannot inventory iCloud Drive under {}",
-                cloud_docs.display()
-            )
-        })?;
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) if error.depth() > 0 => {
+                unread.push(super::project::UnreadFolder::from_walk(&error));
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "cannot inventory iCloud Drive under {}",
+                        cloud_docs.display()
+                    )
+                });
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -60,6 +72,12 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
         ));
     }
     findings.sort_by(|left, right| left.path.cmp(&right.path));
+    if !unread.is_empty() {
+        findings.push(super::project::unread_folders_finding(
+            "iCloud Drive files",
+            &unread,
+        ));
+    }
     Ok(findings)
 }
 
@@ -68,20 +86,4 @@ fn blocks_bytes(path: &std::path::Path) -> Result<u64> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("cannot inspect iCloud file {}", path.display()))?;
     super::blocks_bytes(&metadata, path)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_file_measurement_fails_closed() {
-        let missing =
-            std::env::temp_dir().join(format!("devtrim-icloud-missing-{}", std::process::id()));
-        crate::ops::remove_test_path(&missing);
-
-        let error = blocks_bytes(&missing).unwrap_err();
-
-        assert!(error.to_string().contains("cannot inspect iCloud file"));
-    }
 }

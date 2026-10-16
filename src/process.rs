@@ -2,11 +2,16 @@
 //! subprocess runs under a wall-clock limit. It must never return partial
 //! output as if the command had finished, and a timeout is never an absent
 //! program (`NotFound`), so a hung probe cannot read as "nothing running".
+//! It also owns the one registry of live command groups, so an interrupted
+//! devtrim kills every command it started before it exits.
 
+use std::collections::BTreeSet;
 use std::io::{self, Read};
 use std::os::unix::process::CommandExt as _;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,7 +19,7 @@ use std::time::{Duration, Instant};
 ///
 /// A margin, not a measurement. On the development machine at load average 300
 /// to 950 with about 1,700 processes (2026-10-08) only a system-wide `lsof` was
-/// timed (16 s at load 300); no Git, `simctl`, `docker`, `npm` or `brew` query
+/// timed (16 s at load 300); no Git, `simctl`, `docker`, `npm`, `brew` or `go` query
 /// was. A query that takes milliseconds when idle gets two minutes, which a
 /// loaded machine should not exhaust, while a wedged tool still fails the
 /// affected repository or category instead of hanging the whole scan.
@@ -53,11 +58,11 @@ pub(crate) trait BoundedCommand {
     ///
     /// The child leads a process group of its own, and a timeout kills that
     /// whole group, so what a tool spawned (`docker`'s buildx plugin, a helper
-    /// of `git`) does not outlive the failure that was reported. The cost: the
-    /// terminal's SIGINT reaches devtrim only, so an interrupted devtrim does
-    /// not signal a command in flight. A read or probe ends when it finishes or
-    /// on SIGPIPE once devtrim's pipes close; one that is stuck stays running
-    /// until it ends, and a typed mutation command runs on.
+    /// of `git`) does not outlive the failure that was reported. The terminal's
+    /// SIGINT reaches devtrim only, so the group is also registered for
+    /// [`exit_on_interrupt`], which kills every live group before devtrim
+    /// exits.
+    ///
     /// Output still held open by a descendant after the child exited cleanly is
     /// abandoned, not awaited, and the descendant is left alone: it may be
     /// something the command meant to leave running.
@@ -69,12 +74,12 @@ impl BoundedCommand for Command {
         let limit = effective_limit(limit);
         let program = self.get_program().to_string_lossy().into_owned();
         let deadline = Instant::now() + limit;
-        let mut child = self
-            .process_group(0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let mut child = spawn_registered(
+            self.process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )?;
         let timed_out = |detail: &str| {
             io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -94,7 +99,7 @@ impl BoundedCommand for Command {
 
         let mut delay = FIRST_POLL;
         let status = loop {
-            match child.try_wait() {
+            match poll_exit(&mut child) {
                 Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() >= deadline => {
                     return Err(if kill_and_reap(&mut child) {
@@ -155,6 +160,163 @@ fn drain(
     Ok(receiver)
 }
 
+/// The process groups of commands that are running now, and whether devtrim
+/// has been interrupted. Every command devtrim runs is registered here, and
+/// only [`poll_exit`] reaps one.
+///
+/// Reaping and removal happen under the registry's lock, as does the kill on
+/// interrupt, so a group is never signalled after its leader was reaped: once
+/// the leader is gone its process id can name an unrelated process.
+struct Registry {
+    groups: BTreeSet<i32>,
+    /// Commands being spawned right now, not yet registered.
+    spawning: usize,
+    interrupted: bool,
+}
+
+static LIVE: Mutex<Registry> = Mutex::new(Registry {
+    groups: BTreeSet::new(),
+    spawning: 0,
+    interrupted: false,
+});
+
+/// Signalled when a spawn finishes, for [`exit_on_interrupt`] to wait on.
+static SPAWNED: Condvar = Condvar::new();
+
+fn live() -> MutexGuard<'static, Registry> {
+    LIVE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Registry {
+    /// Kills every registered group. Their leaders are unreaped, so each id
+    /// still names the group it was registered for.
+    fn kill_all(&self) {
+        for group in &self.groups {
+            if let Some(group) = rustix::process::Pid::from_raw(*group) {
+                rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();
+            }
+        }
+    }
+}
+
+/// Spawns `command` and registers its group before anything else can run, so
+/// a descendant born at once is already covered. Refuses after an interrupt:
+/// devtrim is about to exit and must not start another command.
+///
+/// The lock is not held across the spawn, so commands still start in parallel.
+/// A spawn in flight is counted instead, and [`exit_on_interrupt`] waits for
+/// the count to reach zero before it kills, so no group is missed.
+fn spawn_registered(command: &mut Command) -> io::Result<Child> {
+    {
+        let mut registry = live();
+        if registry.interrupted {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "devtrim was interrupted",
+            ));
+        }
+        registry.spawning += 1;
+    }
+    let spawned = command.spawn();
+    let mut registry = live();
+    registry.spawning = registry.spawning.saturating_sub(1);
+    let registered = spawned.and_then(|mut child| match i32::try_from(child.id()) {
+        Ok(group) => {
+            registry.groups.insert(group);
+            Ok(child)
+        }
+        // A group id that does not fit could never be killed on interrupt.
+        Err(_) => {
+            child.kill().ok();
+            child.wait().ok();
+            Err(io::Error::other("child process id out of range"))
+        }
+    });
+    drop(registry);
+    SPAWNED.notify_all();
+    registered
+}
+
+/// `try_wait` that unregisters the group in the same critical section that
+/// reaps its leader.
+fn poll_exit(child: &mut Child) -> io::Result<Option<ExitStatus>> {
+    let mut registry = live();
+    let status = child.try_wait()?;
+    if status.is_some()
+        && let Ok(group) = i32::try_from(child.id())
+    {
+        registry.groups.remove(&group);
+    }
+    Ok(status)
+}
+
+/// Kills every command devtrim started when it receives SIGINT or SIGTERM,
+/// then exits with the conventional status: 130 or 143.
+///
+/// Each command leads a process group of its own, so the terminal's SIGINT
+/// never reaches it; without this an interrupted run would leave a `docker`
+/// prune or a stuck query running. The kill happens under the registry's lock
+/// before the exit, and leaders are left for the kernel to reap. A journal
+/// attempt in flight stays unmatched, which `history` reports as interrupted.
+///
+/// Nothing between the signal and the exit can block on the outside world: no
+/// message is written, since a full or unread stderr would stall the write
+/// while the run kept deleting. A second signal exits at once, without
+/// waiting for the first kill to finish.
+///
+/// Installing the handler replaces a SIGINT that was ignored at startup, as in
+/// a background job of a non-interactive shell: such a run now stops on SIGINT.
+/// std and rustix offer no safe way to read the earlier disposition.
+///
+/// Not installed for the TUI, which runs in raw mode where Ctrl-C is a key and
+/// must restore its terminal before it exits: it installs
+/// [`forward_interrupts`] instead.
+pub(crate) fn exit_on_interrupt() -> io::Result<()> {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+
+    let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?;
+    thread::Builder::new()
+        .name("devtrim-interrupt".into())
+        .spawn(move || {
+            let mut stopping = false;
+            for signal in signals.forever() {
+                if stopping {
+                    std::process::exit(128 + signal);
+                }
+                stopping = true;
+                // On its own thread, so a second signal is still heard while
+                // the kill waits for the lock.
+                let stop = thread::Builder::new()
+                    .name("devtrim-interrupt-stop".into())
+                    .spawn(move || kill_and_exit(signal));
+                if stop.is_err() {
+                    kill_and_exit(signal);
+                }
+            }
+        })?;
+    Ok(())
+}
+
+/// How long an interrupt waits for a spawn in flight to register its group.
+/// A spawn takes milliseconds, so the bound only keeps a wedged one from
+/// delaying the exit.
+const SPAWN_GRACE: Duration = Duration::from_secs(2);
+
+/// Kills every registered command group and exits 128 plus `signal`, as
+/// [`exit_on_interrupt`] does on a signal.
+pub(crate) fn kill_and_exit(signal: i32) -> ! {
+    let mut registry = live();
+    registry.interrupted = true;
+    registry = SPAWNED
+        .wait_timeout_while(registry, SPAWN_GRACE, |registry| registry.spawning > 0)
+        .unwrap_or_else(PoisonError::into_inner)
+        .0;
+    registry.kill_all();
+    // The lock stays held: no command can be reaped, registered or started
+    // between the kill and the exit.
+    std::process::exit(128 + signal)
+}
+
 /// Kills the child's whole process group and waits for the child, for at most
 /// [`REAP_GRACE`]. Whether it was reaped: an unreaped child stays a zombie
 /// until devtrim exits.
@@ -174,11 +336,46 @@ fn kill_and_reap(child: &mut Child) -> bool {
     child.kill().ok();
     let deadline = Instant::now() + REAP_GRACE;
     loop {
-        match child.try_wait() {
+        match poll_exit(child) {
             Ok(Some(_)) => return true,
             Ok(None) if Instant::now() < deadline => thread::sleep(LONGEST_POLL),
             Ok(None) | Err(_) => return false,
         }
+    }
+}
+
+/// What the TUI installs in place of [`exit_on_interrupt`]. Its terminal is in
+/// raw mode and must be restored before devtrim exits, and only the TUI's own
+/// thread writes to it, so a SIGINT or SIGTERM is recorded for that thread
+/// instead of ending the run here: the TUI restores the terminal and then
+/// calls [`kill_and_exit`] with the signal. A second signal kills every
+/// command and exits at once, leaving the terminal as it is, so a TUI that
+/// stopped polling cannot keep devtrim or its commands alive.
+pub(crate) fn forward_interrupts() -> io::Result<Interrupts> {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+
+    let received = Arc::new(AtomicI32::new(0));
+    let recorded = Arc::clone(&received);
+    let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?;
+    thread::Builder::new()
+        .name("devtrim-interrupt".into())
+        .spawn(move || {
+            for signal in signals.forever() {
+                if recorded.swap(signal, Ordering::SeqCst) != 0 {
+                    kill_and_exit(signal);
+                }
+            }
+        })?;
+    Ok(Interrupts(received))
+}
+
+/// The signal [`forward_interrupts`] recorded for the TUI to act on.
+pub(crate) struct Interrupts(Arc<AtomicI32>);
+
+impl Interrupts {
+    /// The first SIGINT or SIGTERM received, once one has been.
+    pub(crate) fn received(&self) -> Option<i32> {
+        Some(self.0.load(Ordering::SeqCst)).filter(|signal| *signal != 0)
     }
 }
 
@@ -265,69 +462,152 @@ mod tests {
             .success()
     }
 
+    /// Starts a shell script as a registered group leader, as `output_within`
+    /// does, with its output discarded.
+    fn start_family(directory: &Path, body: &str) -> Child {
+        let family = script(directory, "family", body);
+        spawn_registered(
+            Command::new(family)
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .unwrap()
+    }
+
+    /// Waits for a pid file the script writes. The script's own progress is the
+    /// readiness signal: how long a loaded machine takes to start a shell is
+    /// not something a test can guess.
+    fn pid_from(path: &Path) -> String {
+        for _ in 0..3000 {
+            if let Ok(pid) = std::fs::read_to_string(path)
+                && pid.ends_with('\n')
+            {
+                return pid.trim().to_owned();
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        panic!("the script never wrote {}", path.display());
+    }
+
+    fn registered(pid: &str) -> bool {
+        let group = pid.parse::<i32>().unwrap();
+        live().groups.contains(&group)
+    }
+
     #[test]
     fn a_hung_command_is_killed_reaped_and_reported_as_a_timeout() {
-        let directory = temp("process-hang");
-        let pid_file = directory.join("pid");
-        let hang = script(
-            &directory,
-            "hang",
-            &format!("echo $$ > '{}'\nexec sleep 60", pid_file.display()),
-        );
-
-        // The limit leaves a loaded machine seconds to start the shell, and the
-        // guard and the sleep leave a regression that never times out room to
-        // fail here rather than hang or be mistaken for a normal exit.
-        let result = within(Duration::from_secs(25), move || {
-            Command::new(hang).output_within(Duration::from_secs(5))
+        // The guard and the sleep leave a regression that never times out room
+        // to fail here rather than hang. `sleep` starts at once, so the limit
+        // depends on no script making progress.
+        let result = within(Duration::from_secs(25), || {
+            Command::new("/bin/sleep")
+                .arg("60")
+                .output_within(Duration::from_secs(3))
         })
         .expect("PV process/timeout: the command was never bounded");
         let error = result.unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
         let message = error.to_string();
-        assert!(message.contains("hang"), "names the command: {message}");
-        assert!(message.contains("5s"), "names the limit: {message}");
-        let pid = std::fs::read_to_string(&pid_file).unwrap();
-        // `kill -0` still succeeds on a zombie, so this also proves the reap.
-        assert!(!alive(pid.trim()), "the hung child {pid} was left behind");
-        crate::ops::remove_test_path(directory);
+        assert!(
+            message.contains("/bin/sleep"),
+            "names the command: {message}"
+        );
+        assert!(message.contains("3s"), "names the limit: {message}");
+        // That wording is only used once the leader was reaped.
+        assert!(message.contains("and was killed"), "{message}");
     }
 
     /// `docker builder prune` runs through a buildx plugin child, and a Git
     /// helper is a child too: killing only the command would report the failure
     /// while the work went on. A shell that starts a background `sleep` and
-    /// waits for it stands for such a tool.
+    /// waits for it stands for such a tool, and `kill_and_reap` is what a
+    /// timeout runs.
     #[test]
     fn a_timed_out_command_takes_its_descendants_with_it() {
         let directory = temp("process-family");
-        let pid_file = directory.join("descendant");
-        let family = script(
+        let leader_file = directory.join("leader");
+        let descendant_file = directory.join("descendant");
+        let mut child = start_family(
             &directory,
-            "family",
-            &format!("sleep 60 &\necho $! > '{}'\nwait", pid_file.display()),
+            &format!(
+                "echo $$ > '{}'\nsleep 600 &\necho $! > '{}'\nwait",
+                leader_file.display(),
+                descendant_file.display()
+            ),
+        );
+        let leader = pid_from(&leader_file);
+        let descendant = pid_from(&descendant_file);
+        assert!(
+            alive(&descendant),
+            "control: the child runs before the kill"
         );
 
-        let result = within(Duration::from_secs(25), move || {
-            Command::new(family).output_within(Duration::from_secs(5))
-        })
-        .expect("the command was never bounded");
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(kill_and_reap(&mut child), "the leader was not reaped");
 
-        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        // `kill -0` still succeeds on a zombie, so this proves the reap.
+        assert!(!alive(&leader), "the leader {leader} was left behind");
         // The killed `sleep` is reparented and reaped by launchd, which can
-        // take a moment; a surviving one is still there 60 seconds later.
+        // take a moment. The limit is wall-clock, because on a loaded machine
+        // each `kill` takes seconds to start, and the `sleep` outlives it.
+        let started = Instant::now();
         let mut gone = false;
-        for _ in 0..50 {
-            if !alive(pid.trim()) {
+        while started.elapsed() < Duration::from_secs(60) {
+            if !alive(&descendant) {
                 gone = true;
                 break;
             }
             thread::sleep(Duration::from_millis(100));
         }
+        Command::new("/bin/kill")
+            .args(["-9", &descendant])
+            .output()
+            .ok();
         assert!(
             gone,
-            "PV process/descendants: the timed-out command's child {pid} still runs"
+            "PV process/descendants: the timed-out command's child {descendant} still runs"
+        );
+        crate::ops::remove_test_path(directory);
+    }
+
+    /// A group is registered from the spawn until its leader is reaped, and no
+    /// later: an interrupt that found a reaped leader's id could signal an
+    /// unrelated process group that reused it.
+    #[test]
+    fn a_command_is_registered_while_it_runs_and_unregistered_once_reaped() {
+        let directory = temp("process-registry");
+        let leader_file = directory.join("leader");
+        let mut child = start_family(
+            &directory,
+            &format!("echo $$ > '{}'\nexec sleep 60", leader_file.display()),
+        );
+        let leader = pid_from(&leader_file);
+        assert!(
+            registered(&leader),
+            "control: a running command is registered"
+        );
+
+        assert!(kill_and_reap(&mut child));
+        assert!(
+            !registered(&leader),
+            "PV process/unregister: a reaped leader's group is still registered"
+        );
+
+        let finished_file = directory.join("finished");
+        let quick = script(
+            &directory,
+            "quick",
+            &format!("echo $$ > '{}'", finished_file.display()),
+        );
+        Command::new(quick)
+            .output_within(Duration::from_secs(120))
+            .unwrap();
+        let finished = pid_from(&finished_file);
+        assert!(
+            !registered(&finished),
+            "PV process/unregister: a finished command's group is still registered"
         );
         crate::ops::remove_test_path(directory);
     }
@@ -376,17 +656,32 @@ mod tests {
     #[test]
     fn output_held_open_by_a_descendant_is_abandoned_at_the_deadline() {
         let directory = temp("process-descendant");
+        let descendant_file = directory.join("descendant");
         // The shell exits at once and its background `sleep` keeps the pipes
         // open far past the limit, so the child is already gone when the
-        // deadline passes.
-        let leaves = script(&directory, "leaves", "sleep 40 &\nexit 0");
+        // deadline passes. The limit is long enough for a loaded machine to
+        // start and finish the shell.
+        let leaves = script(
+            &directory,
+            "leaves",
+            &format!(
+                "sleep 120 &\necho $! > '{}'\nexit 0",
+                descendant_file.display()
+            ),
+        );
 
-        let result = within(Duration::from_secs(30), move || {
-            Command::new(leaves).output_within(Duration::from_secs(5))
-        })
-        .expect("the descendant held the call past its deadline");
+        let result = within(Duration::from_secs(90), move || {
+            Command::new(leaves).output_within(Duration::from_secs(20))
+        });
+        let descendant = pid_from(&descendant_file);
+        Command::new("/bin/kill")
+            .args(["-9", &descendant])
+            .output()
+            .ok();
+        let error = result
+            .expect("the descendant held the call past its deadline")
+            .unwrap_err();
 
-        let error = result.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
         assert!(
             error.to_string().contains("still held open"),

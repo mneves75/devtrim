@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
-use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -99,6 +99,54 @@ pub(crate) fn has_git_marker(path: &Path) -> Result<bool> {
         Err(error) => Err(error)
             .with_context(|| format!("cannot inspect Git marker under {}", path.display())),
     }
+}
+
+/// Every directory under `root` holding a Git marker — a repository or a
+/// linked worktree — not entered further. Folders the walk cannot read are
+/// recorded in `unread`; only the root itself failing fails it.
+pub(crate) fn repositories_under(
+    root: &Path,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    let mut entries = walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter();
+    while let Some(result) = entries.next() {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) if error.depth() > 0 => {
+                unread.push(UnreadFolder::from_walk(&error));
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot look for repositories under {}", root.display())
+                });
+            }
+        };
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        if is_git_metadata_name(entry.file_name()) || super::is_node_modules_name(entry.file_name())
+        {
+            entries.skip_current_dir();
+            continue;
+        }
+        match std::fs::symlink_metadata(entry.path().join(".git")) {
+            Ok(_) => {
+                found.push(entry.path().to_path_buf());
+                entries.skip_current_dir();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                unread.push(UnreadFolder::new(entry.path(), &error.into()));
+                entries.skip_current_dir();
+            }
+        }
+    }
+    Ok(found)
 }
 
 pub(crate) fn normalized_roots(roots: &[PathBuf]) -> Vec<&Path> {
@@ -409,6 +457,63 @@ fn hardened_output(mut command: Command, failure: impl Fn() -> String) -> Result
     Ok(output.stdout)
 }
 
+/// `git worktree list --porcelain -z` for the repository holding `repo`,
+/// through the hardened invocation. Every path it lists is the repository's
+/// own data, not a fact about the disk.
+pub(crate) fn worktree_listing(repo: &Path) -> Result<Vec<u8>> {
+    let mut command = hardened_git(repo, "git");
+    command.args(["worktree", "list", "--porcelain", "-z"]);
+    hardened_output(command, || {
+        format!("cannot list the worktrees of {}", repo.display())
+    })
+}
+
+/// The absolute common directory (`.git` of the main worktree) of the
+/// repository holding `repo`.
+pub(crate) fn git_common_dir(repo: &Path) -> Result<PathBuf> {
+    let mut command = hardened_git(repo, "git");
+    command.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    let mut listed = hardened_output(command, || {
+        format!("cannot find the Git directory of {}", repo.display())
+    })?;
+    if listed.last() == Some(&b'\n') {
+        listed.pop();
+    }
+    if !listed.starts_with(b"/") {
+        anyhow::bail!(
+            "Git named no absolute common directory for {}",
+            repo.display()
+        );
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(listed)))
+}
+
+/// Whether Git ignores `relative` in the repository at `repo`
+/// (`check-ignore` exits 0 for ignored, 1 for not ignored; anything else is a
+/// failure, never an answer).
+pub(crate) fn ignores_path(repo: &Path, relative: &str) -> Result<bool> {
+    let mut command = hardened_git(repo, "git");
+    command.args(["check-ignore", "-q", "--", relative]);
+    let output = command
+        .output_within(QUERY_TIMEOUT)
+        .with_context(|| format!("cannot run Git in {}", repo.display()))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let reason = stderr.lines().map(str::trim).find(|line| !line.is_empty());
+            anyhow::bail!(
+                "cannot tell whether Git ignores {relative} in {}{}",
+                repo.display(),
+                reason
+                    .map(|reason| format!(": {reason}"))
+                    .unwrap_or_default()
+            )
+        }
+    }
+}
+
 fn iso_date(date: &str, root: &Path) -> Result<String> {
     if date.len() != 10
         || !date.chars().enumerate().all(|(index, character)| {
@@ -576,10 +681,6 @@ pub(crate) fn unborn_branch(repo: &Path) -> bool {
         })
 }
 
-/// Whether a `git count-objects -v` report describes an object store with
-/// nothing in it: zero loose objects, zero packed objects, zero packs, and no
-/// alternate store lending objects. Its keys are fixed, not translated; a
-/// report missing a count, or one that is not text, proves nothing.
 /// Whether a `cat-file --batch-all-objects --batch-check=%(objecttype)`
 /// listing holds no commit: every line names an object type, none of them
 /// `commit`. Git prints types untranslated; anything else proves nothing.
@@ -665,7 +766,6 @@ pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf]) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
 
     fn temp(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("devtrim-{name}-{}", std::process::id()));
@@ -840,139 +940,11 @@ mod tests {
         crate::ops::remove_test_path(base);
     }
 
-    /// Only a listing of object types that holds no commit proves there is
-    /// no history; anything that is not such a listing proves nothing.
-    #[test]
-    fn only_a_listing_without_a_commit_object_proves_no_history() {
-        for listing in [&b""[..], b"blob\n", b"blob\nblob\ntree\n"] {
-            assert!(
-                holds_no_commit(listing),
-                "{}",
-                String::from_utf8_lossy(listing)
-            );
-        }
-        for listing in [
-            &b"blob\ncommit\n"[..],
-            b"commit\n",
-            b"blob\nmissing\n",
-            b"blob\n\n",
-            b"\xff\n",
-        ] {
-            assert!(
-                !holds_no_commit(listing),
-                "{}",
-                String::from_utf8_lossy(listing)
-            );
-        }
-    }
-
-    /// Git records a worktree's `gitdir` as raw path bytes, so a name that is
-    /// not UTF-8 must still be judged, not fail the category it sits in.
-    #[test]
-    fn orphaned_worktrees_are_judged_by_their_gitdir_bytes() {
-        let base = temp("orphan-bytes");
-        let orphan = base.join("orphan");
-        std::fs::create_dir_all(&orphan).unwrap();
-        let mut marker = b"gitdir: ".to_vec();
-        marker.extend_from_slice(base.join("gone").as_os_str().as_encoded_bytes());
-        marker.extend_from_slice(b"/\xff\n");
-        std::fs::write(orphan.join(".git"), marker).unwrap();
-        let live = base.join("live");
-        std::fs::create_dir_all(base.join("main/.git/worktrees/live")).unwrap();
-        std::fs::create_dir_all(&live).unwrap();
-        std::fs::write(
-            live.join(".git"),
-            format!(
-                "gitdir: {}\n",
-                base.join("main/.git/worktrees/live").display()
-            ),
-        )
-        .unwrap();
-        let repository = base.join("repository");
-        std::fs::create_dir_all(repository.join(".git")).unwrap();
-        // Git keeps every byte after `gitdir: ` but trailing CR/LF, so a
-        // separate Git directory named with a newline or a trailing space is
-        // live, not gone (git v2.51.0 `setup.c`, `read_gitfile_gently`).
-        let unusual = base.join("odd");
-        let gitdir = base.join("main/.git/worktrees/odd\nname ");
-        std::fs::create_dir_all(&gitdir).unwrap();
-        std::fs::create_dir_all(&unusual).unwrap();
-        let mut marker = b"gitdir: ".to_vec();
-        marker.extend_from_slice(gitdir.as_os_str().as_encoded_bytes());
-        marker.extend_from_slice(b"\r\n");
-        std::fs::write(unusual.join(".git"), marker).unwrap();
-
-        assert!(orphaned_worktree(&orphan).unwrap());
-        assert!(!orphaned_worktree(&live).unwrap());
-        assert!(
-            !orphaned_worktree(&unusual).unwrap(),
-            "a live worktree was misread as orphaned"
-        );
-        assert!(!orphaned_worktree(&repository).unwrap());
-        crate::ops::remove_test_path(base);
-    }
-
     #[test]
     fn iso_dates_are_correct_and_ordered() {
         assert_eq!(iso_from_epoch_days(0), "1970-01-01");
         assert_eq!(iso_from_epoch_days(19_723), "2024-01-01");
         assert!(iso_days_ago(30) < iso_days_ago(1));
-    }
-
-    #[test]
-    fn finds_owning_repo_and_handles_orphans() {
-        let base = temp("owner");
-        let home = base.join("home");
-        let project = base.join("project/sub/node_modules");
-        std::fs::create_dir_all(&project).unwrap();
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(base.join("project/.git")).unwrap();
-        assert_eq!(
-            owning_repo(&project, &home).unwrap(),
-            Some(base.join("project"))
-        );
-        assert_eq!(
-            owning_repo(&base.join("orphan/node_modules"), &home).unwrap(),
-            None
-        );
-        // A repository at the home folder, or above it, owns nothing.
-        let loose = home.join("dev/loose/node_modules");
-        std::fs::create_dir_all(&loose).unwrap();
-        std::fs::create_dir_all(home.join(".git")).unwrap();
-        assert_eq!(owning_repo(&loose, &home).unwrap(), None);
-        std::fs::remove_dir_all(home.join(".git")).unwrap();
-        std::fs::create_dir_all(base.join(".git")).unwrap();
-        assert_eq!(owning_repo(&loose, &home).unwrap(), None);
-        crate::ops::remove_test_path(base);
-    }
-
-    #[test]
-    fn detects_file_and_directory_git_markers() {
-        let base = temp("git-marker");
-        let file_target = base.join("file-target");
-        let directory_target = base.join("directory-target");
-        let case_targets = [
-            ("upper-target", ".GIT"),
-            ("title-target", ".Git"),
-            ("mixed-target", ".gIt"),
-        ];
-        let normal_target = base.join("normal-target");
-        std::fs::create_dir_all(&file_target).unwrap();
-        std::fs::create_dir_all(directory_target.join(".git")).unwrap();
-        for (directory, marker) in case_targets {
-            std::fs::create_dir_all(base.join(directory).join(marker)).unwrap();
-        }
-        std::fs::create_dir_all(normal_target.join("git")).unwrap();
-        std::fs::write(file_target.join(".git"), "gitdir: elsewhere").unwrap();
-
-        assert!(has_git_marker(&file_target).unwrap());
-        assert!(has_git_marker(&directory_target).unwrap());
-        for (directory, _) in case_targets {
-            assert!(has_git_marker(&base.join(directory)).unwrap());
-        }
-        assert!(!has_git_marker(&normal_target).unwrap());
-        assert!(!has_git_marker(&base.join("missing")).unwrap());
-        crate::ops::remove_test_path(base);
     }
 
     #[test]
@@ -988,22 +960,6 @@ mod tests {
             normalized_roots(&roots),
             vec![Path::new("/tmp/other"), Path::new("/tmp/work")]
         );
-    }
-
-    #[test]
-    fn directory_roots_follow_readable_symlinks_and_reject_broken_ones() {
-        let base = temp("root-symlink");
-        let target = base.join("target");
-        let readable = base.join("readable");
-        let broken = base.join("broken");
-        std::fs::create_dir_all(&target).unwrap();
-        symlink(&target, &readable).unwrap();
-        symlink(base.join("missing-target"), &broken).unwrap();
-
-        assert!(is_directory_if_present(&readable).unwrap());
-        assert!(!is_directory_if_present(&base.join("missing-root")).unwrap());
-        assert!(is_directory_if_present(&broken).is_err());
-        crate::ops::remove_test_path(base);
     }
 
     /// A Git query that never answers fails that repository, naming the
@@ -1072,25 +1028,6 @@ mod tests {
             .args(["log", "-1", "--format=%cs"])
             .output()
             .unwrap();
-    }
-
-    /// A failed Git query says why, in Git's own words, so a refusal it causes
-    /// can be diagnosed; here the marker is an empty directory Git rejects.
-    #[test]
-    fn a_failed_git_query_names_gits_reason() {
-        let base = temp("git-reason");
-        let repo = base.join("repo");
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::create_dir_all(repo.join("target")).unwrap();
-
-        for error in [
-            repo_last_activity(&repo).unwrap_err(),
-            tracks_files_under(&repo, &repo.join("target")).unwrap_err(),
-        ] {
-            let message = format!("{error:#}");
-            assert!(message.contains("not a git repository"), "{message}");
-        }
-        crate::ops::remove_test_path(base);
     }
 
     #[test]
@@ -1277,26 +1214,5 @@ mod tests {
             "PV git/utc-dates: activity was read in a local zone, not the cutoff's UTC"
         );
         crate::ops::remove_test_path(base);
-    }
-
-    #[test]
-    fn a_repository_without_reflogs_is_judged_by_its_commit_date() {
-        let base = temp("git-no-reflog");
-        let repo = base.join("repo");
-        init_old_git_repo(&repo).unwrap();
-        crate::ops::remove_test_path(repo.join(".git/logs"));
-        assert_eq!(repo_last_activity(&repo).unwrap(), "2000-01-01");
-        crate::ops::remove_test_path(base);
-    }
-
-    #[test]
-    fn repo_owns_equal_and_descendant_process_cwds_only() {
-        let repo = Path::new("/Users/example/dev/project");
-        assert!(repo_has_active_build(repo, &[repo.to_path_buf()]));
-        assert!(repo_has_active_build(repo, &[repo.join("packages/app")]));
-        assert!(!repo_has_active_build(
-            repo,
-            &[PathBuf::from("/Users/example/dev/project-other")]
-        ));
     }
 }

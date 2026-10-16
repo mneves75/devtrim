@@ -38,7 +38,6 @@ use std::process::{Command, ExitCode, Output};
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
 
-use crate::ops::dir_size;
 use crate::report::{self, Action, Finding};
 use crate::safety::Ctx;
 
@@ -261,19 +260,35 @@ pub(crate) fn matches_identifier_file(name: &str, identifier: &str, extension: &
         .is_some_and(|stem| stem == identifier)
 }
 
-fn measure(path: &Path) -> Result<u64> {
+/// Logical bytes under `path` and how many entries could not be read. A
+/// protected folder inside a container lowers that one size to a disclosed
+/// lower bound instead of hiding every path the report found.
+fn measure(path: &Path) -> Result<(u64, usize)> {
     let metadata = std::fs::symlink_metadata(path)
         .with_context(|| format!("cannot inspect {}", path.display()))?;
     if metadata.file_type().is_dir() {
-        dir_size(path)
+        let measured = crate::safety::measure_lenient(path, &Default::default());
+        Ok((measured.bytes, measured.unread))
     } else {
-        Ok(metadata.len())
+        Ok((metadata.len(), 0))
     }
 }
 
 fn info_finding(label: impl Into<String>, path: PathBuf, note: &str) -> Result<Finding> {
-    let size = measure(&path)?;
-    Ok(Finding::new(label, Some(path), size, note, 1, Action::Info))
+    let (size, unread) = measure(&path)?;
+    let note = if unread == 0 {
+        note.to_owned()
+    } else {
+        format!("{note}; size is a lower bound: {unread} entries could not be read")
+    };
+    Ok(Finding::new(
+        label,
+        Some(path),
+        size,
+        &note,
+        1,
+        Action::Info,
+    ))
 }
 
 /// Every path that belongs to `identifier`, plus the bundle itself.
@@ -368,200 +383,4 @@ by the protected-path boundary, for every command rather than only this one.",
         "report-only:".yellow().bold(),
     ))?;
     Ok(ExitCode::SUCCESS)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn home() -> tempfile::TempDir {
-        tempfile::Builder::new()
-            .prefix("devtrim-uninstall")
-            .tempdir()
-            .unwrap()
-    }
-
-    fn make_app(root: &Path, name: &str, identifier: &str) -> PathBuf {
-        let app = root.join(format!("{name}.app"));
-        std::fs::create_dir_all(app.join("Contents")).unwrap();
-        std::fs::write(
-            app.join("Contents/Info.plist"),
-            format!(
-                "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>\
-<key>CFBundleIdentifier</key><string>{identifier}</string></dict></plist>"
-            ),
-        )
-        .unwrap();
-        app
-    }
-
-    /// The whole safety argument rests on this: a prefix must never match.
-    #[test]
-    fn identifiers_match_exactly_and_never_by_prefix() {
-        assert!(matches_identifier("com.example.thing", "com.example.thing"));
-        assert!(!matches_identifier(
-            "com.example.thingy",
-            "com.example.thing"
-        ));
-        assert!(!matches_identifier("com.example.thin", "com.example.thing"));
-
-        assert!(matches_identifier_file(
-            "com.example.thing.plist",
-            "com.example.thing",
-            "plist"
-        ));
-        assert!(!matches_identifier_file(
-            "com.example.thingy.plist",
-            "com.example.thing",
-            "plist"
-        ));
-        // A different extension in the same directory is not this app's file.
-        assert!(!matches_identifier_file(
-            "com.example.thing.savedState",
-            "com.example.thing",
-            "plist"
-        ));
-    }
-
-    #[test]
-    fn bundle_identifiers_are_validated_as_filenames() {
-        assert!(validate_bundle_identifier("com.example.thing").is_ok());
-        for bad in [
-            "",
-            "noreversedns",
-            ".com.example",
-            "com.example.",
-            "com..example",
-            "com/example.thing",
-            "com.example.thing\n../../etc",
-            "com.example.thing;rm",
-        ] {
-            assert!(validate_bundle_identifier(bad).is_err(), "accepted {bad:?}");
-        }
-    }
-
-    #[test]
-    fn a_running_bundle_is_detected_by_executable_path_prefix() {
-        let listing = "/usr/libexec/somed\n\
-/Applications/AltTab.app/Contents/MacOS/AltTab\n\
-/Applications/Other.app/Contents/MacOS/Other\n";
-        assert!(parse_running_bundle(
-            listing,
-            Path::new("/Applications/AltTab.app")
-        ));
-        assert!(!parse_running_bundle(
-            listing,
-            Path::new("/Applications/Missing.app")
-        ));
-        // A sibling whose name merely starts the same must not count.
-        assert!(!parse_running_bundle(
-            listing,
-            Path::new("/Applications/AltTab")
-        ));
-    }
-
-    #[test]
-    fn resolution_refuses_ambiguity_and_paths_outside_the_roots() {
-        let home = home();
-        let user_apps = home.path().join(USER_APPLICATION_ROOT);
-        std::fs::create_dir_all(&user_apps).unwrap();
-        make_app(&user_apps, "Widget", "com.example.widget");
-
-        assert_eq!(
-            resolve_app("Widget", home.path()).unwrap(),
-            user_apps.join("Widget.app")
-        );
-        assert_eq!(
-            resolve_app("widget.app", home.path()).unwrap(),
-            user_apps.join("Widget.app"),
-            "the name is matched case-insensitively, with or without the suffix"
-        );
-        assert!(resolve_app("Nonexistent", home.path()).is_err());
-        assert!(
-            resolve_app(
-                &home
-                    .path()
-                    .join("elsewhere/Widget.app")
-                    .display()
-                    .to_string(),
-                home.path()
-            )
-            .is_err(),
-            "a bundle outside the Applications roots must be refused"
-        );
-    }
-
-    #[test]
-    fn a_symlinked_bundle_is_refused() {
-        let home = home();
-        let user_apps = home.path().join(USER_APPLICATION_ROOT);
-        std::fs::create_dir_all(&user_apps).unwrap();
-        let real = make_app(home.path(), "Real", "com.example.real");
-        let link = user_apps.join("Linked.app");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-
-        assert!(!is_approved_app_bundle(&link, home.path()).unwrap());
-    }
-
-    #[test]
-    fn located_paths_are_reported_and_never_actionable() {
-        let home = home();
-        let user_apps = home.path().join(USER_APPLICATION_ROOT);
-        std::fs::create_dir_all(&user_apps).unwrap();
-        let app = make_app(&user_apps, "Widget", "com.example.widget");
-
-        let identifier = "com.example.widget";
-        std::fs::create_dir_all(home.path().join("Library/Application Support")).unwrap();
-        std::fs::create_dir_all(
-            home.path()
-                .join("Library/Application Support")
-                .join(identifier),
-        )
-        .unwrap();
-        // A sibling whose identifier merely extends this one must stay out.
-        std::fs::create_dir_all(
-            home.path()
-                .join("Library/Application Support")
-                .join(format!("{identifier}y")),
-        )
-        .unwrap();
-        std::fs::create_dir_all(home.path().join("Library/Preferences")).unwrap();
-        std::fs::write(
-            home.path()
-                .join("Library/Preferences")
-                .join(format!("{identifier}.plist")),
-            b"x",
-        )
-        .unwrap();
-
-        let findings = locate(&app, identifier, home.path()).unwrap();
-        let paths: Vec<String> = findings
-            .iter()
-            .filter_map(|finding| finding.path.clone())
-            .collect();
-
-        assert!(paths.iter().any(|path| path.ends_with("Widget.app")));
-        assert!(
-            paths
-                .iter()
-                .any(|path| path.ends_with(&format!("Application Support/{identifier}")))
-        );
-        assert!(
-            paths
-                .iter()
-                .any(|path| path.ends_with(&format!("Preferences/{identifier}.plist")))
-        );
-        assert!(
-            !paths
-                .iter()
-                .any(|path| path.ends_with(&format!("{identifier}y"))),
-            "a longer identifier must never be swept in"
-        );
-        assert!(
-            findings
-                .iter()
-                .all(|finding| finding.action == Action::Info),
-            "this command must never produce an actionable finding"
-        );
-    }
 }

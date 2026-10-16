@@ -1,7 +1,9 @@
 //! CLI application flow.
 
-use crate::{analyze, cli, journal, largest, ops, report, safety, status, tui, uninstall};
-use anyhow::Result;
+use crate::{
+    analyze, cli, journal, largest, ops, process, report, safety, status, tui, uninstall, worktrees,
+};
+use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use colored::Colorize;
 use std::ffi::{OsStr, OsString};
@@ -16,9 +18,9 @@ pub fn main_impl() -> ExitCode {
         Ok(cli) => cli,
         Err(error) => return clap_error(error, json_requested, operation),
     };
-    if let Some(message) = incompatible_flags(&cli) {
+    if let Some((rejecting, message)) = incompatible_flags(&cli) {
         if cli.json {
-            if let Err(error) = report::print_json(operation, false, &[], None, &[message]) {
+            if let Err(error) = report::print_json(rejecting, false, &[], None, &[message]) {
                 eprintln!(
                     "{} {}",
                     "error:".red().bold(),
@@ -71,7 +73,9 @@ pub fn main_impl() -> ExitCode {
     }
 }
 
-fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
+/// The operation that refuses, and why, when a flag reaches a command that
+/// cannot honour it.
+fn incompatible_flags(cli: &cli::Cli) -> Option<(&'static str, String)> {
     let (operation, allow_apply, allow_yes, allow_yolo, allow_shred) = match cli.command.as_ref() {
         None | Some(cli::Command::Tui) => ("tui", false, false, false, false),
         Some(cli::Command::Scan { .. }) => ("scan", false, false, false, true),
@@ -91,6 +95,7 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
         Some(cli::Command::Uninstall { .. }) => ("uninstall", false, false, false, false),
         Some(cli::Command::Analyze { .. }) => ("analyze", false, false, false, false),
         Some(cli::Command::Largest { .. }) => ("largest", false, false, false, false),
+        Some(cli::Command::Worktrees) => ("worktrees", false, false, false, false),
         Some(cli::Command::History { .. }) => ("history", false, false, false, false),
         Some(cli::Command::Completions { .. }) => ("completions", false, false, false, false),
         Some(cli::Command::Manpage) => ("manpage", false, false, false, false),
@@ -113,9 +118,12 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<String> {
         rejected.push("--json");
     }
     (!rejected.is_empty()).then(|| {
-        format!(
-            "{operation} does not accept flag(s): {}",
-            rejected.join(", ")
+        (
+            operation,
+            format!(
+                "{operation} does not accept flag(s): {}",
+                rejected.join(", ")
+            ),
         )
     })
 }
@@ -167,6 +175,7 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
         Some("optimize") => "optimize",
         Some("uninstall") => "uninstall",
         Some("largest") => "largest",
+        Some("worktrees") => "worktrees",
         Some("history") => "history",
         Some("completions") => "completions",
         Some("manpage") => "manpage",
@@ -314,6 +323,12 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
     }
     let ctx = safety::Ctx::from_cli(&cli)?;
     let command = cli.command.take().unwrap_or(cli::Command::Tui);
+    // The TUI runs in raw mode, where Ctrl-C is a key, and must restore its
+    // terminal before it exits, so `tui::run` installs its own forwarding
+    // handler; every other run kills the commands it started and exits at once.
+    if !matches!(command, cli::Command::Tui) {
+        process::exit_on_interrupt().context("cannot install the interrupt handler")?;
+    }
 
     match command {
         cli::Command::Tui => tui::run(&ctx),
@@ -326,7 +341,8 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             if ctx.json {
                 report::print_json("scan", false, &scan.findings, None, &scan.errors)?;
             } else {
-                report::print_scan_human(&scan.findings, &scan.sections, all)?;
+                let failed = ops::failed_categories(&scan.sections);
+                report::print_scan_human(&scan.findings, &scan.sections, &failed, all)?;
                 for error in &scan.errors {
                     eprintln!("{} {}", "warn".yellow(), report::terminal_safe(error));
                 }
@@ -361,6 +377,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                 Ok(ExitCode::from(1))
             }
         }
+        cli::Command::Worktrees => run_worktrees(&ctx),
         cli::Command::Optimize { ref tasks } => {
             let operation = ops::optimize::Optimize::new(tasks, cli.apply)?;
             run_op(&operation, &cli, &ctx)
@@ -374,18 +391,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
         cli::Command::History { .. } | cli::Command::Completions { .. } | cli::Command::Manpage => {
             unreachable!("context-free commands are dispatched before configuration loads")
         }
-        cli::Command::Icloud => {
-            let findings = match ops::icloud_status(&ctx) {
-                Ok(findings) => findings,
-                Err(error) => return command_error("icloud", false, &[], &ctx, error),
-            };
-            if ctx.json {
-                report::print_json("icloud", false, &findings, None, &[])?;
-            } else {
-                report::print_human(&findings)?;
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        cli::Command::Icloud => run_icloud(&ctx),
         cli::Command::TrashEmpty {
             confirm_gb,
             only_devtrim,
@@ -441,6 +447,64 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             }
         }
     }
+}
+
+fn run_worktrees(ctx: &safety::Ctx) -> Result<ExitCode> {
+    if !ctx.json {
+        ctx.diagnostic("info", ctx.roots_note());
+    }
+    let mut report = worktrees::report(ctx);
+    if ctx.json {
+        report.findings.push(report::Finding::new(
+            "not assessed",
+            None,
+            0,
+            worktrees::NOT_ASSESSED,
+            1,
+            report::Action::Info,
+        ));
+        report::print_json("worktrees", false, &report.findings, None, &report.errors)?;
+    } else {
+        for note in report.notes.drain(..) {
+            ctx.diagnostic("info", note);
+        }
+        if report.findings.is_empty() {
+            report::print_line("no linked worktrees under the scan roots")?;
+        } else {
+            report::print_findings(&report.findings)?;
+        }
+        ctx.diagnostic("info", worktrees::NOT_ASSESSED.to_owned());
+        for error in &report.errors {
+            ctx.diagnostic("warn", error.clone());
+        }
+    }
+    if report.errors.is_empty() {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Ok(ExitCode::from(1))
+    }
+}
+
+fn run_icloud(ctx: &safety::Ctx) -> Result<ExitCode> {
+    let findings = match ops::icloud_status(ctx) {
+        Ok(findings) => findings,
+        Err(error) => return command_error("icloud", false, &[], ctx, error),
+    };
+    let errors: Vec<String> = findings
+        .iter()
+        .filter_map(report::Finding::scan_error)
+        .map(str::to_owned)
+        .collect();
+    if ctx.json {
+        report::print_json("icloud", false, &findings, None, &errors)?;
+    } else {
+        report::print_human(&findings)?;
+    }
+    Ok(if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 fn clean(target: cli::Target, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitCode> {
@@ -592,43 +656,5 @@ fn command_error(
         Ok(ExitCode::from(1))
     } else {
         Err(error)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::ValueEnum;
-
-    /// The clap error envelope must name the category the user typed. This is a
-    /// table over clap's own variant list rather than a fixed set of strings:
-    /// `agents` shipped with the wrong operation name precisely because nothing
-    /// enumerated the subcommands against this map, so an eleventh category
-    /// cannot regress the same way without failing here.
-    #[test]
-    fn every_clean_target_maps_to_its_own_operation_name() {
-        for target in cli::Target::value_variants() {
-            // The user types clap's possible-value name. Keying the table on
-            // `as_str()` for both input and expectation would stay green if the
-            // two ever drifted, which is the regression this test exists to stop.
-            let possible = target
-                .to_possible_value()
-                .expect("every target is selectable");
-            let name = possible.get_name();
-            assert_eq!(
-                target.as_str(),
-                name,
-                "`Target::as_str` must match the name clap accepts"
-            );
-            let args: Vec<OsString> = ["devtrim", "clean", name, "--unsupported", "--json"]
-                .iter()
-                .map(OsString::from)
-                .collect();
-            assert_eq!(
-                operation_from_args(&args),
-                name,
-                "`clean {name}` must report its own operation, not the `clean` fallback"
-            );
-        }
     }
 }

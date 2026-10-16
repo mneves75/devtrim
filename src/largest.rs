@@ -60,18 +60,16 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
             .then_with(|| left_path.cmp(right_path))
     });
     let limit = top.unwrap_or(20).clamp(1, 100);
+    let note = if skipped > 0 {
+        "report-only; sizes are estimated logical bytes and lower bounds: unreadable entries were skipped"
+    } else {
+        "report-only; sizes are estimated logical bytes"
+    };
     let findings = ranked
         .into_iter()
         .take(limit)
         .map(|(path, size)| {
-            Finding::new(
-                "large directory",
-                Some(path),
-                size,
-                "report-only; sizes are estimated logical bytes (lower bound when entries were skipped)",
-                1,
-                Action::Info,
-            )
+            Finding::new("large directory", Some(path), size, note, 1, Action::Info)
         })
         .collect();
     let errors = (skipped > 0)
@@ -99,88 +97,5 @@ fn add_to_shallow_ancestors(
         directory.push(component.as_os_str());
         let total = totals.entry(directory.clone()).or_default();
         *total = total.saturating_add(bytes);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn overlapping_roots_count_each_file_once() {
-        let base =
-            std::env::temp_dir().join(format!("devtrim-largest-overlap-{}", std::process::id()));
-        crate::ops::remove_test_path(&base);
-        let nested = base.join("work/project/cache");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(nested.join("blob"), vec![0u8; 1024]).unwrap();
-
-        let once = super::scan_roots(&[base.join("work")], Some(50));
-        let twice = super::scan_roots(
-            &[
-                base.join("work"),
-                base.join("work/project"),
-                base.join("work"),
-            ],
-            Some(50),
-        );
-        let total = |result: &super::LargestResult| {
-            result
-                .findings
-                .iter()
-                .map(|finding| finding.size_bytes)
-                .max()
-                .unwrap_or(0)
-        };
-        assert_eq!(total(&once), 1024);
-        assert_eq!(total(&twice), 1024);
-        crate::ops::remove_test_path(base);
-    }
-
-    use super::*;
-
-    fn temp(name: &str) -> PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("devtrim-largest-{name}-{}", std::process::id()));
-        crate::ops::remove_test_path(&path);
-        std::fs::create_dir_all(&path).unwrap();
-        path
-    }
-
-    #[test]
-    fn ranks_depth_one_and_two_totals_and_clamps_top() {
-        let root = temp("ranking");
-        std::fs::create_dir_all(root.join("alpha/deep/third")).unwrap();
-        std::fs::create_dir_all(root.join("beta")).unwrap();
-        std::fs::write(root.join("alpha/top"), vec![0; 5]).unwrap();
-        std::fs::write(root.join("alpha/deep/nested"), vec![0; 10]).unwrap();
-        std::fs::write(root.join("alpha/deep/third/lower"), vec![0; 2]).unwrap();
-        std::fs::write(root.join("beta/file"), vec![0; 7]).unwrap();
-
-        let result = scan_roots(std::slice::from_ref(&root), None);
-        let ranked = result
-            .findings
-            .iter()
-            .map(|finding| (finding.target().unwrap().to_path_buf(), finding.size_bytes))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ranked,
-            vec![
-                (root.join("alpha"), 17),
-                (root.join("alpha/deep"), 12),
-                (root.join("beta"), 7),
-            ]
-        );
-        assert!(result.errors.is_empty());
-
-        let one = scan_roots(std::slice::from_ref(&root), Some(0));
-        assert_eq!(one.findings.len(), 1);
-
-        for index in 0..105 {
-            let directory = root.join(format!("extra-{index:03}"));
-            std::fs::create_dir_all(&directory).unwrap();
-            std::fs::write(directory.join("file"), [0]).unwrap();
-        }
-        let hundred = scan_roots(std::slice::from_ref(&root), Some(usize::MAX));
-        assert_eq!(hundred.findings.len(), 100);
-        crate::ops::remove_test_path(root);
     }
 }

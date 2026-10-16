@@ -223,11 +223,12 @@ exactly four:
   the simulator UDID must be validated and carried by that closed authority.
 - `capture` in `src/status.rs` — `SystemTool::parts()`, the same closed-enum
   shape.
-- `command_path` in `src/ops/caches.rs` — `"npm"` or `"brew"` from its two
-  callers, trusted only inside that owner's cache namespace.
+- `command_path` in `src/ops/caches.rs` — `"npm"`, `"brew"` or `"go"` from its
+  three callers, trusted only inside that owner's cache namespace.
 - `hardened_git` in `src/ops/project.rs` — `"git"`, from `repo_last_activity`
-  through `hardened_git_log`, and as a literal from `TrackedIndex::list` and
-  `unborn_branch`, its only production callers.
+  through `hardened_git_log`, and as a literal from `TrackedIndex::list`,
+  `unborn_branch`, `worktree_listing`, `git_common_dir` and `ignores_path`, its
+  only production callers.
 
 The only other variable programs in the tree are inside `#[cfg(test)] mod
 tests`: `std::env::current_exe()` re-invoking the test binary in
@@ -237,9 +238,9 @@ The bounded-subprocess tests add uniquely named symlinks to `/bin/sleep` in
 `src/safety.rs`, which stand in for the coding agents' process names, and run
 literal system programs (`/bin/sleep`, `/usr/bin/seq`, `/bin/cat`,
 `/usr/bin/false`, `/bin/kill`). A shell appears only where it is the thing
-under test: four scripts in `src/process.rs` (one records its own pid, one
-writes to stderr and exits 3, one leaves a background `sleep` holding the
-pipes, one starts a background `sleep` and waits for it) and a `git` stand-in in `src/ops/project.rs` that ignores Git's
+under test: four kinds of script in `src/process.rs` (one records its pid and waits, with
+or without a background `sleep`; one records its pid and exits; one writes to
+stderr and exits 3; one leaves a background `sleep` holding the pipes) and a `git` stand-in in `src/ops/project.rs` that ignores Git's
 arguments and sleeps.
 A fifth production site is a finding.
 

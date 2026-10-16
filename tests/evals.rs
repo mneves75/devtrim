@@ -159,10 +159,16 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     let home = sandbox.path();
     sandbox.script("npm", "printf '%s\\n' \"$HOME/.npm\"");
     sandbox.script("brew", "printf '%s\\n' \"$HOME/Library/Caches/Homebrew\"");
+    // `go` must be asked with `GOTOOLCHAIN=local`, or a `go.mod` could make it
+    // download a toolchain.
+    sandbox.script(
+        "go",
+        "[ \"$*\" = 'env GOMODCACHE' ] && [ \"${GOTOOLCHAIN:-}\" = local ] || exit 3\nprintf '%s\\n' \"$HOME/go/pkg/mod\"",
+    );
     let targets: Vec<PathBuf> = [
         ".cache/huggingface/hub",
         ".cache/uv",
-        ".cache/node",
+        ".cache/node/corepack",
         ".bun/install/cache",
         ".cache/gh",
         ".cargo/registry/cache",
@@ -171,10 +177,14 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
         "Library/Caches/go-build",
         "Library/Caches/pnpm",
         "Library/Caches/org.swift.swiftpm",
+        "Library/Caches/CocoaPods",
         ".npm",
         // Homebrew's cache holds a Git clone, so it is offered as its other children.
         "Library/Caches/Homebrew/downloads",
         "Library/Caches/Homebrew/bootsnap",
+        ".gradle/caches",
+        ".gradle/wrapper/dists",
+        "go/pkg/mod",
     ]
     .iter()
     .map(|relative| home.join(relative))
@@ -186,18 +196,35 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     for relative in [
         ".cache/huggingface/token", // HF tokens and settings are never authority
         ".cache/huggingface/settings",
+        ".cache/node/compile-cache/entry", // only Corepack's child of `.cache/node` is listed
         "Library/pnpm/store/v10/index.json", // the pnpm store, unlike its metadata cache
         "Library/Caches/JetBrains/IDEA/LocalHistory/changes", // IDE system dir with LocalHistory
         "Library/Caches/deno/location_data/kv", // DENO_DIR holds KV databases
         "Library/Caches/ms-playwright-extra/x", // a neighbour sharing a listed prefix
         "Library/Caches/com.apple.Safari/x", // an unlisted Library cache
-        ".cargo/registry/index/x",           // cargo's index is not listed
+        ".cargo/registry/index/x",         // cargo's index is not listed
         ".cargo/bin/cargo",
         "Library/Caches/Homebrew/omlx--git/.git/HEAD", // a Homebrew Git clone stays
         "Library/Caches/Homebrew/omlx--git/README",
+        ".gradle/gradle.properties", // Gradle's configuration beside its caches
+        ".gradle/init.d/init.gradle",
+        ".gradle/daemon/9.8.1/registry.bin",
+        "go/bin/tool", // installed commands beside the module cache
     ] {
         write(&home.join(relative), "keep");
     }
+    write(
+        &home.join("go/pkg/mod/cache/download/example.com/m/@v/v1.0.0.zip"),
+        "module",
+    );
+    write(
+        &home.join(".gradle/caches/modules-2/files-2.1/x.jar"),
+        "module",
+    );
+    write(
+        &home.join(".gradle/wrapper/dists/gradle-9.8.1-bin/a1b2/gradle-9.8.1-bin.zip"),
+        "distribution",
+    );
     let mut targets = targets;
     targets.sort();
     targets
@@ -296,7 +323,7 @@ fn eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview() {
     let sandbox = Sandbox::in_target("eval-drift");
     let home = sandbox.path();
     for relative in [
-        ".cache/node",
+        ".cache/node/corepack",
         ".cache/huggingface/hub",
         "Library/Caches/pip",
     ] {
@@ -310,9 +337,9 @@ fn eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview() {
         &home.join(".cache/gh/appeared.bin"),
         "appeared after preview",
     );
-    std::fs::remove_dir_all(home.join(".cache/node")).unwrap();
+    std::fs::remove_dir_all(home.join(".cache/node/corepack")).unwrap();
     write(
-        &home.join(".cache/node/payload.bin"),
+        &home.join(".cache/node/corepack/payload.bin"),
         "replaced after preview",
     );
 
@@ -326,7 +353,7 @@ fn eval_apply_ignores_new_targets_and_refuses_swapped_ones_after_preview() {
         "PV eval/drift-new-target: a target found after the preview was removed:\n{output}"
     );
     assert_eq!(
-        std::fs::read_to_string(home.join(".cache/node/payload.bin"))
+        std::fs::read_to_string(home.join(".cache/node/corepack/payload.bin"))
             .ok()
             .as_deref(),
         Some("replaced after preview"),
@@ -954,6 +981,14 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
         &developer.join("iOS DeviceSupport/17.0 (21A329)/Symbols/dyld"),
         "symbols",
     );
+    let platforms = [
+        "watchOS DeviceSupport/Watch7,1 27.0 (24R5)",
+        "tvOS DeviceSupport/AppleTV14,1 27.0 (24J5)",
+        "visionOS DeviceSupport/RealityDevice14,1 27.0 (24N5)",
+    ];
+    for folder in platforms {
+        write(&developer.join(folder).join("Symbols/dyld"), "symbols");
+    }
     for folder in ["App-old", "App-held", "App-pkg"] {
         age(&derived.join(folder), 60);
     }
@@ -984,6 +1019,7 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
         derived.join("App-pkg/Index.noindex"),
         developer.join("iOS DeviceSupport/17.0 (21A329)"),
     ];
+    expected.extend(platforms.iter().map(|folder| developer.join(folder)));
     expected.sort();
     let pristine = Tree::snapshot(sandbox.path());
 
@@ -1016,6 +1052,60 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
     );
     assert!(apply.status.success(), "{document}");
     assert_journaled(&sandbox, "xcode", "shred", &expected);
+}
+
+/// Restores a folder's permissions when dropped, so a fixture made unreadable
+/// can still be removed after a failed assertion.
+struct Unreadable(PathBuf);
+
+impl Unreadable {
+    fn new(path: PathBuf) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
+    }
+}
+
+/// One DeviceSupport or DerivedData folder that cannot be read or measured
+/// offers nothing and is reported, so the run exits nonzero; every folder
+/// beside it is still offered. Xcode is idle (the default `pgrep` stub finds
+/// nothing), the state in which DerivedData folders are measured directly.
+#[test]
+fn eval_an_unreadable_xcode_folder_blocks_only_itself() {
+    let sandbox = Sandbox::in_target("eval-xcode-unreadable");
+    let developer = sandbox.path().join("Library/Developer/Xcode");
+    let offered = vec![
+        developer.join("DerivedData/App-readable"),
+        developer.join("iOS DeviceSupport/iPhone18,2 27.0 (24A437)"),
+    ];
+    for folder in &offered {
+        write(&folder.join("Symbols/file"), "regenerable");
+    }
+    let locked_child = developer.join("iOS DeviceSupport/iPhone17,1 26.0 (23A341)/locked");
+    write(&locked_child.join("file"), "unreadable");
+    let locked_folder = developer.join("DerivedData/App-locked");
+    write(&locked_folder.join("Build/file"), "unreadable");
+    let _child = Unreadable::new(locked_child);
+    let _folder = Unreadable::new(locked_folder);
+
+    let preview = run(&sandbox, &["clean", "xcode", "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        offered,
+        "PV eval/xcode-unreadable: an unreadable folder blocked the folders beside it"
+    );
+    assert!(
+        !preview.status.success(),
+        "an unreadable folder must fail the run: {document}"
+    );
 }
 
 // ---------- two windows: active_days and retain_days ----------
@@ -1208,5 +1298,270 @@ fn eval_a_repository_that_becomes_active_during_apply_keeps_its_build_output() {
             write(&project.join("Cargo.toml"), "[package]\nname = \"p\"\n");
             write(&project.join("target/debug/out"), "build output");
         },
+    );
+}
+
+// ---------- worktrees and .scratch reports ----------
+
+/// The finding for `path` in a report document, by exact path.
+fn finding_at<'a>(document: &'a serde_json::Value, path: &Path) -> &'a serde_json::Value {
+    document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["path"].as_str() == Some(path.to_str().unwrap()))
+        .unwrap_or_else(|| panic!("no finding for {}: {document}", path.display()))
+}
+
+#[test]
+fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_repository() {
+    let sandbox = Sandbox::in_target("eval-worktrees");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let dev = sandbox.path().join("dev");
+    let app = dev.join("app");
+    write(&app.join("README"), "readme");
+    repo(&sandbox, &app, STALE, &["README"]);
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &["worktree", "add", "-q", "-b", "feature", "../app-feature"],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &["worktree", "add", "-q", "--detach", "../app-detached"],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &["worktree", "add", "-q", "-b", "usb", "../app-locked"],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &["worktree", "lock", "--reason", "on usb", "../app-locked"],
+    );
+    let feature = dev.join("app-feature");
+    write(&feature.join("untracked.bin"), &"x".repeat(101));
+
+    // A worktree registered in `app` whose own `.git` leads to another
+    // repository, and a genuine one outside the scan roots: both are listed,
+    // neither is measured.
+    let other = dev.join("other");
+    write(&other.join("README"), "other");
+    repo(&sandbox, &other, STALE, &["README"]);
+    git(
+        &sandbox,
+        &other,
+        STALE,
+        &["worktree", "add", "-q", "--detach", "../decoy"],
+    );
+    let forged = dev.join("decoy");
+    write(&forged.join("payload.bin"), &"x".repeat(4096));
+    let registration = app.join(".git/worktrees/forged");
+    write(
+        &registration.join("gitdir"),
+        &format!("{}/.git\n", forged.display()),
+    );
+    write(&registration.join("commondir"), "../..\n");
+    let head = std::fs::read_to_string(app.join(".git/HEAD")).unwrap();
+    write(&registration.join("HEAD"), &head);
+    let outside = sandbox.path().join("elsewhere");
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            outside.to_str().unwrap(),
+        ],
+    );
+    write(&outside.join("payload.bin"), &"x".repeat(4096));
+
+    // A stray registration in `app` names another repository. It is listed
+    // unsized, and that repository is still queried for its own worktrees.
+    let zeta = dev.join("zeta");
+    write(&zeta.join("README"), "zeta");
+    repo(&sandbox, &zeta, STALE, &["README"]);
+    let zeta_outside = sandbox.path().join("zeta-elsewhere");
+    git(
+        &sandbox,
+        &zeta,
+        STALE,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            zeta_outside.to_str().unwrap(),
+        ],
+    );
+    let stray = app.join(".git/worktrees/stray");
+    write(&stray.join("gitdir"), &format!("{}/.git\n", zeta.display()));
+    write(&stray.join("commondir"), "../..\n");
+    write(&stray.join("HEAD"), &head);
+
+    // A linked worktree whose repository is gone is a skip note, not a failure.
+    write(
+        &dev.join("orphan/.git"),
+        "gitdir: /nonexistent/worktrees/orphan\n",
+    );
+
+    let before = Tree::snapshot(sandbox.path());
+    let root = dev.to_str().unwrap();
+    let output = run(&sandbox, &["worktrees", "--root", root, "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document = json(&output);
+
+    let size = |path: &Path| finding_at(&document, path)["size_bytes"].as_u64().unwrap();
+    let note = |path: &Path| {
+        finding_at(&document, path)["note"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let gitfile = std::fs::metadata(feature.join(".git")).unwrap().len();
+    assert_eq!(size(&feature), 6 + 101 + gitfile, "{document}");
+    assert!(note(&feature).contains("branch feature"), "{document}");
+    assert!(
+        note(&dev.join("app-detached")).contains("detached"),
+        "{document}"
+    );
+    assert!(
+        note(&dev.join("app-locked")).contains("locked: on usb"),
+        "{document}"
+    );
+    assert_eq!(
+        size(&app),
+        0,
+        "the main worktree is the repository, not a copy"
+    );
+    for unmeasured in [&forged, &outside] {
+        assert_eq!(
+            size(unmeasured),
+            0,
+            "PV eval/worktrees-common-dir: {document}"
+        );
+        assert!(note(unmeasured).contains("not measured"), "{document}");
+    }
+    assert!(note(&zeta_outside).contains("not measured"), "{document}");
+    let last = document["findings"].as_array().unwrap().last().unwrap();
+    assert!(last["path"].is_null(), "{document}");
+    assert!(
+        last["note"]
+            .as_str()
+            .unwrap()
+            .contains("git worktree remove"),
+        "{document}"
+    );
+    before.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "worktrees",
+    );
+
+    let human = run(&sandbox, &["worktrees", "--root", root]);
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(human.status.success(), "{stderr}");
+    assert!(stderr.contains("orphan"), "the orphan is named: {stderr}");
+    assert!(stderr.contains("not assessed"), "{stderr}");
+    assert!(
+        run(&sandbox, &["worktrees", "--apply", "--yolo", "--json"])
+            .status
+            .code()
+            == Some(2)
+    );
+}
+
+#[test]
+fn eval_leftovers_reports_ignored_scratch_folders_only() {
+    let sandbox = Sandbox::in_target("eval-leftovers-scratch");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let dev = sandbox.path().join("dev");
+
+    let kept = dev.join("org/kept");
+    write(&kept.join(".gitignore"), ".scratch/\n");
+    repo(&sandbox, &kept, STALE, &[".gitignore"]);
+    write(&kept.join(".scratch/evidence/run.log"), &"x".repeat(13));
+    git(
+        &sandbox,
+        &kept,
+        STALE,
+        &["worktree", "add", "-q", "--detach", ".scratch/wt-review"],
+    );
+
+    // Near misses: a .scratch Git does not ignore, and one holding a tracked file.
+    let open = dev.join("open");
+    write(&open.join("README"), "readme");
+    repo(&sandbox, &open, STALE, &["README"]);
+    write(&open.join(".scratch/notes/todo.md"), "mine");
+    let tracked = dev.join("tracked");
+    write(&tracked.join(".gitignore"), ".scratch/\n");
+    write(&tracked.join(".scratch/keep/committed.txt"), "committed");
+    repo(
+        &sandbox,
+        &tracked,
+        STALE,
+        &[".gitignore", ".scratch/keep/committed.txt"],
+    );
+
+    let before = Tree::snapshot(sandbox.path());
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            dev.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document = json(&output);
+    let mut listed: Vec<PathBuf> = document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|finding| PathBuf::from(finding["path"].as_str().unwrap()))
+        .collect();
+    listed.sort();
+    assert_eq!(
+        listed,
+        vec![
+            kept.join(".scratch/evidence"),
+            kept.join(".scratch/wt-review")
+        ],
+        "PV eval/leftovers-scratch: {document}"
+    );
+    assert_eq!(
+        finding_at(&document, &kept.join(".scratch/evidence"))["size_bytes"],
+        13
+    );
+    assert!(
+        finding_at(&document, &kept.join(".scratch/wt-review"))["label"]
+            .as_str()
+            .unwrap()
+            .contains("linked worktree"),
+        "{document}"
+    );
+    before.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "leftovers",
     );
 }

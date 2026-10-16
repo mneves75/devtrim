@@ -8,7 +8,7 @@
 mod support;
 
 use serde_json::Value;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use support::{Sandbox, git_activity, json, run};
@@ -22,18 +22,6 @@ fn docker_script(sandbox: &Sandbox, image_prune_exit: i32) {
     sandbox.script("docker", &body);
 }
 
-/// A `git` that answers "stale" to its first three activity checks and fails
-/// after, so an apply that re-probes every repository before mutating can be
-/// caught mutating between probes. Each check's commit query advances the count
-/// through `DEVTRIM_TEST_COUNT`; its reflog query reads it. The tracked-file
-/// check finds nothing tracked and leaves the count alone.
-fn git_stale_for_three_probes(sandbox: &Sandbox) {
-    sandbox.script(
-        "git",
-        "case \"$*\" in\n  *ls-files*) exit 0 ;;\nesac\ncount=0\nif [ -f \"$DEVTRIM_TEST_COUNT\" ]; then read count < \"$DEVTRIM_TEST_COUNT\"; fi\ncase \"$*\" in\n  *' -g '*) ;;\n  *) count=$((count + 1)); printf '%s\\n' \"$count\" > \"$DEVTRIM_TEST_COUNT\" ;;\nesac\ncase \"$count\" in\n  1|2|3) ;;\n  *) exit 9 ;;\nesac\ncase \"$*\" in\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
-    );
-}
-
 #[test]
 fn no_arguments_in_a_non_terminal_prints_help_and_does_not_start_tui() {
     let sandbox = Sandbox::new("no-args");
@@ -43,114 +31,6 @@ fn no_arguments_in_a_non_terminal_prints_help_and_does_not_start_tui() {
     assert_eq!(output.status.code(), Some(2));
     assert!(stdout.contains("Usage: devtrim"));
     assert!(!stdout.contains("\u{1b}[?1049h"));
-}
-
-#[test]
-fn explicit_tui_requires_an_interactive_terminal() {
-    let sandbox = Sandbox::new("tui-non-terminal");
-    let output = run(&sandbox, &["tui"]);
-
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("requires an interactive stdin and stdout terminal")
-    );
-}
-
-#[test]
-fn tui_rejects_cli_confirmation_bypasses() {
-    let sandbox = Sandbox::new("tui-flags");
-    let output = run(&sandbox, &["tui", "--apply", "--yolo"]);
-
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("tui does not accept flag(s)"));
-}
-
-#[test]
-fn tui_json_flag_error_names_the_tui_operation() {
-    let sandbox = Sandbox::new("tui-json-flag");
-    let output = run(&sandbox, &["tui", "--json"]);
-
-    assert_eq!(output.status.code(), Some(2));
-    assert!(output.stderr.is_empty());
-    let value = json(&output);
-    assert_eq!(value["operation"], "tui");
-    assert_eq!(value["applied"], false);
-    assert!(value["errors"][0].as_str().unwrap().contains("--json"));
-}
-
-#[test]
-fn read_only_commands_reject_mutation_flags() {
-    let sandbox = Sandbox::new("read-only-mutation-flags");
-    for (args, operation) in [
-        (vec!["scan", "--apply", "--json"], "scan"),
-        (vec!["largest", "--shred", "--json"], "largest"),
-        // analyze is a read-only explorer: it must reject every mutation flag
-        // rather than accept one as a silent no-op.
-        (vec!["analyze", "--apply", "--json"], "analyze"),
-        (vec!["analyze", "--shred", "--json"], "analyze"),
-        (vec!["analyze", "--yolo", "--json"], "analyze"),
-        (vec!["analyze", "-y", "--json"], "analyze"),
-        (vec!["icloud", "--yolo", "--json"], "icloud"),
-        (vec!["history", "--apply", "--json"], "history"),
-        (
-            vec!["completions", "zsh", "--apply", "--json"],
-            "completions",
-        ),
-        (vec!["manpage", "--shred", "--json"], "manpage"),
-        (vec!["clean", "leftovers", "--apply", "--json"], "leftovers"),
-    ] {
-        let output = run(&sandbox, &args);
-        assert_eq!(output.status.code(), Some(2), "args: {args:?}");
-        assert!(output.stderr.is_empty(), "args: {args:?}");
-        let value = json(&output);
-        assert_eq!(value["operation"], operation, "args: {args:?}");
-        assert_eq!(value["applied"], false, "args: {args:?}");
-        assert!(
-            value["errors"][0]
-                .as_str()
-                .unwrap()
-                .contains("does not accept flag"),
-            "args: {args:?}"
-        );
-    }
-}
-
-#[test]
-fn mutation_flags_remain_available_only_where_they_have_meaning() {
-    let sandbox = Sandbox::new("valid-mutation-flags");
-    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
-
-    for target in ["docker", "simulators"] {
-        let output = run(&sandbox, &["clean", target, "--shred", "--json"]);
-        assert_eq!(output.status.code(), Some(2), "target: {target}");
-        assert!(output.stderr.is_empty(), "target: {target}");
-        let value = json(&output);
-        assert_eq!(value["operation"], target, "target: {target}");
-        assert_eq!(value["applied"], false, "target: {target}");
-        assert!(
-            value["errors"][0].as_str().unwrap().contains("--shred"),
-            "target: {target}"
-        );
-    }
-
-    let scan = run(&sandbox, &["scan", "--shred", "--json"]);
-    assert!(scan.status.success());
-    assert_eq!(json(&scan)["operation"], "scan");
-
-    let clean = run(
-        &sandbox,
-        &["clean", "caches", "--apply", "-y", "--shred", "--json"],
-    );
-    assert!(clean.status.success());
-    assert_eq!(json(&clean)["operation"], "caches");
-
-    let trash = run(
-        &sandbox,
-        &["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"],
-    );
-    assert!(trash.status.success());
-    assert_eq!(json(&trash)["operation"], "trash-empty");
 }
 
 #[test]
@@ -203,23 +83,6 @@ fn run_time_json_errors_name_the_operation_that_failed() {
         );
         assert_eq!(value["operation"], operation, "{args:?}");
     }
-}
-
-#[test]
-fn no_command_json_error_remains_one_document() {
-    let sandbox = Sandbox::new("no-command-json");
-    let output = run(&sandbox, &["--json"]);
-    let value = json(&output);
-
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(value["operation"], "unknown");
-    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
-    assert!(
-        value["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("tui does not accept flag(s): --json")
-    );
 }
 
 #[test]
@@ -290,327 +153,6 @@ fn json_help_and_version_are_one_nonzero_error_document() {
     }
 }
 
-#[test]
-fn json_detection_requires_an_exact_flag() {
-    let sandbox = Sandbox::new("clap-exact-json");
-
-    for args in [vec!["scan", "--json=false"], vec!["scan", "--", "--json"]] {
-        let output = run(&sandbox, &args);
-
-        assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
-        assert!(!output.stderr.is_empty());
-    }
-}
-
-#[test]
-fn version_without_json_preserves_clap_output() {
-    let sandbox = Sandbox::new("clap-version");
-
-    let output = run(&sandbox, &["--version"]);
-
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    assert!(String::from_utf8_lossy(&output.stdout).starts_with("devtrim "));
-}
-
-#[test]
-fn empty_json_scan_is_one_document() {
-    let sandbox = Sandbox::new("empty-json");
-    let output = run(&sandbox, &["scan", "--json"]);
-    assert!(output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "scan");
-    assert_eq!(value["findings"].as_array().unwrap().len(), 0);
-}
-
-/// A real scan listed 830 findings, 780 of them one line each of agent
-/// history, so the handful that held the space were lost. The human report
-/// leads with one line per category and the command that acts on it, then
-/// lists the largest findings of each; `--all` restores the full listing and
-/// JSON is always complete.
-#[test]
-fn scan_leads_with_categories_and_lists_the_largest_until_all() {
-    let sandbox = Sandbox::new("scan-summary");
-    let dev = sandbox.path().join("dev");
-    for index in 0..12 {
-        let project = dev.join(format!("p{index:02}"));
-        std::fs::create_dir_all(project.join(".git")).unwrap();
-        std::fs::create_dir_all(project.join("node_modules")).unwrap();
-        std::fs::write(project.join("package.json"), "{}").unwrap();
-        std::fs::write(
-            project.join("node_modules/file"),
-            vec![b'x'; 100 * (index + 1)],
-        )
-        .unwrap();
-    }
-    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
-    let root = dev.to_str().unwrap();
-
-    let output = run(&sandbox, &["scan", "--root", root]);
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let summary = stdout
-        .lines()
-        .find(|line| line.contains("node-modules") && line.contains("12"))
-        .unwrap_or_else(|| panic!("no node-modules summary line: {stdout}"));
-    assert!(
-        summary.contains("devtrim clean node-modules --apply"),
-        "{summary}"
-    );
-    assert_eq!(stdout.matches("stale node_modules").count(), 5, "{stdout}");
-    assert!(stdout.contains("7 more"), "{stdout}");
-    assert!(
-        stdout.contains("p11/node_modules"),
-        "largest listed first: {stdout}"
-    );
-    assert!(!stdout.contains("p00/node_modules"), "{stdout}");
-
-    let all = run(&sandbox, &["scan", "--root", root, "--all"]);
-    let all = String::from_utf8_lossy(&all.stdout);
-    assert_eq!(all.matches("stale node_modules").count(), 12, "{all}");
-
-    let json_scan = run(&sandbox, &["scan", "--root", root, "--json"]);
-    assert_eq!(json(&json_scan)["findings"].as_array().unwrap().len(), 12);
-}
-
-#[test]
-fn largest_json_is_one_read_only_document() {
-    let sandbox = Sandbox::new("largest-json");
-    let root = sandbox.path().join("largest-root");
-    std::fs::create_dir_all(root.join("project/cache")).unwrap();
-    std::fs::write(root.join("project/cache/payload"), vec![0; 12]).unwrap();
-
-    let output = run(
-        &sandbox,
-        &["largest", "--root", root.to_str().unwrap(), "--json"],
-    );
-
-    assert!(output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "largest");
-    assert_eq!(value["applied"], false);
-    assert_eq!(value["findings"][0]["label"], "large directory");
-    assert_eq!(value["findings"][0]["action"]["type"], "info");
-    assert!(value["errors"].as_array().unwrap().is_empty());
-}
-
-#[test]
-fn largest_unreadable_entry_is_disclosed_and_nonzero() {
-    let sandbox = Sandbox::new("largest-unreadable");
-    let root = sandbox.path().join("largest-root");
-    let unreadable = root.join("project/private");
-    std::fs::create_dir_all(&unreadable).unwrap();
-    std::fs::write(unreadable.join("hidden"), "not measured").unwrap();
-    let original = std::fs::metadata(&unreadable).unwrap().permissions();
-    let mut denied = original.clone();
-    denied.set_mode(0o000);
-    std::fs::set_permissions(&unreadable, denied).unwrap();
-
-    let output = run(
-        &sandbox,
-        &["largest", "--root", root.to_str().unwrap(), "--json"],
-    );
-    std::fs::set_permissions(&unreadable, original).unwrap();
-
-    // Partial visibility matches the scan contract: errors AND nonzero status.
-    assert!(!output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "largest");
-    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
-    assert!(
-        value["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("totals are lower bounds")
-    );
-}
-
-#[test]
-fn oversized_journal_rotates_once_when_context_opens() {
-    let sandbox = Sandbox::new("journal-open-rotation");
-    let root = sandbox.path().join("largest-root");
-    std::fs::create_dir_all(&root).unwrap();
-    let journal = sandbox.path().join(".local/state/devtrim/journal.jsonl");
-    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
-    let file = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&journal)
-        .unwrap();
-    file.set_len(10 * 1024 * 1024 + 1).unwrap();
-    drop(file);
-    let args = ["largest", "--root", root.to_str().unwrap(), "--json"];
-
-    let first = run(&sandbox, &args);
-    let second = run(&sandbox, &args);
-
-    assert!(first.status.success());
-    assert!(second.status.success());
-    assert_eq!(
-        std::fs::metadata(journal.with_extension("jsonl.1"))
-            .unwrap()
-            .len(),
-        10 * 1024 * 1024 + 1
-    );
-    assert!(!journal.with_extension("jsonl.2").exists());
-    assert!(!journal.exists());
-}
-
-#[test]
-fn malformed_config_fails_closed_with_json() {
-    let sandbox = Sandbox::new("bad-config");
-    std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
-    std::fs::write(sandbox.path().join(".config/devtrim.toml"), "roots = [").unwrap();
-    let output = run(&sandbox, &["scan", "--json"]);
-    assert!(!output.status.success());
-    assert!(!json(&output)["errors"].as_array().unwrap().is_empty());
-}
-
-#[test]
-fn unknown_config_field_fails_closed_with_json() {
-    let sandbox = Sandbox::new("unknown-config-field");
-    std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
-    std::fs::write(
-        sandbox.path().join(".config/devtrim.toml"),
-        "rootz = [\"~/only-this-root\"]\n",
-    )
-    .unwrap();
-
-    let output = run(&sandbox, &["scan", "--json"]);
-
-    assert!(!output.status.success());
-    assert!(
-        json(&output)["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("unknown field `rootz`")
-    );
-}
-
-#[test]
-fn relative_protect_entry_fails_closed_with_json() {
-    let sandbox = Sandbox::new("relative-protect");
-    std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
-    std::fs::write(
-        sandbox.path().join(".config/devtrim.toml"),
-        "protect = [\"dev/keep\"]\n",
-    )
-    .unwrap();
-
-    let output = run(&sandbox, &["scan", "--json"]);
-
-    assert!(!output.status.success());
-    let value = json(&output);
-    assert!(value["errors"][0].as_str().unwrap().contains("dev/keep"));
-    assert!(value["errors"][0].as_str().unwrap().contains("absolute"));
-}
-
-#[test]
-fn config_tilde_root_is_expanded() {
-    let sandbox = Sandbox::new("tilde-root");
-    let project = sandbox.path().join("dev/project");
-    std::fs::create_dir_all(project.join(".git")).unwrap();
-    std::fs::create_dir_all(project.join("node_modules")).unwrap();
-    std::fs::write(project.join("package.json"), "{}").unwrap();
-    std::fs::write(project.join("node_modules/file"), "x").unwrap();
-    std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
-    std::fs::write(
-        sandbox.path().join(".config/devtrim.toml"),
-        "roots = [\"~/dev\"]\nactive_days = 30\n",
-    )
-    .unwrap();
-    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
-    let output = run(&sandbox, &["clean", "node-modules", "--json"]);
-    assert!(output.status.success());
-    let value = json(&output);
-    assert_eq!(value["findings"].as_array().unwrap().len(), 1);
-    let home = sandbox.path().canonicalize().unwrap();
-    assert!(
-        value["findings"][0]["path"]
-            .as_str()
-            .unwrap()
-            .starts_with(home.to_str().unwrap())
-    );
-}
-
-#[test]
-fn config_tilde_protect_filters_preview_with_diagnostic() {
-    let sandbox = Sandbox::new("tilde-protect");
-    let project = sandbox.path().join("dev/project");
-    std::fs::create_dir_all(project.join(".git")).unwrap();
-    std::fs::create_dir_all(project.join("node_modules")).unwrap();
-    std::fs::write(project.join("package.json"), "{}").unwrap();
-    std::fs::write(project.join("node_modules/file"), "x").unwrap();
-    std::fs::create_dir_all(sandbox.path().join(".config")).unwrap();
-    std::fs::write(
-        sandbox.path().join(".config/devtrim.toml"),
-        "roots = [\"~/dev\"]\nprotect = [\"~/dev/project/node_modules\"]\nactive_days = 30\n",
-    )
-    .unwrap();
-    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
-
-    let output = run(&sandbox, &["clean", "node-modules", "--json"]);
-
-    assert!(output.status.success());
-    assert!(json(&output)["findings"].as_array().unwrap().is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("skipping protected path"));
-}
-
-#[test]
-fn broken_swift_latest_is_a_nonzero_json_error() {
-    let sandbox = Sandbox::new("broken-swift-latest");
-    let directory = sandbox.path().join("Library/Developer/Toolchains");
-    std::fs::create_dir_all(directory.join("swift-1.xctoolchain")).unwrap();
-    symlink(
-        "missing.xctoolchain",
-        directory.join("swift-latest.xctoolchain"),
-    )
-    .unwrap();
-
-    let output = run(&sandbox, &["clean", "toolchains", "--json"]);
-
-    assert!(!output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "toolchains");
-    assert!(value["findings"].as_array().unwrap().is_empty());
-    assert!(
-        value["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("cannot resolve Swift toolchain reference")
-    );
-}
-
-#[test]
-fn artifacts_target_scans_corroborated_stale_repo() {
-    let sandbox = Sandbox::new("artifacts-target");
-    let project = sandbox.path().join("dev/project");
-    std::fs::create_dir_all(project.join(".git")).unwrap();
-    std::fs::create_dir_all(project.join("target")).unwrap();
-    std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
-    std::fs::write(project.join("target/output"), "x").unwrap();
-    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
-
-    let output = run(
-        &sandbox,
-        &[
-            "clean",
-            "artifacts",
-            "--root",
-            sandbox.path().join("dev").to_str().unwrap(),
-            "--json",
-        ],
-    );
-
-    assert!(output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "artifacts");
-    assert_eq!(value["findings"].as_array().unwrap().len(), 1);
-    assert_eq!(value["findings"][0]["label"], "stale target artifacts");
-}
-
 /// Two stale repositories: `small` with a `node_modules`, `large` with a Rust
 /// `target` and a `node_modules`. Returns the canonical dev root and both repos.
 fn purge_fixture(sandbox: &Sandbox) -> (PathBuf, PathBuf, PathBuf) {
@@ -630,247 +172,6 @@ fn purge_fixture(sandbox: &Sandbox) -> (PathBuf, PathBuf, PathBuf) {
     sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
     let dev = dev.canonicalize().unwrap();
     (dev.clone(), dev.join("alpha"), dev.join("beta"))
-}
-
-/// Without `--root` or configured roots every conventional project folder that
-/// exists is scanned, and the human preview says which folders those were;
-/// JSON stays exactly one document with no note in it.
-#[test]
-fn purge_scans_the_default_project_folders_and_names_them() {
-    let sandbox = Sandbox::new("purge-default-roots");
-    let (_dev, small, _large) = purge_fixture(&sandbox);
-    let gamma = sandbox.path().join("Projects/gamma");
-    std::fs::create_dir_all(gamma.join(".git")).unwrap();
-    std::fs::create_dir_all(gamma.join("node_modules/pkg")).unwrap();
-    std::fs::write(gamma.join("package.json"), "{}").unwrap();
-    std::fs::write(gamma.join("node_modules/pkg/index.js"), "x").unwrap();
-    let gamma = gamma.canonicalize().unwrap();
-
-    let human = run(&sandbox, &["purge"]);
-    assert!(human.status.success());
-    let stdout = String::from_utf8_lossy(&human.stdout);
-    let stderr = String::from_utf8_lossy(&human.stderr);
-    assert!(
-        stderr.contains("info scan roots: ~/dev, ~/Projects (default project folders"),
-        "{stderr}"
-    );
-    assert!(
-        stdout.contains(&gamma.join("node_modules").display().to_string()),
-        "a default folder beside ~/dev was not scanned: {stdout}"
-    );
-    assert!(stdout.contains(&small.join("node_modules").display().to_string()));
-
-    let machine = run(&sandbox, &["purge", "--json"]);
-    assert!(machine.status.success());
-    let value = json(&machine);
-    assert!(
-        value["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| finding["project"] == gamma.display().to_string())
-    );
-    assert!(!String::from_utf8_lossy(&machine.stderr).contains("scan roots"));
-
-    let flagged = run(&sandbox, &["largest", "--root", gamma.to_str().unwrap()]);
-    assert!(
-        String::from_utf8_lossy(&flagged.stderr)
-            .contains("scan roots: ~/Projects/gamma (from --root)"),
-        "{}",
-        String::from_utf8_lossy(&flagged.stderr)
-    );
-}
-
-/// Codex creates its managed worktrees in `~/.codex/worktrees/<id>/<project>`,
-/// each a linked worktree whose `.git` is a file. The dependencies an agent
-/// installed there are found without configuration; the worktree stays.
-#[test]
-fn purge_finds_dependencies_in_codex_worktrees() {
-    let sandbox = Sandbox::new("purge-codex-worktrees");
-    let worktree = sandbox.path().join(".codex/worktrees/a1b2/project");
-    std::fs::create_dir_all(worktree.join("node_modules/pkg")).unwrap();
-    std::fs::write(worktree.join("package.json"), "{}").unwrap();
-    std::fs::write(worktree.join("node_modules/pkg/index.js"), "x").unwrap();
-    // The repository the worktree belongs to lives elsewhere, as it does for
-    // Codex; a worktree whose repository is gone is covered separately.
-    let gitdir = sandbox.path().join("main/.git/worktrees/project");
-    std::fs::create_dir_all(&gitdir).unwrap();
-    std::fs::write(
-        worktree.join(".git"),
-        format!("gitdir: {}\n", gitdir.display()),
-    )
-    .unwrap();
-    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
-    let worktree = worktree.canonicalize().unwrap();
-
-    let output = run(&sandbox, &["purge"]);
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("scan roots: ~/.codex/worktrees (default project folders"),
-        "{stderr}"
-    );
-    assert!(
-        stdout.contains(&worktree.join("node_modules").display().to_string()),
-        "{stdout}"
-    );
-    assert!(
-        !stdout.contains(&format!("{}\n", worktree.display())),
-        "the worktree itself is never a finding: {stdout}"
-    );
-}
-
-/// The Trash is shared: other programs and sessions keep items there, so
-/// emptying it whole takes theirs too. `--only-devtrim` purges only what the
-/// journal says devtrim moved there, recognized by identity rather than name;
-/// the plain command, the positive control, still lists everything.
-#[test]
-fn trash_empty_only_devtrim_leaves_everyone_elses_items() {
-    use std::os::macos::fs::MetadataExt;
-
-    let sandbox = Sandbox::in_target("trash-only-devtrim");
-    let home = sandbox.path().canonicalize().unwrap();
-    let trash = home.join(".Trash");
-    let ours = trash.join("cache 12.09.42");
-    let foreign = trash.join("berlin-notes");
-    for item in [&ours, &foreign] {
-        std::fs::create_dir_all(item).unwrap();
-        std::fs::write(item.join("file"), vec![b'x'; 10]).unwrap();
-    }
-    let metadata = std::fs::symlink_metadata(&ours).unwrap();
-    let identity = format!(
-        r#"{{"dev":{},"ino":{},"birth_secs":{},"birth_nanos":{}}}"#,
-        metadata.st_dev(),
-        metadata.st_ino(),
-        metadata.st_birthtime(),
-        metadata.st_birthtime_nsec()
-    );
-    let journal = home.join(".local/state/devtrim");
-    std::fs::create_dir_all(&journal).unwrap();
-    std::fs::write(
-        journal.join("journal.jsonl"),
-        format!(
-            "{{\"id\":\"a1\",\"ts\":1,\"phase\":\"attempt\",\"op\":\"caches\",\"action\":\"trash\",\"target\":\"/Users/x/Library/Caches/cache\",\"size_bytes\":10,\"identity\":{identity}}}\n{{\"id\":\"a1\",\"ts\":2,\"phase\":\"result\",\"op\":\"caches\",\"action\":\"trash\",\"target\":\"/Users/x/Library/Caches/cache\",\"size_bytes\":10,\"status\":\"ok\",\"identity\":{identity}}}\n"
-        ),
-    )
-    .unwrap();
-
-    let everything = run(&sandbox, &["trash-empty", "--json"]);
-    assert!(everything.status.success());
-    assert_eq!(finding_paths(&json(&everything)).len(), 2);
-
-    let preview = run(&sandbox, &["trash-empty", "--only-devtrim", "--json"]);
-    assert!(
-        preview.status.success(),
-        "{}",
-        String::from_utf8_lossy(&preview.stderr)
-    );
-    assert_eq!(
-        finding_paths(&json(&preview)),
-        vec![ours.display().to_string()]
-    );
-
-    // A history that cannot be read whole could be missing a move, so the
-    // narrowed purge is refused outright rather than offered partially, even
-    // though `ours` still matches a readable record.
-    let journal_file = journal.join("journal.jsonl");
-    let readable = std::fs::read_to_string(&journal_file).unwrap();
-    std::fs::write(&journal_file, format!("{readable}{{not json\n")).unwrap();
-    for arguments in [
-        &["trash-empty", "--only-devtrim", "--json"][..],
-        &[
-            "trash-empty",
-            "--only-devtrim",
-            "--apply",
-            "--confirm=0",
-            "--yolo",
-            "--json",
-        ],
-    ] {
-        let refused = run(&sandbox, arguments);
-        assert!(!refused.status.success(), "{arguments:?}");
-        let value = json(&refused);
-        assert!(
-            value["findings"].as_array().is_none_or(Vec::is_empty),
-            "PV-E2E: an incomplete history still offered a target: {value}"
-        );
-        assert!(ours.join("file").exists() && foreign.join("file").exists());
-    }
-    std::fs::write(&journal_file, readable).unwrap();
-
-    let applied = run(
-        &sandbox,
-        &[
-            "trash-empty",
-            "--only-devtrim",
-            "--apply",
-            "--confirm=0",
-            "--yolo",
-            "--json",
-        ],
-    );
-    assert!(
-        applied.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&applied.stdout),
-        String::from_utf8_lossy(&applied.stderr)
-    );
-    assert!(!ours.exists(), "devtrim's own item was not purged");
-    assert!(
-        foreign.join("file").exists(),
-        "another program's item was purged"
-    );
-
-    let rejected = run(&sandbox, &["scan", "--only-devtrim"]);
-    assert_eq!(
-        rejected.status.code(),
-        Some(2),
-        "only trash-empty takes the flag"
-    );
-}
-
-/// devtrim resolves `$HOME` to its real path, while `brew --cache` answers in
-/// the spelling it was given; a home reached through a link must not make the
-/// Homebrew cache look like it lies outside the home folder.
-#[test]
-fn a_homebrew_cache_reported_through_a_linked_home_is_still_offered() {
-    let sandbox = Sandbox::in_target("brew-linked-home");
-    let real = sandbox.path().canonicalize().unwrap();
-    let alias = real.with_file_name(format!(
-        "{}-alias",
-        real.file_name().unwrap().to_string_lossy()
-    ));
-    std::fs::remove_file(&alias).ok();
-    symlink(&real, &alias).unwrap();
-    let cache = real.join("Library/Caches/Homebrew/downloads");
-    std::fs::create_dir_all(&cache).unwrap();
-    std::fs::write(cache.join("bottle.tar.gz"), vec![b'x'; 100]).unwrap();
-    sandbox.script(
-        "brew",
-        &format!(
-            "printf '%s\\n' '{}/Library/Caches/Homebrew'",
-            alias.display()
-        ),
-    );
-
-    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
-        .args(["clean", "caches", "--json"])
-        .env("HOME", &alias)
-        .env("PATH", sandbox.bin())
-        .env_remove("XDG_STATE_HOME")
-        .output()
-        .unwrap();
-    std::fs::remove_file(&alias).ok();
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stderr}");
-    assert!(
-        finding_paths(&json(&output))
-            .contains(&real.join("Library/Caches/Homebrew").display().to_string()),
-        "the Homebrew cache was skipped: {stderr}"
-    );
 }
 
 /// Restores a fixture folder's mode when dropped, so the sandbox can be removed
@@ -895,109 +196,6 @@ impl Drop for Unreadable {
     }
 }
 
-/// What emptied `purge` on the owner's Mac, all at once: a root-owned
-/// `.fseventsd` the walk cannot read, a repository created with `git init` and
-/// never committed to, a repository whose Git fails, and a `node_modules`
-/// inside an archived app bundle. The unreadable folder and the failing
-/// repository are errors that block only themselves, the uncommitted
-/// repository is skipped and named, the bundle's `node_modules` is never
-/// offered, and everything else is offered. Once the folder is readable and
-/// the failing repository is gone, the same run succeeds.
-#[test]
-fn purge_contains_each_failure_to_where_it_happened() {
-    let sandbox = Sandbox::new("purge-contained");
-    let dev = sandbox.path().join("dev");
-    for repo in ["alpha", "fresh", "dangling"] {
-        std::fs::create_dir_all(dev.join(repo).join(".git")).unwrap();
-        std::fs::create_dir_all(dev.join(repo).join("node_modules/pkg")).unwrap();
-        std::fs::write(dev.join(repo).join("node_modules/pkg/index.js"), "x").unwrap();
-        std::fs::write(dev.join(repo).join("package.json"), "{}").unwrap();
-    }
-    std::fs::create_dir_all(dev.join("beta/.git")).unwrap();
-    std::fs::write(dev.join("beta/Cargo.toml"), "[package]\n").unwrap();
-    std::fs::create_dir_all(dev.join("beta/target")).unwrap();
-    std::fs::write(dev.join("beta/target/out"), vec![b'x'; 500]).unwrap();
-    let bundle = dev.join("alpha/.scratch/App.xcarchive/Products/Applications/App.app/assets");
-    std::fs::create_dir_all(bundle.join("node_modules/pkg")).unwrap();
-    std::fs::write(bundle.join("node_modules/pkg/icon.png"), "png").unwrap();
-    let dev = dev.canonicalize().unwrap();
-    let locked = dev.join("alpha/.scratch/recovery-volume/.fseventsd");
-    let _locked = Unreadable::new(locked.clone());
-    sandbox.script(
-        "git",
-        "case \"$*\" in\n  *ls-files*) exit 0 ;;\n  *'/fresh '*symbolic-ref*) printf 'refs/heads/main\\n' ;;\n  *'/fresh '*'refs verify'*) exit 0 ;;\n  *'/fresh '*for-each-ref*) exit 0 ;;\n  *'/fresh '*cat-file*) printf 'blob\\nblob\\n' ;;\n  *'/fresh '*) printf \"fatal: your current branch 'main' does not have any commits yet\\n\" >&2; exit 128 ;;\n  *'/dangling '*symbolic-ref*) printf 'refs/heads/main\\n' ;;\n  *'/dangling '*) printf 'fatal: bad object HEAD\\n' >&2; exit 128 ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
-    );
-    let root = dev.to_str().unwrap();
-    let mut expected = vec![
-        dev.join("alpha/node_modules").display().to_string(),
-        dev.join("beta/target").display().to_string(),
-    ];
-    expected.sort();
-    // Error findings carry no path, so only targets are compared.
-    let targets = |value: &Value| {
-        let mut paths = value["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|finding| finding["path"].as_str().map(str::to_owned))
-            .collect::<Vec<_>>();
-        paths.sort();
-        paths
-    };
-
-    let machine = run(&sandbox, &["purge", "--root", root, "--json"]);
-    let stderr = String::from_utf8_lossy(&machine.stderr).into_owned();
-    assert_eq!(machine.status.code(), Some(1), "{stderr}");
-    let value = json(&machine);
-    assert_eq!(targets(&value), expected, "{value}");
-    let errors = value["errors"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|error| error.as_str().unwrap())
-        .collect::<Vec<_>>();
-    let dangling = dev.join("dangling").display().to_string();
-    let locked_path = locked.display().to_string();
-    // Each half of `purge` reports the folder it could not read; only
-    // `node-modules` finds anything in the failing repository.
-    assert_eq!(errors.len(), 3, "{errors:?}");
-    assert_eq!(
-        errors
-            .iter()
-            .filter(|error| error.contains(&dangling))
-            .count(),
-        1,
-        "{errors:?}"
-    );
-    assert_eq!(
-        errors
-            .iter()
-            .filter(|error| error.contains("could not be read") && error.contains(&locked_path))
-            .count(),
-        2,
-        "{errors:?}"
-    );
-
-    let human = run(&sandbox, &["purge", "--root", root]);
-    let stderr = String::from_utf8_lossy(&human.stderr);
-    assert_eq!(human.status.code(), Some(1), "{stderr}");
-    assert!(
-        stderr.contains("no commits yet")
-            && stderr.contains(&dev.join("fresh").display().to_string()),
-        "{stderr}"
-    );
-
-    drop(_locked);
-    std::fs::remove_dir_all(dev.join("dangling")).unwrap();
-    let healed = run(&sandbox, &["purge", "--root", root, "--json"]);
-    assert!(
-        healed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&healed.stderr)
-    );
-    assert_eq!(targets(&json(&healed)), expected);
-}
-
 /// One cache the scan cannot measure must not take the rest of the category
 /// with it. The unreadable cache is named in one error finding, so the run
 /// still exits nonzero, and is never offered; the readable cache listed before
@@ -1008,12 +206,12 @@ fn one_unreadable_cache_does_not_fail_the_caches_category() {
     let sandbox = Sandbox::in_target("caches-unreadable");
     let home = sandbox.path().canonicalize().unwrap();
     let before = home.join(".cache/huggingface/hub");
-    let broken = home.join(".cache/node");
+    let broken = home.join(".cache/node/corepack");
     let after = home.join(".cache/gh");
     for cache in [&before, &broken, &after] {
         support::write(&cache.join("entry"), "cached");
     }
-    let locked = Unreadable::new(broken.join("corepack"));
+    let locked = Unreadable::new(broken.join("v1"));
 
     let output = run(&sandbox, &["clean", "caches", "--json"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1045,114 +243,6 @@ fn one_unreadable_cache_does_not_fail_the_caches_category() {
         String::from_utf8_lossy(&healed.stderr)
     );
     assert_eq!(finding_paths(&json(&healed)).len(), 3);
-}
-
-/// A build directory holding a file its repository tracks is part of the
-/// repository, not build output, so neither `purge` half offers it. The
-/// untracked `node_modules` beside it is the positive control.
-#[test]
-fn purge_never_offers_a_build_directory_holding_tracked_files() {
-    let sandbox = Sandbox::new("purge-tracked");
-    let (dev, _small, large) = purge_fixture(&sandbox);
-    sandbox.script(
-        "git",
-        "case \"$*\" in\n  *ls-files*) printf 'target/committed.txt\\0' ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
-    );
-
-    let output = run(
-        &sandbox,
-        &["purge", "--root", dev.to_str().unwrap(), "--json"],
-    );
-
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let paths = finding_paths(&json(&output));
-    assert!(
-        !paths.contains(&large.join("target").display().to_string()),
-        "a build directory holding tracked files was offered: {paths:?}"
-    );
-    assert!(
-        paths.contains(&large.join("node_modules").display().to_string()),
-        "positive control: the untracked node_modules was not offered: {paths:?}"
-    );
-}
-
-/// A cache its owner rebuilds only when a command runs names that command and
-/// never promises an automatic rebuild: Playwright's browsers come back only
-/// through `npx playwright install`. pip refills its cache on the next install,
-/// and its finding keeps that promise.
-#[test]
-fn a_cache_rebuilt_only_by_a_command_names_that_command() {
-    let sandbox = Sandbox::new("caches-rebuilt-by-command");
-    let caches = sandbox.path().join("Library/Caches");
-    std::fs::create_dir_all(caches.join("ms-playwright/chromium-1200")).unwrap();
-    std::fs::write(
-        caches.join("ms-playwright/chromium-1200/chrome"),
-        vec![b'x'; 2048],
-    )
-    .unwrap();
-    std::fs::create_dir_all(caches.join("pip/http")).unwrap();
-    std::fs::write(caches.join("pip/http/entry"), vec![b'x'; 2048]).unwrap();
-
-    let output = run(&sandbox, &["clean", "caches", "--json"]);
-
-    let value = json(&output);
-    assert!(output.status.success(), "{value}");
-    let note = |leaf: &str| {
-        value["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|finding| finding["path"].as_str().unwrap().ends_with(leaf))
-            .map(|finding| finding["note"].as_str().unwrap().to_string())
-            .unwrap_or_else(|| panic!("no finding for {leaf}: {value}"))
-    };
-    let playwright = note("Library/Caches/ms-playwright");
-    assert!(
-        playwright.contains("npx playwright install") && !playwright.contains("automatically"),
-        "{playwright}"
-    );
-    let pip = note("Library/Caches/pip");
-    assert!(pip.contains("automatically"), "positive control: {pip}");
-}
-
-/// Xcode keeps a project's resolved packages in its DerivedData folder, each a
-/// Git clone, which devtrim never deletes. `clean xcode` removes the folder's
-/// build output around them, and a folder without packages whole.
-#[test]
-fn clean_xcode_cleans_derived_data_around_package_checkouts() {
-    let sandbox = Sandbox::in_target("xcode-packages");
-    let derived_data = sandbox.path().join("Library/Developer/Xcode/DerivedData");
-    let checkout = derived_data.join("App-pkg/SourcePackages/checkouts/Example");
-    std::fs::create_dir_all(checkout.join(".git/objects")).unwrap();
-    std::fs::write(checkout.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-    for build in [
-        derived_data.join("App-pkg/Build/Products/Debug"),
-        derived_data.join("App-pkg/Index.noindex/DataStore"),
-        derived_data.join("App-plain/Build/Products/Debug"),
-    ] {
-        std::fs::create_dir_all(&build).unwrap();
-        std::fs::write(build.join("output"), vec![b'x'; 4096]).unwrap();
-    }
-
-    let output = run(
-        &sandbox,
-        &["clean", "xcode", "--apply", "--shred", "--yolo", "--json"],
-    );
-
-    let value = json(&output);
-    assert!(output.status.success(), "{value}");
-    assert_eq!(value["summary"]["items_touched"], 3, "{value}");
-    assert!(!derived_data.join("App-pkg/Build").exists(), "{value}");
-    assert!(
-        !derived_data.join("App-pkg/Index.noindex").exists(),
-        "{value}"
-    );
-    assert!(!derived_data.join("App-plain").exists(), "{value}");
-    assert!(checkout.join(".git/HEAD").exists(), "{value}");
 }
 
 /// A tracked-file query that fails is no evidence either way, so the category
@@ -1196,38 +286,6 @@ fn finding_paths(value: &Value) -> Vec<String> {
         .iter()
         .map(|finding| finding["path"].as_str().unwrap().to_string())
         .collect()
-}
-
-/// `cargo build-sbf`, which `anchor build` runs, writes a Solana program's
-/// keypair into `target/deploy` only when none exists, and its public key is the
-/// program's address: a rebuild after removal mints a different one. `target`
-/// is ignored, so the key is untracked and only its name can protect it.
-#[test]
-fn purge_never_offers_a_build_directory_holding_a_program_keypair() {
-    let sandbox = Sandbox::new("purge-keypair");
-    let (dev, _small, large) = purge_fixture(&sandbox);
-    std::fs::create_dir_all(large.join("target/deploy")).unwrap();
-    std::fs::write(large.join("target/deploy/program-keypair.json"), "[0]").unwrap();
-
-    let output = run(
-        &sandbox,
-        &["purge", "--root", dev.to_str().unwrap(), "--json"],
-    );
-
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let paths = finding_paths(&json(&output));
-    assert!(
-        !paths.contains(&large.join("target").display().to_string()),
-        "a build directory holding a program keypair was offered: {paths:?}"
-    );
-    assert!(
-        paths.contains(&large.join("node_modules").display().to_string()),
-        "positive control: the node_modules beside it was not offered: {paths:?}"
-    );
 }
 
 /// The tracked-file check against real Git. A pathspec setting in the caller's
@@ -1315,119 +373,47 @@ fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() 
     }
 }
 
-/// `purge` is `node-modules` and `artifacts` in one plan — the same closed
-/// authorities and staleness gate — ordered by project, largest project first.
-#[test]
-fn purge_previews_project_build_output_grouped_largest_project_first() {
-    let sandbox = Sandbox::new("purge-preview");
-    let (dev, small, large) = purge_fixture(&sandbox);
-
-    let output = run(
-        &sandbox,
-        &["purge", "--root", dev.to_str().unwrap(), "--json"],
-    );
-
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value = json(&output);
-    assert_eq!(value["operation"], "purge");
-    assert_eq!(value["applied"], false);
-    let rows: Vec<(&str, &str)> = value["findings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|finding| {
-            (
-                finding["project"].as_str().unwrap(),
-                finding["path"].as_str().unwrap(),
-            )
-        })
-        .collect();
-    let large_name = large.display().to_string();
-    let small_name = small.display().to_string();
-    let expected = [
-        (
-            large_name.clone(),
-            large.join("target").display().to_string(),
-        ),
-        (large_name, large.join("node_modules").display().to_string()),
-        (small_name, small.join("node_modules").display().to_string()),
-    ];
-    assert_eq!(
-        rows,
-        expected
-            .iter()
-            .map(|(project, path)| (project.as_str(), path.as_str()))
-            .collect::<Vec<_>>()
-    );
-
-    let human = run(&sandbox, &["purge", "--root", dev.to_str().unwrap()]);
-    let stdout = String::from_utf8_lossy(&human.stdout);
-    assert!(human.status.success());
-    let beta = stdout.find(&format!("{} ·", large.display())).unwrap();
-    let alpha = stdout.find(&format!("{} ·", small.display())).unwrap();
-    assert!(beta < alpha, "largest project first: {stdout}");
-    assert!(stdout.contains("no changes made"), "{stdout}");
-    assert!(large.join("target/debug/out").exists());
-}
-
-#[test]
-fn purge_applies_each_finding_through_its_own_category() {
-    let sandbox = Sandbox::in_target("purge-apply");
-    let (dev, small, large) = purge_fixture(&sandbox);
-
-    let output = run(
-        &sandbox,
-        &[
-            "purge",
-            "--root",
-            dev.to_str().unwrap(),
-            "--apply",
-            "--shred",
-            "--yolo",
-            "--json",
-        ],
-    );
-
-    let value = json(&output);
-    assert!(output.status.success(), "{value}");
-    assert_eq!(value["operation"], "purge");
-    assert_eq!(value["applied"], true);
-    assert_eq!(value["summary"]["items_touched"], 3);
-    assert!(!large.join("target").exists());
-    assert!(!large.join("node_modules").exists());
-    assert!(!small.join("node_modules").exists());
-    assert!(large.join("Cargo.toml").exists());
-    let journal =
-        std::fs::read_to_string(sandbox.path().join(".local/state/devtrim/journal.jsonl")).unwrap();
-    assert!(journal.contains("\"node-modules\""), "{journal}");
-    assert!(journal.contains("\"artifacts\""), "{journal}");
-}
-
-#[test]
-fn purge_accepts_the_cleanup_flags_clean_accepts() {
-    let sandbox = Sandbox::new("purge-flags");
-    let output = run(&sandbox, &["purge", "--shred", "--json"]);
-    assert!(output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "purge");
-    assert_eq!(value["applied"], false);
-}
-
+/// A failed liveness probe is no evidence that nothing is building, so the
+/// stale output beside it is refused, not offered: in each category alone and
+/// in both halves of one `scan`, which share a single memoized probe. The
+/// same fixture is offered once the probe answers.
 #[test]
 fn project_cleanup_probe_failures_are_nonzero_json_errors() {
     let sandbox = Sandbox::new("project-probe-failure");
-    sandbox.script("pgrep", "exit 2");
+    let project = sandbox.path().join("dev/project");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
+    std::fs::write(project.join("package.json"), "{}").unwrap();
+    std::fs::write(project.join("node_modules/pkg/index.js"), "x").unwrap();
+    std::fs::create_dir_all(project.join("target")).unwrap();
+    std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+    std::fs::write(project.join("target/output"), "x").unwrap();
+    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
+    let offered = |value: &Value| {
+        value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|finding| finding["path"].as_str().map(str::to_owned))
+            .count()
+    };
 
+    sandbox.script("pgrep", "exit 1");
+    let control = run(&sandbox, &["scan", "--json"]);
+    assert_eq!(
+        offered(&json(&control)),
+        2,
+        "positive control: with no build running both outputs are offered"
+    );
+
+    sandbox.script("pgrep", "exit 2");
     for target in ["node-modules", "artifacts"] {
         let output = run(&sandbox, &["clean", target, "--json"]);
 
         assert!(!output.status.success());
         let value = json(&output);
         assert_eq!(value["operation"], target);
+        assert_eq!(offered(&value), 0, "{value}");
         assert!(
             value["errors"][0]
                 .as_str()
@@ -1435,264 +421,19 @@ fn project_cleanup_probe_failures_are_nonzero_json_errors() {
                 .contains("cannot verify build-process liveness")
         );
     }
-}
-
-/// One repository whose Git fails reports the error and offers nothing, and
-/// the run fails; the repository beside it is still judged and offered.
-#[test]
-fn project_git_probe_failure_blocks_only_its_own_repository() {
-    let sandbox = Sandbox::new("project-git-failure");
-    std::fs::create_dir_all(sandbox.path().join("dev")).unwrap();
-    let root = sandbox.path().join("dev").canonicalize().unwrap();
-    for repo_name in ["a-good", "z-bad"] {
-        let repo = root.join(repo_name);
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::create_dir_all(repo.join("node_modules")).unwrap();
-        std::fs::write(repo.join("node_modules/payload"), "x").unwrap();
-        std::fs::write(repo.join("package.json"), "{}").unwrap();
-        std::fs::create_dir_all(repo.join("target")).unwrap();
-        std::fs::write(repo.join("target/payload"), "x").unwrap();
-        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
-    }
-    sandbox.script(
-        "git",
-        &format!(
-            "case \"$2\" in\n  *z-bad) exit 9 ;;\nesac\n{}",
-            git_activity("2020-01-01", "2020-01-01")
-        ),
-    );
-
-    for (target, leaf) in [("node-modules", "node_modules"), ("artifacts", "target")] {
-        let output = run(
-            &sandbox,
-            &["clean", target, "--root", root.to_str().unwrap(), "--json"],
-        );
-
-        assert!(!output.status.success());
-        let value = json(&output);
-        assert_eq!(value["operation"], target);
-        let paths = value["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|finding| finding["path"].as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            paths,
-            vec![root.join("a-good").join(leaf).to_str().unwrap()],
-            "{target}"
-        );
-        let errors = value["errors"].as_array().unwrap();
+    let scan = run(&sandbox, &["scan", "--json"]);
+    assert!(!scan.status.success());
+    let value = json(&scan);
+    assert_eq!(offered(&value), 0, "{value}");
+    for operation in ["node-modules", "artifacts"] {
         assert!(
-            errors.len() == 1
-                && errors[0]
-                    .as_str()
-                    .unwrap()
-                    .contains("Git activity check failed")
-                && errors[0].as_str().unwrap().contains("z-bad"),
-            "{target}: {errors:?}"
+            value["errors"].as_array().unwrap().iter().any(|error| {
+                let error = error.as_str().unwrap();
+                error.contains(operation) && error.contains("cannot verify build-process liveness")
+            }),
+            "{operation}: {value}"
         );
     }
-}
-
-#[test]
-fn project_targets_with_their_own_git_marker_are_rejected() {
-    let sandbox = Sandbox::new("nested-git-target");
-    let root = sandbox.path().join("dev");
-    for (repo_name, marker_is_dir) in [("file-marker", false), ("dir-marker", true)] {
-        let repo = root.join(repo_name);
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::create_dir_all(repo.join("node_modules")).unwrap();
-        std::fs::write(repo.join("package.json"), "{}").unwrap();
-        std::fs::create_dir_all(repo.join("target")).unwrap();
-        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
-        for candidate in [repo.join("node_modules"), repo.join("target")] {
-            if marker_is_dir {
-                std::fs::create_dir_all(candidate.join(".git")).unwrap();
-            } else {
-                std::fs::write(candidate.join(".git"), "gitdir: elsewhere").unwrap();
-            }
-        }
-    }
-    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
-
-    for target in ["node-modules", "artifacts"] {
-        let output = run(
-            &sandbox,
-            &["clean", target, "--root", root.to_str().unwrap(), "--json"],
-        );
-
-        assert!(output.status.success());
-        assert!(json(&output)["findings"].as_array().unwrap().is_empty());
-    }
-}
-
-#[test]
-fn overlapping_project_roots_do_not_duplicate_findings() {
-    let sandbox = Sandbox::new("overlapping-project-roots");
-    let root = sandbox.path().join("dev");
-    let repo = root.join("project");
-    std::fs::create_dir_all(repo.join(".git")).unwrap();
-    std::fs::create_dir_all(repo.join("node_modules")).unwrap();
-    std::fs::write(repo.join("package.json"), "{}").unwrap();
-    std::fs::write(repo.join("node_modules/payload"), "x").unwrap();
-    std::fs::create_dir_all(repo.join("target")).unwrap();
-    std::fs::write(repo.join("target/payload"), "x").unwrap();
-    std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
-    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
-
-    for target in ["node-modules", "artifacts"] {
-        let output = run(
-            &sandbox,
-            &[
-                "clean",
-                target,
-                "--root",
-                root.to_str().unwrap(),
-                "--root",
-                repo.to_str().unwrap(),
-                "--json",
-            ],
-        );
-
-        assert!(output.status.success());
-        assert_eq!(json(&output)["findings"].as_array().unwrap().len(), 1);
-    }
-}
-
-/// A folder the walk cannot read is where the scan could not look: it is
-/// reported as an error, so the run fails, and nothing in it is offered, while
-/// every other repository is still judged and offered.
-#[test]
-fn project_walk_errors_block_only_the_unreadable_folder() {
-    let sandbox = Sandbox::new("project-walk-error");
-    std::fs::create_dir_all(sandbox.path().join("dev")).unwrap();
-    let root = sandbox.path().join("dev").canonicalize().unwrap();
-    let repo = root.join("a-good");
-    std::fs::create_dir_all(repo.join(".git")).unwrap();
-    std::fs::create_dir_all(repo.join("node_modules")).unwrap();
-    std::fs::write(repo.join("node_modules/payload"), "x").unwrap();
-    std::fs::write(repo.join("package.json"), "{}").unwrap();
-    std::fs::create_dir_all(repo.join("target")).unwrap();
-    std::fs::write(repo.join("target/payload"), "x").unwrap();
-    std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
-    let unreadable = root.join("z-unreadable");
-    std::fs::create_dir_all(unreadable.join("hidden/node_modules")).unwrap();
-    let _unreadable = Unreadable::new(unreadable.clone());
-    sandbox.script("git", &git_activity("2020-01-01", "2020-01-01"));
-
-    for (target, leaf) in [("node-modules", "node_modules"), ("artifacts", "target")] {
-        let output = run(
-            &sandbox,
-            &["clean", target, "--root", root.to_str().unwrap(), "--json"],
-        );
-        assert!(!output.status.success(), "{target}");
-        let value = json(&output);
-        assert_eq!(value["operation"], target);
-        let paths = value["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|finding| finding["path"].as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(paths, vec![repo.join(leaf).to_str().unwrap()], "{target}");
-        let errors = value["errors"].as_array().unwrap();
-        assert!(
-            errors.len() == 1
-                && errors[0].as_str().unwrap().contains("could not be read")
-                && errors[0].as_str().unwrap().contains("z-unreadable"),
-            "{target}: {errors:?}"
-        );
-    }
-}
-
-#[test]
-fn leftovers_walk_errors_are_not_silently_flattened() {
-    let sandbox = Sandbox::new("leftovers-walk-error");
-    let root = sandbox.path().join("dev");
-    std::fs::create_dir_all(root.join("codex-worktree.ABC123")).unwrap();
-    let unreadable = root.join("z-unreadable");
-    std::fs::create_dir_all(unreadable.join("hidden")).unwrap();
-    let original = std::fs::metadata(&unreadable).unwrap().permissions();
-    let mut denied = original.clone();
-    denied.set_mode(0o000);
-    std::fs::set_permissions(&unreadable, denied).unwrap();
-
-    let output = run(
-        &sandbox,
-        &[
-            "clean",
-            "leftovers",
-            "--root",
-            root.to_str().unwrap(),
-            "--json",
-        ],
-    );
-    std::fs::set_permissions(&unreadable, original).unwrap();
-
-    assert!(!output.status.success());
-    let value = json(&output);
-    assert!(value["findings"].as_array().unwrap().is_empty());
-    assert!(value["errors"][0].as_str().unwrap().contains("cannot scan"));
-}
-
-#[test]
-fn icloud_recursively_reports_large_files_without_inferring_upload_status() {
-    let sandbox = Sandbox::new("icloud-recursive");
-    let cloud_docs = sandbox
-        .path()
-        .join("Library/Mobile Documents/com~apple~CloudDocs");
-    let large = cloud_docs.join("Projects/archive.bin");
-    std::fs::create_dir_all(large.parent().unwrap()).unwrap();
-    let file = std::fs::File::create(&large).unwrap();
-    file.set_len(100 * 1024 * 1024).unwrap();
-
-    let output = run(&sandbox, &["icloud", "--json"]);
-
-    assert!(output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "icloud");
-    assert_eq!(value["findings"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        value["findings"][0]["path"],
-        large.canonicalize().unwrap().display().to_string()
-    );
-    assert_eq!(value["findings"][0]["size_bytes"], 100 * 1024 * 1024);
-    let text = format!(
-        "{} {}",
-        value["findings"][0]["label"].as_str().unwrap(),
-        value["findings"][0]["note"].as_str().unwrap()
-    );
-    assert!(text.contains("allocated locally"));
-    assert!(text.contains("does not indicate iCloud upload status"));
-}
-
-#[test]
-fn icloud_traversal_errors_are_nonzero_json_errors() {
-    let sandbox = Sandbox::new("icloud-walk-error");
-    let cloud_docs = sandbox
-        .path()
-        .join("Library/Mobile Documents/com~apple~CloudDocs");
-    let unreadable = cloud_docs.join("unreadable");
-    std::fs::create_dir_all(unreadable.join("nested")).unwrap();
-    let original = std::fs::metadata(&unreadable).unwrap().permissions();
-    let mut denied = original.clone();
-    denied.set_mode(0o000);
-    std::fs::set_permissions(&unreadable, denied).unwrap();
-
-    let output = run(&sandbox, &["icloud", "--json"]);
-    std::fs::set_permissions(&unreadable, original).unwrap();
-
-    assert!(!output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "icloud");
-    assert!(value["findings"].as_array().unwrap().is_empty());
-    assert!(
-        value["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("cannot inventory")
-    );
 }
 
 #[test]
@@ -1707,100 +448,6 @@ fn empty_json_apply_includes_a_zero_summary() {
     assert_eq!(value["summary"]["items_touched"], 0);
     assert_eq!(value["summary"]["bytes_freed_estimate"], 0);
     assert!(value["summary"]["notes"].as_array().unwrap().is_empty());
-}
-
-#[test]
-fn trash_empty_requires_apply() {
-    let sandbox = Sandbox::new("trash-preview");
-    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
-    let sentinel = sandbox.path().join(".Trash/keep");
-    std::fs::write(&sentinel, "keep").unwrap();
-    let output = run(&sandbox, &["trash-empty", "--confirm=0", "--json"]);
-    assert!(output.status.success());
-    assert!(sentinel.exists());
-    assert_eq!(json(&output)["applied"], false);
-}
-
-#[test]
-fn trash_empty_yolo_still_requires_size_acknowledgment() {
-    let sandbox = Sandbox::new("trash-yolo-ack");
-    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
-    let sentinel = sandbox.path().join(".Trash/keep");
-    std::fs::write(&sentinel, "keep").unwrap();
-
-    let output = run(&sandbox, &["trash-empty", "--apply", "--yolo", "--json"]);
-
-    assert!(!output.status.success());
-    assert!(sentinel.exists());
-    assert!(
-        json(&output)["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("requires --confirm=<gb>")
-    );
-}
-
-#[test]
-fn trash_empty_apply_confirms_like_every_other_mutation() {
-    let sandbox = Sandbox::in_target("trash-confirms");
-    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
-    let sentinel = sandbox.path().join(".Trash/keep");
-    std::fs::write(&sentinel, "keep").unwrap();
-
-    // The size acknowledgment is not consent: a piped run with only `--confirm`,
-    // or with `-y` against a danger-9 purge, must refuse like any other command.
-    for args in [
-        vec!["trash-empty", "--apply", "--confirm=0", "--json"],
-        vec!["trash-empty", "--apply", "--confirm=0", "-y", "--json"],
-    ] {
-        let output = run(&sandbox, &args);
-        assert!(!output.status.success(), "{args:?} purged without consent");
-        assert!(sentinel.exists(), "{args:?} deleted the Trash item");
-        let error = json(&output)["errors"][0].as_str().unwrap().to_string();
-        assert!(
-            error.contains("non-interactive") || error.contains("interactive typed confirmation"),
-            "{args:?} refused for the wrong reason: {error}"
-        );
-    }
-
-    let output = run(
-        &sandbox,
-        &["trash-empty", "--apply", "--confirm=0", "--yolo", "--json"],
-    );
-    assert!(output.status.success(), "positive control: --yolo purges");
-    assert!(!sentinel.exists());
-}
-
-#[test]
-fn owner_cache_probes_run_from_home_not_the_invoking_directory() {
-    let sandbox = Sandbox::new("owner-cache-cwd");
-    std::fs::create_dir_all(sandbox.path().join(".npm/_cacache")).unwrap();
-    std::fs::write(sandbox.path().join(".npm/_cacache/blob"), "x").unwrap();
-    // The stub answers relative to its working directory, as a project
-    // `.npmrc` would: only a probe started in $HOME names the home cache.
-    sandbox.script("npm", "printf '%s/.npm\\n' \"$PWD\"");
-    let elsewhere = sandbox.path().join("project");
-    std::fs::create_dir_all(&elsewhere).unwrap();
-
-    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
-        .args(["clean", "caches", "--json"])
-        .current_dir(&elsewhere)
-        .env("HOME", sandbox.path())
-        .env("PATH", sandbox.bin())
-        .env_remove("XDG_STATE_HOME")
-        .output()
-        .unwrap();
-
-    let value = json(&output);
-    assert!(output.status.success(), "{value}");
-    assert!(
-        value["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| finding["label"] == "npm download cache"),
-        "{value}"
-    );
 }
 
 #[test]
@@ -1825,45 +472,6 @@ fn status_reads_system_tools_in_the_c_locale() {
         value["load_average"],
         serde_json::json!([1.5, 2.25, 3.0]),
         "{value}"
-    );
-}
-
-#[test]
-fn a_missing_explicit_root_is_warned_not_silently_empty() {
-    let sandbox = Sandbox::new("missing-root");
-    let missing = sandbox.path().join("dve");
-    let present = sandbox.path().join("dev");
-    std::fs::create_dir_all(&present).unwrap();
-
-    let output = run(
-        &sandbox,
-        &[
-            "clean",
-            "node-modules",
-            "--root",
-            missing.to_str().unwrap(),
-            "--json",
-        ],
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("scan root does not exist") && stderr.contains("dve"),
-        "{stderr}"
-    );
-
-    let output = run(
-        &sandbox,
-        &[
-            "clean",
-            "node-modules",
-            "--root",
-            present.to_str().unwrap(),
-            "--json",
-        ],
-    );
-    assert!(
-        !String::from_utf8_lossy(&output.stderr).contains("scan root does not exist"),
-        "positive control: an existing root is not warned about"
     );
 }
 
@@ -1914,203 +522,6 @@ fn owner_reported_cache_outside_namespace_is_skipped() {
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("outside a home cache location; skipping")
     );
-}
-
-#[test]
-fn unavailable_simulator_json_authorizes_only_the_previewed_device() {
-    let sandbox = Sandbox::new("simulator-json");
-    let log = sandbox.path().join("xcrun.log");
-    sandbox.script(
-        "xcrun",
-        "printf '%s\\n' \"$*\" >> \"$DEVTRIM_TEST_LOG\"\ncase \"$*\" in\n  '--version') printf 'xcrun version 70\\n' ;;\n  'simctl list devices --json') printf '%s\\n' '{\"devices\":{\"com.apple.CoreSimulator.SimRuntime.iOS-18-0\":[{\"dataPath\":\"/tmp/device\",\"dataPathSize\":0,\"logPath\":\"/tmp/log\",\"udid\":\"00000000-0000-0000-0000-000000000000\",\"isAvailable\":false,\"deviceTypeIdentifier\":\"com.apple.CoreSimulator.SimDeviceType.iPhone-16\",\"state\":\"Shutdown\",\"name\":\"iPhone 16\"}]}}' ;;\n  'simctl delete 00000000-0000-0000-0000-000000000000') exit 0 ;;\n  *) exit 1 ;;\nesac",
-    );
-    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
-        .args(["clean", "simulators", "--apply", "--yolo", "--json"])
-        .env("HOME", sandbox.path())
-        .env("PATH", sandbox.bin())
-        .env_remove("XDG_STATE_HOME")
-        .env("DEVTRIM_TEST_LOG", &log)
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let value = json(&output);
-    assert_eq!(
-        value["findings"][0]["label"],
-        "unavailable Apple simulator device 00000000-0000-0000-0000-000000000000"
-    );
-    let calls = std::fs::read_to_string(log).unwrap();
-    assert!(calls.contains("simctl list devices --json"));
-    assert!(calls.contains("simctl delete 00000000-0000-0000-0000-000000000000"));
-    assert!(!calls.contains("simctl delete unavailable"));
-    assert!(!calls.contains("erase all"));
-    let records =
-        std::fs::read_to_string(sandbox.path().join(".local/state/devtrim/journal.jsonl")).unwrap();
-    let records = records
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(records[0]["action"], "command");
-    assert_eq!(
-        records[0]["argv"],
-        serde_json::json!([
-            "xcrun",
-            "simctl",
-            "delete",
-            "00000000-0000-0000-0000-000000000000"
-        ])
-    );
-    assert_eq!(records[1]["status"], "ok");
-}
-
-#[test]
-fn node_modules_apply_refuses_repo_that_became_active() {
-    let sandbox = Sandbox::new("node-became-active");
-    let project = sandbox.path().join("dev/project");
-    let target = project.join("node_modules");
-    std::fs::create_dir_all(project.join(".git")).unwrap();
-    std::fs::create_dir_all(&target).unwrap();
-    std::fs::write(target.join("sentinel"), "keep").unwrap();
-    std::fs::write(project.join("package.json"), "{}").unwrap();
-    let state = sandbox.path().join("git-state");
-    sandbox.script(
-        "git",
-        &format!(
-            "case \"$*\" in *ls-files*) ;; *' -g '*) if [ -e '{}' ]; then printf 'HEAD@{{2999-01-01}}\\n'; else : > '{}'; printf 'HEAD@{{2020-01-01}}\\n'; fi ;; *) printf '2020-01-01\\n' ;; esac",
-            state.display(),
-            state.display()
-        ),
-    );
-
-    let output = run(
-        &sandbox,
-        &["clean", "node-modules", "--apply", "-y", "--json"],
-    );
-    assert!(!output.status.success());
-    assert!(target.join("sentinel").exists());
-    let value = json(&output);
-    assert_eq!(value["operation"], "node-modules");
-    assert!(
-        value["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("repo became active after preview")
-    );
-}
-
-#[test]
-fn project_apply_preflights_all_repo_probes_before_mutating() {
-    let sandbox = Sandbox::in_target("partial-apply");
-    let first = sandbox.path().join("dev/a/node_modules");
-    let second = sandbox.path().join("dev/b/node_modules");
-    for target in [&first, &second] {
-        std::fs::create_dir_all(target.parent().unwrap().join(".git")).unwrap();
-        std::fs::create_dir_all(target).unwrap();
-        std::fs::write(target.join("sentinel"), "keep").unwrap();
-        std::fs::write(target.parent().unwrap().join("package.json"), "{}").unwrap();
-    }
-    let counter = sandbox.path().join("git-count");
-    git_stale_for_three_probes(&sandbox);
-
-    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
-        .args([
-            "clean",
-            "node-modules",
-            "--apply",
-            "--shred",
-            "--yolo",
-            "--json",
-        ])
-        .env("HOME", sandbox.path())
-        .env("PATH", sandbox.bin())
-        .env_remove("XDG_STATE_HOME")
-        .env("DEVTRIM_TEST_COUNT", &counter)
-        .output()
-        .unwrap();
-
-    let value = json(&output);
-    assert!(!output.status.success());
-    assert!(first.join("sentinel").exists());
-    assert!(second.join("sentinel").exists());
-    assert_eq!(value["operation"], "node-modules");
-    assert_eq!(value["applied"], true);
-    assert_eq!(value["summary"]["items_touched"], 0);
-    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
-    assert!(
-        value["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("Git activity check failed")
-    );
-}
-
-#[test]
-fn artifact_apply_preflights_all_repo_probes_before_mutating() {
-    let sandbox = Sandbox::in_target("artifact-preflight");
-    let first = sandbox.path().join("dev/a/target");
-    let second = sandbox.path().join("dev/b/target");
-    for target in [&first, &second] {
-        let repo = target.parent().unwrap();
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::create_dir_all(target).unwrap();
-        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
-        std::fs::write(target.join("sentinel"), "keep").unwrap();
-    }
-    let counter = sandbox.path().join("git-count");
-    git_stale_for_three_probes(&sandbox);
-
-    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
-        .args([
-            "clean",
-            "artifacts",
-            "--apply",
-            "--shred",
-            "--yolo",
-            "--json",
-        ])
-        .env("HOME", sandbox.path())
-        .env("PATH", sandbox.bin())
-        .env_remove("XDG_STATE_HOME")
-        .env("DEVTRIM_TEST_COUNT", &counter)
-        .output()
-        .unwrap();
-
-    let value = json(&output);
-    assert!(!output.status.success());
-    assert!(first.join("sentinel").exists());
-    assert!(second.join("sentinel").exists());
-    assert_eq!(value["operation"], "artifacts");
-    assert_eq!(value["applied"], true);
-    assert_eq!(value["summary"]["items_touched"], 0);
-    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
-    assert!(
-        value["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("Git activity check failed")
-    );
-}
-
-#[test]
-fn docker_remote_context_is_rejected_before_any_prune_capability_is_created() {
-    let sandbox = Sandbox::new("docker-remote-context");
-    sandbox.script(
-        "docker",
-        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"ssh://production.example\"}}}]\\n' ;;\n  *) : > \"$HOME/unexpected-docker-command\"; exit 91 ;;\nesac",
-    );
-
-    let output = run(&sandbox, &["clean", "docker", "--json"]);
-
-    assert!(!output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "docker");
-    assert_eq!(value["findings"].as_array().unwrap().len(), 0);
-    assert!(
-        value["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("refusing non-local Docker endpoint")
-    );
-    assert!(!sandbox.path().join("unexpected-docker-command").exists());
 }
 
 #[test]
@@ -2166,20 +577,6 @@ fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
 }
 
 #[test]
-fn failed_human_apply_does_not_print_a_success_summary() {
-    let sandbox = Sandbox::new("docker-human-failure");
-    docker_script(&sandbox, 9);
-
-    let output = run(&sandbox, &["clean", "docker", "--apply", "-y"]);
-
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("docker failed"));
-    assert!(!stdout.contains('✓'));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("image prune -a -f"));
-}
-
-#[test]
 fn human_apply_prints_data_loss_warning_before_action() {
     let sandbox = Sandbox::new("risk-warning");
     docker_script(&sandbox, 0);
@@ -2190,670 +587,299 @@ fn human_apply_prints_data_loss_warning_before_action() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("DATA-LOSS WARNING"));
 }
 
-#[test]
-fn help_states_that_apply_flags_accept_data_loss_risk() {
-    let sandbox = Sandbox::new("risk-help");
-    let output = run(&sandbox, &["--help"]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    assert!(output.status.success());
-    assert!(stdout.contains("cleanup can delete data"));
-    assert!(stdout.matches("Accept data-loss risk").count() >= 2);
+/// A stub command that records its own pid, starts a descendant that outlives
+/// any polite exit, records that pid, and blocks: the shape of `docker` running
+/// a prune through a plugin child. Every process it started is killed when the
+/// guard drops, so a failing test cannot leave a 400-second `sleep` behind.
+struct BlockingFamily {
+    stub: PathBuf,
+    descendant: PathBuf,
+    devtrim: Option<std::process::Child>,
 }
 
-#[test]
-fn history_json_is_one_document_and_skips_malformed_lines() {
-    let sandbox = Sandbox::new("history-json");
-    let journal = sandbox.path().join(".local/state/devtrim/journal.jsonl");
-    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
-    std::fs::write(
-        &journal,
-        concat!(
-            "{\"ts\":2,\"phase\":\"result\",\"op\":\"caches\",\"action\":\"trash\",\"target\":\"/tmp/cache\",\"size_bytes\":4,\"status\":\"ok\"}\n",
-            "not-json\n"
-        ),
-    )
-    .unwrap();
-
-    let output = run(&sandbox, &["history", "--json"]);
-
-    // A partial audit is a partial operation: entries survive, errors are
-    // reported, and the status is nonzero.
-    assert!(!output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "history");
-    assert_eq!(value["entries"].as_array().unwrap().len(), 1);
-    assert_eq!(value["entries"][0]["status"], "ok");
-    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
-}
-
-#[test]
-fn missing_history_is_empty_and_successful() {
-    let sandbox = Sandbox::new("history-missing");
-
-    let output = run(&sandbox, &["history", "--json"]);
-
-    assert!(output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "history");
-    assert!(value["entries"].as_array().unwrap().is_empty());
-    assert!(value["errors"].as_array().unwrap().is_empty());
-}
-
-#[test]
-fn history_human_marks_orphan_attempt_interrupted() {
-    let sandbox = Sandbox::new("history-interrupted");
-    let journal = sandbox.path().join(".local/state/devtrim/journal.jsonl");
-    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
-    std::fs::write(
-        &journal,
-        "{\"ts\":1,\"phase\":\"attempt\",\"op\":\"xcode\",\"action\":\"shred\",\"target\":\"/tmp/build\",\"size_bytes\":8}\n",
-    )
-    .unwrap();
-
-    let output = run(&sandbox, &["history"]);
-
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("interrupted"));
-}
-
-#[test]
-fn unreadable_history_is_one_error_document_and_nonzero() {
-    let sandbox = Sandbox::new("history-unreadable");
-    let journal = sandbox.path().join(".local/state/devtrim/journal.jsonl");
-    std::fs::create_dir_all(&journal).unwrap();
-
-    let output = run(&sandbox, &["history", "--json"]);
-
-    assert!(!output.status.success());
-    let value = json(&output);
-    assert_eq!(value["operation"], "history");
-    assert!(value["entries"].as_array().unwrap().is_empty());
-    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
-}
-
-#[test]
-fn history_uses_only_an_absolute_xdg_state_home() {
-    let record = "{\"ts\":2,\"phase\":\"result\",\"op\":\"caches\",\"action\":\"trash\",\"target\":\"/tmp/cache\",\"size_bytes\":4,\"status\":\"ok\"}\n";
-
-    let absolute = Sandbox::new("history-xdg-absolute");
-    let state_home = absolute.path().join("state");
-    let journal = state_home.join("devtrim/journal.jsonl");
-    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
-    std::fs::write(&journal, record).unwrap();
-    let state_home = state_home.canonicalize().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
-        .args(["history", "--json"])
-        .env("HOME", absolute.path())
-        .env("PATH", absolute.bin())
-        .env("XDG_STATE_HOME", &state_home)
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    assert_eq!(json(&output)["entries"].as_array().unwrap().len(), 1);
-
-    let relative = Sandbox::new("history-xdg-relative");
-    let fallback = relative.path().join(".local/state/devtrim/journal.jsonl");
-    std::fs::create_dir_all(fallback.parent().unwrap()).unwrap();
-    std::fs::write(&fallback, record).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
-        .args(["history", "--json"])
-        .env("HOME", relative.path())
-        .env("PATH", relative.bin())
-        .env("XDG_STATE_HOME", "relative-state")
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    assert_eq!(json(&output)["entries"].as_array().unwrap().len(), 1);
-}
-
-#[test]
-fn zsh_completions_are_printed_to_piped_stdout() {
-    let sandbox = Sandbox::new("completions");
-
-    let output = run(&sandbox, &["completions", "zsh"]);
-
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("_devtrim"));
-}
-
-#[test]
-fn completions_reject_unsupported_shells() {
-    let sandbox = Sandbox::new("unsupported-completions");
-
-    let output = run(&sandbox, &["completions", "powershell"]);
-
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("bash, zsh, fish"));
-}
-
-#[test]
-fn manpage_is_printed_to_piped_stdout() {
-    let sandbox = Sandbox::new("manpage");
-
-    let output = run(&sandbox, &["manpage"]);
-
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains(".TH devtrim"));
-}
-
-#[test]
-fn generated_docs_reject_json_with_one_error_document() {
-    let sandbox = Sandbox::new("generated-docs-json");
-    for command in ["completions", "manpage"] {
-        let args = if command == "completions" {
-            vec![command, "zsh", "--json"]
-        } else {
-            vec![command, "--json"]
-        };
-        let output = run(&sandbox, &args);
-        assert!(!output.status.success());
-        let value = json(&output);
-        assert_eq!(value["operation"], command);
-        assert_eq!(value["errors"].as_array().unwrap().len(), 1);
-    }
-}
-
-#[test]
-fn huggingface_cleanup_preserves_authentication_and_other_state() {
-    let sandbox = Sandbox::in_target("huggingface-state");
-    let state = sandbox.path().join(".cache/huggingface");
-    let hub = state.join("hub");
-    std::fs::create_dir_all(&hub).unwrap();
-    std::fs::write(hub.join("model"), "downloaded model").unwrap();
-    for name in ["token", "stored_tokens", "settings"] {
-        std::fs::write(state.join(name), "keep this state").unwrap();
+impl BlockingFamily {
+    fn new(sandbox: &Sandbox) -> Self {
+        Self {
+            stub: sandbox.path().join("stub.pid"),
+            descendant: sandbox.path().join("descendant.pid"),
+            devtrim: None,
+        }
     }
 
-    let output = run(
-        &sandbox,
-        &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
-    );
-    let value = json(&output);
-    assert!(output.status.success(), "{value}");
-    assert_eq!(value["summary"]["items_touched"], 1);
-    assert!(!hub.exists(), "eligible model data was not removed");
-    for name in ["token", "stored_tokens", "settings"] {
-        assert_eq!(
-            std::fs::read_to_string(state.join(name)).unwrap(),
-            "keep this state",
-            "{name} must survive cache cleanup"
+    /// The shell lines that make a stub block as a family.
+    fn body(&self) -> String {
+        format!(
+            "echo $$ > '{}'\n/bin/sleep 400 &\necho $! > '{}'\nwait",
+            self.stub.display(),
+            self.descendant.display()
+        )
+    }
+
+    fn start(&mut self, sandbox: &Sandbox, args: &[&str]) {
+        self.devtrim = Some(
+            Command::new(env!("CARGO_BIN_EXE_devtrim"))
+                .args(args)
+                .env_clear()
+                .env("HOME", sandbox.path())
+                .env("PATH", sandbox.bin())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap(),
         );
     }
-}
 
-/// End-to-end proof that `clean agents` removes its three target kinds
-/// advertises and nothing beside them. The surviving assertions are the point:
-/// an agent's credentials, configuration and a still-active session must come
-/// through an `--apply --yolo` run untouched.
-#[test]
-fn agent_cleanup_removes_only_stale_history_and_regenerable_caches() {
-    let sandbox = Sandbox::in_target("agents-tiers");
-    let home = sandbox.path();
-    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60 * 24 * 400);
-    let age = |path: &Path| {
-        std::fs::File::options()
-            .write(true)
-            .open(path)
+    fn pid(path: &Path) -> Option<String> {
+        let pid = std::fs::read_to_string(path).ok()?;
+        let pid = pid.trim();
+        (!pid.is_empty()).then(|| pid.to_owned())
+    }
+
+    fn alive(pid: &str) -> bool {
+        Command::new("/bin/kill")
+            .args(["-0", pid])
+            .output()
             .unwrap()
-            .set_modified(stale)
+            .status
+            .success()
+    }
+
+    /// Waits until the stub and its descendant are both running.
+    fn running(&self) -> (String, String) {
+        for _ in 0..1500 {
+            if let (Some(stub), Some(descendant)) =
+                (Self::pid(&self.stub), Self::pid(&self.descendant))
+            {
+                return (stub, descendant);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("the stub command never started its descendant");
+    }
+
+    /// Sends `signal` to devtrim and returns its exit code and stderr.
+    fn interrupt(&mut self, signal: &str) -> (Option<i32>, String) {
+        let devtrim = self.devtrim.as_mut().unwrap();
+        Command::new("/bin/kill")
+            .args(["-s", signal, &devtrim.id().to_string()])
+            .output()
             .unwrap();
-    };
-
-    let cache = home.join(".claude/cache");
-    std::fs::create_dir_all(&cache).unwrap();
-    std::fs::write(cache.join("changelog.md"), "# 1.0.0\n").unwrap();
-
-    // `.codex/archived_sessions` holds one loose transcript per session.
-    let archived = home.join(".codex/archived_sessions");
-    std::fs::create_dir_all(&archived).unwrap();
-    let old_session = archived.join("rollout-old-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl");
-    let live_session = archived.join("rollout-live-24bb0c93-fbb9-49b7-99b0-7a97be87baeb.jsonl");
-    std::fs::write(&old_session, "old").unwrap();
-    std::fs::write(&live_session, "live").unwrap();
-    age(&old_session);
-
-    let standalone = home.join(".codex/packages/standalone");
-    let releases = standalone.join("releases");
-    let release = |version: &str| {
-        let path = releases.join(format!("{version}-aarch64-apple-darwin"));
-        for directory in ["bin", "codex-resources", "codex-path"] {
-            std::fs::create_dir_all(path.join(directory)).unwrap();
+        for _ in 0..600 {
+            if let Some(status) = devtrim.try_wait().unwrap() {
+                let mut stderr = String::new();
+                std::io::Read::read_to_string(devtrim.stderr.as_mut().unwrap(), &mut stderr)
+                    .unwrap();
+                return (status.code(), stderr);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        for binary in ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"] {
-            let file = path.join(binary);
-            std::fs::write(&file, "binary").unwrap();
-            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        panic!("devtrim did not exit within 60 s of {signal}");
+    }
+
+    /// Whether the process is gone within forty-five seconds. A killed process is
+    /// reaped by launchd, which can take a moment.
+    fn gone(pid: &str) -> bool {
+        // Wall-clock, not a count: on a loaded machine each `kill` takes
+        // seconds to start, and the stub's `sleep` outlives any poll.
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(45) {
+            if !Self::alive(pid) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        std::os::unix::fs::symlink("bin/codex", path.join("codex")).unwrap();
-        let voice = path.join("codex-resources/voice");
-        std::fs::create_dir_all(&voice).unwrap();
-        std::fs::write(voice.join("runtime.json"), "{}").unwrap();
-        std::fs::write(
-            voice.join("manifest.json"),
-            serde_json::json!({
-                "schemaVersion": 1,
-                "appVersion": version,
-                "appTarget": "aarch64-apple-darwin",
-                "voiceTarget": "aarch64-apple-darwin",
-                "sha256": {
-                    "bin/codex": "9a3a45d01531a20e89ac6ae10b0b0beb0492acd7216a368aa062d1a5fecaf9cd",
-                    "codex-resources/voice/runtime.json": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("codex-package.json"),
-            format!(r#"{{"layoutVersion":1,"version":"{version}","target":"aarch64-apple-darwin","variant":"codex","entrypoint":"bin/codex","resourcesDir":"codex-resources","pathDir":"codex-path"}}"#),
-        )
-        .unwrap();
-        path
-    };
-    let old_release = release("0.155.1");
-    let current_release = release("0.156.1");
-    let newer_release = release("0.157.0");
-    let unknown_release = release("0.154.0");
-    std::fs::write(unknown_release.join("bin/user-notes.txt"), "keep").unwrap();
-    let incomplete_release = release("0.153.0");
-    std::fs::remove_file(incomplete_release.join("bin/codex-code-mode-host")).unwrap();
-    let personal_release = release("0.152.0");
-    std::fs::write(
-        personal_release.join("codex-resources/personal.txt"),
-        "keep",
-    )
-    .unwrap();
-    let forged_voice_release = release("0.151.0");
-    std::fs::write(
-        forged_voice_release.join("codex-resources/voice/personal.txt"),
-        "keep",
-    )
-    .unwrap();
-    let voice_manifest = forged_voice_release.join("codex-resources/voice/manifest.json");
-    let mut voice_json: Value =
-        serde_json::from_slice(&std::fs::read(&voice_manifest).unwrap()).unwrap();
-    voice_json["sha256"]["codex-resources/voice/personal.txt"] = Value::String("0".repeat(64));
-    std::fs::write(&voice_manifest, voice_json.to_string()).unwrap();
-    let modified_voice_release = release("0.150.0");
-    std::fs::write(
-        modified_voice_release.join("codex-resources/voice/runtime.json"),
-        "PERSONAL CONTENT",
-    )
-    .unwrap();
-    let no_voice_release = release("0.149.0");
-    std::fs::remove_dir_all(no_voice_release.join("codex-resources/voice")).unwrap();
-    let malformed_version_release = release("0.148.0-");
-    std::fs::write(standalone.join("install.lock"), "").unwrap();
-    std::os::unix::fs::symlink(&current_release, standalone.join("current")).unwrap();
+        false
+    }
+}
 
-    let credentials = home.join(".codex/auth.json");
-    let thread_history = home.join(".codex/thread_history_1.sqlite");
-    let plugin = home.join(".codex/plugins/cache/keep.txt");
-    let configuration = home.join(".claude/settings.json");
-    std::fs::write(&credentials, "OAUTH TOKEN").unwrap();
-    std::fs::write(&thread_history, "thread index").unwrap();
-    std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
-    std::fs::write(&plugin, "plugin state").unwrap();
-    std::fs::write(&configuration, "{\"theme\":\"dark\"}").unwrap();
-    age(&credentials);
-    age(&configuration);
+impl Drop for BlockingFamily {
+    fn drop(&mut self) {
+        for path in [&self.stub, &self.descendant] {
+            if let Some(pid) = Self::pid(path) {
+                Command::new("/bin/kill").args(["-9", &pid]).output().ok();
+            }
+        }
+        if let Some(devtrim) = self.devtrim.as_mut() {
+            devtrim.kill().ok();
+            devtrim.wait().ok();
+        }
+    }
+}
 
-    std::fs::remove_file(standalone.join("current")).unwrap();
-    std::os::unix::fs::symlink(home.join("missing-current"), standalone.join("current")).unwrap();
-    let blocked_output = run(&sandbox, &["clean", "agents", "--json"]);
-    assert!(
-        !blocked_output.status.success(),
-        "partial preview must be nonzero"
-    );
-    let blocked = json(&blocked_output);
-    assert!(blocked["errors"].as_array().unwrap().iter().any(|error| {
-        error
-            .as_str()
-            .unwrap()
-            .contains("Codex release cleanup refused")
-    }));
-    let blocked_findings = blocked["findings"].as_array().unwrap();
-    assert!(blocked_findings.iter().any(|finding| {
-        finding["label"] == "Codex standalone releases unavailable"
-            && finding["action"]["type"] == "info"
-    }));
-    assert!(
-        blocked_findings
-            .iter()
-            .any(|finding| { finding["path"] == cache.display().to_string() })
-    );
-    assert!(
-        blocked_findings
-            .iter()
-            .any(|finding| { finding["path"] == old_session.display().to_string() })
-    );
-    assert!(
-        !blocked_findings
-            .iter()
-            .any(|finding| { finding["path"] == old_release.display().to_string() })
-    );
-    std::fs::remove_file(standalone.join("current")).unwrap();
-    std::os::unix::fs::symlink(&current_release, standalone.join("current")).unwrap();
+/// Interrupting a plain CLI run stops every command it started. The scan's
+/// `docker` query blocks as a family; devtrim must exit with the conventional
+/// status and leave neither the stub nor its descendant running.
+fn an_interrupted_scan_kills_the_commands_it_started(signal: &str, status: i32) {
+    let sandbox = Sandbox::new("interrupt-scan");
+    let mut family = BlockingFamily::new(&sandbox);
+    sandbox.script("docker", &family.body());
+    family.start(&sandbox, &["scan", "--json"]);
+    let (stub, descendant) = family.running();
+    // Control: before the signal, both are running.
+    assert!(BlockingFamily::alive(&stub) && BlockingFamily::alive(&descendant));
 
-    // A process still executing from the old release keeps it out of the plan;
-    // the rest of the category is unaffected.
+    let (code, stderr) = family.interrupt(signal);
+
+    assert_eq!(code, Some(status), "{stderr}");
+    assert!(
+        BlockingFamily::gone(&stub),
+        "PV process/interrupt-kill: the stub command {stub} survived {signal}"
+    );
+    assert!(
+        BlockingFamily::gone(&descendant),
+        "PV process/interrupt-kill: the stub's descendant {descendant} survived {signal}"
+    );
+}
+
+#[test]
+fn sigint_kills_every_command_a_scan_started_and_exits_130() {
+    an_interrupted_scan_kills_the_commands_it_started("INT", 130);
+}
+
+#[test]
+fn sigterm_kills_every_command_a_scan_started_and_exits_143() {
+    an_interrupted_scan_kills_the_commands_it_started("TERM", 143);
+}
+
+/// A typed mutation command in flight: `docker image prune` blocks as a
+/// family. Interrupted, devtrim kills it and exits 130, and the journal keeps
+/// the attempt with no result, which `history` reports as interrupted.
+#[test]
+fn an_interrupted_apply_kills_the_prune_and_leaves_an_interrupted_journal_entry() {
+    let sandbox = Sandbox::new("interrupt-apply");
+    let mut family = BlockingFamily::new(&sandbox);
+    let host = "unix:///var/run/docker.sock";
     sandbox.script(
-        "lsof",
+        "docker",
         &format!(
-            "printf 'p77\\nftxt\\nn{}\\n'",
-            old_release
-                .canonicalize()
-                .unwrap()
-                .join("bin/codex")
-                .display()
+            "case \"$*\" in\n  'context inspect') printf '[{{\"Endpoints\":{{\"docker\":{{\"Host\":\"{host}\"}}}}}}]\\n' ;;\n  '--host {host} version') printf 'Docker version 28.0.0\\n' ;;\n  '--host {host} system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\t0\\n' ;;\n  '--host {host} image prune -a -f')\n{}\n ;;\n  *) exit 1 ;;\nesac",
+            family.body()
         ),
     );
-    let running = run(&sandbox, &["clean", "agents", "--json"]);
-    assert!(running.status.success());
-    let running_findings = json(&running)["findings"].as_array().unwrap().clone();
-    assert!(
-        !running_findings
-            .iter()
-            .any(|finding| finding["path"] == old_release.display().to_string()),
-        "a release a process still executes was offered"
-    );
-    assert!(
-        running_findings
-            .iter()
-            .any(|finding| finding["path"] == cache.display().to_string())
-    );
-    assert!(
-        String::from_utf8_lossy(&running.stderr).contains("still executing in a running process")
-    );
-    // A probe that fails refuses release cleanup instead of passing.
-    sandbox.script("lsof", "exit 1");
-    let unprobed = run(&sandbox, &["clean", "agents", "--json"]);
-    assert!(!unprobed.status.success());
-    assert!(
-        json(&unprobed)["errors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|error| error
-                .as_str()
-                .unwrap()
-                .contains("cannot tell which Codex releases running processes execute"))
-    );
-    sandbox.script("lsof", "printf 'p1\\nftxt\\nn/usr/lib/dyld\\n'");
-
-    // The preview must disclose the interruption risk before anything is
-    // applied, and in BOTH renderings: a warning present only in the JSON
-    // envelope is invisible to the person actually running the command.
-    let preview = run(&sandbox, &["clean", "agents", "--json"]);
-    let previewed = json(&preview);
-    assert!(
-        previewed["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| {
-                finding["path"] == old_release.display().to_string()
-                    && finding["action"]["type"] == "trash"
-            })
-    );
-    assert!(
-        !previewed["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| { finding["path"] == personal_release.display().to_string() })
-    );
-    assert!(
-        !previewed["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| { finding["path"] == forged_voice_release.display().to_string() })
-    );
-    assert!(
-        !previewed["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| { finding["path"] == modified_voice_release.display().to_string() })
-    );
-    assert!(
-        !previewed["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| { finding["path"] == no_voice_release.display().to_string() })
-    );
-    assert!(
-        !previewed["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| { finding["path"] == malformed_version_release.display().to_string() })
-    );
-    assert!(
-        !previewed["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| {
-                [
-                    &current_release,
-                    &newer_release,
-                    &unknown_release,
-                    &incomplete_release,
-                ]
-                .iter()
-                .any(|path| finding["path"] == path.display().to_string())
-            })
-    );
-    let cache_note = previewed["findings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|finding| finding["label"] == "Claude Code metadata cache")
-        .map(|finding| finding["note"].as_str().unwrap().to_string())
-        .expect("the regenerable cache must be previewed");
-    for phrase in ["interrupt", "close agents"] {
-        assert!(
-            cache_note.contains(phrase),
-            "agent cache preview must disclose active-session interruption: {cache_note}"
-        );
-    }
-    let human = run(&sandbox, &["clean", "agents"]);
-    let human = String::from_utf8_lossy(&human.stdout);
-    for phrase in ["interrupt", "close agents"] {
-        assert!(
-            human.contains(phrase),
-            "the human preview must carry the same warning as the JSON one"
-        );
-    }
-
-    let output = run(
+    family.start(
         &sandbox,
-        &["clean", "agents", "--apply", "--shred", "--yolo", "--json"],
+        &["clean", "docker", "--apply", "--yolo", "--json"],
     );
-    let value = json(&output);
-    assert!(output.status.success(), "{value}");
-    assert_eq!(value["operation"], "agents");
-    assert_eq!(value["summary"]["items_touched"], 3, "{value}");
-    assert!(!cache.exists(), "a regenerable cache must be removed");
-    assert!(
-        !old_release.exists(),
-        "the obsolete release must be removed"
-    );
-    assert!(current_release.exists(), "the current release must survive");
-    assert!(newer_release.exists(), "newer release must survive");
-    assert!(unknown_release.exists(), "unknown contents must survive");
-    assert!(personal_release.exists(), "extra resource must survive");
-    assert!(
-        forged_voice_release.exists(),
-        "forged voice resource must survive"
-    );
-    assert!(
-        modified_voice_release.exists(),
-        "modified voice resource must survive"
-    );
-    assert!(
-        no_voice_release.exists(),
-        "unverifiable package must survive"
-    );
-    assert!(
-        malformed_version_release.exists(),
-        "malformed version must survive"
-    );
-    assert!(
-        incomplete_release.exists(),
-        "incomplete release must survive"
-    );
-    assert!(!old_session.exists(), "a stale session must be removed");
-    assert!(live_session.exists(), "an active session must survive");
-    assert_eq!(
-        std::fs::read_to_string(&credentials).unwrap(),
-        "OAUTH TOKEN"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&thread_history).unwrap(),
-        "thread index"
-    );
-    assert_eq!(std::fs::read_to_string(&plugin).unwrap(), "plugin state");
-    assert_eq!(
-        std::fs::read_to_string(&configuration).unwrap(),
-        "{\"theme\":\"dark\"}"
-    );
-}
+    let (stub, descendant) = family.running();
 
-#[test]
-fn installers_parse_errors_retain_the_category_in_json() {
-    let sandbox = Sandbox::new("installers-parse-error");
-    let output = run(
-        &sandbox,
-        &["clean", "installers", "--unsupported", "--json"],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    let value = json(&output);
-    assert_eq!(value["operation"], "installers");
-    assert_eq!(value["errors"].as_array().unwrap().len(), 1);
-}
+    let (code, stderr) = family.interrupt("INT");
 
-#[test]
-fn scan_runs_each_liveness_probe_once_and_git_once_per_repo() {
-    let sandbox = Sandbox::new("scan-spawn-count");
-    let project = sandbox.path().join("dev/project");
-    std::fs::create_dir_all(project.join(".git")).unwrap();
-    std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
-    std::fs::write(project.join("package.json"), "{}").unwrap();
-    std::fs::write(project.join("node_modules/pkg/index.js"), "x").unwrap();
-    std::fs::create_dir_all(project.join("target")).unwrap();
-    std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
-    std::fs::write(project.join("target/output"), "x").unwrap();
-    let log = sandbox.path().join("spawns.log");
-    let record = format!("printf '%s\\n' \"${{0##*/}} $*\" >> '{}'", log.display());
-    sandbox.script(
-        "pgrep",
-        &format!("{record}\ncase \"$*\" in \"-a -x xcodebuild|SWBBuildService|XCBBuildService|Xcode\") exit 1 ;; esac\nprintf '4242\\n'"),
-    );
-    sandbox.script(
-        "lsof",
-        &format!("{record}\nprintf 'p4242\\nn/elsewhere\\n'"),
-    );
-    sandbox.script(
-        "git",
-        &format!("{record}\n{}", git_activity("2020-01-01", "2020-01-01")),
-    );
-
-    let output = run(&sandbox, &["scan", "--json"]);
-
+    assert_eq!(code, Some(130), "{stderr}");
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        BlockingFamily::gone(&stub),
+        "PV process/interrupt-kill: the prune {stub} survived"
     );
-    let value = json(&output);
-    let labels = value["findings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|finding| finding["label"].as_str().unwrap().to_string())
+    assert!(
+        BlockingFamily::gone(&descendant),
+        "PV process/interrupt-kill: the prune's child {descendant} survived"
+    );
+    let journal = std::fs::read_to_string(sandbox.journal()).unwrap();
+    let phases = journal
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap()["phase"].clone())
         .collect::<Vec<_>>();
-    assert!(
-        labels.iter().any(|label| label == "stale node_modules"),
-        "{labels:?}"
-    );
-    assert!(
-        labels.iter().any(|label| label == "stale target artifacts"),
-        "{labels:?}"
-    );
-    let spawns = std::fs::read_to_string(&log).unwrap();
-    let count = |needle: &str| spawns.lines().filter(|line| line.contains(needle)).count();
-    // node_modules and artifacts both need the build-process probe and the
-    // owning repo's last commit; one scan pays for each exactly once.
-    assert_eq!(count("pgrep -a -x node|"), 1, "{spawns}");
-    assert_eq!(count("lsof "), 1, "{spawns}");
-    assert_eq!(
-        count(" log --no-show-signature -1 --date=format-local:%Y-%m-%d --format=%cd"),
-        1,
-        "{spawns}"
-    );
-    assert_eq!(count(" log --no-show-signature -1 -g "), 1, "{spawns}");
-    // The tracked-file check runs once per offered candidate, never per file.
-    assert_eq!(count(" ls-files "), 2, "{spawns}");
+    assert_eq!(phases, vec![Value::from("attempt")], "{journal}");
+    let history = json(&run(&sandbox, &["history", "--json"]));
+    assert_eq!(history["entries"][0]["status"], "interrupted", "{history}");
+}
 
-    for failed_probe in ["liveness", "git"] {
-        std::fs::write(&log, "").unwrap();
-        sandbox.script(
-            "pgrep",
-            &format!(
-                "{record}\ncase \"$*\" in \"-a -x xcodebuild|SWBBuildService|XCBBuildService|Xcode\") exit 1 ;; esac\n{}",
-                if failed_probe == "liveness" {
-                    "exit 2"
-                } else {
-                    "printf '4242\\n'"
-                }
-            ),
-        );
-        sandbox.script("git", &format!("{record}\nexit 2"));
-        let output = run(&sandbox, &["scan", "--json"]);
-        assert!(!output.status.success());
-        let value = json(&output);
-        let errors = value["errors"].as_array().unwrap();
-        for operation in ["node-modules", "artifacts"] {
-            assert!(
-                errors
-                    .iter()
-                    .any(|error| error.as_str().unwrap().contains(operation)),
-                "{failed_probe}: {errors:?}"
-            );
+/// A pipe that is full and that nobody reads, to hand devtrim as its stderr:
+/// any write to it blocks for as long as the test lives.
+fn full_unread_pipe() -> (std::io::PipeReader, std::io::PipeWriter) {
+    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+    use std::io::Write as _;
+
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let flags = fcntl_getfl(&writer).unwrap();
+    fcntl_setfl(&writer, flags | OFlags::NONBLOCK).unwrap();
+    loop {
+        match writer.write(&[b'x'; 4096]) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("cannot fill the pipe: {error}"),
         }
-        // A failed liveness probe fails both categories whole; a failed Git
-        // query blocks each repository, so nothing is offered either way.
-        assert!(
-            value["findings"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|finding| finding["path"].is_null()),
-            "{failed_probe}: {value}"
-        );
-        let spawns = std::fs::read_to_string(&log).unwrap();
-        assert_eq!(
-            spawns
-                .lines()
-                .filter(|line| line.contains("pgrep -a -x node|"))
-                .count(),
-            1,
-            "{spawns}"
-        );
-        assert_eq!(
-            spawns
-                .lines()
-                .filter(|line| line.contains(
-                    " log --no-show-signature -1 --date=format-local:%Y-%m-%d --format=%cd"
-                ))
-                .count(),
-            usize::from(failed_probe == "git"),
-            "{spawns}"
-        );
     }
+    fcntl_setfl(&writer, flags).unwrap();
+    (reader, writer)
+}
+
+/// The interrupt must never wait on the outside world. With stderr full and
+/// unread, a handler that wrote a message before exiting stalled for as long
+/// as nobody read it, and the run kept deleting meanwhile. Here an apply is
+/// interrupted right after its first journal attempt: devtrim must exit 130
+/// promptly, and the caches after the first must still be there.
+#[test]
+fn an_interrupt_with_a_full_unread_stderr_still_exits_promptly_and_stops_deleting() {
+    let sandbox = Sandbox::in_target("interrupt-full-stderr");
+    let home = sandbox.path().canonicalize().unwrap();
+    // The first cache listed is large, so the signal lands while it is being
+    // removed; the other two are small and must survive it.
+    let caches = [
+        ".cache/huggingface/hub",
+        ".cache/node/corepack",
+        ".cache/gh",
+    ];
+    for directory in 0..40 {
+        let folder = home.join(caches[0]).join(format!("d{directory}"));
+        std::fs::create_dir_all(&folder).unwrap();
+        for file in 0..150 {
+            std::fs::write(folder.join(format!("f{file}")), "x").unwrap();
+        }
+    }
+    for cache in &caches[1..] {
+        support::write(&home.join(cache).join("entry"), "x");
+    }
+    let (reader, writer) = full_unread_pipe();
+    let mut devtrim = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["clean", "caches", "--apply", "--yolo", "--shred", "--json"])
+        .env_clear()
+        .env("HOME", &home)
+        .env("PATH", sandbox.bin())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(writer))
+        .spawn()
+        .unwrap();
+
+    let journal = sandbox.journal();
+    for _ in 0..6000 {
+        if std::fs::read_to_string(&journal).is_ok_and(|text| text.contains('\n')) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Command::new("/bin/kill")
+        .args(["-s", "INT", &devtrim.id().to_string()])
+        .output()
+        .unwrap();
+    let signalled = std::time::Instant::now();
+    let mut code = None;
+    for _ in 0..200 {
+        if let Some(status) = devtrim.try_wait().unwrap() {
+            code = Some(status.code());
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if code.is_none() {
+        devtrim.kill().ok();
+        devtrim.wait().ok();
+    }
+    drop(reader);
+
+    assert_eq!(
+        code,
+        Some(Some(130)),
+        "PV process/interrupt-prompt: devtrim never exited after SIGINT"
+    );
+    assert!(
+        signalled.elapsed() < std::time::Duration::from_secs(10),
+        "PV process/interrupt-prompt: took {:?} to exit",
+        signalled.elapsed()
+    );
+    assert!(
+        caches[1..].iter().all(|cache| home.join(cache).exists()),
+        "PV process/interrupt-prompt: a cache after the first was removed after the signal"
+    );
 }

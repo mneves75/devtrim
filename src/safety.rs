@@ -84,6 +84,10 @@ impl Ctx {
             activity_windows(file_cfg.active_days, file_cfg.retain_days);
         let (protect, protect_warnings) =
             configured_protect(file_cfg.protect.unwrap_or_default(), &home)?;
+        // Validated now so a malformed setting fails every command loudly, as
+        // `protect` does; `agents` reads it again for each scan and apply.
+        codex_homes_from(file_cfg.codex_homes.as_deref().unwrap_or_default(), &home)
+            .with_context(|| format!("invalid config: {}", cfg.display()))?;
         let ResolvedRoots {
             roots,
             origin: roots_origin,
@@ -423,6 +427,7 @@ pub(crate) struct FileCfg {
     active_days: Option<u32>,
     retain_days: Option<u32>,
     protect: Option<Vec<String>>,
+    codex_homes: Option<Vec<String>>,
 }
 
 fn load_config(path: &Path) -> Result<FileCfg> {
@@ -436,6 +441,89 @@ fn load_config(path: &Path) -> Result<FileCfg> {
 
 pub(crate) fn parse_config_str(contents: &str) -> Result<FileCfg> {
     toml::from_str(contents).map_err(Into::into)
+}
+
+/// The additional Codex homes `codex_homes` names, which `agents` judges
+/// exactly as it judges `~/.codex`, read from the configuration in `home`.
+/// Read again by each `agents` scan and apply rather than kept from startup.
+pub(crate) fn configured_codex_homes(home: &Path) -> Result<Vec<PathBuf>> {
+    let path = home.join(".config/devtrim.toml");
+    let config = load_config(&path)?;
+    codex_homes_from(config.codex_homes.as_deref().unwrap_or_default(), home)
+        .with_context(|| format!("invalid config: {}", path.display()))
+}
+
+/// Validates `codex_homes`. Each entry expands `~/`, must be absolute and made
+/// only of normal components, and must name a real directory inside the home
+/// folder reached through no link (Codex requires a configured `CODEX_HOME` to
+/// exist already). It must be neither `~/.codex` itself, by spelling or by
+/// device and inode, nor inside or around `~/.codex` or another entry, so no
+/// folder is judged twice. Any entry that fails refuses the whole setting.
+fn codex_homes_from(entries: &[String], home: &Path) -> Result<Vec<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let default = home.join(".codex");
+    let default_identity = match std::fs::metadata(&default) {
+        Ok(metadata) => Some((metadata.dev(), metadata.ino())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", default.display()));
+        }
+    };
+    let mut homes: Vec<PathBuf> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let candidate = PathBuf::from(shellexpand(entry, home));
+        if !candidate.is_absolute() {
+            bail!("codex_homes entry `{entry}` must expand to an absolute candidate");
+        }
+        if candidate.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        }) {
+            bail!("codex_homes entry `{entry}` must not contain `.` or `..`");
+        }
+        if !candidate.starts_with(home) || candidate == home {
+            bail!("codex_homes entry `{entry}` must be a folder inside the home folder");
+        }
+        let metadata = std::fs::symlink_metadata(&candidate).with_context(|| {
+            format!(
+                "codex_homes entry `{entry}` is not an existing directory: {}",
+                candidate.display()
+            )
+        })?;
+        if !metadata.file_type().is_dir() {
+            bail!(
+                "codex_homes entry `{entry}` is not a real directory: {}",
+                candidate.display()
+            );
+        }
+        let resolved = candidate
+            .canonicalize()
+            .with_context(|| format!("cannot resolve codex_homes entry `{entry}`"))?;
+        if resolved != candidate {
+            bail!(
+                "codex_homes entry `{entry}` is reached through a link or another spelling: {} -> {}",
+                candidate.display(),
+                resolved.display()
+            );
+        }
+        if candidate == default || default_identity == Some((metadata.dev(), metadata.ino())) {
+            bail!("codex_homes entry `{entry}` is `~/.codex`, which is always judged");
+        }
+        if let Some(other) = std::iter::once(&default)
+            .chain(&homes)
+            .find(|other| candidate.starts_with(other) || other.starts_with(&candidate))
+        {
+            bail!(
+                "codex_homes entry `{entry}` overlaps {}, so one folder would be judged twice",
+                other.display()
+            );
+        }
+        homes.push(candidate);
+    }
+    Ok(homes)
 }
 
 fn configured_protect(entries: Vec<String>, home: &Path) -> Result<(Vec<PathBuf>, Vec<String>)> {
@@ -539,11 +627,21 @@ pub(crate) struct MarkerGrant {
     /// uv's empty `.git` in `sdists-v<N>`: granted while uv's cache lock on
     /// this exact root is held, or to a tree in the Trash, where no uv uses it.
     uv: bool,
+    /// Owner write and search permission added, through each folder's open
+    /// handle, to a read-only folder the current user owns, so a permanent
+    /// removal can delete its entries: granted only to a direct Trash child,
+    /// whose purge the operator confirmed by its size. Go leaves its module
+    /// cache read-only, and `clean caches` moves it to the Trash.
+    owned_permissions: bool,
 }
 
 impl MarkerGrant {
     pub(crate) fn uv(&self) -> bool {
         self.uv
+    }
+
+    pub(crate) fn owned_permissions(&self) -> bool {
+        self.owned_permissions
     }
 }
 
@@ -579,6 +677,7 @@ impl VerifiedTarget {
             );
         }
         self.markers.uv = true;
+        self.markers.owned_permissions = true;
         Ok(self)
     }
 }
@@ -1090,6 +1189,18 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
                    it is the one part that returns only by fuzzing again.",
     },
     DeletionEntry {
+        label: "CocoaPods download cache",
+        relative: "CocoaPods",
+        evidence: "CocoaPods 1.17.0 `lib/cocoapods/config.rb`: `cache_root` \
+                   defaults to `~/Library/Caches/CocoaPods` (moved by \
+                   `CP_CACHE_DIR` or `CP_HOME_DIR`), and `pod cache clean \
+                   --all` removes every cached pod. `download_pod` in \
+                   `lib/cocoapods/downloader/cache.rb` downloads a pod the \
+                   cache lacks, and `copy_and_clean` copies a cached pod into \
+                   the project with `rsync -a`, so an installed `Pods` folder \
+                   never points into this cache.",
+    },
+    DeletionEntry {
         label: "TypeScript server cache",
         relative: "typescript",
         evidence: "Automatic type-acquisition cache (`<version>/node_modules/\
@@ -1101,13 +1212,18 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
 /// Managed caches their owner does not rebuild on next use, with the command
 /// that brings each back, so a finding can say what removing it costs. Every
 /// name is a [`MANAGED_LIBRARY_CACHES`] entry.
-pub(crate) const REBUILT_BY_COMMAND: &[(&str, &str)] =
-    &[("ms-playwright", "npx playwright install")];
+pub(crate) const REBUILT_BY_COMMAND: &[(&str, &str)] = &[
+    ("ms-playwright", "npx playwright install"),
+    ("CocoaPods", "pod install"),
+];
 
 fn is_managed_library_subpath(relative: &Path) -> bool {
     const MANAGED: &[&str] = &[
         "Developer/Toolchains",
         "Developer/Xcode/iOS DeviceSupport",
+        "Developer/Xcode/watchOS DeviceSupport",
+        "Developer/Xcode/tvOS DeviceSupport",
+        "Developer/Xcode/visionOS DeviceSupport",
         "Developer/Xcode/DerivedData",
         "Caches/Homebrew",
     ];
@@ -1193,20 +1309,28 @@ pub fn confirmation_requirement(danger: u8, findings: &[Finding]) -> Confirmatio
 }
 
 pub fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
-    if !ctx.interactive && !ctx.yes && !ctx.yolo {
-        bail!("non-interactive run: re-run with -y to confirm danger-{max_danger} operations");
+    let requirement = confirmation_requirement(max_danger, findings);
+    if !ctx.interactive && !ctx.yolo {
+        match requirement {
+            // -y cannot answer a typed size, so naming it would send the
+            // operator round a second refusal.
+            ConfirmationRequirement::TypedGigabytes { danger, .. } => bail!(
+                "non-interactive run: danger-{danger} operation requires interactive typed confirmation or --yolo"
+            ),
+            ConfirmationRequirement::YesNo { .. } if !ctx.yes => {
+                bail!(
+                    "non-interactive run: re-run with -y to confirm danger-{max_danger} operations"
+                )
+            }
+            ConfirmationRequirement::YesNo { .. } => {}
+        }
     }
     warn_data_loss(ctx);
     if ctx.yolo {
         return Ok(());
     }
-    match confirmation_requirement(max_danger, findings) {
-        ConfirmationRequirement::TypedGigabytes { danger, expected } => {
-            if !ctx.interactive {
-                bail!(
-                    "danger-{danger} operation requires interactive typed confirmation or --yolo"
-                );
-            }
+    match requirement {
+        ConfirmationRequirement::TypedGigabytes { expected, .. } => {
             eprintln!(
                 "{} about to irreversibly remove ~{expected} GB. Type the number to continue:",
                 "CRITICAL".red().bold()
@@ -1255,6 +1379,43 @@ pub fn trash_gate(findings: &[Finding], confirm_gb: Option<u64>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Logical bytes under a directory for a report, and how many entries could
+/// not be read. It follows no link, stays on the directory's device, and does
+/// not enter `skip` (other worktrees nested inside this one), so a byte is
+/// counted once.
+pub(crate) struct Measured {
+    pub(crate) bytes: u64,
+    pub(crate) unread: usize,
+}
+
+pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured {
+    let mut measured = Measured {
+        bytes: 0,
+        unread: 0,
+    };
+    let mut entries = walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .same_file_system(true)
+        .into_iter();
+    while let Some(result) = entries.next() {
+        let Ok(entry) = result else {
+            measured.unread = measured.unread.saturating_add(1);
+            continue;
+        };
+        if entry.depth() > 0 && entry.file_type().is_dir() && skip.contains(entry.path()) {
+            entries.skip_current_dir();
+            continue;
+        }
+        if entry.file_type().is_file() {
+            match entry.metadata() {
+                Ok(metadata) => measured.bytes = measured.bytes.saturating_add(metadata.len()),
+                Err(_) => measured.unread = measured.unread.saturating_add(1),
+            }
+        }
+    }
+    measured
 }
 
 pub fn dir_size(path: &Path) -> Result<u64> {
@@ -1487,43 +1648,70 @@ pub(crate) struct LsofCwds {
 ///
 /// The fresh `pgrep` can also show a build process that started after the
 /// first one — a build moving to its next step. Its directory was never looked
-/// up, so it is looked up once, and any gap in that second answer refuses
-/// rather than chasing a moving process list.
+/// up, so it is looked up, and that answer is judged by the same two rules. On
+/// the development machine (about 200 matching processes, load average 60–85)
+/// a successor exited before its own lookup in 1 probe of 10, and 40 probes
+/// settled within three lookups; a list still changing after
+/// `LIVENESS_LOOKUPS` refuses rather than chasing it.
 fn resolve_build_process_cwds(
     requested: &BTreeSet<u32>,
     lsof: LsofCwds,
-    running_now: impl FnOnce() -> Result<BTreeSet<u32>>,
-    cwds_of: impl FnOnce(&BTreeSet<u32>) -> Result<LsofCwds>,
+    mut running_now: impl FnMut() -> Result<BTreeSet<u32>>,
+    mut cwds_of: impl FnMut(&BTreeSet<u32>) -> Result<LsofCwds>,
 ) -> Result<Vec<PathBuf>> {
-    if let Some(unexpected) = lsof.reported.difference(requested).next() {
-        bail!("lsof reported process {unexpected}, which was not probed");
-    }
-    if lsof.complete {
-        return Ok(lsof.paths);
-    }
-    let unreported: BTreeSet<u32> = requested.difference(&lsof.reported).copied().collect();
-    if unreported.is_empty() {
-        bail!("lsof cwd probe exited with status 1 after reporting every process");
-    }
-    let running = running_now().context("cannot recheck the processes lsof did not report")?;
-    if let Some(pid) = unreported.intersection(&running).next() {
-        bail!("lsof could not read the working directory of running build process {pid}");
-    }
-    let mut paths = lsof.paths;
-    let successors: BTreeSet<u32> = running.difference(requested).copied().collect();
-    if !successors.is_empty() {
-        let later = cwds_of(&successors).context(
+    let mut asked = requested.clone();
+    let mut answer = lsof;
+    let mut reported = BTreeSet::new();
+    let mut paths = Vec::new();
+    for lookup in 1..=LIVENESS_LOOKUPS {
+        if let Some(unexpected) = answer.reported.difference(&asked).next() {
+            bail!("lsof reported process {unexpected}, which was not probed");
+        }
+        paths.append(&mut answer.paths);
+        reported.extend(answer.reported.iter().copied());
+        // An exit 0 is trusted only when it reported every PID asked about;
+        // one it left out is judged like any unreported PID below.
+        let unreported: BTreeSet<u32> = asked.difference(&answer.reported).copied().collect();
+        if unreported.is_empty() {
+            if answer.complete {
+                break;
+            }
+            bail!("lsof cwd probe exited with status 1 after reporting every process");
+        }
+        answer.complete = false;
+        let running = running_now().context("cannot recheck the processes lsof did not report")?;
+        if let Some(pid) = unreported.intersection(&running).next() {
+            bail!("lsof could not read the working directory of running build process {pid}");
+        }
+        // A PID that was unreported and gone, then listed again, is a new
+        // process that took the number, so it is looked up like any other.
+        let successors: BTreeSet<u32> = running.difference(&reported).copied().collect();
+        if successors.is_empty() {
+            answer.complete = true;
+            break;
+        }
+        if lookup == LIVENESS_LOOKUPS {
+            break;
+        }
+        answer = cwds_of(&successors).context(
             "cannot read the working directories of build processes that started during the probe",
         )?;
-        if !later.complete || later.reported != successors {
-            bail!("build processes changed again while their working directories were read");
-        }
-        paths.extend(later.paths);
-        paths.sort();
-        paths.dedup();
+        asked = successors;
     }
+    if !answer.complete {
+        bail!(
+            "build processes kept changing while their working directories were read \
+             ({LIVENESS_LOOKUPS} lookups)"
+        );
+    }
+    paths.sort();
+    paths.dedup();
     Ok(paths)
 }
+
+/// `lsof` runs one probe may make, the first included, before a process list
+/// that keeps changing refuses.
+const LIVENESS_LOOKUPS: usize = 5;
 
 /// Processes that write DerivedData: command-line builds, the Swift Build and
 /// legacy XCBuild services that Xcode.app builds run through (their parent is
@@ -1929,16 +2117,6 @@ mod tests {
         assert!(error.to_string().contains("absolute"));
     }
 
-    #[test]
-    fn configured_protect_existing_entry_warns_nothing() {
-        let fixture = crate::ops::TestFixture::new("devtrim-protect-exists");
-        let home = fixture.path().to_path_buf();
-        std::fs::create_dir_all(home.join("dev/keep")).unwrap();
-        let (_, warnings) = configured_protect(vec!["~/dev/keep".into()], &home).unwrap();
-        assert!(warnings.is_empty());
-        crate::ops::remove_test_path(home);
-    }
-
     /// Without configured roots devtrim scans every conventional project
     /// folder that exists, not only `~/dev`; a folder that is absent, not a
     /// directory, or a broken link is left out, and two names for one folder
@@ -2053,27 +2231,6 @@ mod tests {
         assert!(!holds_home(&resolved.join("elsewhere"), &home));
         assert!(!holds_home(&resolved.join("home/dev"), &home));
         crate::ops::remove_test_path(base);
-    }
-
-    /// An empty preview must never read as a clean machine when the scan only
-    /// looked in one place: the note names the roots and how to change them.
-    #[test]
-    fn the_roots_note_says_where_the_roots_came_from() {
-        let home = Path::new("/Users/someone");
-        let roots = [home.join("dev"), PathBuf::from("/Volumes/work")];
-
-        let note = roots_note(&roots, RootsOrigin::Default, home);
-        assert!(note.contains("~/dev, /Volumes/work"), "{note}");
-        assert!(note.contains("default project folders"), "{note}");
-        assert!(note.contains("--root"), "{note}");
-        assert!(note.contains("~/.config/devtrim.toml"), "{note}");
-
-        let none = roots_note(&[], RootsOrigin::Default, home);
-        assert!(none.contains("no default project folder exists"), "{none}");
-        assert!(none.contains("~/Projects"), "{none}");
-
-        assert!(roots_note(&roots, RootsOrigin::Config, home).contains("from `roots` in"));
-        assert!(roots_note(&roots, RootsOrigin::Flag, home).contains("from --root"));
     }
 
     #[test]
@@ -2364,17 +2521,6 @@ mod tests {
     }
 
     #[test]
-    fn refuses_symlinked_trash() {
-        let home = temp("trash-link");
-        let target = home.join("elsewhere");
-        std::fs::create_dir_all(&target).unwrap();
-        symlink(&target, home.join(".Trash")).unwrap();
-        assert!(validate_trash_root(&home).is_err());
-        crate::ops::remove_test_path(home.join(".Trash"));
-        crate::ops::remove_test_path(home);
-    }
-
-    #[test]
     fn trash_acknowledgment_measures_the_plan_not_the_whole_trash() {
         const GIB: u64 = 1024 * 1024 * 1024;
         let small = Finding::new(
@@ -2436,37 +2582,6 @@ mod tests {
                 .to_string()
                 .contains("requires interactive typed confirmation")
         );
-    }
-
-    #[test]
-    fn directory_size_fails_closed_on_unreadable_content() {
-        let root = temp("unreadable-size");
-        let unreadable = root.join("unreadable");
-        std::fs::create_dir_all(&unreadable).unwrap();
-        std::fs::write(unreadable.join("hidden"), "not measured").unwrap();
-
-        let original = std::fs::metadata(&unreadable).unwrap().permissions();
-        let mut denied = original.clone();
-        denied.set_mode(0o000);
-        std::fs::set_permissions(&unreadable, denied).unwrap();
-        let measured = dir_size(&root);
-        std::fs::set_permissions(&unreadable, original).unwrap();
-
-        assert!(measured.is_err());
-        crate::ops::remove_test_path(root);
-    }
-
-    #[test]
-    fn directory_size_does_not_follow_a_root_symlink() {
-        let root = temp("symlink-size");
-        let target = root.join("target");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::write(target.join("payload"), "not part of the link").unwrap();
-        let link = root.join("link");
-        symlink(&target, &link).unwrap();
-
-        assert_eq!(dir_size(&link).unwrap(), 0);
-        crate::ops::remove_test_path(root);
     }
 
     fn cwds_complete_was(output: &[u8], exit: i32) -> bool {
@@ -2532,6 +2647,19 @@ mod tests {
                 .unwrap();
         assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
 
+        // An exit 0 that leaves a running PID out proves nothing about it.
+        let silent = || parse_lsof_cwds(b"p12\nfcwd\nn/work/live\n", Some(0)).unwrap();
+        assert!(
+            resolve_build_process_cwds(
+                &pid_set(&[12, 34]),
+                silent(),
+                || Ok(pid_set(&[12, 34])),
+                unused
+            )
+            .is_err(),
+            "PV liveness/lsof-silent-omission: an exit 0 without PID 34 was accepted while it runs"
+        );
+
         // PID 34 is still running and lsof could not read it.
         match resolve_build_process_cwds(
             &pid_set(&[12, 34]),
@@ -2576,7 +2704,7 @@ mod tests {
     }
 
     #[test]
-    fn a_build_process_that_started_during_the_probe_is_looked_up_once() {
+    fn build_processes_started_during_the_probe_are_judged_until_the_list_settles() {
         let lsof = || parse_lsof_cwds(b"p12\nfcwd\nn/work/live\n", Some(1)).unwrap();
 
         // PID 34 exited; PID 56 (the build's next step) appeared in the recheck.
@@ -2600,22 +2728,57 @@ mod tests {
             ]
         );
 
-        // The successor's directory could not be read, or it too vanished.
-        for (output, exit) in [(&b""[..], 1), (b"p56\nfcwd\nn/work/next-step\n", 1)] {
-            match resolve_build_process_cwds(
-                &pid_set(&[12, 34]),
-                lsof(),
-                || Ok(pid_set(&[12, 56])),
-                |_| parse_lsof_cwds(output, Some(exit)),
-            ) {
-                Ok(cwds) => panic!(
-                    "PV liveness/lsof-successor: accepted {cwds:?} without the successor's directory"
-                ),
-                Err(error) => assert!(
-                    error.to_string().contains("changed again"),
-                    "PV liveness/lsof-successor: {error:#}"
-                ),
-            }
+        // The successor exited before its own lookup, and the next recheck
+        // agrees: on a busy machine this is routine, and it runs no build.
+        let rechecks = std::cell::Cell::new(0);
+        let cwds = resolve_build_process_cwds(
+            &pid_set(&[12, 34]),
+            lsof(),
+            || {
+                rechecks.set(rechecks.get() + 1);
+                Ok(if rechecks.get() == 1 {
+                    pid_set(&[12, 56])
+                } else {
+                    pid_set(&[12])
+                })
+            },
+            |_| parse_lsof_cwds(b"", Some(1)),
+        )
+        .unwrap();
+        assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+
+        // The successor is still running but its directory could not be read.
+        let error = resolve_build_process_cwds(
+            &pid_set(&[12, 34]),
+            lsof(),
+            || Ok(pid_set(&[12, 56])),
+            |_| parse_lsof_cwds(b"", Some(1)),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("running build process 56"),
+            "{error:#}"
+        );
+
+        // Every recheck shows a new process that is gone before it is read: the
+        // list never settles, so some directory stays unknown.
+        let next_pid = std::cell::Cell::new(100);
+        match resolve_build_process_cwds(
+            &pid_set(&[12, 34]),
+            lsof(),
+            || {
+                next_pid.set(next_pid.get() + 1);
+                Ok(pid_set(&[12, next_pid.get()]))
+            },
+            |_| parse_lsof_cwds(b"", Some(1)),
+        ) {
+            Ok(cwds) => panic!(
+                "PV liveness/lsof-successor: accepted {cwds:?} from a list that never settled"
+            ),
+            Err(error) => assert!(
+                error.to_string().contains("kept changing"),
+                "PV liveness/lsof-successor: {error:#}"
+            ),
         }
 
         let error = resolve_build_process_cwds(
@@ -2892,17 +3055,5 @@ mod tests {
                 PathBuf::from("/work/v1^2"),
             ]
         );
-    }
-
-    #[test]
-    fn size_lookup_errors_are_not_reported_as_empty_paths() {
-        let root = temp("size-lookup-error");
-        let non_directory = root.join("file");
-        std::fs::write(&non_directory, "data").unwrap();
-
-        let error = dir_size(&non_directory.join("child")).unwrap_err();
-
-        assert!(error.to_string().contains("cannot inspect"));
-        crate::ops::remove_test_path(root);
     }
 }

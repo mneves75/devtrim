@@ -25,6 +25,7 @@ mod status;
 mod theme;
 mod tui;
 mod uninstall;
+mod worktrees;
 
 #[cfg(fuzzing)]
 #[doc(hidden)]
