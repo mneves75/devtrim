@@ -91,7 +91,7 @@ devtrim clean caches --apply -y           # tool download caches (HF, uv, npm, b
 devtrim clean node-modules --apply -y     # exact paths in Git repos with no recent activity
 devtrim clean artifacts --apply -y        # corroborated build artifacts in stale Git repos
 devtrim clean simulators --apply -y       # delete exact previewed unavailable devices; working ones are only reported; no Xcode, nothing to do
-devtrim clean xcode --apply -y            # exact DeviceSupport/DerivedData child directories; package checkouts stay
+devtrim clean xcode --apply -y            # exact iOS/watchOS/tvOS/visionOS DeviceSupport and DerivedData children; package checkouts stay
 devtrim clean docker --apply -y           # local daemon images + build cache; never volumes
 devtrim clean toolchains --apply -y       # only swift.org toolchains no symlink or swiftly references
 devtrim clean installers --apply -y       # stale installer archives in Downloads/Desktop

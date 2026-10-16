@@ -177,6 +177,7 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
         "Library/Caches/go-build",
         "Library/Caches/pnpm",
         "Library/Caches/org.swift.swiftpm",
+        "Library/Caches/CocoaPods",
         ".npm",
         // Homebrew's cache holds a Git clone, so it is offered as its other children.
         "Library/Caches/Homebrew/downloads",
@@ -972,6 +973,14 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
         &developer.join("iOS DeviceSupport/17.0 (21A329)/Symbols/dyld"),
         "symbols",
     );
+    let platforms = [
+        "watchOS DeviceSupport/Watch7,1 27.0 (24R5)",
+        "tvOS DeviceSupport/AppleTV14,1 27.0 (24J5)",
+        "visionOS DeviceSupport/RealityDevice14,1 27.0 (24N5)",
+    ];
+    for folder in platforms {
+        write(&developer.join(folder).join("Symbols/dyld"), "symbols");
+    }
     for folder in ["App-old", "App-held", "App-pkg"] {
         age(&derived.join(folder), 60);
     }
@@ -1002,6 +1011,7 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
         derived.join("App-pkg/Index.noindex"),
         developer.join("iOS DeviceSupport/17.0 (21A329)"),
     ];
+    expected.extend(platforms.iter().map(|folder| developer.join(folder)));
     expected.sort();
     let pristine = Tree::snapshot(sandbox.path());
 

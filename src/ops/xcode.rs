@@ -18,11 +18,41 @@ enum XcodeTargetKind {
     DerivedData,
 }
 
+const DEVICE_SUPPORT_NOTE: &str = "debug symbols copied from a device; Xcode copies them again only from a connected device running this exact OS build, so a build no device still runs is needed only to symbolicate its crash logs";
+
+/// The folders whose direct children are offered. Apple documents none of
+/// the DeviceSupport folders; what they hold was observed for iOS (one folder
+/// of symbols per device OS build), and the other three are the same kind of
+/// folder for their platform. Their names are the ones LLVM's debugger looks
+/// for as Xcode's device support (llvm-project 82911de
+/// `lldb/source/Plugins/Platform/MacOSX/PlatformRemote{iOS,AppleWatch,AppleTV,AppleXR}.cpp`
+/// `GetDeviceSupportDirectoryNames`; for visionOS, "Xcode 27+ uses
+/// "visionOS DeviceSupport""), and Mole V1.56.0 (`lib/clean/dev.sh`) cleans
+/// the iOS, watchOS and tvOS ones the same way. `watchOS DeviceSupport` was
+/// observed on the development machine, empty; `tvOS` and `visionOS` were not.
+/// The pre-27 visionOS folder is left out: lldb spells it `XROS DeviceSupport`
+/// and Mole `xrOS DeviceSupport`, and a spelling that differs from the folder
+/// on disk only in case would be offered and then refused at the sink.
 const TARGETS: &[(&str, &str, &str)] = &[
     (
         "iOS DeviceSupport",
         "Developer/Xcode/iOS DeviceSupport",
-        "debug symbols copied from a device; Xcode copies them again only from a connected device running this exact OS build, so a build no device still runs is needed only to symbolicate its crash logs",
+        DEVICE_SUPPORT_NOTE,
+    ),
+    (
+        "watchOS DeviceSupport",
+        "Developer/Xcode/watchOS DeviceSupport",
+        DEVICE_SUPPORT_NOTE,
+    ),
+    (
+        "tvOS DeviceSupport",
+        "Developer/Xcode/tvOS DeviceSupport",
+        DEVICE_SUPPORT_NOTE,
+    ),
+    (
+        "visionOS DeviceSupport",
+        "Developer/Xcode/visionOS DeviceSupport",
+        DEVICE_SUPPORT_NOTE,
     ),
     (
         "DerivedData",
@@ -523,10 +553,15 @@ fn is_package_folder_child(path: &Path, derived_data: &Path) -> Result<bool> {
 }
 
 fn authorize_xcode_target(path: &Path, home: &Path) -> Result<XcodeTargetKind> {
-    let device_support = home.join("Library/Developer/Xcode/iOS DeviceSupport");
     let derived_data = home.join("Library/Developer/Xcode/DerivedData");
     refuse_package_checkouts(path, &derived_data)?;
-    let kind = if path.parent() == Some(device_support.as_path()) {
+    let device_support = TARGETS
+        .iter()
+        .filter(|(label, _, _)| *label != "DerivedData")
+        .any(|(_, relative, _)| {
+            path.parent() == Some(home.join("Library").join(relative).as_path())
+        });
+    let kind = if device_support {
         XcodeTargetKind::DeviceSupport
     } else if path.parent() == Some(derived_data.as_path())
         || is_package_folder_child(path, &derived_data)?

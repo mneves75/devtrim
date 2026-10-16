@@ -1090,6 +1090,18 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
                    it is the one part that returns only by fuzzing again.",
     },
     DeletionEntry {
+        label: "CocoaPods download cache",
+        relative: "CocoaPods",
+        evidence: "CocoaPods 1.17.0 `lib/cocoapods/config.rb`: `cache_root` \
+                   defaults to `~/Library/Caches/CocoaPods` (moved by \
+                   `CP_CACHE_DIR` or `CP_HOME_DIR`), and `pod cache clean \
+                   --all` removes every cached pod. `download_pod` in \
+                   `lib/cocoapods/downloader/cache.rb` downloads a pod the \
+                   cache lacks, and `copy_and_clean` copies a cached pod into \
+                   the project with `rsync -a`, so an installed `Pods` folder \
+                   never points into this cache.",
+    },
+    DeletionEntry {
         label: "TypeScript server cache",
         relative: "typescript",
         evidence: "Automatic type-acquisition cache (`<version>/node_modules/\
@@ -1101,13 +1113,18 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
 /// Managed caches their owner does not rebuild on next use, with the command
 /// that brings each back, so a finding can say what removing it costs. Every
 /// name is a [`MANAGED_LIBRARY_CACHES`] entry.
-pub(crate) const REBUILT_BY_COMMAND: &[(&str, &str)] =
-    &[("ms-playwright", "npx playwright install")];
+pub(crate) const REBUILT_BY_COMMAND: &[(&str, &str)] = &[
+    ("ms-playwright", "npx playwright install"),
+    ("CocoaPods", "pod install"),
+];
 
 fn is_managed_library_subpath(relative: &Path) -> bool {
     const MANAGED: &[&str] = &[
         "Developer/Toolchains",
         "Developer/Xcode/iOS DeviceSupport",
+        "Developer/Xcode/watchOS DeviceSupport",
+        "Developer/Xcode/tvOS DeviceSupport",
+        "Developer/Xcode/visionOS DeviceSupport",
         "Developer/Xcode/DerivedData",
         "Caches/Homebrew",
     ];
