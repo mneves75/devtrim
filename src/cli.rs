@@ -66,6 +66,17 @@ pub enum Command {
         /// Directory to start from (default: your home directory)
         path: Option<String>,
     },
+    /// Create a private, offline HTML disk inventory and category-preview dashboard
+    Dashboard {
+        /// Directory to map (default: your home directory)
+        path: Option<std::path::PathBuf>,
+        /// New HTML file to create; an existing file is never overwritten
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+        /// Generate the snapshot without opening the default browser
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Show the largest directories one and two levels below scan roots
     Largest {
         /// Number of entries to show (clamped 1..=100)

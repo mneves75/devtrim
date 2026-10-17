@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.11.0.
+This source tree and its packaged documentation describe devtrim v0.12.0.
 
 ## Install
 
@@ -105,6 +105,9 @@ devtrim trash-empty --only-devtrim        # only what devtrim itself moved to th
 devtrim history                           # recent journaled applies; --json for one document
 devtrim analyze                           # interactive read-only disk explorer (never deletes)
 devtrim analyze ~/Library --json          # one-shot breakdown of a directory
+devtrim dashboard                        # open a local, read-only HTML disk map of your home folder
+devtrim dashboard ~/dev                  # map a chosen folder; cleanup roots keep their configured scope
+devtrim dashboard ~/dev --output disk-map.html --no-open # save a private offline snapshot
 devtrim status                            # read-only machine vitals and a health score
 devtrim status --watch                    # live dashboard; q quits
 devtrim uninstall AltTab                  # paths named for an app's bundle id (report-only)
@@ -328,6 +331,37 @@ lists each one in `errors` and exits nonzero, as quitting the explorer does.
 health score that **names every input it could not read** rather than scoring
 over the gap. Memory used is stated as `active + wired + compressed`: counting
 macOS's reclaimable inactive pages as used reports a healthy machine at 96%.
+
+### HTML disk map
+
+`devtrim dashboard` generates a local HTML snapshot of your home folder and
+opens it in your default browser. Supply a directory to map that folder instead:
+
+```bash
+devtrim dashboard ~/dev
+devtrim dashboard ~/dev --output disk-map.html --no-open
+```
+
+The light dashboard combines an interactive treemap, folder breadcrumbs,
+searchable details and cleanup previews. It works offline without a server,
+external fonts or uploaded data. The generated file contains local paths and
+sizes; keep it private when sharing files. Output files are private and an
+explicit `--output` refuses an existing file or symlink.
+
+Available disk space comes from the selected folder's filesystem. Mapped sizes
+are estimated logical bytes, which may differ from physical blocks because of
+APFS clones, hard links and sparse files. Unreadable content is disclosed as a
+partial lower bound; the command still saves the useful report and exits nonzero.
+Symlinks are measured at their own size, and other filesystems are not traversed.
+The overview retains up to six levels and 10,000 entries. Detail beyond that
+limit is summarized; its measured bytes stay in the totals. Search covers the
+retained overview. Generate a new report rooted at a folder for a closer view.
+
+The dashboard never deletes. Cleanup previews come from the existing categories
+and keep their configured project roots; mapping your home does not authorize
+cleanup across it. Copied commands start a fresh CLI preview, where you review
+the current findings before any apply. The HTML is a snapshot, so rerun the
+command to refresh it. `--no-open` saves the report without starting a browser.
 
 ## Where devtrim stops, and why
 

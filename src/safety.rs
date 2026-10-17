@@ -94,9 +94,16 @@ impl Ctx {
             warnings: root_warnings,
         } = resolve_roots(&cli.roots, &cfg_roots, &home)?;
         let journal_path = journal_path(&home);
-        let journal_warnings = match crate::journal::rotate_if_needed(&journal_path) {
-            Ok(warnings) => warnings,
-            Err(error) => vec![format!("cannot rotate apply journal: {error:#}")],
+        let journal_warnings = if matches!(
+            cli.command.as_ref(),
+            Some(crate::cli::Command::Dashboard { .. })
+        ) {
+            Vec::new()
+        } else {
+            match crate::journal::rotate_if_needed(&journal_path) {
+                Ok(warnings) => warnings,
+                Err(error) => vec![format!("cannot rotate apply journal: {error:#}")],
+            }
         };
         let ctx = Self {
             yes: cli.yes,
@@ -112,7 +119,7 @@ impl Ctx {
             home,
             diagnostic_output: if matches!(
                 cli.command.as_ref(),
-                None | Some(crate::cli::Command::Tui)
+                None | Some(crate::cli::Command::Tui | crate::cli::Command::Dashboard { .. })
             ) {
                 DiagnosticOutput::Capture
             } else {

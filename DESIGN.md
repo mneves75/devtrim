@@ -38,6 +38,22 @@ accent oklch(50% 0.16 155) · warn oklch(62% 0.14 70) · bad oklch(52% 0.19 25)
 6. Filter shows empty-state message + result count.
 7. Em-dash density in prose reduced (detector advisory).
 
+## Offline disk dashboard
+
+The generated dashboard is an Operate surface with an explicitly requested
+light disk-map design. Use white panels, cool neutral ground and system sans
+text. Compact summary metrics lead directly to the map, with category preview
+rows alongside on desktop and below on narrow screens. The map owns the first
+viewport; avoid marketing headlines, hero whitespace and decorative animation.
+
+Parent headers and one nested map level show hierarchy; drilldown, breadcrumbs,
+search and the paginated list expose retained detail. Layout uses actual CSS
+pixels so visible labels stay legible at narrow widths. Small tiles keep
+equivalent list controls. Category color never implies an ancestor is removable.
+The output is an immutable offline snapshot with text-only path rendering,
+keyboard focus and useful empty/partial/error states. Logical sizes and actual
+filesystem available space stay separate. There is no apply control.
+
 ## Terminal interface
 - Preserve the same semantic palette: green = preview/read-only, amber = review,
   red = permanent. Every meaning also appears as text (`READ-ONLY`, `TRASH`,

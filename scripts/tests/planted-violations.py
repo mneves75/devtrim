@@ -44,6 +44,34 @@ TEST_TIMEOUT_SECONDS = 120
 REPOSITORY = Path(__file__).resolve().parents[2]
 SOURCE_INPUTS = ("src", "tests", "Cargo.toml", "Cargo.lock")
 
+# Both guards must permit an existing leaf: disabling only the preflight would
+# leave exclusive creation refusing it, hiding whether data preservation holds.
+DASHBOARD_OUTPUT_GUARDS = '''    match fs::symlink_metadata(&path) {
+        Ok(_) => bail!(
+            "output already exists (never overwritten): {}",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path),
+        Err(error) => {
+            Err(error).with_context(|| format!("cannot inspect output {}", path.display()))
+        }
+    }
+}
+
+fn create_output(explicit: Option<&Path>) -> Result<(File, PathBuf)> {
+    if let Some(path) = explicit {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+'''
+DASHBOARD_OUTPUT_OVERWRITE = DASHBOARD_OUTPUT_GUARDS.replace(
+    '''        Ok(_) => bail!(
+            "output already exists (never overwritten): {}",
+            path.display()
+        ),''',
+    "        Ok(_) => Ok(path),",
+).replace(".create_new(true)", ".create(true).truncate(true)")
+
 
 class Case:
     """One production branch, the edit that disables it, and the proof."""
@@ -70,6 +98,60 @@ class Case:
 
 
 CASES = (
+    Case(
+        name="dashboard/existing-output",
+        relative_path="src/dashboard.rs",
+        before=DASHBOARD_OUTPUT_GUARDS,
+        after=DASHBOARD_OUTPUT_OVERWRITE,
+        tests=("existing_output_is_preserved_without_scanning",),
+        marker="PV dashboard/existing-output",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/symlink-output",
+        relative_path="src/dashboard.rs",
+        before=DASHBOARD_OUTPUT_GUARDS,
+        after=DASHBOARD_OUTPUT_OVERWRITE,
+        tests=("symlink_output_is_preserved_without_scanning",),
+        marker="PV dashboard/symlink-output",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/apply-flag",
+        relative_path="src/app.rs",
+        before='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),',
+        after='Some(cli::Command::Dashboard { .. }) => ("dashboard", true, false, false, false),',
+        tests=("dashboard_mutation_flags_refuse_before_any_work",),
+        marker="PV dashboard/mutation-flags",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/yes-flag",
+        relative_path="src/app.rs",
+        before='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),',
+        after='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, true, false, false),',
+        tests=("dashboard_mutation_flags_refuse_before_any_work",),
+        marker="PV dashboard/mutation-flags",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/yolo-flag",
+        relative_path="src/app.rs",
+        before='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),',
+        after='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, true, false),',
+        tests=("dashboard_mutation_flags_refuse_before_any_work",),
+        marker="PV dashboard/mutation-flags",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/shred-flag",
+        relative_path="src/app.rs",
+        before='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),',
+        after='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, true),',
+        tests=("dashboard_mutation_flags_refuse_before_any_work",),
+        marker="PV dashboard/mutation-flags",
+        target="dashboard",
+    ),
     Case(
         name="liveness/lsof-silent-omission",
         relative_path="src/safety.rs",
