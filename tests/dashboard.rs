@@ -11,7 +11,7 @@ mod support;
 use serde_json::Value;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::process::Command;
-use support::{Allowed, Sandbox, Tree, json, run, write};
+use support::{Allowed, Sandbox, Tree, git_activity, json, run, write};
 
 fn fixture(name: &str) -> Sandbox {
     let sandbox = Sandbox::new(name);
@@ -29,6 +29,180 @@ fn embedded(document: &str) -> Value {
         .unwrap()
         .0;
     serde_json::from_str(data).unwrap()
+}
+
+#[test]
+fn copied_project_preview_preserves_explicit_roots_and_inert_shell_data() {
+    let sandbox = Sandbox::in_target("dashboard-root-preview");
+    sandbox.script("xcrun", "if [ \"$1\" = --version ]; then printf 'xcrun version 70\\n'; else printf '{\"devices\":{}}\\n'; fi");
+    sandbox.script("git", &git_activity("2000-01-01", "2000-01-01"));
+    sandbox.script(
+        "devtrim",
+        "printf '%s\\0' \"$@\" > \"$HOME/copied-argv\"\nexec \"$DEVTRIM_BIN\" \"$@\"",
+    );
+    let root = sandbox
+        .path()
+        .join("odd ' \\ path; & | $(printf shell-ran > $HOME/shell-ran)\n\t\r\u{7f}\u{85}");
+    let target = root.join("project/target");
+    let ordinary_root = sandbox
+        .path()
+        .join("literal ' \\ path $(printf shell-ran > $HOME/shell-ran)");
+    std::fs::create_dir_all(&ordinary_root).unwrap();
+    write(&root.join("project/.git/HEAD"), "ref: refs/heads/main\n");
+    write(
+        &root.join("project/Cargo.toml"),
+        "[package]\nname = 'fixture'\n",
+    );
+    write(&target.join("build.bin"), "build output");
+    write(
+        &sandbox.path().join(".cache/huggingface/hub/weights"),
+        "cache",
+    );
+    std::fs::create_dir(sandbox.path().join("configured")).unwrap();
+    write(
+        &sandbox.path().join(".config/devtrim.toml"),
+        "roots = [\"~/configured\"]\n",
+    );
+    let before = Tree::snapshot(sandbox.path());
+
+    let ordinary = run(&sandbox, &["clean", "artifacts", "--json"]);
+    assert!(ordinary.status.success());
+    assert!(json(&ordinary)["findings"].as_array().unwrap().is_empty());
+    let eligible = run(
+        &sandbox,
+        &[
+            "clean",
+            "artifacts",
+            "--root",
+            root.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(
+        eligible.status.success(),
+        "{}",
+        String::from_utf8_lossy(&eligible.stdout)
+    );
+    assert_eq!(
+        json(&eligible)["findings"][0]["path"],
+        target.to_str().unwrap()
+    );
+
+    let report = sandbox.path().join("report.html");
+    let snapshot_output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args([
+            "dashboard",
+            "--root",
+            root.to_str().unwrap(),
+            "--root",
+            ordinary_root.to_str().unwrap(),
+            "--root",
+            "missing projects",
+            "--output",
+            report.to_str().unwrap(),
+            "--no-open",
+            "--json",
+        ])
+        .current_dir(sandbox.path())
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .output()
+        .unwrap();
+    assert!(
+        snapshot_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&snapshot_output.stdout)
+    );
+    let document = json(&snapshot_output);
+    let categories = document["recommendations"]["categories"]
+        .as_array()
+        .unwrap();
+    let category = categories
+        .iter()
+        .find(|category| category["category"] == "artifacts")
+        .unwrap();
+    assert_eq!(category["findings"][0]["path"], target.to_str().unwrap());
+    let command = category["preview_command"].as_str().unwrap();
+    assert!(
+        !command.chars().any(char::is_control),
+        "a single-line command field must preserve controls through escapes"
+    );
+    let later_cwd = sandbox.path().join("later-terminal");
+    std::fs::create_dir(&later_cwd).unwrap();
+    let copied = Command::new("/bin/zsh")
+        .args(["-f", "-c", &format!("{command} --json")])
+        .current_dir(&later_cwd)
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("DEVTRIM_BIN", env!("CARGO_BIN_EXE_devtrim"))
+        .output()
+        .unwrap();
+    assert!(
+        !sandbox.path().join("shell-ran").exists(),
+        "PV dashboard-preview/inert-roots"
+    );
+    assert!(
+        copied.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&copied.stdout),
+        String::from_utf8_lossy(&copied.stderr)
+    );
+    assert_eq!(
+        json(&copied)["findings"],
+        json(&eligible)["findings"],
+        "copied preview must retain the displayed project's scope"
+    );
+    let argv = std::fs::read(sandbox.path().join("copied-argv")).unwrap();
+    let arguments = argv.split(|byte| *byte == 0).collect::<Vec<_>>();
+    assert!(arguments.contains(&root.as_os_str().as_encoded_bytes()));
+    assert!(arguments.contains(&ordinary_root.as_os_str().as_encoded_bytes()));
+    assert!(
+        arguments.contains(
+            &sandbox
+                .path()
+                .join("missing projects")
+                .as_os_str()
+                .as_encoded_bytes()
+        )
+    );
+
+    let caches = categories
+        .iter()
+        .find(|category| category["category"] == "caches")
+        .unwrap();
+    let cache_command = caches["preview_command"].as_str().unwrap();
+    let copied_cache = Command::new("/bin/zsh")
+        .args(["-f", "-c", &format!("{cache_command} --json")])
+        .current_dir(&later_cwd)
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("DEVTRIM_BIN", env!("CARGO_BIN_EXE_devtrim"))
+        .output()
+        .unwrap();
+    assert!(copied_cache.status.success());
+    let ordinary_cache = run(&sandbox, &["clean", "caches", "--json"]);
+    assert!(ordinary_cache.status.success());
+    assert_eq!(
+        json(&copied_cache)["findings"],
+        json(&ordinary_cache)["findings"]
+    );
+    assert_eq!(json(&copied_cache)["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read(sandbox.path().join("copied-argv")).unwrap(),
+        b"clean\0caches\0--json\0"
+    );
+    before
+        .diff(
+            &Tree::snapshot(sandbox.path()),
+            &Allowed {
+                scratch: vec![report, sandbox.path().join("copied-argv"), later_cwd],
+                ..Allowed::default()
+            },
+        )
+        .unwrap();
 }
 
 #[test]

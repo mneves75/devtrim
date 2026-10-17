@@ -543,6 +543,9 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
         .filter_map(report::Finding::scan_error)
         .map(str::to_owned)
         .collect();
+    let actionable = findings
+        .iter()
+        .any(|finding| finding.action.is_actionable());
 
     if !cli.apply {
         if ctx.json {
@@ -555,11 +558,13 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
             ))?;
         } else {
             report::print_human(&findings)?;
-            report::print_line(&format!(
-                "\n{} no changes made. Re-run with {} to act.",
-                "dry-run".yellow().bold(),
-                "--apply".cyan()
-            ))?;
+            if actionable {
+                report::print_line(&format!(
+                    "\n{} no changes made. Re-run with {} to act.",
+                    "dry-run".yellow().bold(),
+                    "--apply".cyan()
+                ))?;
+            }
         }
         return Ok(if scan_errors.is_empty() {
             ExitCode::SUCCESS
@@ -585,9 +590,6 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
     if !ctx.json {
         report::print_human(&findings)?;
     }
-    let actionable = findings
-        .iter()
-        .any(|finding| finding.action.is_actionable());
     if !actionable {
         return match operation.apply(&findings, ctx) {
             Ok(outcome) => print_outcome(operation.name(), &findings, &outcome, ctx),

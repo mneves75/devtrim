@@ -18,8 +18,15 @@ quote them as inert shell arguments, and execute the copied preview in a
 regression fixture outside the default roots. Control characters must survive
 the command field; never turn a lossy path display into executable scope.
 This correction and the original audit's report-only `leftovers --apply` hint
-are still pending. The implementation launch exhausted its 15-minute wait for
-an available host agent slot before executing any model turn.
+are implemented. The first implementation launch exhausted its admission wait;
+a later normal slot succeeded without overriding the host guard. The corrected
+full suite and MSRV 1.88 suite each pass 312 tests, and a new
+compiling injection mutant fails its designated assertion. Final independent
+acceptance and the complete release gates remain blocked or pending. The
+corrected UI was re-exercised at all four widths. A fresh independent acceptance
+launch could not obtain an agent slot after 15 minutes; no verifier ran in that
+attempt. Heavy fuzz checks require disk headroom or the owner's explicit
+low-disk approval. The existing 50ms page-load failure has no new waiver.
 
 ## Objective and frozen acceptance
 

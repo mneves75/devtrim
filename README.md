@@ -362,6 +362,10 @@ and keep their configured project roots; mapping your home does not authorize
 cleanup across it. Copied commands start a fresh CLI preview, where you review
 the current findings before any apply. The HTML is a snapshot, so rerun the
 command to refresh it. `--no-open` saves the report without starting a browser.
+Copied root-scanning previews preserve explicit `--root` overrides. Roots are
+quoted as data; control-character quoting requires zsh, Bash or a POSIX.1-2024
+shell. If a resolved root cannot be represented faithfully, the report explains
+why a copy command is unavailable. It never substitutes a lossy display path.
 
 ## Where devtrim stops, and why
 
@@ -570,7 +574,7 @@ devtrim never silently falls back to another root.
 
 ## JSON contract
 
-JSON mode returns one envelope, including empty and failed results:
+Cleanup JSON mode returns one envelope, including empty and failed results:
 
 ```json
 {
@@ -596,6 +600,14 @@ the standard error envelope when `--json` is passed.
 metric that could not be read. A metric is `null` when unread, never zero, and
 the process exits nonzero whenever `unavailable` is not empty. `status --watch`
 is interactive and rejects `--json`.
+
+`devtrim dashboard --json --no-open` emits its snapshot metadata: `root`,
+`output_file`, `inventory`, `coverage`, `volume`, `recommendations` and `errors`,
+with `schema_version: 1`. Volume metrics are nullable with a reason; coverage
+discloses partial lower bounds and summarized detail. A recommendation category
+has `preview_command` or a null command with `preview_unavailable` explaining
+why. Startup/argument failures use the standard error envelope. `--json` alone
+does not suppress opening the browser; use `--no-open` for automation.
 
 ### For agents
 

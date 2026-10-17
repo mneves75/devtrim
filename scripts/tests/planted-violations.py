@@ -99,6 +99,15 @@ class Case:
 
 CASES = (
     Case(
+        name="dashboard-preview/inert-roots",
+        relative_path="src/dashboard.rs",
+        before=r'''        return format!("'{}'", value.replace('\'', "'\\''"));''',
+        after=r'''        return format!("\"{value}\"");''',
+        tests=("copied_project_preview_preserves_explicit_roots_and_inert_shell_data",),
+        marker="PV dashboard-preview/inert-roots",
+        target="dashboard",
+    ),
+    Case(
         name="dashboard/existing-output",
         relative_path="src/dashboard.rs",
         before=DASHBOARD_OUTPUT_GUARDS,

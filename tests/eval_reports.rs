@@ -141,6 +141,8 @@ fn eval_leftovers_reports_exact_hints_and_sizes() {
     write(&root.join("project/.supergoal/perf/blob"), &"x".repeat(7));
     write(&root.join("codex-worktree.short/blob"), "near miss");
     write(&root.join("ordinary.aB1234/blob"), "near miss");
+    let cache = sandbox.path().join(".cache/huggingface/hub");
+    write(&cache.join("weights"), "eligible cache");
     let before = Tree::snapshot(sandbox.path());
     let output = run(
         &sandbox,
@@ -162,6 +164,29 @@ fn eval_leftovers_reports_exact_hints_and_sizes() {
     expected.sort();
     assert_eq!(actual, expected, "PV eval/leftovers-hints");
     successful(&output);
+    let report = run(
+        &sandbox,
+        &["clean", "leftovers", "--root", root.to_str().unwrap()],
+    );
+    successful(&report);
+    let human = String::from_utf8(report.stdout).unwrap();
+    assert!(human.contains("codex-worktree.aB1234"), "{human}");
+    assert!(
+        !human.contains("--apply"),
+        "report-only results must not offer an unsupported apply: {human}"
+    );
+    assert!(human.contains("nothing here is removed"), "{human}");
+    let preview = run(&sandbox, &["clean", "caches"]);
+    successful(&preview);
+    let human_preview = String::from_utf8(preview.stdout).unwrap();
+    assert!(
+        human_preview.contains(cache.to_str().unwrap()),
+        "{human_preview}"
+    );
+    assert!(
+        human_preview.contains("Re-run with --apply to act"),
+        "actionable previews must retain the apply hint: {human_preview}"
+    );
     unchanged(&before, &sandbox);
 }
 

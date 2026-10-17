@@ -192,6 +192,10 @@
       const details = make("details"); details.append(make("summary", "Why this appears"), make("p", row.note)); item.append(details); list.append(item);
     });
     section.append(list);
+    if (category.preview_command === null) {
+      section.append(make("p", category.preview_unavailable)); recommendations.append(section); return;
+    }
+    if (category.preview_command.includes("$'")) section.append(make("p", "Control-character quoting requires zsh, Bash, or a POSIX.1-2024 shell."));
     const field = make("input"); field.type = "text"; field.readOnly = true; field.value = category.preview_command; field.setAttribute("aria-label", `${category.category} preview command`);
     const button = make("button", "Copy preview command"); button.type = "button";
     button.addEventListener("click", async () => {

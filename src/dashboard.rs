@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
 use crate::report::{self, Action};
-use crate::safety::Ctx;
+use crate::safety::{Ctx, RootsOrigin};
 
 const MAX_DEPTH: usize = 6;
 const MAX_NODES: usize = 10_000;
@@ -253,8 +253,54 @@ struct Recommendation {
 #[derive(Serialize)]
 struct Category {
     category: &'static str,
-    preview_command: String,
+    preview_command: Option<String>,
+    preview_unavailable: Option<&'static str>,
     findings: Vec<Recommendation>,
+}
+
+// Display only: POSIX single quotes, or POSIX.1-2024/zsh/Bash dollar-single
+// quotes when controls would otherwise be stripped by the single-line input.
+fn shell_argument(value: &str) -> String {
+    if !value.chars().any(char::is_control) {
+        return format!("'{}'", value.replace('\'', "'\\''"));
+    }
+    let mut quoted = String::from("$'");
+    for character in value.chars() {
+        match character {
+            '\'' => quoted.push_str("\\'"),
+            '\\' => quoted.push_str("\\\\"),
+            control if control.is_control() => {
+                for byte in control.encode_utf8(&mut [0; 4]).bytes() {
+                    quoted.push_str(&format!("\\{byte:03o}"));
+                }
+            }
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+fn preview_command(
+    operation: &dyn crate::ops::Op,
+    ctx: &Ctx,
+) -> std::result::Result<String, &'static str> {
+    let mut command = format!("devtrim clean {}", operation.name());
+    if operation.scans_roots() && ctx.roots_origin == RootsOrigin::Flag {
+        for root in &ctx.roots {
+            // Missing explicit roots can still be relative in Ctx. Anchor them
+            // now, rather than changing scope in the operator's later terminal.
+            let absolute = std::path::absolute(root).map_err(
+                |_| "Preview command unavailable: cannot resolve an absolute scan root.",
+            )?;
+            let value = absolute.to_str().ok_or(
+                "Preview command unavailable: an explicit scan root is not valid UTF-8. Re-run a category preview with the original roots.",
+            )?;
+            command.push_str(" --root ");
+            command.push_str(&shell_argument(value));
+        }
+    }
+    Ok(command)
 }
 
 #[derive(Serialize)]
@@ -267,6 +313,7 @@ struct Recommendations {
 
 fn recommendations(ctx: &Ctx, root: &Path) -> Recommendations {
     let scan = crate::ops::scan_all(ctx);
+    let operations = crate::ops::all();
     let mut categories = Vec::new();
     for section in &scan.sections {
         let findings = scan.findings[section.range.clone()]
@@ -295,9 +342,19 @@ fn recommendations(ctx: &Ctx, root: &Path) -> Recommendations {
             })
             .collect::<Vec<_>>();
         if !findings.is_empty() {
+            let command = operations
+                .iter()
+                .find(|operation| operation.name() == section.category)
+                .ok_or("Preview command unavailable: category owner is unavailable.")
+                .and_then(|operation| preview_command(operation.as_ref(), ctx));
+            let (preview_command, preview_unavailable) = match command {
+                Ok(command) => (Some(command), None),
+                Err(reason) => (None, Some(reason)),
+            };
             categories.push(Category {
                 category: section.category,
-                preview_command: format!("devtrim clean {}", section.category),
+                preview_command,
+                preview_unavailable,
                 findings,
             });
         }
