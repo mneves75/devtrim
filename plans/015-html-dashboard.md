@@ -11,6 +11,16 @@ drilldown for the full retained hierarchy. Source review also found missing
 planted proof for the new refusal assertions; close that verification gap
 before acceptance. Preserve startup root warnings in the HTML diagnostics.
 
+The final fixed-commit adversarial review found P2 at
+`src/dashboard.rs:298`: copied preview commands discard explicit `--root`
+overrides. Preserve those roots only for categories that scan roots, safely
+quote them as inert shell arguments, and execute the copied preview in a
+regression fixture outside the default roots. Control characters must survive
+the command field; never turn a lossy path display into executable scope.
+This correction and the original audit's report-only `leftovers --apply` hint
+are still pending. The implementation launch exhausted its 15-minute wait for
+an available host agent slot before executing any model turn.
+
 ## Objective and frozen acceptance
 
 Developers can run `devtrim dashboard [PATH]` to understand local disk usage,
@@ -75,6 +85,10 @@ Preserve others' edits. Resume the same implementation lane for corrections.
 3. Add focused planted cases that compile and fail only the designated
    observable assertion when a refusal is deliberately permitted.
    Run `python3 scripts/tests/planted-violations.py dashboard/`.
+   All six cases passed locally. The root-command correction must also prove
+   that spaces, apostrophes, control characters and command-substitution text
+   remain data when the copied preview runs. See the primary
+   [shell quoting specification](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html).
 4. With the 1.98.1 compiler bin first on PATH and the task-local Cargo home,
    run format, structural tests/scan, all-target Clippy, full Rust tests,
    real PTY/read-only suites and `node --check src/dashboard/app.js`.
