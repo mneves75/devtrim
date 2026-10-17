@@ -2,11 +2,18 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.11.1] - Unreleased
+## [0.12.0] - 2026-10-17
+
+### Added
+- `devtrim dashboard [PATH]` generates and opens a private, self-contained HTML disk-usage snapshot with a responsive treemap, folder navigation/search, volume free-space metrics and existing-category cleanup previews. Copied project previews preserve explicit roots with inert shell quoting. `--output` saves to a chosen new file; `--no-open` generates without starting a browser. The view never deletes or turns an inventory path into cleanup authority.
 
 ### Changed
+- Document the credential/release compromise response procedure previously deferred as SEC-21, including containment, artifact/tap/site review and recovery through a fresh reviewed beta.
 - The demo video shows the 0.11.0 interface: the Project purge entry, the scan clock that `q` stops, one row per finding with its selection box and the details pane, the plan count in the confirmation, and an outcome that says the Trash still holds the space until `devtrim trash-empty`. The landing page transcript describes it
 - Demo-video tooling: Remotion 4.0.532, React and react-dom 19.3.0 (Dependabot #33–#36). TypeScript stays at 5.9.3: 7.0.2 (#32) breaks `typescript-eslint` 8.71.1, which cannot load its new API
+
+### Fixed
+- Human previews containing only report-only/non-actionable findings no longer offer an unsupported or ineffective `--apply` hint. Actionable cleanup previews retain their apply guidance.
 
 ## [0.11.0] - 2026-10-16
 

@@ -25,6 +25,7 @@ Ratatui interface and its shared safety/release boundaries.
 | 012 | Add feature evals, audit security and validate page measurement | P1 | L | 011 | DONE (shipped in 0.10.9; owner waived the failed 50 ms release condition) |
 | 013 | Fix five adversarial-review findings and release 0.10.9 | P1 | M | 012 | DONE (immutable beta/stable, exact artifact promotion, Homebrew and Mac installation verified) |
 | 014 | Report worktrees and agent scratch; delete neither | P2 | M | 013 | DONE in 0.11.0 (`devtrim worktrees`, `.scratch` rows in `clean leftovers`; repositories found anywhere under the roots, not only one level down) |
+| [015](015-html-dashboard.md) | Complete the offline HTML dashboard and verified release candidate | P1 | M | 014 | IN PROGRESS |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 

@@ -15,6 +15,7 @@
 mod analyze;
 pub mod app;
 mod cli;
+mod dashboard;
 mod journal;
 mod largest;
 mod ops;

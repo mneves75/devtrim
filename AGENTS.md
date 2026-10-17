@@ -55,6 +55,7 @@ checked 2026-09-04. User instructions take precedence over skill procedures.
 - Site/manual: `python3 -m http.server 4173`, then open `/index.html` or `/MANUAL.html`
 
 ## Conventions
+- `dashboard` is a private offline HTML snapshot, never deletion authority. It reuses existing category scans without widening their roots, copies fresh preview commands only, distinguishes logical inventory from filesystem available space, preserves the apply journal, and keeps hostile paths inert under hashed CSP. Retained detail is bounded; omitted measured bytes remain in totals, and unreadable inputs are disclosed with nonzero status. Existing report outputs are never overwritten.
 - Every cleanup category = one file in `src/ops/`, implementing the `Op` trait.
 - Findings use typed actions. Confirmation flags may bypass a gate but MUST NOT add or widen actions.
 - Apply consumes only exact previewed findings; never rescan for deletion targets after confirmation.
@@ -190,6 +191,16 @@ the project's own deployment target.
 7. The hosted release workflow builds/verifies arm64, packages the full Apache-2.0 license, signs artifact provenance, publishes an immutable prerelease, and verifies the remote asset.
 8. After staging verification, promote the same commit with `scripts/release.sh <version>`. Production reuses the exact highest verified beta artifact and checksum without rebuilding, then automatically runs the idempotent Homebrew closeout. That helper re-verifies release provenance, changes only the tap formula, pushes normally, locks validation to the published tap commit, upgrades/tests the existing `/opt/homebrew` installation, and requires it to be the sole visible `devtrim`. Beta never invokes it; a failed closeout resumes with `scripts/update-homebrew.sh <version>` without moving the tag or release.
 9. After verification, update the production landing page and open the next patch `Unreleased` section.
+
+## Agent skills
+
+### Issue tracker
+
+Local Markdown in `docs/specs/`; see `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single context: root `GLOSSARY.md` and relevant `docs/adr/` decisions; see `docs/agents/domain.md`.
 
 ## Agent contract
 
