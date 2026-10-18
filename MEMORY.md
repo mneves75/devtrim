@@ -2,11 +2,15 @@
 
 ## Current source candidate (0.12.0)
 
-The 2026-10-17 dashboard feature is in progress on `feat/html-dashboard`;
-see `plans/015-html-dashboard.md` and `memory/2026-10-17.md`. It adds a private,
+The 2026-10-17 dashboard feature is implemented on `feat/html-dashboard`;
+see `plans/015-html-dashboard.md`, `memory/2026-10-17.md` and the follow-up in
+`memory/2026-10-18.md`. It adds a private,
 offline, read-only HTML snapshot without new dependencies or deletion authority.
 Source/manual versions identify 0.12.0. This is not an installed or published
 release; production remains 0.11.0 until the release gates and delivery pass.
+The owner authorized a separate journal/tooling/documentation hardening scope
+on 2026-10-18. Prior passing CI and dashboard acceptance belong to commit
+`3ccf208`; they do not automatically certify the follow-up's changed tree.
 
 ## Current production state (0.11.0)
 

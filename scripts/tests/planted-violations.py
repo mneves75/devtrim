@@ -44,6 +44,26 @@ TEST_TIMEOUT_SECONDS = 120
 REPOSITORY = Path(__file__).resolve().parents[2]
 SOURCE_INPUTS = ("src", "tests", "Cargo.toml", "Cargo.lock")
 
+# One shared journal opener guards both the journal and its lock; each case
+# selects the test for one leaf, so a hardlinked lock and journal stay distinct.
+JOURNAL_SINGLE_LINK_GUARD = '''    if metadata.nlink() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "journal path must have exactly one hard link",
+        ));
+    }
+'''
+
+# The owner check on the same opener; a unit test proves it against a real
+# handle on a file another user owns, not mocked metadata.
+JOURNAL_OWNER_GUARD = '''    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "journal path is not owned by the current user",
+        ));
+    }
+'''
+
 # Both guards must permit an existing leaf: disabling only the preflight would
 # leave exclusive creation refusing it, hiding whether data preservation holds.
 DASHBOARD_OUTPUT_GUARDS = '''    match fs::symlink_metadata(&path) {
@@ -453,6 +473,30 @@ CASES = (
         after="            flags | OFlags::NONBLOCK | OFlags::CLOEXEC,\n",
         tests=("eval_a_symlinked_journal_refuses_apply_without_touching_its_destination",),
         marker="PV eval/journal-symlink", target="eval_safety",
+    ),
+    Case(
+        name="eval/safety-hardlink-journal",
+        relative_path="src/journal.rs",
+        before=JOURNAL_SINGLE_LINK_GUARD,
+        after="",
+        tests=("eval_a_hardlinked_journal_refuses_apply_without_touching_the_sentinel",),
+        marker="PV eval/journal-hardlink", target="eval_safety",
+    ),
+    Case(
+        name="eval/safety-hardlink-lock",
+        relative_path="src/journal.rs",
+        before=JOURNAL_SINGLE_LINK_GUARD,
+        after="",
+        tests=("eval_a_hardlinked_journal_lock_refuses_apply_without_touching_the_sentinel",),
+        marker="PV eval/lock-hardlink", target="eval_safety",
+    ),
+    Case(
+        name="journal/foreign-owner",
+        relative_path="src/journal.rs",
+        before=JOURNAL_OWNER_GUARD,
+        after="",
+        tests=("journal::tests::the_shared_opener_refuses_a_leaf_another_user_owns",),
+        marker="PV journal/foreign-owner",
     ),
     Case(
         name="eval/safety-noninteractive",

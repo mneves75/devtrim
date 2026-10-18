@@ -1,4 +1,19 @@
 {
   "name": "devtrim-brag",
-  "private": true
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc",
+    "build": "remotion bundle"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.532",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "remotion": "4.0.532"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/web": "0.0.166",
+    "typescript": "5.9.3"
+  }
 }

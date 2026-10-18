@@ -21,12 +21,16 @@ This correction and the original audit's report-only `leftovers --apply` hint
 are implemented. The first implementation launch exhausted its admission wait;
 a later normal slot succeeded without overriding the host guard. The corrected
 full suite and MSRV 1.88 suite each pass 312 tests, and a new
-compiling injection mutant fails its designated assertion. Final independent
-acceptance and the complete release gates remain blocked or pending. The
-corrected UI was re-exercised at all four widths. A fresh independent acceptance
-launch could not obtain an agent slot after 15 minutes; no verifier ran in that
-attempt. Heavy fuzz checks require disk headroom or the owner's explicit
-low-disk approval. The existing 50ms page-load failure has no new waiver.
+compiling injection mutant fails its designated assertion. The corrected UI was
+re-exercised at all four widths. On 2026-10-18, independent acceptance passed
+all seven dashboard criteria for commit `3ccf208`, and five fresh default
+sanitizer fuzz runs passed after the owner authorized bounded low-disk checks.
+Earlier failed admission attempts remain separate from that completed evidence.
+The full source security audit prompted an authorized follow-up covering journal
+state validation, maintained media-tooling locks and local-data lifecycle docs;
+see `memory/2026-10-18.md`. That changed candidate requires its own checks and
+independent acceptance. The existing 50ms page-load failure has no new waiver,
+and production delivery remains gated.
 
 ## Objective and frozen acceptance
 

@@ -25,6 +25,32 @@ must be inserted as text under the report's restrictive Content Security Policy.
 Unreadable content remains a disclosed lower bound. Physical free space is an
 independent operating-system metric, not logical inventory subtracted from capacity.
 
+## Local data lifecycle
+
+The owner controls report and export retention. A dashboard is saved at the
+printed path (an explicit output or a `devtrim-dashboard-<random>.html` file in
+the OS temporary directory); devtrim does not schedule its removal. Reports,
+JSON exports and apply history may contain paths, names, sizes, commands and
+errors. There is no devtrim backend, account data store or telemetry processor.
+
+Apply history lives in `~/.local/state/devtrim/journal.jsonl`, replaced by
+`<XDG_STATE_HOME>/devtrim/journal.jsonl` when the override is absolute. The current
+file rotates at 10 MiB, retaining `.1`, `.2` and `.3`. This is a size policy,
+not a time-based erasure deadline. `journal.lock` coordinates access in the same
+directory. To discard local data, first wait for every apply using that state
+directory to finish and exit the TUI, then identify and remove only the exact
+owned reports, exports and journal generations you intend to discard. Never
+remove or replace the lock while another process may use it. Keep evidence
+required for incident response. Removing journal records also removes the
+ownership evidence for `trash-empty --only-devtrim`; devtrim never reconstructs
+that evidence from names or age.
+
+The owner must separately account for copied files, terminal logs, screenshots,
+cloud shares, backups and restore copies. Their retention is controlled by their
+own storage/provider; a restore can bring deleted data back. Moving a file to
+Trash is not erasure, and file deletion does not guarantee physical erasure from
+an SSD, filesystem snapshot or backup. See README's local-data procedure.
+
 ## Reporting
 
 Report suspected vulnerabilities privately through GitHub Security Advisories

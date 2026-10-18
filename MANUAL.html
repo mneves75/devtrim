@@ -483,6 +483,14 @@ devtrim clean caches</code></pre>
   </ul>
 </section>
 
+<section id="local-data" aria-labelledby="h-local-data">
+  <h2 id="h-local-data">Local data and removal</h2>
+  <p>devtrim has no account, backend or telemetry store. HTML reports contain local paths, sizes and diagnostics. Keep the printed output path: an explicit <code>--output</code>, or <code>devtrim-dashboard-&lt;random&gt;.html</code> in the OS temporary directory. devtrim does not expire reports; the OS controls temporary-directory cleanup. JSON exports, terminal logs, screenshots and shared copies remain where you put them.</p>
+  <p>Apply history is <code>~/.local/state/devtrim/journal.jsonl</code>, or <code>&lt;XDG_STATE_HOME&gt;/devtrim/journal.jsonl</code> when the override is absolute. Rotation starts at 10 MiB and keeps <code>.1</code>, <code>.2</code> and <code>.3</code>; this is size-based retention, not an erasure deadline. <code>journal.lock</code> in the same directory coordinates access.</p>
+  <p>To discard local data, first let every apply using that state directory finish and exit the TUI. Identify and remove only the exact report/export files and journal generations you own and intend to discard. Never remove or replace a lock while another process may use it. Removing history loses its audit trail and the ownership evidence used by <code>trash-empty --only-devtrim</code>; old Trash items can no longer be identified through deleted records. Preserve evidence needed for an investigation.</p>
+  <p>Separately account for backups, cloud shares, messages, logs and restore copies under each location's policy. Restoring a backup can restore the data. Moving a report to Trash leaves it on disk; deleting a file does not guarantee physical erasure from SSDs, snapshots or backups. There is no devtrim backend deletion request.</p>
+</section>
+
 <!-- ============ 04 COMMANDS ============ -->
 <section id="commands" aria-labelledby="h-commands">
   <h2 id="h-commands"><span class="num">04</span> Command reference</h2>

@@ -49,7 +49,7 @@ cp target/release/devtrim /usr/local/bin/
 - **Fail closed.** Unknown Git activity, incomplete size measurement, broken toolchain links, unknown or malformed config fields, symlinked ancestors, failed owner commands, and failed liveness probes block mutation. A failure blocks only what it touches: a repository whose Git query or tree check fails offers nothing and is reported as an error, so the run exits nonzero, while every other repository is still judged; a folder the walk cannot read, a cache whose size cannot be measured, or an Xcode DeviceSupport or DerivedData folder that cannot be read or measured is reported as an error too, and nothing in it is offered while the other caches still are. A failed liveness probe still blocks its whole category. An external command that does not answer in time is a failure too: it is killed and reaped, and the repository, category or probe that asked refuses with an error naming the command and its limit (two minutes for Git, `simctl`, `docker`, `npm`, `brew` and `go` queries, three for the `pgrep` and `lsof` probes, fifteen for the Docker, simulator and maintenance commands an apply runs; a timeout kills the command's whole process group), while the other categories still complete. Interrupting a run with Ctrl-C or SIGTERM kills every command it started before devtrim exits with 130 or 143; the TUI restores its terminal first and then does the same, and `q` or Ctrl-C typed during a TUI scan stops it the same way (exit 130).
 - **Liveness guards.** `node-modules` and `artifacts` refuse a repo that is the working directory of a running build or package process; while Xcode, `xcodebuild`, or the build services Xcode.app builds run through are running, `xcode` offers only DerivedData folders untouched for longer than the activity window that no Xcode process holds a file open in, and apply judges each again. A probe that cannot complete blocks instead of passing; a build tool that exited between the process list and the directory lookup is not mistaken for one.
 - **Identity-verified deletion.** Every finding records its target's device/inode at preview (plus file generation on macOS); the sink re-checks that identity through an open parent-directory handle. Every directory action rejects foreign devices and Git repository/worktree markers at any depth before mutation; the one exception is the empty `.git` uv writes into its own source-distribution bucket, which Git itself rejects as an invalid gitfile, tolerated only in that exact shape under a tagged cache root that `clean caches` holds uv's lock on or `trash-empty` finds in the Trash. Permanent deletes additionally quarantine the verified leaf and drive recursion through open handles. A target swapped after preview is refused. Trash remains path-based because macOS has no fd-anchored Trash API; that residual window is documented, not denied.
-- **Write-ahead journal.** Every apply records an attempt before deletion and a result after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). Symlinked path components are refused, complete records are serialized and synced, and an unwritable journal blocks apply. Rotation (10 MiB, keep 3) cannot split an in-flight pair. `devtrim history` is read-only, waits for guarded applies before snapshotting, pairs legacy records across generations, reverse-scans only the bounded newest tail needed for the requested limit, and reports a genuinely unmatched attempt as interrupted.
+- **Write-ahead journal.** Every apply records an attempt before deletion and a result after it in `~/.local/state/devtrim/journal.jsonl` (`$XDG_STATE_HOME` honored). Symlinked path components and journal/lock files with another owner or multiple hard links are refused; complete records are serialized and synced, and an unwritable journal blocks apply. Rotation (10 MiB, keep 3) cannot split an in-flight pair. `devtrim history` is read-only, waits for guarded applies before snapshotting, pairs legacy records across generations, reverse-scans only the bounded newest tail needed for the requested limit, and reports a genuinely unmatched attempt as interrupted.
 - **Danger scores.** Actionable findings carry 1–10; aggregate size can raise the plan score:
   - 1–8: y/N prompt (`-y` skips it); non-TTY apply needs `-y`/`--yolo`
   - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
@@ -366,6 +366,33 @@ Copied root-scanning previews preserve explicit `--root` overrides. Roots are
 quoted as data; control-character quoting requires zsh, Bash or a POSIX.1-2024
 shell. If a resolved root cannot be represented faithfully, the report explains
 why a copy command is unavailable. It never substitutes a lossy display path.
+
+### Local data and removal
+
+devtrim has no account, backend or telemetry store. It creates local reports
+and an apply journal; copies you export or share have their own lifetime.
+
+| Data | Location and retention |
+| --- | --- |
+| HTML disk maps | The path printed by `dashboard`, or your explicit `--output`. The default is `devtrim-dashboard-<random>.html` in the operating system's temporary directory. devtrim does not expire reports; temporary-directory cleanup is controlled by the OS. |
+| Apply history | `~/.local/state/devtrim/journal.jsonl`, or `<XDG_STATE_HOME>/devtrim/journal.jsonl` when `XDG_STATE_HOME` is absolute. Rotation starts at 10 MiB and retains `.1`, `.2` and `.3`; this is size-based, not a time-to-erasure guarantee. `journal.lock` in the same directory coordinates access. |
+| Exported output | Your chosen files for redirected JSON, `history`, terminal logs, screenshots or copied commands. devtrim does not track or expire these copies. |
+
+Reports and history can contain local paths, names, sizes, commands and errors.
+To remove them, first let every apply using that state directory finish and
+exit the TUI. Locate the exact report/export files and, if you choose to discard
+history, the current journal and all three retained generations. Remove only
+those files you own, using your file manager; do not remove or replace a lock
+while another devtrim process may use it. Removing the journal loses its audit
+trail and the ownership evidence used by `trash-empty --only-devtrim`: older
+Trash items can no longer be recognized through the deleted records.
+
+Separately remove copies you chose to keep in backups, cloud storage, messages,
+logs or other exports, following each location's retention and restore policy.
+Restoring a backup can restore the data. Moving a report to Trash leaves it on
+disk until you decide to empty it; deleting a file is not a guarantee of physical
+erasure from SSDs, snapshots or backups. There is no backend deletion request
+for devtrim to process. Keep any history needed for an ongoing investigation.
 
 ## Where devtrim stops, and why
 
