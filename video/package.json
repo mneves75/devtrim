@@ -17,7 +17,8 @@
     "@types/web": "0.0.166",
     "eslint": "10.8.1",
     "prettier": "3.9.6",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "typescript-native": "npm:typescript@7.0.2"
   },
   "overrides": {
     "typescript-eslint": "^8.67.0"
@@ -26,7 +27,7 @@
     "dev": "remotion studio",
     "build": "remotion bundle",
     "upgrade": "remotion upgrade",
-    "lint": "eslint src && tsc",
+    "lint": "eslint src && node node_modules/typescript-native/bin/tsc",
     "format:check": "prettier --check \"src/**/*.{ts,tsx}\""
   },
   "allowScripts": {
