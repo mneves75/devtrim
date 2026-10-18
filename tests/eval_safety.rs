@@ -518,6 +518,60 @@ fn eval_a_symlinked_journal_refuses_apply_without_touching_its_destination() {
     assert_journaled(&sandbox, "caches", "shred", &[target]);
 }
 
+/// Hardlinks an unrelated sentinel as `leaf` in the journal folder and proves
+/// apply refuses before changing the sentinel's bytes or mode, or the cache.
+fn assert_hardlinked_journal_leaf_refused(leaf: &str, allowed: &[&str], marker: &str) {
+    let sandbox = Sandbox::in_target("eval-journal-hardlink");
+    let target = cache(&sandbox, ".cache/node/corepack");
+    let sentinel = sandbox.path().join("outside/sentinel");
+    write(&sentinel, "unrelated sentinel contents\n");
+    std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let journal = sandbox.journal();
+    let state = journal.parent().unwrap();
+    std::fs::create_dir_all(state).unwrap();
+    std::fs::set_permissions(state, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::hard_link(&sentinel, state.join(leaf)).unwrap();
+    let pristine = Tree::snapshot(sandbox.path());
+    let preview = run(&sandbox, &["clean", "caches", "--shred", "--json"]);
+    assert!(preview.status.success(), "{}", json(&preview));
+    assert_eq!(
+        actionable_targets(&json(&preview)),
+        std::slice::from_ref(&target)
+    );
+    let result = apply(&sandbox, "caches");
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            scratch: allowed.iter().map(|name| state.join(name)).collect(),
+            ..Allowed::default()
+        },
+        marker,
+    );
+    assert!(!result.status.success(), "{}", json(&result));
+    assert!(!json(&result)["errors"].as_array().unwrap().is_empty());
+    assert!(target.exists());
+}
+
+#[test]
+fn eval_a_hardlinked_journal_refuses_apply_without_touching_the_sentinel() {
+    assert_hardlinked_journal_leaf_refused(
+        "journal.jsonl",
+        &["journal.lock"],
+        "PV eval/journal-hardlink",
+    );
+    let sandbox = Sandbox::in_target("eval-journal-hardlink-control");
+    let target = cache(&sandbox, ".cache/node/corepack");
+    let result = apply(&sandbox, "caches");
+    assert!(result.status.success(), "{}", json(&result));
+    assert!(!target.exists());
+    assert_journaled(&sandbox, "caches", "shred", &[target]);
+}
+
+#[test]
+fn eval_a_hardlinked_journal_lock_refuses_apply_without_touching_the_sentinel() {
+    assert_hardlinked_journal_leaf_refused("journal.lock", &[], "PV eval/lock-hardlink");
+}
+
 #[test]
 fn eval_noninteractive_apply_requires_explicit_consent() {
     let sandbox = Sandbox::in_target("eval-unattended");

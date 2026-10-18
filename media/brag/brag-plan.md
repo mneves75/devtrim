@@ -25,10 +25,11 @@ Landing palette: bg `#0a0a0a`, ink `#f4f1e9`, accent `#c8ff38`, amber `#ffc53d`,
 Total 645 frames = 21.5s.
 
 ## Caveat
-Features shown are 0.10.0 (in this tree, not yet released; the landing still says v0.9.8). Post after 0.10.0 ships, or `brew install` will give a build without `purge`.
+`media/brag.mp4` and `media/brag.jpg` are historical footage: rendered on 2026-09-26 from the 0.10.0 TUI, and not re-rendered for any later release, so a newer TUI can differ from what they show. `purge` has shipped since 0.10.0, so `brew install` gives a build that has it.
 
 ## Rebuild
-1. Screens: `python3 source/capture.py target/debug/devtrim` (needs `pyte`; runs the real TUI in a PTY against a disposable HOME with planted stale repos; applies nothing). Output lands in `source/screens/`; the composition carries the captured text.
-2. Audio: `python3 source/audio.py raw.wav` (needs `numpy`, `scipy`), then `ffmpeg -i raw.wav -af loudnorm=I=-16:TP=-1.5:LRA=9 -ar 48000 source/remotion/public/mix.wav`.
-3. Video: in `source/remotion/`, link `node_modules` to `../../../../video/node_modules`, then `npx remotion render src/index.ts Brag out.mp4 --crf=16`.
+Run every command from the repository root. Each tool set installs into its own folder from its own lockfile, never `video/`'s. `uv run --project media/brag/source --locked` builds `media/brag/source/.venv` from `media/brag/source/uv.lock`. `--locked` refuses to run when the lock no longer matches `pyproject.toml`. The lock pins `pyte`, `numpy` and `scipy` with hashes and needs Python 3.12 or later. Real screen capture and audio generation were checked with Python 3.12; audio was also checked with 3.15. npm follows the existing `video/` package-lock convention: `npm --prefix media/brag/source/remotion ci --ignore-scripts` installs exactly that folder's `package-lock.json`, using the same Remotion, React and TypeScript versions. esbuild's install script is the only one, and it is not needed.
+1. Screens: build `target/debug/devtrim` (`rustup run 1.98.1 cargo build --locked`), then run `uv run --project media/brag/source --locked python media/brag/source/capture.py target/debug/devtrim`. It runs the real TUI in a PTY against a disposable HOME with planted stale repos, and applies nothing. Output lands in `media/brag/source/screens/`; the composition carries the captured text.
+2. Audio: create the output folder with `mkdir -p media/brag/source/remotion/public`, then run `uv run --project media/brag/source --locked python media/brag/source/audio.py raw.wav`, then `ffmpeg -i raw.wav -af loudnorm=I=-16:TP=-1.5:LRA=9 -ar 48000 media/brag/source/remotion/public/mix.wav`.
+3. Video: `npm --prefix media/brag/source/remotion ci --ignore-scripts`, check with `npm --prefix media/brag/source/remotion run typecheck`, then render from that folder: `cd media/brag/source/remotion && npx remotion render src/index.ts Brag out.mp4 --crf=16`.
 4. Poster: take frame 330 as `brag.jpg` and overlay it on frame 0 only, so the duration and audio sync stay unchanged.

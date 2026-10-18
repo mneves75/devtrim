@@ -1,5 +1,17 @@
 # Project Memory
 
+## Current source candidate (0.12.0)
+
+The 2026-10-17 dashboard feature is implemented on `feat/html-dashboard`;
+see `plans/015-html-dashboard.md`, `memory/2026-10-17.md` and the follow-up in
+`memory/2026-10-18.md`. It adds a private,
+offline, read-only HTML snapshot without new dependencies or deletion authority.
+Source/manual versions identify 0.12.0. This is not an installed or published
+release; production remains 0.11.0 until the release gates and delivery pass.
+The owner authorized a separate journal/tooling/documentation hardening scope
+on 2026-10-18. Prior passing CI and dashboard acceptance belong to commit
+`3ccf208`; they do not automatically certify the follow-up's changed tree.
+
 ## Current production state (0.11.0)
 
 0.11.0 is the owner's 2026-10-16 request: a full source review, its fixes,
@@ -23,8 +35,8 @@ A read-only live scan with the beta exits 0 with no errors (0.10.9 failed
 `node-modules` and `artifacts` on this Mac) and offers 20.75 GiB.
 
 Waived and not PASS: the 50 ms page-load budget (load p50 52–60 ms, LCP p50
-72–88 ms under load). The landing page links stable 0.11.0; `0.11.1` is the
-next Unreleased section.
+72–88 ms under load). The landing page links stable 0.11.0; the current source
+candidate is 0.12.0.
 
 ## Previous production state (0.10.9)
 

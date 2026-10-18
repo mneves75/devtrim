@@ -44,6 +44,54 @@ TEST_TIMEOUT_SECONDS = 120
 REPOSITORY = Path(__file__).resolve().parents[2]
 SOURCE_INPUTS = ("src", "tests", "Cargo.toml", "Cargo.lock")
 
+# One shared journal opener guards both the journal and its lock; each case
+# selects the test for one leaf, so a hardlinked lock and journal stay distinct.
+JOURNAL_SINGLE_LINK_GUARD = '''    if metadata.nlink() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "journal path must have exactly one hard link",
+        ));
+    }
+'''
+
+# The owner check on the same opener; a unit test proves it against a real
+# handle on a file another user owns, not mocked metadata.
+JOURNAL_OWNER_GUARD = '''    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "journal path is not owned by the current user",
+        ));
+    }
+'''
+
+# Both guards must permit an existing leaf: disabling only the preflight would
+# leave exclusive creation refusing it, hiding whether data preservation holds.
+DASHBOARD_OUTPUT_GUARDS = '''    match fs::symlink_metadata(&path) {
+        Ok(_) => bail!(
+            "output already exists (never overwritten): {}",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path),
+        Err(error) => {
+            Err(error).with_context(|| format!("cannot inspect output {}", path.display()))
+        }
+    }
+}
+
+fn create_output(explicit: Option<&Path>) -> Result<(File, PathBuf)> {
+    if let Some(path) = explicit {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+'''
+DASHBOARD_OUTPUT_OVERWRITE = DASHBOARD_OUTPUT_GUARDS.replace(
+    '''        Ok(_) => bail!(
+            "output already exists (never overwritten): {}",
+            path.display()
+        ),''',
+    "        Ok(_) => Ok(path),",
+).replace(".create_new(true)", ".create(true).truncate(true)")
+
 
 class Case:
     """One production branch, the edit that disables it, and the proof."""
@@ -70,6 +118,69 @@ class Case:
 
 
 CASES = (
+    Case(
+        name="dashboard-preview/inert-roots",
+        relative_path="src/dashboard.rs",
+        before=r'''        return format!("'{}'", value.replace('\'', "'\\''"));''',
+        after=r'''        return format!("\"{value}\"");''',
+        tests=("copied_project_preview_preserves_explicit_roots_and_inert_shell_data",),
+        marker="PV dashboard-preview/inert-roots",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/existing-output",
+        relative_path="src/dashboard.rs",
+        before=DASHBOARD_OUTPUT_GUARDS,
+        after=DASHBOARD_OUTPUT_OVERWRITE,
+        tests=("existing_output_is_preserved_without_scanning",),
+        marker="PV dashboard/existing-output",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/symlink-output",
+        relative_path="src/dashboard.rs",
+        before=DASHBOARD_OUTPUT_GUARDS,
+        after=DASHBOARD_OUTPUT_OVERWRITE,
+        tests=("symlink_output_is_preserved_without_scanning",),
+        marker="PV dashboard/symlink-output",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/apply-flag",
+        relative_path="src/app.rs",
+        before='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),',
+        after='Some(cli::Command::Dashboard { .. }) => ("dashboard", true, false, false, false),',
+        tests=("dashboard_mutation_flags_refuse_before_any_work",),
+        marker="PV dashboard/mutation-flags",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/yes-flag",
+        relative_path="src/app.rs",
+        before='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),',
+        after='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, true, false, false),',
+        tests=("dashboard_mutation_flags_refuse_before_any_work",),
+        marker="PV dashboard/mutation-flags",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/yolo-flag",
+        relative_path="src/app.rs",
+        before='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),',
+        after='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, true, false),',
+        tests=("dashboard_mutation_flags_refuse_before_any_work",),
+        marker="PV dashboard/mutation-flags",
+        target="dashboard",
+    ),
+    Case(
+        name="dashboard/shred-flag",
+        relative_path="src/app.rs",
+        before='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),',
+        after='Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, true),',
+        tests=("dashboard_mutation_flags_refuse_before_any_work",),
+        marker="PV dashboard/mutation-flags",
+        target="dashboard",
+    ),
     Case(
         name="liveness/lsof-silent-omission",
         relative_path="src/safety.rs",
@@ -362,6 +473,30 @@ CASES = (
         after="            flags | OFlags::NONBLOCK | OFlags::CLOEXEC,\n",
         tests=("eval_a_symlinked_journal_refuses_apply_without_touching_its_destination",),
         marker="PV eval/journal-symlink", target="eval_safety",
+    ),
+    Case(
+        name="eval/safety-hardlink-journal",
+        relative_path="src/journal.rs",
+        before=JOURNAL_SINGLE_LINK_GUARD,
+        after="",
+        tests=("eval_a_hardlinked_journal_refuses_apply_without_touching_the_sentinel",),
+        marker="PV eval/journal-hardlink", target="eval_safety",
+    ),
+    Case(
+        name="eval/safety-hardlink-lock",
+        relative_path="src/journal.rs",
+        before=JOURNAL_SINGLE_LINK_GUARD,
+        after="",
+        tests=("eval_a_hardlinked_journal_lock_refuses_apply_without_touching_the_sentinel",),
+        marker="PV eval/lock-hardlink", target="eval_safety",
+    ),
+    Case(
+        name="journal/foreign-owner",
+        relative_path="src/journal.rs",
+        before=JOURNAL_OWNER_GUARD,
+        after="",
+        tests=("journal::tests::the_shared_opener_refuses_a_leaf_another_user_owns",),
+        marker="PV journal/foreign-owner",
     ),
     Case(
         name="eval/safety-noninteractive",

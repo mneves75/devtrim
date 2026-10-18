@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, Permissions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -529,10 +529,25 @@ fn open_regular_at(parent: &File, leaf: &OsStr, flags: OFlags, mode: Mode) -> io
         Err(error) => return Err(error),
     };
     let file = File::from(fd);
-    if !file.metadata()?.is_file() {
+    // Judged on the open handle before any caller chmods, locks or appends:
+    // a second link or another owner means the leaf is someone else's file.
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "journal path is not a regular file",
+        ));
+    }
+    if metadata.nlink() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "journal path must have exactly one hard link",
+        ));
+    }
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "journal path is not owned by the current user",
         ));
     }
     Ok(file)
@@ -1127,6 +1142,53 @@ mod tests {
         symlink(&target, &path).unwrap();
         assert!(read_history(&path, 20).is_err());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "unchanged");
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn the_shared_opener_refuses_a_leaf_another_user_owns() {
+        let root = temp("foreign-owner");
+        std::fs::write(root.join("journal.jsonl"), "").unwrap();
+        let parent = File::open(&root).unwrap();
+        assert!(
+            open_regular_at(
+                &parent,
+                OsStr::new("journal.jsonl"),
+                OFlags::RDONLY,
+                Mode::empty()
+            )
+            .is_ok(),
+            "positive control: an owned single-link leaf opens"
+        );
+
+        let euid = rustix::process::geteuid();
+        // Read only for metadata: a root-owned system binary, or for root a
+        // fresh private file handed to another user.
+        let (foreign_parent, leaf) = if euid.is_root() {
+            let other = root.join("other-user");
+            std::fs::write(&other, "").unwrap();
+            std::os::unix::fs::chown(&other, Some(1), Some(1)).unwrap();
+            (root.clone(), "other-user")
+        } else {
+            (PathBuf::from("/usr/bin"), "true")
+        };
+        let metadata = File::open(foreign_parent.join(leaf))
+            .unwrap()
+            .metadata()
+            .unwrap();
+        assert!(
+            metadata.is_file() && metadata.nlink() == 1 && metadata.uid() != euid.as_raw(),
+            "the fixture must differ from an owned leaf only by its owner"
+        );
+
+        let parent = File::open(&foreign_parent).unwrap();
+        let error = open_regular_at(&parent, OsStr::new(leaf), OFlags::RDONLY, Mode::empty())
+            .expect_err("PV journal/foreign-owner: the opener accepted another user's leaf");
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::PermissionDenied,
+            "PV journal/foreign-owner: refused for another reason: {error}"
+        );
         crate::ops::remove_test_path(root);
     }
 

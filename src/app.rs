@@ -1,7 +1,8 @@
 //! CLI application flow.
 
 use crate::{
-    analyze, cli, journal, largest, ops, process, report, safety, status, tui, uninstall, worktrees,
+    analyze, cli, dashboard, journal, largest, ops, process, report, safety, status, tui,
+    uninstall, worktrees,
 };
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, error::ErrorKind};
@@ -51,10 +52,13 @@ pub fn main_impl() -> ExitCode {
     match run(cli) {
         Ok(code) => code,
         Err(error) => {
+            let message = if operation == "dashboard" {
+                format!("dashboard: {error:#}")
+            } else {
+                format!("{error:#}")
+            };
             if json {
-                if let Err(output_error) =
-                    report::print_error_json(operation, &format!("{error:#}"))
-                {
+                if let Err(output_error) = report::print_error_json(operation, &message) {
                     eprintln!(
                         "{} {}",
                         "error:".red().bold(),
@@ -65,7 +69,7 @@ pub fn main_impl() -> ExitCode {
                 eprintln!(
                     "{} {}",
                     "error:".red().bold(),
-                    report::terminal_safe(&format!("{error:#}"))
+                    report::terminal_safe(&message)
                 );
             }
             ExitCode::from(1)
@@ -94,6 +98,7 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<(&'static str, String)> {
         Some(cli::Command::Status { .. }) => ("status", false, false, false, false),
         Some(cli::Command::Uninstall { .. }) => ("uninstall", false, false, false, false),
         Some(cli::Command::Analyze { .. }) => ("analyze", false, false, false, false),
+        Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),
         Some(cli::Command::Largest { .. }) => ("largest", false, false, false, false),
         Some(cli::Command::Worktrees) => ("worktrees", false, false, false, false),
         Some(cli::Command::History { .. }) => ("history", false, false, false, false),
@@ -171,6 +176,7 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
         Some("tui") => "tui",
         Some("scan") => "scan",
         Some("analyze") => "analyze",
+        Some("dashboard") => "dashboard",
         Some("status") => "status",
         Some("optimize") => "optimize",
         Some("uninstall") => "uninstall",
@@ -356,6 +362,12 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
         cli::Command::Status { watch } => status::run(&ctx, watch),
         cli::Command::Uninstall { ref app } => uninstall::run(&ctx, app),
         cli::Command::Analyze { ref path } => analyze::run(&ctx, path.as_deref()),
+        cli::Command::Dashboard {
+            ref path,
+            ref output,
+            no_open,
+        } => dashboard::run(&ctx, path.as_deref(), output.as_deref(), no_open)
+            .context("dashboard failed"),
         cli::Command::Largest { top } => {
             if !ctx.json {
                 ctx.diagnostic("info", ctx.roots_note());
@@ -531,6 +543,9 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
         .filter_map(report::Finding::scan_error)
         .map(str::to_owned)
         .collect();
+    let actionable = findings
+        .iter()
+        .any(|finding| finding.action.is_actionable());
 
     if !cli.apply {
         if ctx.json {
@@ -543,11 +558,13 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
             ))?;
         } else {
             report::print_human(&findings)?;
-            report::print_line(&format!(
-                "\n{} no changes made. Re-run with {} to act.",
-                "dry-run".yellow().bold(),
-                "--apply".cyan()
-            ))?;
+            if actionable {
+                report::print_line(&format!(
+                    "\n{} no changes made. Re-run with {} to act.",
+                    "dry-run".yellow().bold(),
+                    "--apply".cyan()
+                ))?;
+            }
         }
         return Ok(if scan_errors.is_empty() {
             ExitCode::SUCCESS
@@ -573,9 +590,6 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
     if !ctx.json {
         report::print_human(&findings)?;
     }
-    let actionable = findings
-        .iter()
-        .any(|finding| finding.action.is_actionable());
     if !actionable {
         return match operation.apply(&findings, ctx) {
             Ok(outcome) => print_outcome(operation.name(), &findings, &outcome, ctx),

@@ -10,6 +10,47 @@ command action.
 
 Supported security fixes target the latest release and `main`.
 
+## Local HTML dashboard
+
+`dashboard` is a read-only inventory and cleanup-preview surface. It writes the
+requested report, never applies a cleanup, and rejects mutation flags. Mapping
+the home folder does not widen the configured project cleanup roots. Its copied
+commands start fresh CLI previews; the saved report is never an approval token.
+
+Reports contain local paths and sizes and stay on the machine. They are generated
+as private, self-contained files with no server, external assets or telemetry.
+An explicit output refuses an existing file or symlink instead of overwriting it.
+Filesystem names are untrusted input: embedded data must remain inert and labels
+must be inserted as text under the report's restrictive Content Security Policy.
+Unreadable content remains a disclosed lower bound. Physical free space is an
+independent operating-system metric, not logical inventory subtracted from capacity.
+
+## Local data lifecycle
+
+The owner controls report and export retention. A dashboard is saved at the
+printed path (an explicit output or a `devtrim-dashboard-<random>.html` file in
+the OS temporary directory); devtrim does not schedule its removal. Reports,
+JSON exports and apply history may contain paths, names, sizes, commands and
+errors. There is no devtrim backend, account data store or telemetry processor.
+
+Apply history lives in `~/.local/state/devtrim/journal.jsonl`, replaced by
+`<XDG_STATE_HOME>/devtrim/journal.jsonl` when the override is absolute. The current
+file rotates at 10 MiB, retaining `.1`, `.2` and `.3`. This is a size policy,
+not a time-based erasure deadline. `journal.lock` coordinates access in the same
+directory. To discard local data, first wait for every apply using that state
+directory to finish and exit the TUI, then identify and remove only the exact
+owned reports, exports and journal generations you intend to discard. Never
+remove or replace the lock while another process may use it. Keep evidence
+required for incident response. Removing journal records also removes the
+ownership evidence for `trash-empty --only-devtrim`; devtrim never reconstructs
+that evidence from names or age.
+
+The owner must separately account for copied files, terminal logs, screenshots,
+cloud shares, backups and restore copies. Their retention is controlled by their
+own storage/provider; a restore can bring deleted data back. Moving a file to
+Trash is not erasure, and file deletion does not guarantee physical erasure from
+an SSD, filesystem snapshot or backup. See README's local-data procedure.
+
 ## Reporting
 
 Report suspected vulnerabilities privately through GitHub Security Advisories
@@ -20,6 +61,46 @@ issue.
 Useful reports include the devtrim/macOS version, exact command, preview output,
 whether `--apply`/`--shred` was used, and whether symlinks, custom roots, Git,
 Docker, Xcode, or Trash were involved.
+
+## Credential or release compromise response
+
+The repository owner coordinates this procedure. Suspected compromise of a
+maintainer account, release credential, runner or distributed artifact stops
+new publication and promotion until the affected boundary is understood.
+These are operator instructions, not authority for an agent to revoke access,
+change credentials, delete evidence or contact users without approval.
+
+1. Preserve private evidence: UTC times, commit/tree and artifact hashes,
+   workflow/run IDs, affected release tags, security-log events and access
+   scope. Keep tokens and private user data out of issues and logs. Use the
+   private reporting channel above; do not publish exploit details prematurely.
+2. Contain through a trusted device and account. Revoke affected credentials
+   promptly, review authorized applications, SSH keys, active sessions and
+   recent security events, then issue narrowly scoped replacements. If a
+   runner or workflow was compromised, stop its release jobs and assess every
+   credential available to that job. Log redaction does not establish that a
+   credential stayed secret. See GitHub's [incident response](https://docs.github.com/en/code-security/tutorials/secure-your-organization/respond-to-a-security-incident),
+   [credential revocation](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/revoking-your-credentials)
+   and [compromised runner guidance](https://docs.github.com/en/actions/concepts/security/compromised-runners).
+3. Determine the affected interval and outputs. Compare source, workflow/action
+   revisions, immutable release receipts, checksums and attestations with
+   independently trusted records. Inspect the Homebrew tap and Pages publication
+   as well as the release ZIP. A checksum or attestation alone is insufficient
+   when its publishing identity may also have been compromised.
+4. Recover from reviewed source on a trusted fresh runner. Restore least
+   privilege and environment protections, rerun the exact-candidate security
+   and release gates, and validate the installed executable and served docs.
+   Publish a new version through the normal beta and exact-byte promotion
+   process; never overwrite or reuse an affected immutable release/tag.
+5. With owner approval, publish an advisory naming affected versions, the
+   supported replacement and concrete user actions. If malicious code may have
+   executed, replacing the binary alone does not establish host recovery;
+   explain the observed scope and unresolved uncertainty. Keep the incident
+   record, evidence and corrective actions for review, and rehearse this
+   procedure after the release boundary changes.
+
+This procedure documents the previously deferred SEC-21 response boundary.
+It is not evidence that a credential rotation or incident rehearsal has run.
 
 ## Threat model
 
