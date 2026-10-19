@@ -1,18 +1,31 @@
 # Project Memory
 
-## Current source candidate (0.12.0)
+## Current production state (0.12.0)
 
-The 2026-10-17 dashboard feature is implemented on `feat/html-dashboard`;
-see `plans/015-html-dashboard.md`, `memory/2026-10-17.md` and the follow-up in
-`memory/2026-10-18.md`. It adds a private,
-offline, read-only HTML snapshot without new dependencies or deletion authority.
-Source/manual versions identify 0.12.0. This is not an installed or published
-release; production remains 0.11.0 until the release gates and delivery pass.
-The owner authorized a separate journal/tooling/documentation hardening scope
-on 2026-10-18. Prior passing CI and dashboard acceptance belong to commit
-`3ccf208`; they do not automatically certify the follow-up's changed tree.
+0.12.0 ships the 2026-10-17 dashboard feature plus the owner's 2026-10-18
+journal/tooling/documentation hardening scope; story in
+`plans/015-html-dashboard.md`, `memory/2026-10-17.md` and `memory/2026-10-18.md`.
+Tag `v0.12.0` points at `01bbd3e9b8f1e8e36bf4694d036a6fba244f72cf` (tree
+`4b5507c898af4e4b70f3d381f1188dfb8039b122`), produced by squash-merging PR #50,
+#51 and #52 onto the reviewed candidate. Immutable `v0.12.0-beta1` and stable
+`v0.12.0` both point at that commit, and production reused the beta ZIP byte for
+byte: both releases carry SHA-256
+`ffd3275d20020c3fe689ed2ec0103a54989cdb5d1a278eded032fabacc81dc47`, selected by
+the hosted "Select verified beta artifact" job. Attestations verify signer
+workflow, source digest, tag and a hosted runner; a tampered ZIP and a wrong
+source digest both fail. Homebrew upgraded 0.11.0 → 0.12.0 and ran its test;
+`/opt/homebrew/bin/devtrim` is the sole visible binary, reports 0.12.0 and is
+byte-identical to the beta executable (SHA-256
+`cfbeb9fea4e0834bcab43f3e8789016665615e1eafa138d571cbc645af59619c`). The PTY TUI,
+read-only-view and dashboard suites pass against the downloaded beta, and an
+isolated-HOME fixture scan with `active_days = 1` offers exactly its
+`node_modules` and `.next` (200,038 B and 400,000 B, action trash) with no
+errors. Gate records: `.scratch/security-gate/01bbd3e9…/` (staging PASS,
+production PASS, reconciled from `.scratch/security-gate/c3936e93-tree-4b5507c/`).
+The only release-level waiver remains the 50 ms page-load gate. The landing page
+links stable 0.12.0; the next source section is 0.12.1.
 
-## Current production state (0.11.0)
+## Previous production state (0.11.0)
 
 0.11.0 is the owner's 2026-10-16 request: a full source review, its fixes,
 what was missing, a test suite cut to the tests that guard something, docs,
@@ -35,8 +48,8 @@ A read-only live scan with the beta exits 0 with no errors (0.10.9 failed
 `node-modules` and `artifacts` on this Mac) and offers 20.75 GiB.
 
 Waived and not PASS: the 50 ms page-load budget (load p50 52–60 ms, LCP p50
-72–88 ms under load). The landing page links stable 0.11.0; the current source
-candidate is 0.12.0.
+72–88 ms under load). The landing page linked stable 0.11.0 until 0.12.0
+shipped.
 
 ## Previous production state (0.10.9)
 
