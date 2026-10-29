@@ -716,6 +716,129 @@ fn eval_noninteractive_apply_requires_explicit_consent() {
     }
 }
 
+/// A build working in a superproject keeps the repositories nested inside it:
+/// `npm run build` at the top of a checkout reads its submodules' installs. A
+/// build in a folder above that is in no repository protects nothing below it.
+#[test]
+fn eval_a_build_in_the_enclosing_repository_keeps_a_nested_one() {
+    let sandbox = Sandbox::in_target("eval-build-superproject");
+    sandbox.script("git", &support::git_activity("2020-01-01", "2020-01-01"));
+    let dev = sandbox.path().join("dev");
+    let outer = dev.join("outer");
+    let inner = outer.join("vendor/inner");
+    write(&outer.join(".git/HEAD"), "ref: refs/heads/main\n");
+    write(&inner.join(".git"), "gitdir: ../../.git/modules/inner\n");
+    write(
+        &outer.join(".git/modules/inner/HEAD"),
+        "ref: refs/heads/main\n",
+    );
+    write(&inner.join("package.json"), "{}");
+    write(&inner.join("node_modules/pkg/file"), "dependency");
+    let dev = dev.canonicalize().unwrap();
+    let root = dev.to_str().unwrap();
+    sandbox.script("pgrep", "printf '42\\n'");
+    for (cwd, offered) in [
+        (dev.join("outer"), false),
+        (dev.join("outer/vendor"), false),
+        (dev.clone(), true),
+    ] {
+        sandbox.script("lsof", &format!("printf 'p42\\nn{}\\n'", cwd.display()));
+        let preview = json(&run(
+            &sandbox,
+            &["clean", "node-modules", "--root", root, "--json"],
+        ));
+        let expected = if offered {
+            vec![dev.join("outer/vendor/inner/node_modules")]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            actionable_targets(&preview),
+            expected,
+            "PV eval/superproject-build: build in {}: {preview}",
+            cwd.display()
+        );
+    }
+}
+
+/// A busy repository is kept whatever spelling the scan root uses: realpath
+/// keeps the data-volume firmlink spelling it is given, and APFS accepts a
+/// case variant, while `lsof` names the working directory its own way. Both
+/// spellings reach the same folder, so liveness compares identities.
+#[cfg(target_os = "macos")]
+#[test]
+fn eval_build_liveness_matches_the_repository_under_any_spelling() {
+    let sandbox = Sandbox::in_target("eval-build-spelling");
+    sandbox.script("git", &support::git_activity("2020-01-01", "2020-01-01"));
+    let dev = sandbox.path().join("dev");
+    let busy = dev.join("busy");
+    write(&busy.join(".git/HEAD"), "ref: refs/heads/main\n");
+    write(&busy.join("package.json"), "{}");
+    write(&busy.join("node_modules/pkg/file"), "dependency");
+    let dev = dev.canonicalize().unwrap();
+    sandbox.script("pgrep", "printf '42\\n'");
+    sandbox.script(
+        "lsof",
+        &format!("printf 'p42\\nn{}\\n'", dev.join("busy/src").display()),
+    );
+    write(&dev.join("busy/src/main.js"), "");
+    let firmlink = Path::new("/System/Volumes/Data").join(dev.strip_prefix("/").unwrap());
+    assert!(
+        firmlink.is_dir(),
+        "no data-volume firmlink at {}",
+        firmlink.display()
+    );
+    let upper = dev.parent().unwrap().join("DEV");
+    assert!(upper.is_dir(), "case-sensitive volume: {}", upper.display());
+    for root in [firmlink, upper] {
+        let preview = run(
+            &sandbox,
+            &[
+                "clean",
+                "node-modules",
+                "--root",
+                root.to_str().unwrap(),
+                "--json",
+            ],
+        );
+        assert_eq!(
+            actionable_targets(&json(&preview)),
+            Vec::<PathBuf>::new(),
+            "PV eval/busy-repository-spelling: {} offered a busy repository: {}",
+            root.display(),
+            json(&preview)
+        );
+    }
+    let preview = run(
+        &sandbox,
+        &[
+            "clean",
+            "node-modules",
+            "--root",
+            dev.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(preview.status.success(), "{}", json(&preview));
+    sandbox.script("lsof", "printf 'p42\\nn/elsewhere\\n'");
+    let control = run(
+        &sandbox,
+        &[
+            "clean",
+            "node-modules",
+            "--root",
+            dev.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(
+        actionable_targets(&json(&control)),
+        vec![dev.join("busy/node_modules")],
+        "positive control: {}",
+        json(&control)
+    );
+}
+
 #[test]
 fn eval_build_process_liveness_keeps_only_the_busy_repository() {
     for category in ["node-modules", "artifacts"] {

@@ -229,6 +229,45 @@ CASES = (
         marker="PV liveness/current-user-only", target="eval_system",
     ),
     Case(
+        name="liveness/repository-identity",
+        relative_path="src/ops/project.rs",
+        # Liveness compares spellings only, so a root typed through the
+        # data-volume firmlink or in another case offers a busy repository.
+        before="        cwd.ancestors().any(|folder| {\n",
+        after="        cwd.ancestors().take(0).any(|folder| {\n",
+        tests=("eval_build_liveness_matches_the_repository_under_any_spelling",),
+        marker="PV eval/busy-repository-spelling", target="eval_safety",
+    ),
+    Case(
+        name="liveness/superproject-build",
+        relative_path="src/ops/project.rs",
+        # A build working in a superproject no longer keeps the repositories
+        # nested inside it.
+        before="        works_here && in_repository(folder, home)\n",
+        after="        works_here && false\n",
+        tests=("eval_a_build_in_the_enclosing_repository_keeps_a_nested_one",),
+        marker="PV eval/superproject-build", target="eval_safety",
+    ),
+    Case(
+        name="protect/built-in-preview",
+        relative_path="src/ops/mod.rs",
+        # The preview filter checks configured entries only, so a target in a
+        # built-in protected folder is offered and then refused at apply.
+        before="                crate::safety::is_protected(target, &ctx.home)\n                    || crate::safety::is_config_protected(target, &ctx.protect)\n",
+        after="                crate::safety::is_config_protected(target, &ctx.protect)\n",
+        tests=("ops::tests::a_built_in_protected_target_is_never_previewed",),
+        marker="PV protect/built-in-preview",
+    ),
+    Case(
+        name="protect/home-ancestors",
+        relative_path="src/safety.rs",
+        # Only the home folder itself is protected again, not the folders above it.
+        before="    if path_starts_with_ignore_ascii_case(home, path)\n",
+        after="    if path_eq_ignore_ascii_case(path, home)\n",
+        tests=("safety::tests::folders_above_the_home_folder_are_protected",),
+        marker="PV protect/home-ancestors",
+    ),
+    Case(
         name="trash/unmeasurable-item",
         relative_path="src/ops/mod.rs",
         before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",

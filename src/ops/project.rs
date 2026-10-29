@@ -759,8 +759,57 @@ fn error_finding(label: String, message: String) -> Finding {
     Finding::new(label, None, 0, &message, 5, Action::Info).with_scan_error(message)
 }
 
-pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf]) -> bool {
-    process_cwds.iter().any(|cwd| cwd.starts_with(repo))
+/// Whether a build process works in `repo`: its working directory is `repo` or
+/// lies below it, or it is a folder above `repo` that is itself inside a
+/// repository — a superproject's build reads the installs of the repositories
+/// nested in it. Spelling alone misses one folder reached two ways — realpath
+/// keeps the `/System/Volumes/Data` firmlink spelling and the case a root was
+/// typed in, while `lsof` names a directory its own way — so folders are also
+/// compared by device and inode. A folder above `repo` counts only inside a
+/// repository that does not hold the home folder, so a shell at `~` with
+/// dotfiles kept there protects nothing. Anything that cannot be read counts
+/// as busy.
+pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let identity_of = |path: &Path| {
+        std::fs::metadata(path)
+            .ok()
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+    };
+    if process_cwds.iter().any(|cwd| cwd.starts_with(repo)) {
+        return true;
+    }
+    let Some(identity) = identity_of(repo) else {
+        return true;
+    };
+    if process_cwds.iter().any(|cwd| {
+        cwd.ancestors()
+            .any(|folder| identity_of(folder) == Some(identity))
+    }) {
+        return true;
+    }
+    let cwds = process_cwds
+        .iter()
+        .filter_map(|cwd| identity_of(cwd))
+        .collect::<std::collections::BTreeSet<_>>();
+    repo.ancestors().skip(1).any(|folder| {
+        let works_here = process_cwds.iter().any(|cwd| cwd == folder)
+            || identity_of(folder).is_some_and(|folder| cwds.contains(&folder));
+        works_here && in_repository(folder, home)
+    })
+}
+
+/// Whether `folder` is inside a repository that can own it, failing closed.
+fn in_repository(folder: &Path, home: &Path) -> bool {
+    let marked = match has_git_marker(folder) {
+        Ok(marked) => marked,
+        Err(_) => return true,
+    };
+    if marked && !crate::safety::holds_home(folder, home) {
+        return true;
+    }
+    owning_repo(folder, home).map_or(true, |owner| owner.is_some())
 }
 
 #[cfg(test)]

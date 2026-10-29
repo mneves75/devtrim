@@ -126,8 +126,13 @@ Non-negotiable boundaries:
 - Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
 - Literal and physically resolved parents must agree; symlinked ancestors fail closed. Any ASCII-case variant of a `.git` path component is refused.
 - `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children. An item the sink refuses at apply — a trashed project that still holds its repository — is recorded and skipped; the purge continues with the other exact items and reports nonzero. `--only-devtrim` narrows the purge to items whose device, inode and birth time match a Trash move devtrim journaled as successful, so another program's item — even one carrying a name devtrim's item had — is never offered; a history that cannot be read whole refuses the purge and offers nothing.
-- System roots and descendants (including ASCII case variants), the user home
-  root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
+- System roots and descendants (including ASCII case variants: `/System`, `/usr`,
+  `/etc`, `/var`, `/private/var`, `/Applications`, `/Library`, and `/Volumes`, so
+  nothing on another mounted volume is ever removed), the user home root and
+  every folder above it, Trash root, `.ssh`, `.gnupg`, and wholesale
+  `~/Library` are protected. The preview drops a target the sink would refuse
+  as protected, built-in or configured, and a scan root inside a protected
+  system folder is named in a warning.
   Only named managed Library subpaths are eligible. The `~/Library/Caches`
   half of that carve-out is `safety::MANAGED_LIBRARY_CACHES`, a closed list of
   exact directory names that is also the sole source the `caches` category
@@ -275,8 +280,12 @@ Non-negotiable boundaries:
   wrapper), `claude`, and Claude Code's own process name, its version number
   (`2.1.294`), matched only as a whole dotted triple of digits with an
   optional SemVer pre-release suffix (`2.2.0-beta.1`). Protection follows the
-  process's own working directory: the repository containing it is
-  protected, not every repository the agent edits by absolute path. Only the
+  process's own working directory, matched by spelling or by device and inode
+  (a root typed through the `/System/Volumes/Data` firmlink or in another case
+  reaches the same folder): the repository containing it is
+  protected, and so is every repository nested below it when that directory
+  is itself inside a repository (a superproject's build reads its
+  submodules' installs), not every repository the agent edits by absolute path. Only the
   current user's processes are probed (`pgrep -U <uid>`): `lsof` cannot read
   another user's working directory, and a root-owned `node` service refused
   every project cleanup on the development machine. A build another user runs
