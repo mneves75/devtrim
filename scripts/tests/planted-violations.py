@@ -233,8 +233,8 @@ CASES = (
         relative_path="src/ops/project.rs",
         # Liveness compares spellings only, so a root typed through the
         # data-volume firmlink or in another case offers a busy repository.
-        before="        cwd.ancestors().any(|folder| {\n",
-        after="        cwd.ancestors().take(0).any(|folder| {\n",
+        before="        cwd.ancestors()\n            .any(|folder| identity_of(folder) == Some(identity))\n",
+        after="        cwd.ancestors()\n            .take(0)\n            .any(|folder| identity_of(folder) == Some(identity))\n",
         tests=("eval_build_liveness_matches_the_repository_under_any_spelling",),
         marker="PV eval/busy-repository-spelling", target="eval_safety",
     ),

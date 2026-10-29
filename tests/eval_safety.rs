@@ -778,10 +778,12 @@ fn eval_a_build_in_the_superproject_keeps_its_submodules() {
     }
 }
 
-/// A busy repository is kept whatever spelling the scan root uses: realpath
-/// keeps the data-volume firmlink spelling it is given, and APFS accepts a
-/// case variant, while `lsof` names the working directory its own way. Both
-/// spellings reach the same folder, so liveness compares identities.
+/// A busy repository is kept whatever spelling `lsof` gives its working
+/// directory: the kernel may name it through the data-volume firmlink or in
+/// another case than the scan walked, while APFS reaches the same folder by
+/// each, so liveness compares identities, not spellings. A scan root typed in
+/// another case reaches it too. (A root typed through the firmlink lies under
+/// the protected `/System` and offers nothing, so it proves nothing here.)
 #[cfg(target_os = "macos")]
 #[test]
 fn eval_build_liveness_matches_the_repository_under_any_spelling() {
@@ -792,13 +794,8 @@ fn eval_build_liveness_matches_the_repository_under_any_spelling() {
     write(&busy.join(".git/HEAD"), "ref: refs/heads/main\n");
     write(&busy.join("package.json"), "{}");
     write(&busy.join("node_modules/pkg/file"), "dependency");
+    write(&busy.join("src/main.js"), "");
     let dev = dev.canonicalize().unwrap();
-    sandbox.script("pgrep", "printf '42\\n'");
-    sandbox.script(
-        "lsof",
-        &format!("printf 'p42\\nn{}\\n'", dev.join("busy/src").display()),
-    );
-    write(&dev.join("busy/src/main.js"), "");
     let firmlink = Path::new("/System/Volumes/Data").join(dev.strip_prefix("/").unwrap());
     assert!(
         firmlink.is_dir(),
@@ -807,8 +804,10 @@ fn eval_build_liveness_matches_the_repository_under_any_spelling() {
     );
     let upper = dev.parent().unwrap().join("DEV");
     assert!(upper.is_dir(), "case-sensitive volume: {}", upper.display());
-    for root in [firmlink, upper] {
-        let preview = run(
+    sandbox.script("pgrep", "printf '42\\n'");
+    let preview = |root: &Path, cwd: &Path| {
+        sandbox.script("lsof", &format!("printf 'p42\\nn{}\\n'", cwd.display()));
+        run(
             &sandbox,
             &[
                 "clean",
@@ -817,37 +816,25 @@ fn eval_build_liveness_matches_the_repository_under_any_spelling() {
                 root.to_str().unwrap(),
                 "--json",
             ],
-        );
+        )
+    };
+    for (root, cwd) in [
+        (&dev, firmlink.join("busy/src")),
+        (&dev, upper.join("busy/src")),
+        (&upper, dev.join("busy/src")),
+    ] {
+        let preview = preview(root, &cwd);
         assert_eq!(
             actionable_targets(&json(&preview)),
             Vec::<PathBuf>::new(),
-            "PV eval/busy-repository-spelling: {} offered a busy repository: {}",
+            "PV eval/busy-repository-spelling: root {} with a build in {} offered a busy repository: {}",
             root.display(),
+            cwd.display(),
             json(&preview)
         );
+        assert!(preview.status.success(), "{}", json(&preview));
     }
-    let preview = run(
-        &sandbox,
-        &[
-            "clean",
-            "node-modules",
-            "--root",
-            dev.to_str().unwrap(),
-            "--json",
-        ],
-    );
-    assert!(preview.status.success(), "{}", json(&preview));
-    sandbox.script("lsof", "printf 'p42\\nn/elsewhere\\n'");
-    let control = run(
-        &sandbox,
-        &[
-            "clean",
-            "node-modules",
-            "--root",
-            dev.to_str().unwrap(),
-            "--json",
-        ],
-    );
+    let control = preview(&dev, Path::new("/elsewhere"));
     assert_eq!(
         actionable_targets(&json(&control)),
         vec![dev.join("busy/node_modules")],

@@ -762,10 +762,10 @@ fn error_finding(label: String, message: String) -> Finding {
 /// Whether a build process works in `repo`: its working directory is `repo` or
 /// lies below it, or `repo` is a submodule and the build works in its
 /// superproject, which reads the installs of the submodules it records.
-/// Spelling alone misses one folder reached two ways — realpath keeps the
-/// `/System/Volumes/Data` firmlink spelling and the case a root was typed in,
-/// while `lsof` names a directory its own way — so folders are also compared
-/// by device and inode. Anything that cannot be read counts as busy.
+/// Spelling alone misses one folder reached two ways — `lsof` names a working
+/// directory its own way, through the `/System/Volumes/Data` firmlink or in
+/// another case than the scan walked — so folders are also compared by device
+/// and inode. Anything that cannot be read counts as busy.
 pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
 
