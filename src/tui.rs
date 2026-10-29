@@ -1608,7 +1608,9 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     // ladder, because moderate carries no modifier and high carries BOLD. The
     // theme's own test cannot see this — it exercises `style()` — so the
     // distinction has to be preserved at the call site.
-    let danger = format!("{:>3}. danger-{} ", row + 1, finding.danger);
+    // Wide enough for the last row's number, so every column stays aligned.
+    let number = app.findings.len().to_string().len().max(3);
+    let danger = format!("{:>number$}. danger-{} ", row + 1, finding.danger);
     let size = format!(
         "{:>8}  {:<8} ",
         report::gb(finding.size_bytes),
@@ -2516,6 +2518,45 @@ mod tests {
             "PV tui/outcome-rescan"
         );
         assert!(rendered(&app, MIN_WIDTH, MIN_HEIGHT).contains("r rescan"));
+    }
+
+    #[test]
+    fn row_numbers_keep_every_column_aligned_past_999_findings() {
+        let mut app = App::default();
+        let findings = (0..1200)
+            .map(|index| {
+                Finding::new(
+                    format!("item{index}"),
+                    Some(std::path::PathBuf::from(format!("/Users/example/x{index}"))),
+                    1,
+                    "test",
+                    3,
+                    Action::Trash,
+                )
+            })
+            .collect();
+        app.finish_results(
+            Operation::Clean(Target::Caches),
+            findings,
+            Vec::new(),
+            Vec::new(),
+        );
+        let text = |row| {
+            result_row(&app, row, 120)
+                .spans
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect::<String>()
+        };
+
+        let (first, last) = (text(0), text(1199));
+        let column = |line: &str| line.find("danger-").map(|end| line[..end].chars().count());
+        assert_eq!(
+            column(&first),
+            column(&last),
+            "PV tui/row-number-width: {first:?} vs {last:?}"
+        );
+        assert!(last.contains("1200. danger-3"), "{last:?}");
     }
 
     #[test]

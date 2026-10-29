@@ -337,6 +337,22 @@ CASES = (
         marker="PV report/quotes-literal",
     ),
     Case(
+        name="tui/row-number-width",
+        relative_path="src/tui.rs",
+        before="    let number = app.findings.len().to_string().len().max(3);\n",
+        after="    let number = 3;\n",
+        tests=("tui::tests::row_numbers_keep_every_column_aligned_past_999_findings",),
+        marker="PV tui/row-number-width",
+    ),
+    Case(
+        name="status/health-missing",
+        relative_path="src/status.rs",
+        before="    if health.missing_inputs.is_empty() {\n",
+        after="    if true {\n",
+        tests=("status::tests::a_score_never_claims_a_band_over_signals_it_could_not_read",),
+        marker="PV status/health-missing",
+    ),
+    Case(
         name="trash/unmeasurable-item",
         relative_path="src/ops/mod.rs",
         before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",

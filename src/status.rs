@@ -706,6 +706,29 @@ pub(crate) fn health_band(score: u8) -> &'static str {
     }
 }
 
+/// Every signal [`health`] scores; a score with all of them missing was
+/// computed from nothing.
+const HEALTH_INPUTS: usize = 4;
+
+/// The one-line verdict both surfaces print. A score never claims a band
+/// over signals it could not read: it names them, and with none read there is
+/// no verdict at all, since the perfect score it starts from is not one.
+pub(crate) fn health_headline(health: &Health) -> String {
+    if health.missing_inputs.len() >= HEALTH_INPUTS {
+        return "health unknown (no signal could be read)".into();
+    }
+    let band = health_band(health.score);
+    if health.missing_inputs.is_empty() {
+        format!("health {}/100 ({band})", health.score)
+    } else {
+        format!(
+            "health {}/100 ({band}, without {})",
+            health.score,
+            health.missing_inputs.join(", ")
+        )
+    }
+}
+
 fn format_uptime(seconds: u64) -> String {
     let days = seconds / 86_400;
     let hours = (seconds % 86_400) / 3_600;
@@ -815,24 +838,14 @@ fn print_human(report: &StatusReport) -> Result<()> {
     // ladder would collapse all three bands into identical plain text — the
     // exact failure the theme module exists to prevent, on the one surface
     // that cannot use it.
-    let headline = format!(
-        "health {}/100 ({})",
-        report.health.score,
-        health_band(report.health.score)
-    );
+    let headline = health_headline(&report.health);
     let headline = match report.health.score {
+        _ if report.health.missing_inputs.len() >= HEALTH_INPUTS => headline.yellow(),
         90..=100 => headline.green(),
         70..=89 => headline.yellow(),
         _ => headline.red(),
     };
     let _ = writeln!(output, "{}", headline.bold());
-    if !report.health.missing_inputs.is_empty() {
-        let _ = writeln!(
-            output,
-            "  scored without: {}",
-            report.health.missing_inputs.join(", ")
-        );
-    }
     for entry in &report.unavailable {
         let _ = writeln!(output, "  unavailable: {}", report::terminal_safe(entry));
     }
@@ -953,13 +966,12 @@ fn render_watch(frame: &mut Frame, report: Option<&StatusReport>, theme: Theme) 
     ])
     .areas(area);
 
-    let score = report.map(|report| report.health.score);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" status ", theme.bold(Token::Accent)),
-            Span::raw(score.map_or_else(
+            Span::raw(report.map_or_else(
                 || "sampling…".to_string(),
-                |score| format!("health {score}/100 ({})", health_band(score)),
+                |report| health_headline(&report.health),
             )),
         ]))
         .block(Block::bordered().title(" measure · classify · trim ")),
@@ -1160,6 +1172,27 @@ lo0        16384 <Link#1>                       3727486     0 5479580870  372748
 lo0        16384 127           localhost        3727486     - 5479580870  3727486     - 5479580870     -\n\
 lo0        16384 localhost   ::1                3727486     - 5479580870  3727486     - 5479580870     -\n\
 en0        1500  <Link#12>   a4:83:e7:11:22:33     50000     0    1000000    40000     0     900000     0\n";
+
+    #[test]
+    fn a_score_never_claims_a_band_over_signals_it_could_not_read() {
+        let missing = |names: &[&str]| Health {
+            score: 100,
+            missing_inputs: names.iter().map(ToString::to_string).collect(),
+        };
+
+        assert_eq!(health_headline(&missing(&[])), "health 100/100 (healthy)");
+        assert_eq!(
+            health_headline(&missing(&["disk"])),
+            "health 100/100 (healthy, without disk)",
+            "PV status/health-missing"
+        );
+        let nothing = health_headline(&missing(&["disk", "memory", "load", "thermal"]));
+        assert!(
+            !nothing.contains("healthy"),
+            "PV status/health-missing: {nothing}"
+        );
+        assert!(nothing.contains("unknown"), "{nothing}");
+    }
 
     #[test]
     fn disk_layout_selection_fails_closed_except_for_absence() {

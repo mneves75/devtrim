@@ -5,6 +5,8 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ## [0.12.1] - Unreleased
 
 ### Fixed
+- `status --watch` names the signals its health score lacks, as `status` does, and with none readable says the health is unknown instead of `100/100 (healthy)`.
+- TUI result rows past the 999th keep every column aligned.
 - Closing the terminal window (SIGHUP) stops a run the way SIGINT does: every command devtrim started is killed and it exits 129. The hangup reached devtrim only, so its commands, each in a process group of its own, kept running.
 - The TUI confirmation reports a mismatched answer inside itself; at the minimum 64×18 it covers the footer, where the message used to appear unseen. A typed answer stops at 32 characters.
 - On the too-small-terminal screen only `q` and Ctrl-C quit; `Esc`, which means back everywhere else, no longer ends the session.
