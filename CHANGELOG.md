@@ -5,6 +5,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ## [0.12.1] - Unreleased
 
 ### Fixed
+- The TUI ignores a key carrying Alt, Control or Super (Ctrl-C still quits) and turns on bracketed paste, so neither `ESC y` (how a terminal sends Alt+y) nor a pasted answer can approve a plan on the confirmation screen.
 - `node-modules`, `artifacts` and `purge` no longer fail on a machine where another user runs a process named like a build tool (a root-owned `node` service): the build-process probe now asks for the current user's processes only. A build another user runs inside your repository is not seen; SECURITY.md records the limit.
 - A repository with a build running is kept whatever spelling the scan root uses. A root typed through `/System/Volumes/Data` or in another case (`~/DEV` for `~/dev`) used to make the liveness check miss the build's working directory, which `lsof` names its own way, and offer the busy repository's `node_modules` and build output.
 - A build running in a superproject keeps the submodules its index records (their `node_modules` and build output); before, only the repository holding the build's working directory was kept. A nested repository the superproject does not record, such as a worktree in an ignored `.scratch`, is judged on its own.

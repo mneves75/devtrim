@@ -654,6 +654,13 @@ impl App {
         if key.modifiers.contains(event::KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Intent::Quit;
         }
+        // A modified key is not the letter it carries: Alt+y arrives as `ESC y`,
+        // so a stray Escape before a `y` would approve a plan. Shift is part of
+        // the typed character (`Y`, a typed `PURGE`).
+        let modified = key.modifiers.difference(event::KeyModifiers::SHIFT);
+        if !modified.is_empty() {
+            return Intent::None;
+        }
         // The help overlay is deliberately unavailable on the confirmation
         // screen: that screen demands an exact typed acknowledgment, and
         // stacking a second overlay over it would obscure the plan being
@@ -919,7 +926,12 @@ pub fn run(ctx: &Ctx) -> Result<ExitCode> {
     let interrupts =
         process::forward_interrupts().context("cannot install the interrupt handler")?;
     let mut terminal = ratatui::try_init().context("cannot initialize TUI terminal")?;
-    let result = run_loop(&mut terminal, ctx, &interrupts);
+    // A paste arrives as one `Event::Paste`, which no screen acts on, instead
+    // of a burst of keys that could type an approval.
+    let result = crossterm::execute!(io::stdout(), event::EnableBracketedPaste)
+        .context("cannot enable bracketed paste")
+        .and_then(|()| run_loop(&mut terminal, ctx, &interrupts));
+    crossterm::execute!(io::stdout(), event::DisableBracketedPaste).ok();
     let restore = ratatui::try_restore().context("cannot restore terminal after TUI exit");
     match (result, restore) {
         (Err(error), _) => Err(error),
@@ -932,6 +944,7 @@ pub fn run(ctx: &Ctx) -> Result<ExitCode> {
 /// command devtrim started is killed, and it exits 128 plus `signal`. Only the
 /// thread that owns the terminal calls it.
 fn stop(terminal: &mut DefaultTerminal, signal: i32) -> ! {
+    crossterm::execute!(io::stdout(), event::DisableBracketedPaste).ok();
     ratatui::try_restore().ok();
     terminal.show_cursor().ok();
     process::kill_and_exit(signal)
@@ -2452,6 +2465,34 @@ mod tests {
             Vec::new(),
         );
         app
+    }
+
+    /// A modified key is not the letter it carries: a terminal sends Alt+y as
+    /// `ESC y`, and a stray Escape before a `y` must not approve a plan. Shift
+    /// still counts, since `Y` and a typed `PURGE` arrive with it.
+    #[test]
+    fn modified_keys_never_approve_a_plan() {
+        for modifiers in [
+            KeyModifiers::ALT,
+            KeyModifiers::CONTROL,
+            KeyModifiers::SUPER,
+            KeyModifiers::META,
+        ] {
+            let mut app = cleanup(vec![trash("first", 1, 2)]);
+            app.begin_confirmation();
+            assert_eq!(
+                app.handle_key(KeyEvent::new(KeyCode::Char('y'), modifiers)),
+                Intent::None,
+                "PV tui/modified-key-approval: {modifiers:?}"
+            );
+            assert_eq!(app.screen, Screen::Confirm);
+        }
+        let mut app = cleanup(vec![trash("first", 1, 2)]);
+        app.begin_confirmation();
+        assert!(matches!(
+            app.handle_key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT)),
+            Intent::Apply(_)
+        ));
     }
 
     /// Deselecting only narrows: a finding left out must never reach the plan

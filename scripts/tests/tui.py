@@ -296,6 +296,39 @@ def verify_type_ahead(binary):
             session.quit()
 
 
+def verify_paste_and_modified_keys_never_approve(binary):
+    """On the typed confirmation, a pasted answer and Alt-modified keys (sent as
+    `ESC` then the key) must not approve: the TUI turns bracketed paste on, so
+    a paste arrives as one paste event no screen acts on, and a key with a
+    modifier other than Shift is ignored. The same answer typed afterwards is
+    the positive control that it would have deleted the cache."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        cache = home / ".cache" / "uv"
+        cache.mkdir(parents=True)
+        (cache / "blob").write_bytes(b"x")
+        with Session(binary, home) as session:
+            session.wait_for("Scan everything")
+            if b"\x1b[?2004h" not in session.output:
+                raise AssertionError("PV tui/bracketed-paste: bracketed paste was not enabled")
+            session.send(b"2")
+            session.wait_for_screen("Review every finding")
+            session.send(b"sa")
+            session.wait_for_screen("This plan:")
+            session.send(b"\x1b[200~0\r\x1b[201~")
+            session.send(b"\x1b0\x1b\r")
+            session.settle(1.0)
+            if not cache.exists():
+                raise AssertionError("PV tui/bracketed-paste: a paste or Alt key approved the plan")
+            session.send(b"0\r")
+            session.wait_for_screen("permanently deleted uv package cache")
+            if cache.exists():
+                raise AssertionError("positive control: the typed answer did not apply")
+            session.quit()
+            if b"\x1b[?2004l" not in session.output:
+                raise AssertionError("bracketed paste was not turned off at exit")
+
+
 def verify_selection(binary):
     """Space leaves the highlighted cache out of the plan, so the approval covers
     only the other one. The cache left out surviving is the proof that selection
@@ -610,6 +643,7 @@ def main():
     try:
         verify_menu(binary)
         verify_type_ahead(binary)
+        verify_paste_and_modified_keys_never_approve(binary)
         verify_selection(binary)
         verify_action_keys_explain_themselves(binary)
         verify_purge(binary)
@@ -622,7 +656,7 @@ def main():
         return 1
     print(
         "tui: menu, help, cancel, quit, terminal restoration, type-ahead discard,"
-        " selection, action-key explanations, project purge, the minimum-size"
+        " pasted and Alt-modified answers refused, selection, action-key explanations, project purge, the minimum-size"
         " detail pane and view, stopping a scan blocked on its probe, and refusing to"
         " quit an apply blocked on its probe passed"
     )

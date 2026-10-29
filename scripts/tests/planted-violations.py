@@ -277,6 +277,16 @@ CASES = (
         marker="PV journal/bounded-error",
     ),
     Case(
+        name="tui/modified-key-approval",
+        relative_path="src/tui.rs",
+        # Keys with Alt, Control or Super count as their letter again, so
+        # `ESC y` approves a plan.
+        before="        if !modified.is_empty() {\n",
+        after="        if false {\n",
+        tests=("tui::tests::modified_keys_never_approve_a_plan",),
+        marker="PV tui/modified-key-approval",
+    ),
+    Case(
         name="trash/unmeasurable-item",
         relative_path="src/ops/mod.rs",
         before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",
