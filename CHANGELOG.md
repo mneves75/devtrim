@@ -13,6 +13,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - A failing `npm` or `brew` (a stale version-manager shim, say) withholds only its own cache, as a failing `go` already did; every other cache is still offered. `npm` is asked with `npm_config_logs_max=0` and `npm_config_update_notifier=false`, so a preview no longer writes a debug log into `~/.npm/_logs` when npm fails.
 - A `~/.gradle` linked to another folder is resolved like `GRADLE_USER_HOME`: inside the home folder its real caches are offered and removed; outside it nothing is offered and a warning says why. Before, the preview offered a target the apply refused.
 - A permanent removal refused at its very first entry (an immutable file, say) is restored to its own name. Before, nothing was removed yet the target was left under its hidden `.devtrim-quarantine-*` name.
+- A failed command or removal whose message is longer than a journal record may hold (a command's whole stderr, say) is journaled with an 8 KiB excerpt of it. Before, the result record could not be written and `history` showed the finished operation as interrupted. A journal that cannot be written before a typed command now names the journal and the command.
 - `installers` names a linked `~/Downloads` or `~/Desktop` in a warning instead of previewing archives the apply would refuse.
 
 ### Changed

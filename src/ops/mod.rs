@@ -75,11 +75,17 @@ pub(crate) fn run_command_authority(
     note: impl FnOnce(&str) -> String,
 ) -> Result<String> {
     let (program, args) = authority.parts();
+    let command = format!("`{program} {}`", args.join(" "));
     let attempt = crate::journal::begin(
         ctx,
         crate::journal::JournalRecord::command_attempt(op, program, &args, size_bytes),
-    )?;
-    let command = format!("`{program} {}`", args.join(" "));
+    )
+    .with_context(|| {
+        format!(
+            "cannot write apply journal {} before running {command}",
+            ctx.journal_path.display()
+        )
+    })?;
     let result = successful_output(
         std::process::Command::new(program)
             .args(&args)

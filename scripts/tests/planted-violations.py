@@ -268,6 +268,16 @@ CASES = (
         marker="PV protect/home-ancestors",
     ),
     Case(
+        name="journal/bounded-error",
+        relative_path="src/journal.rs",
+        # A result record keeps the whole failure message again, so a long
+        # stderr makes it too large to write.
+        before="                record.error = Some(error_excerpt(format!(\"{error:#}\")));\n",
+        after="                record.error = Some(format!(\"{error:#}\"));\n",
+        tests=("journal::tests::a_long_failure_message_is_journaled_as_an_excerpt",),
+        marker="PV journal/bounded-error",
+    ),
+    Case(
         name="trash/unmeasurable-item",
         relative_path="src/ops/mod.rs",
         before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",
