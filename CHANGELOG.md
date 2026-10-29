@@ -2,7 +2,7 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.12.1] - Unreleased
+## [0.12.1] - 2026-10-29
 
 ### Fixed
 - `status --watch` names the signals its health score lacks, as `status` does, and with none readable says the health is unknown instead of `100/100 (healthy)`.

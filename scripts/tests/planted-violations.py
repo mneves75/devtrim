@@ -643,8 +643,8 @@ CASES = (
     Case(
         name="eval/safety-build-busy",
         relative_path="src/ops/project.rs",
-        before="    process_cwds.iter().any(|cwd| cwd.starts_with(repo))\n",
-        after="    let _ = (repo, process_cwds); false\n",
+        before="pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home: &Path) -> bool {\n",
+        after="pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home: &Path) -> bool {\n    if true {\n        let _ = (repo, process_cwds, home);\n        return false;\n    }\n",
         tests=("eval_build_process_liveness_keeps_only_the_busy_repository",),
         marker="PV eval/build-busy", target="eval_safety",
     ),
