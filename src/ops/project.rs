@@ -760,8 +760,9 @@ fn error_finding(label: String, message: String) -> Finding {
 }
 
 /// Whether a build process works in `repo`: its working directory is `repo` or
-/// lies below it, or `repo` is a submodule and the build works in its
-/// superproject, which reads the installs of the submodules it records.
+/// lies below it, or `repo` is a submodule and the build works anywhere in its
+/// superproject outside the repositories nested there, since the
+/// superproject's build reads the installs of the submodules it records.
 /// Spelling alone misses one folder reached two ways — `lsof` names a working
 /// directory its own way, through the `/System/Volumes/Data` firmlink or in
 /// another case than the scan walked — so folders are also compared by device
@@ -786,17 +787,30 @@ pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home:
     }) {
         return true;
     }
-    let cwds = process_cwds
-        .iter()
-        .filter_map(|cwd| identity_of(cwd))
-        .collect::<std::collections::BTreeSet<_>>();
-    let works_in = |folder: &Path| {
-        process_cwds.iter().any(|cwd| cwd == folder)
-            || identity_of(folder).is_some_and(|folder| cwds.contains(&folder))
+    // A build works on a superproject when its working directory lies inside
+    // it, reached by spelling or identity, and outside every repository nested
+    // there: a worktree kept in an ignored folder is its own project. A folder
+    // whose Git marker cannot be read counts as no repository, so the build
+    // still counts.
+    let builds_in = |superproject: &Path| {
+        let Some(identity) = identity_of(superproject) else {
+            return true;
+        };
+        process_cwds.iter().any(|cwd| {
+            for folder in cwd.ancestors() {
+                if folder == superproject || identity_of(folder) == Some(identity) {
+                    return true;
+                }
+                if matches!(has_git_marker(folder), Ok(true)) {
+                    return false;
+                }
+            }
+            false
+        })
     };
     // Up through each superproject that records the repository below it as a
-    // submodule, to the first that does not; a build in any folder between
-    // works on what that superproject records.
+    // submodule, to the first that does not; a build working on any of them
+    // reads what that superproject records.
     let mut submodule = repo.to_path_buf();
     loop {
         let superproject = match owning_repo(&submodule, home) {
@@ -809,12 +823,7 @@ pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home:
             Ok(false) => return false,
             Err(_) => return true,
         }
-        if submodule
-            .ancestors()
-            .skip(1)
-            .take_while(|folder| folder.starts_with(&superproject))
-            .any(works_in)
-        {
+        if builds_in(&superproject) {
             return true;
         }
         submodule = superproject;

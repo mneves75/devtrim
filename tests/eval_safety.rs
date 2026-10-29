@@ -717,10 +717,11 @@ fn eval_noninteractive_apply_requires_explicit_consent() {
 }
 
 /// A build working in a superproject keeps its submodules: `npm run build` at
-/// the top of a checkout reads the installs of the submodules it records. A
-/// repository nested there that the superproject does not record (a worktree
-/// in an ignored `.scratch`) is its own project and is still offered, and a
-/// build in a folder above the superproject protects nothing.
+/// the top of a checkout, or in any of its folders such as `tools`, reads the
+/// installs of the submodules it records. A repository nested there that the
+/// superproject does not record (a worktree in an ignored `.scratch`) is its
+/// own project: it is still offered, and a build inside it keeps only itself.
+/// A build in a folder above the superproject protects nothing.
 #[test]
 fn eval_a_build_in_the_superproject_keeps_its_submodules() {
     let sandbox = Sandbox::in_target("eval-build-superproject");
@@ -750,6 +751,7 @@ fn eval_a_build_in_the_superproject_keeps_its_submodules() {
         &outer.join(".git/worktrees/wt/HEAD"),
         "ref: refs/heads/main\n",
     );
+    write(&outer.join("tools/build.js"), "");
     let dev = dev.canonicalize().unwrap();
     let root = dev.to_str().unwrap();
     let inner = dev.join("outer/vendor/inner/node_modules");
@@ -758,6 +760,8 @@ fn eval_a_build_in_the_superproject_keeps_its_submodules() {
     for (cwd, offered) in [
         (dev.join("outer"), vec![worktree.clone()]),
         (dev.join("outer/vendor"), vec![worktree.clone()]),
+        (dev.join("outer/tools"), vec![worktree.clone()]),
+        (dev.join("outer/.scratch/wt"), vec![inner.clone()]),
         (dev.clone(), vec![worktree.clone(), inner.clone()]),
     ] {
         sandbox.script("lsof", &format!("printf 'p42\\nn{}\\n'", cwd.display()));

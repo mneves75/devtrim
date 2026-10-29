@@ -242,8 +242,17 @@ CASES = (
         name="liveness/superproject-build",
         relative_path="src/ops/project.rs",
         # A build working in a superproject no longer keeps its submodules.
-        before="            .any(works_in)\n",
-        after="            .any(|_| false)\n",
+        before="                if folder == superproject || identity_of(folder) == Some(identity) {\n                    return true;\n",
+        after="                if folder == superproject || identity_of(folder) == Some(identity) {\n                    return false;\n",
+        tests=("eval_a_build_in_the_superproject_keeps_its_submodules",),
+        marker="PV eval/superproject-build", target="eval_safety",
+    ),
+    Case(
+        name="liveness/superproject-nested-repository",
+        relative_path="src/ops/project.rs",
+        # A build in a worktree nested in the superproject keeps its submodules.
+        before="                if matches!(has_git_marker(folder), Ok(true)) {\n",
+        after="                if matches!(has_git_marker(folder), Ok(false)) {\n",
         tests=("eval_a_build_in_the_superproject_keeps_its_submodules",),
         marker="PV eval/superproject-build", target="eval_safety",
     ),

@@ -281,11 +281,13 @@ Non-negotiable boundaries:
   (`2.1.294`), matched only as a whole dotted triple of digits with an
   optional SemVer pre-release suffix (`2.2.0-beta.1`). Protection follows the
   process's own working directory, matched by spelling or by device and inode
-  (a root typed through the `/System/Volumes/Data` firmlink or in another case
-  reaches the same folder): the repository containing it is
+  (`lsof` may spell it through the `/System/Volumes/Data` firmlink or in
+  another case than the scan walked): the repository containing it is
   protected, and so is every submodule its superproject's index records as a
-  gitlink when the directory lies in that superproject (a superproject's build
-  reads its submodules' installs), not every repository the agent edits by absolute path. Only the
+  gitlink when the directory lies in that superproject outside the
+  repositories nested there (a superproject's build, from its top or from a
+  folder such as `tools`, reads its submodules' installs; a build in a nested
+  worktree keeps only that worktree), not every repository the agent edits by absolute path. Only the
   current user's processes are probed (`pgrep -U <uid>`): `lsof` cannot read
   another user's working directory, and a root-owned `node` service refused
   every project cleanup on the development machine. A build another user runs
