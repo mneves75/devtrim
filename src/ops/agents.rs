@@ -45,6 +45,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use super::project::{UnreadFolder, unread_folders_finding};
+
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
@@ -751,9 +753,18 @@ impl Agents {
                 Vec::new()
             }
         };
+        // A folder that cannot be read or measured offers nothing and is named
+        // in one error finding (S8); every other entry is still judged.
+        let mut unread = Vec::new();
         for entry in REGENERABLE {
             for (path, suffix) in placements(entry.relative, &ctx.home, &extra) {
-                let size = dir_size(&path)?;
+                let size = match dir_size(&path) {
+                    Ok(size) => size,
+                    Err(error) => {
+                        unread.push(UnreadFolder::new(&path, &error));
+                        continue;
+                    }
+                };
                 if size > 0 {
                     findings.push(Finding::new(
                         format!("{}{suffix}", entry.label),
@@ -772,12 +783,17 @@ impl Agents {
         for root in HISTORY {
             for (base, suffix) in placements(root.relative, &ctx.home, &extra) {
                 let mut candidates = Vec::new();
-                collect_at_depth(&base, root.depth, &mut candidates)?;
+                collect_at_depth(&base, root.depth, &mut candidates, &mut unread);
                 candidates.sort();
                 for path in candidates {
-                    let Some((age, size)) =
-                        history_details(&path, &ctx.home, &extra, ctx.retain_days)?
-                    else {
+                    let details = history_details(&path, &ctx.home, &extra, ctx.retain_days);
+                    let Some((age, size)) = (match details {
+                        Ok(details) => details,
+                        Err(error) => {
+                            unread.push(UnreadFolder::new(&path, &error));
+                            continue;
+                        }
+                    }) else {
                         continue;
                     };
                     if size == 0 {
@@ -795,6 +811,9 @@ impl Agents {
                     ));
                 }
             }
+        }
+        if !unread.is_empty() {
+            findings.push(unread_folders_finding("agent caches and history", &unread));
         }
         Ok(findings)
     }
@@ -1134,20 +1153,42 @@ fn relative_display(path: &Path, base: &Path) -> String {
 ///
 /// Traversal refuses to descend through a symlink, so a link planted inside an
 /// authorized root cannot widen the candidate set to a foreign tree.
-fn collect_at_depth(base: &Path, depth: usize, found: &mut Vec<PathBuf>) -> Result<()> {
+/// The entries exactly `depth` levels below `base`. A folder that cannot be
+/// read is recorded in `unread` and its subtree is not entered, so one sealed
+/// folder never hides its siblings.
+fn collect_at_depth(
+    base: &Path,
+    depth: usize,
+    found: &mut Vec<PathBuf>,
+    unread: &mut Vec<UnreadFolder>,
+) {
     let entries = match std::fs::read_dir(base) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
         Err(error) => {
-            return Err(error).with_context(|| format!("cannot read {}", base.display()));
+            let error =
+                anyhow::Error::from(error).context(format!("cannot read {}", base.display()));
+            unread.push(UnreadFolder::new(base, &error));
+            return;
         }
     };
     for entry in entries {
-        let entry = entry.with_context(|| format!("cannot enumerate {}", base.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("cannot inspect {}", path.display()))?;
+        let inspected = entry
+            .with_context(|| format!("cannot enumerate {}", base.display()))
+            .and_then(|entry| {
+                let path = entry.path();
+                let file_type = entry
+                    .file_type()
+                    .with_context(|| format!("cannot inspect {}", path.display()))?;
+                Ok((path, file_type))
+            });
+        let (path, file_type) = match inspected {
+            Ok(inspected) => inspected,
+            Err(error) => {
+                unread.push(UnreadFolder::new(base, &error));
+                return;
+            }
+        };
         if file_type.is_symlink() {
             continue;
         }
@@ -1156,10 +1197,9 @@ fn collect_at_depth(base: &Path, depth: usize, found: &mut Vec<PathBuf>) -> Resu
                 found.push(path);
             }
         } else if file_type.is_dir() {
-            collect_at_depth(&path, depth - 1, found)?;
+            collect_at_depth(&path, depth - 1, found, unread);
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1507,6 +1547,44 @@ mod tests {
     /// liveness, so the host's own processes cannot decide their outcome.
     fn idle() -> Result<Vec<PathBuf>> {
         Ok(Vec::new())
+    }
+
+    /// One folder that cannot be read offers nothing and is named in one
+    /// error finding; every other cache and history entry is still judged.
+    #[test]
+    fn an_unreadable_history_folder_withholds_only_itself() {
+        let fixture = crate::ops::TestFixture::new("devtrim-agents-unread");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let stale = home.join(".codex/sessions/2025/01/01");
+        write_aged(&stale.join("rollout.jsonl"), "{}", 100);
+        let locked = crate::ops::Unreadable::new(&home.join(".codex/sessions/2025/01/02"), 0o000);
+        let sealed_month = crate::ops::Unreadable::new(&home.join(".codex/sessions/2024"), 0o000);
+        write_aged(&home.join(".claude/cache/catalog.json"), "{}", 1);
+        let sealed_cache = crate::ops::Unreadable::new(&home.join(".codex/cache/sealed"), 0o000);
+
+        let findings = Agents
+            .scan_with_mappings(&test_ctx(home.clone()), &ScanObservations::default(), &idle)
+            .unwrap();
+
+        drop((locked, sealed_month, sealed_cache));
+        let mut offered = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        offered.sort();
+        assert_eq!(
+            offered,
+            vec![home.join(".claude/cache").as_path(), stale.as_path()]
+        );
+        let errors = findings
+            .iter()
+            .filter_map(Finding::scan_error)
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1, "{findings:?}");
+        for named in ["2025/01/02", ".codex/sessions/2024", ".codex/cache"] {
+            assert!(errors[0].contains(named), "{named} missing: {errors:?}");
+        }
     }
 
     /// A probe that reports the release's `codex-path/rg` mapped while

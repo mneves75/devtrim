@@ -64,7 +64,13 @@ impl Op for Leftovers {
                     format!("cannot inspect leftover candidate {}", path.display())
                 })?;
                 if file_type.is_dir() && is_agent_scratch(&entry.file_name().to_string_lossy()) {
-                    let size = dir_size(&path)?;
+                    let size = match dir_size(&path) {
+                        Ok(size) => size,
+                        Err(error) => {
+                            unread_once(&mut unread, &path, &error);
+                            continue;
+                        }
+                    };
                     findings.push(Finding::new(
                         format!(
                             "possible agent scratch `{}`",
@@ -83,15 +89,29 @@ impl Op for Leftovers {
                 .follow_links(false)
                 .into_iter()
             {
-                let entry = entry
-                    .with_context(|| format!("cannot scan leftovers under {}", root.display()))?;
+                // A folder the walk cannot read is named once, beside the
+                // repositories walk's own unread folders (S8).
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        let path = error.path().unwrap_or(root).to_path_buf();
+                        unread_once(&mut unread, &path, &anyhow::Error::from(error));
+                        continue;
+                    }
+                };
                 if entry.file_name() != ".supergoal" || !entry.file_type().is_dir() {
                     continue;
                 }
                 for child in ["evidence", "perf"] {
                     let path = entry.path().join(child);
                     if is_directory_if_present(&path)? {
-                        let size = dir_size(&path)?;
+                        let size = match dir_size(&path) {
+                            Ok(size) => size,
+                            Err(error) => {
+                                unread_once(&mut unread, &path, &error);
+                                continue;
+                            }
+                        };
                         findings.push(Finding::new(
                             format!("supergoal {child} artifacts"),
                             Some(path),
@@ -105,7 +125,7 @@ impl Op for Leftovers {
             }
         }
         if !unread.is_empty() {
-            findings.push(project::unread_folders_finding("repositories", &unread));
+            findings.push(project::unread_folders_finding("leftovers", &unread));
         }
         Ok(findings)
     }
@@ -179,4 +199,61 @@ fn scratch_findings(repository: &Path, findings: &mut Vec<Finding>) -> Result<()
         ));
     }
     Ok(())
+}
+
+/// Records a folder this scan could not read, once however many walks reach it.
+fn unread_once(unread: &mut Vec<project::UnreadFolder>, path: &Path, error: &anyhow::Error) {
+    if !unread.iter().any(|folder| folder.path == path) {
+        unread.push(project::UnreadFolder::new(path, error));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A folder below a root that cannot be read is named once in one error
+    /// finding; everything else under the root is still reported.
+    #[test]
+    fn an_unreadable_folder_withholds_only_itself() {
+        let fixture = crate::ops::TestFixture::new("devtrim-leftovers-unread");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let root = home.join("dev");
+        let evidence = root.join(".supergoal/evidence");
+        std::fs::create_dir_all(&evidence).unwrap();
+        std::fs::write(evidence.join("run.log"), "log").unwrap();
+        let sealed = crate::ops::Unreadable::new(&root.join("sealed"), 0o000);
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: vec![root.clone()],
+            roots_origin: crate::safety::RootsOrigin::Flag,
+            active_days: 30,
+            retain_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
+            home: home.clone(),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
+
+        let findings = Leftovers.scan(&ctx, &Default::default()).unwrap();
+
+        drop(sealed);
+        let reported = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        assert_eq!(reported, vec![evidence.as_path()]);
+        let errors = findings
+            .iter()
+            .filter_map(Finding::scan_error)
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1, "{findings:?}");
+        assert_eq!(errors[0].matches("sealed").count(), 1, "{errors:?}");
+    }
 }
