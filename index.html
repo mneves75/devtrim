@@ -147,6 +147,36 @@
 <section class="features" aria-labelledby="feat-h">
   <div class="wrap">
     <h2 id="feat-h">One interactive TUI. Explicit commands for automation.</h2>
+    <figure class="scan-fig" data-reveal>
+<!-- cli:scan -->
+<div class="term-frame" style="--cols: 105" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
+Categories
+  artifacts        6.7 GB      3 finding(s)   devtrim clean artifacts --apply
+  node-modules     1.1 GB      1 finding(s)   devtrim clean node-modules --apply
+
+artifacts
+
+~/dev/payments-api · 5.9 GB in 1 item(s)
+   5.9 GB  danger:5  stale target artifacts  ~/dev/payments-api/target
+           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; action: move to Trash
+
+~/dev/storefront · 819 MB in 2 item(s)
+   614 MB  danger:5  stale .next artifacts  ~/dev/storefront/.next
+           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; action: move to Trash
+   205 MB  danger:5  stale .turbo artifacts  ~/dev/storefront/.turbo
+           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; action: move to Trash
+
+node-modules
+
+~/dev/storefront · 1.1 GB in 1 item(s)
+   1.1 GB  danger:5  stale node_modules  ~/dev/storefront/node_modules
+           └─ repo last active 2020-01-01 UTC; lockfile: none; action: move to Trash
+
+7.8 GB actionable across 4 finding(s)
+Pick items one by one in the interactive view: devtrim. Project build output together: devtrim purge.</code></pre></div>
+<!-- /cli:scan -->
+      <figcaption>The same two demo projects through <code>devtrim scan</code>: one line per category, largest first, with the command that acts on it.</figcaption>
+    </figure>
     <dl class="commands">
       <div data-reveal><dt><code>devtrim</code> / <code>tui</code></dt><dd>Keyboard-first scan, preview, and confirmation with written risk labels. It reuses the same cleanup owners and rejects CLI bypass flags.</dd></div>
       <div data-reveal><dt><code>scan</code></dt><dd>Read-only report with estimated logical sizes, danger levels, and one-document JSON output for agents.</dd></div>

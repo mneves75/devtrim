@@ -188,6 +188,23 @@ def refusals(binary, home):
     return "\n".join(out).rstrip()
 
 
+def scan_summary(binary, home):
+    """`devtrim scan` as a reader runs it: the human report, uncolored since
+    stdout is a pipe, with the demo home spelled `~` as a shell shows it."""
+    environment = {"HOME": str(home), "PATH": str(home / "bin"), "LANG": "en_US.UTF-8"}
+    result = subprocess.run(
+        [str(binary), "scan"], stdin=subprocess.DEVNULL, capture_output=True,
+        env=environment, cwd=home, text=True, timeout=120,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"`devtrim scan` failed: {result.stderr}")
+    lines = result.stdout.rstrip().replace(str(home), "~").splitlines()
+    body = "\n".join(
+        [f'<span class="k">$</span> devtrim scan'] + [html.escape(line) for line in lines]
+    )
+    return body, max(len(line) for line in lines)
+
+
 def block(name, columns, body):
     return (
         f'<div class="term-frame" style="--cols: {columns}" data-ui>'
@@ -222,6 +239,8 @@ def main():
             (b"a", ("This plan:",)),
         ])
         frames["tui:confirm"] = block("confirm exact plan", 84, to_html(confirm, 3, rows))
+        scan, scan_columns = scan_summary(binary, home)
+        frames["cli:scan"] = block("devtrim scan", scan_columns, scan)
         frames["cli:refusals"] = (
             f'<pre class="term" tabindex="0" aria-label="devtrim refusals"><code>{refusals(binary, home)}</code></pre>'
         )
