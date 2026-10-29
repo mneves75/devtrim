@@ -1443,7 +1443,8 @@ mod tests {
         assert!(!rotated_path(&path, 1).exists());
 
         attempt.finish(&ctx, Ok(())).unwrap();
-        assert!(rotate_if_needed(&path).unwrap().is_empty());
+        let warnings = rotate_if_needed(&path).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert!(!path.exists());
 
         let mut rotated = File::open(rotated_path(&path, 1)).unwrap();
