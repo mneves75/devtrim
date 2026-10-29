@@ -538,7 +538,10 @@ Non-negotiable boundaries:
   exited cleanly is abandoned, not killed. Because a group of its own never
   receives the terminal's Ctrl-C, every non-TUI run installs a handler
   (`process::exit_on_interrupt`) for SIGINT, SIGTERM and SIGHUP; a hangup
-  reaches devtrim only, so without it closing the terminal left them running. Live groups are kept
+  reaches devtrim only, so without it closing the terminal left them running.
+  The handler replaces a SIGHUP ignored at startup, so a `nohup` run stops when
+  its terminal closes: there is no safe way to read the earlier disposition,
+  and stopping journals the attempt in flight as interrupted. Live groups are kept
   in one registry in `src/process.rs`. The lock is not held across a spawn: a
   counter of spawns in flight covers the gap until the new group is
   registered, and an interrupt waits for that counter (at most two seconds)

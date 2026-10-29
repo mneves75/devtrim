@@ -275,7 +275,12 @@ const STOP_SIGNALS: [i32; 3] = [
 ///
 /// Installing the handler replaces a SIGINT that was ignored at startup, as in
 /// a background job of a non-interactive shell: such a run now stops on SIGINT.
-/// std and rustix offer no safe way to read the earlier disposition.
+/// It replaces an ignored SIGHUP the same way, so a run started under `nohup`
+/// stops when its terminal closes instead of finishing: stopping is the safe
+/// direction, since the attempt in flight is journaled as interrupted and every
+/// command is killed. std and rustix offer no safe way to read the earlier
+/// disposition, and the crate forbids `unsafe`; a run that must outlive its
+/// terminal belongs in `tmux`, `screen` or a launchd job.
 ///
 /// Not installed for the TUI, which runs in raw mode where Ctrl-C is a key and
 /// must restore its terminal before it exits: it installs

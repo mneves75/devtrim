@@ -898,7 +898,7 @@ impl App {
         if self.input.len() < MAX_CONFIRMATION_INPUT {
             self.input.push(value);
         } else {
-            self.status = "The answer is longer than any acknowledgment; Backspace erases.".into();
+            self.status = "Longer than any acknowledgment; Backspace erases.".into();
         }
         Intent::None
     }
@@ -2476,7 +2476,7 @@ mod tests {
 
         // The popup covers the footer there, so the feedback lives inside it.
         assert!(
-            output.contains("Confirmation mismatch"),
+            output.contains(&app.status) && app.status.contains("Confirmation mismatch"),
             "PV tui/confirmation-feedback: {output}"
         );
         assert!(output.contains("understand the request."), "{output}");
@@ -2496,8 +2496,11 @@ mod tests {
             MAX_CONFIRMATION_INPUT,
             "PV tui/input-limit"
         );
-        assert!(app.status.contains("longer than"), "{}", app.status);
-        assert!(rendered(&app, MIN_WIDTH, MIN_HEIGHT).contains("longer than"));
+        assert!(app.status.contains("Longer than"), "{}", app.status);
+        // Whole on one line, in the popup at the minimum size and in the
+        // footer, which does not wrap, on a larger terminal.
+        assert!(rendered(&app, MIN_WIDTH, MIN_HEIGHT).contains(&app.status));
+        assert!(rendered(&app, 100, 30).contains(&app.status));
         app.handle_key(key(KeyCode::Backspace));
         assert!(app.status.is_empty());
     }
