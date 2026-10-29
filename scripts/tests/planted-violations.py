@@ -636,6 +636,16 @@ CASES = (
         marker="PV sink/rename-no-replace",
     ),
     Case(
+        name="sink/refused-removal-restored",
+        relative_path="src/ops/mod.rs",
+        # The sink counts a removal as started before anything is removed, so
+        # a refusal at the first entry leaves the target under its quarantine name.
+        before="        let mut removal_started = false;\n",
+        after="        let mut removal_started = true;\n",
+        tests=("ops::tests::a_removal_refused_before_anything_is_deleted_is_restored",),
+        marker="PV sink/refused-removal-restored",
+    ),
+    Case(
         name="liveness/lsof-escape",
         relative_path="src/safety.rs",
         before="decode_lsof_name(path)?",

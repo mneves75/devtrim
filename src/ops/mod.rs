@@ -603,10 +603,10 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                                     child_path.display()
                                 );
                             }
-                            removal_started = true;
                             frame.dir.remove_file(&name).with_context(|| {
                                 format!("cannot delete entry: {}", child_path.display())
                             })?;
+                            removal_started = true;
                             RemovalStep::Continue
                         }
                     } else {
@@ -632,10 +632,10 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                         let Some(frame) = frames.pop() else {
                             anyhow::bail!("deletion traversal stack unexpectedly empty");
                         };
-                        removal_started = true;
                         frame.dir.remove_open_dir().with_context(|| {
                             format!("cannot delete open directory: {}", frame.path.display())
                         })?;
+                        removal_started = true;
                     }
                 }
             }
@@ -1904,6 +1904,63 @@ mod tests {
             .expect_err("PV sink/removal-root-device: a foreign root was authorized");
         assert!(format!("{refusal:#}").contains("foreign filesystem device"));
         assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
+    }
+
+    /// A permanent removal refused at its first entry has removed nothing, so
+    /// the target is restored to its own name rather than left under the
+    /// quarantine name, where no preview would ever show it again.
+    #[test]
+    fn a_removal_refused_before_anything_is_deleted_is_restored() {
+        struct Immutable(PathBuf);
+        impl Immutable {
+            fn set(path: &Path, flag: &str) -> bool {
+                std::process::Command::new("/usr/bin/chflags")
+                    .arg(flag)
+                    .arg(path)
+                    .status()
+                    .is_ok_and(|status| status.success())
+            }
+        }
+        impl Drop for Immutable {
+            fn drop(&mut self) {
+                std::process::Command::new("/usr/bin/chflags")
+                    .args(["-R", "nouchg"])
+                    .arg(&self.0)
+                    .status()
+                    .ok();
+            }
+        }
+        let fixture = crate::ops::TestFixture::new("devtrim-refused-removal");
+        std::fs::create_dir_all(fixture.path().join("dev/node_modules")).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let target = home.join("dev/node_modules");
+        let locked = target.join("locked");
+        std::fs::write(&locked, "keep").unwrap();
+        assert!(Immutable::set(&locked, "uchg"), "chflags uchg failed");
+        let _guard = Immutable(home.clone());
+        let finding = Finding::new(
+            "node_modules",
+            Some(target.clone()),
+            0,
+            "test",
+            9,
+            Action::Shred,
+        );
+
+        let error = apply_filesystem_finding("test", &finding, &context(home.clone())).unwrap_err();
+
+        assert_eq!(
+            std::fs::read_to_string(&locked).ok().as_deref(),
+            Some("keep"),
+            "PV sink/refused-removal-restored: {error:#}"
+        );
+        assert!(std::fs::read_dir(home.join("dev")).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".devtrim-quarantine-")
+        }));
     }
 
     #[test]
