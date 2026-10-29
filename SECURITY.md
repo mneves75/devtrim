@@ -276,9 +276,12 @@ Non-negotiable boundaries:
   (`2.1.294`), matched only as a whole dotted triple of digits with an
   optional SemVer pre-release suffix (`2.2.0-beta.1`). Protection follows the
   process's own working directory: the repository containing it is
-  protected, not every repository the agent edits by absolute path. As with
-  any build process, one `lsof` cannot read, another user's for example,
-  refuses the probe.
+  protected, not every repository the agent edits by absolute path. Only the
+  current user's processes are probed (`pgrep -U <uid>`): `lsof` cannot read
+  another user's working directory, and a root-owned `node` service refused
+  every project cleanup on the development machine. A build another user runs
+  inside this user's repository is therefore not seen. A process of this user
+  that `lsof` cannot read still refuses the probe.
   `lsof` exiting 0 is trusted only when it reported every requested process; one
   it left out is judged as below. `lsof` exiting 1 is accepted only when every process it did not report is
   absent from a fresh `pgrep`, so a build that exited between the probes does

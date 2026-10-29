@@ -226,6 +226,41 @@ fn project_args<'a>(category: &'a str, root: &'a str, apply: bool) -> Vec<&'a st
     args
 }
 
+/// Only the current user's build processes are judged: another user's (a
+/// root-owned `node` a system service runs) has a working directory `lsof`
+/// cannot read, and counting it refused every project cleanup on the machine.
+/// `pgrep` is asked for this user's processes alone; the stub lists the root
+/// process to any other question, and `lsof` cannot read it.
+#[test]
+fn eval_another_users_build_process_does_not_refuse_project_cleanup() {
+    let uid = rustix::process::getuid().as_raw();
+    for category in ["node-modules", "artifacts", "purge"] {
+        let (sandbox, project) = build_cwd_fixture("eval-foreign-build-process");
+        sandbox.script(
+            "pgrep",
+            &format!("case \" $* \" in *\" -U {uid} \"*) exit 1;; esac\nprintf '618\\n'"),
+        );
+        sandbox.script("lsof", "exit 1");
+        let root = project.to_str().unwrap();
+        let preview = run(&sandbox, &project_args(category, root, false));
+        assert!(
+            preview.status.success(),
+            "PV liveness/current-user-only: {category}: {}",
+            json(&preview)
+        );
+        assert_eq!(
+            actionable_targets(&json(&preview)).len(),
+            if category == "purge" { 2 } else { 1 },
+            "{category}: {}",
+            json(&preview)
+        );
+        let mut apply = project_args(category, root, true);
+        apply.push("--yolo");
+        let applied = run(&sandbox, &apply);
+        assert!(applied.status.success(), "{category}: {}", json(&applied));
+    }
+}
+
 #[test]
 fn eval_unreadable_build_cwd_refuses_project_cleanup() {
     for category in ["node-modules", "artifacts", "purge"] {

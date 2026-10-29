@@ -1518,10 +1518,17 @@ fn pgrep_pids(command: &mut Command, limit: Duration, probe: &str) -> Result<Vec
     parse_pgrep_pids(&output.stdout, output.status.code())
 }
 
+/// This user's build processes only (`pgrep -U`, the real user ID). `lsof`
+/// cannot read another user's working directory, so a root-owned service
+/// matching a build name (a `node` daemon) refused every project cleanup on
+/// the machine. A build another user runs in this user's repository is not
+/// seen, the same limit the executable-mapping probe has.
 fn build_process_pids() -> Result<BTreeSet<u32>> {
+    let uid = rustix::process::getuid().as_raw().to_string();
     Ok(pgrep_pids(
         Command::new("pgrep")
             .args(PGREP_MATCH_ARGS)
+            .args(["-U", &uid])
             .arg(BUILD_PROCESS_PATTERN),
         PROBE_TIMEOUT,
         "build-process pgrep probe",

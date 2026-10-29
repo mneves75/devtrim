@@ -536,7 +536,9 @@ was absent from the preview.
 Localized scan failures remain visible and non-actionable in the TUI and make
 its eventual exit nonzero; a later successful scan does not clear that failure.
 Build-process liveness refuses decoded `lsof` CWD names that are not absolute,
-including diagnostics, at both preview and apply.
+including diagnostics, at both preview and apply. It probes only your own
+processes: `lsof` cannot read another user's working directory, so a build
+another user (root, say) runs inside your repository is not seen.
 
 `status` uses the Data volume when layout inspection finds its directory.
 A failed or malformed Data metric stays unavailable with a reason and nonzero

@@ -219,6 +219,16 @@ CASES = (
         marker="PV eval/trash-empty-read-only", target="eval_system",
     ),
     Case(
+        name="liveness/current-user-only",
+        relative_path="src/safety.rs",
+        # The probe counts every user's build processes again, so a root-owned
+        # `node` whose directory lsof cannot read refuses every project cleanup.
+        before='            .args(["-U", &uid])\n',
+        after="",
+        tests=("eval_another_users_build_process_does_not_refuse_project_cleanup",),
+        marker="PV liveness/current-user-only", target="eval_system",
+    ),
+    Case(
         name="trash/unmeasurable-item",
         relative_path="src/ops/mod.rs",
         before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",
