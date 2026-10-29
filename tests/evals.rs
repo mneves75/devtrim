@@ -157,7 +157,11 @@ fn oracle_allows_only_directories_on_the_way_to_scratch() {
 /// misses its documentation excludes. Returns the targets it must remove.
 fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     let home = sandbox.path();
-    sandbox.script("npm", "printf '%s\\n' \"$HOME/.npm\"");
+    // `npm` is asked not to write a log or its update-check timestamp.
+    sandbox.script(
+        "npm",
+        "[ \"${npm_config_logs_max:-}\" = 0 ] && [ \"${npm_config_update_notifier:-}\" = false ] || exit 3\nprintf '%s\\n' \"$HOME/.npm\"",
+    );
     sandbox.script("brew", "printf '%s\\n' \"$HOME/Library/Caches/Homebrew\"");
     // `go` must be asked with `GOTOOLCHAIN=local`, or a `go.mod` could make it
     // download a toolchain.

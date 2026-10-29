@@ -297,6 +297,93 @@ fn eval_gradle_caches_need_gradle_and_no_repository() {
     }
 }
 
+/// An owner command that fails withholds only its own cache: a broken `npm`
+/// or `brew` (a stale version-manager shim) is one error finding each, the
+/// run exits nonzero, and every other cache is still offered and removed.
+#[test]
+fn eval_a_failing_owner_command_withholds_only_its_cache() {
+    let sandbox = Sandbox::in_target("eval-owner-command-fails");
+    let other = cache(&sandbox, ".cache/gh");
+    for program in ["npm", "brew"] {
+        sandbox.script(program, "echo \"$0: broken shim\" >&2\nexit 1");
+    }
+    let preview = run(&sandbox, &["clean", "caches", "--json"]);
+    let document = json(&preview);
+    assert!(!preview.status.success(), "{document}");
+    assert_eq!(
+        actionable_targets(&document),
+        vec![other.clone()],
+        "{document}"
+    );
+    let text = document.to_string();
+    for subject in ["npm cache folder", "Homebrew cache"] {
+        assert!(
+            text.contains(&format!("cannot judge the {subject}")),
+            "{document}"
+        );
+    }
+    let applied = apply(&sandbox, "caches");
+    assert!(!other.exists(), "{}", json(&applied));
+}
+
+/// The default Gradle user home is resolved like `GRADLE_USER_HOME`: a
+/// `~/.gradle` linked to a folder inside the home folder offers its real
+/// caches, which apply then removes; one linked outside the home folder
+/// offers nothing and says why, instead of previewing a target apply refuses.
+#[test]
+fn eval_a_linked_default_gradle_home_is_resolved() {
+    let sandbox = Sandbox::in_target("eval-gradle-linked");
+    let outside = Sandbox::in_target("eval-gradle-linked-outside");
+    let home = sandbox.path().canonicalize().unwrap();
+    let inside = home.join("dotfiles/gradle");
+    let foreign = outside.path().canonicalize().unwrap().join("gradle");
+    for gradle in [&inside, &foreign] {
+        write(&gradle.join("caches/modules-2/files-2.1/x.jar"), "module");
+    }
+    let link = home.join(".gradle");
+    let caches = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+            .args(args)
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", sandbox.bin())
+            .output()
+            .unwrap()
+    };
+
+    symlink(&foreign, &link).unwrap();
+    let pristine = Tree::snapshot(outside.path());
+    let preview = caches(&["clean", "caches", "--json"]);
+    assert_eq!(
+        actionable_targets(&json(&preview)),
+        Vec::<PathBuf>::new(),
+        "a Gradle home linked outside the home folder was offered"
+    );
+    let stderr = String::from_utf8_lossy(&preview.stderr);
+    assert!(stderr.contains("Gradle user home"), "{stderr}");
+    caches(&["clean", "caches", "--apply", "--shred", "--yolo", "--json"]);
+    pristine.assert_only(
+        &Tree::snapshot(outside.path()),
+        &Allowed {
+            removed: Vec::new(),
+            scratch: Vec::new(),
+        },
+        "linked-outside gradle apply",
+    );
+
+    std::fs::remove_file(&link).unwrap();
+    symlink(&inside, &link).unwrap();
+    let preview = json(&caches(&["clean", "caches", "--json"]));
+    assert_eq!(
+        actionable_targets(&preview),
+        vec![inside.join("caches")],
+        "{preview}"
+    );
+    let apply = caches(&["clean", "caches", "--apply", "--shred", "--yolo", "--json"]);
+    assert!(apply.status.success(), "{}", json(&apply));
+    assert!(!inside.join("caches").exists(), "{}", json(&apply));
+}
+
 /// Gradle locks its caches only among its own processes, so they are kept
 /// while any Gradle process runs: left out of a preview taken then, and refused
 /// at apply when Gradle starts after the preview. The other caches still go.

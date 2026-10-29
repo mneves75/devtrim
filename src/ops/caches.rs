@@ -161,26 +161,34 @@ impl Op for Caches {
                 findings.push(cache_finding(label, path, size, 3));
             }
         }
-        if let Some(path) = owner_cache_path("npm", &["config", "get", "cache"], ctx)? {
-            let size = measured(&path, &mut unread);
-            if size > 0 {
-                // `npm config get cache` names npm's whole cache folder, not
-                // only the content store `npm cache clean` empties.
-                let mut finding = cache_finding("npm cache folder", path, size, 2)
-                    .with_authority(TargetAuthority::NpmCache);
-                finding.note =
-                    "npm's whole cache folder: downloaded packages (`_cacache`) and npx \
+        // An owner command that fails withholds only its own cache, as `go`
+        // does below; the caches listed after it are still judged.
+        match owner_cache_path("npm", &["config", "get", "cache"], NPM_QUIET, ctx) {
+            Ok(Some(path)) => {
+                let size = measured(&path, &mut unread);
+                if size > 0 {
+                    // `npm config get cache` names npm's whole cache folder, not
+                    // only the content store `npm cache clean` empties.
+                    let mut finding = cache_finding("npm cache folder", path, size, 2)
+                        .with_authority(TargetAuthority::NpmCache);
+                    finding.note =
+                        "npm's whole cache folder: downloaded packages (`_cacache`) and npx \
                                 installs (`_npx`) are fetched again on next use; its logs \
                                 (`_logs`) do not come back"
-                        .to_string();
-                findings.push(finding);
+                            .to_string();
+                    findings.push(finding);
+                }
             }
+            Ok(None) => {}
+            Err(error) => findings.push(not_judged("npm cache folder", &error)),
         }
-        if let Some(path) = owner_cache_path("brew", &["--cache"], ctx)? {
-            match brew_cache_findings(&path, &ctx.home, &mut unread) {
+        match owner_cache_path("brew", &["--cache"], &[], ctx) {
+            Ok(Some(path)) => match brew_cache_findings(&path, &ctx.home, &mut unread) {
                 Ok(brew) => findings.extend(brew),
                 Err(error) => unread.push(UnreadFolder::new(&path, &error)),
-            }
+            },
+            Ok(None) => {}
+            Err(error) => findings.push(not_judged("Homebrew cache", &error)),
         }
         findings.extend(gradle_findings(ctx, &mut unread));
         match go_module_cache(ctx, true) {
@@ -442,15 +450,14 @@ fn not_judged(subject: &str, error: &anyhow::Error) -> Finding {
 }
 
 /// Gradle's user home: `GRADLE_USER_HOME`, by default `~/.gradle` (Gradle 9.8.1
-/// "Gradle User Home"). `None` when the variable is relative, which would be
-/// read against whatever folder devtrim started in, or names a folder that is
-/// not inside the home folder. The home itself is never a target: it also
+/// "Gradle User Home"), resolved to its real path either way, since the sink
+/// refuses a target below a link. `None` when the variable is relative, which
+/// would be read against whatever folder devtrim started in, or when the folder
+/// is not inside the home folder. The home itself is never a target: it also
 /// holds `gradle.properties` and `init.d`.
 fn gradle_user_home(home: &Path) -> Result<Option<PathBuf>> {
-    let Some(configured) = std::env::var_os("GRADLE_USER_HOME") else {
-        return Ok(Some(home.join(".gradle")));
-    };
-    let configured = PathBuf::from(configured);
+    let configured =
+        std::env::var_os("GRADLE_USER_HOME").map_or_else(|| home.join(".gradle"), PathBuf::from);
     if !configured.is_absolute() {
         return Ok(None);
     }
@@ -541,7 +548,7 @@ fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
         Ok(None) => {
             ctx.diagnostic(
                 "warn",
-                "GRADLE_USER_HOME is not a folder inside the home folder; skipping Gradle's caches",
+                "the Gradle user home (GRADLE_USER_HOME, or ~/.gradle and where it links) is not a folder inside the home folder; skipping Gradle's caches",
             );
             return Vec::new();
         }
@@ -747,8 +754,21 @@ fn resolved_owner_path(program: &str, path: PathBuf) -> Result<PathBuf> {
     }
 }
 
-fn owner_cache_path(program: &str, args: &[&str], ctx: &Ctx) -> Result<Option<PathBuf>> {
-    let Some(path) = command_path(program, args, &ctx.home, &[])? else {
+/// Asked of `npm` so a preview writes nothing: npm otherwise writes a debug log
+/// to `<cache>/_logs` when a command fails and a timestamp file for its update
+/// check (npm 12.2.1 `logs-max`, `update-notifier`).
+const NPM_QUIET: &[(&str, &str)] = &[
+    ("npm_config_logs_max", "0"),
+    ("npm_config_update_notifier", "false"),
+];
+
+fn owner_cache_path(
+    program: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    ctx: &Ctx,
+) -> Result<Option<PathBuf>> {
+    let Some(path) = command_path(program, args, &ctx.home, envs)? else {
         return Ok(None);
     };
     let path = resolved_owner_path(program, path)?;
