@@ -418,7 +418,7 @@ Non-negotiable boundaries:
 
 - `Cargo.lock` is committed and release builds use `--locked`.
 - `signal-hook` 0.3 (iterator feature, default features off) runs the interrupt
-  handler: it receives SIGINT and SIGTERM on a thread, so the kill-and-exit
+  handler: it receives SIGINT, SIGTERM and SIGHUP on a thread, so the kill-and-exit
   code is ordinary safe Rust. It adds no crate: crossterm's event support
   already pulls it (and `signal-hook-registry`, `libc`) into `Cargo.lock`, so
   `cargo audit` already covers it, and its minimum Rust version is far below the
@@ -537,7 +537,8 @@ Non-negotiable boundaries:
   reported failure. A descendant still holding the output after the command
   exited cleanly is abandoned, not killed. Because a group of its own never
   receives the terminal's Ctrl-C, every non-TUI run installs a handler
-  (`process::exit_on_interrupt`) for SIGINT and SIGTERM. Live groups are kept
+  (`process::exit_on_interrupt`) for SIGINT, SIGTERM and SIGHUP; a hangup
+  reaches devtrim only, so without it closing the terminal left them running. Live groups are kept
   in one registry in `src/process.rs`. The lock is not held across a spawn: a
   counter of spawns in flight covers the gap until the new group is
   registered, and an interrupt waits for that counter (at most two seconds)
@@ -545,7 +546,7 @@ Non-negotiable boundaries:
   its leader, so the handler never signals a group whose leader was reaped (its
   id could then name an unrelated process). On a signal the handler refuses
   later spawns, kills every registered group while holding the lock and exits
-  130 (SIGINT) or 143 (SIGTERM). It writes no message, because a write to a
+  130 (SIGINT), 143 (SIGTERM) or 129 (SIGHUP). It writes no message, because a write to a
   full or unread stderr would stall the exit while the run kept deleting, and
   a second signal exits at once without waiting for the first kill. It cannot reap the leaders, whose handles belong to other threads;
   the kernel reparents and reaps them at exit. An apply attempt in flight

@@ -721,7 +721,11 @@ fn an_interrupted_scan_kills_the_commands_it_started(signal: &str, status: i32) 
 
     let (code, stderr) = family.interrupt(signal);
 
-    assert_eq!(code, Some(status), "{stderr}");
+    assert_eq!(
+        code,
+        Some(status),
+        "PV process/interrupt-status: {signal} gave {code:?}: {stderr}"
+    );
     assert!(
         BlockingFamily::gone(&stub),
         "PV process/interrupt-kill: the stub command {stub} survived {signal}"
@@ -740,6 +744,13 @@ fn sigint_kills_every_command_a_scan_started_and_exits_130() {
 #[test]
 fn sigterm_kills_every_command_a_scan_started_and_exits_143() {
     an_interrupted_scan_kills_the_commands_it_started("TERM", 143);
+}
+
+/// Closing the terminal window sends SIGHUP to devtrim, never to the commands
+/// in their own process groups, so the default action would leave them running.
+#[test]
+fn sighup_kills_every_command_a_scan_started_and_exits_129() {
+    an_interrupted_scan_kills_the_commands_it_started("HUP", 129);
 }
 
 /// A typed mutation command in flight: `docker image prune` blocks as a

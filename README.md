@@ -490,8 +490,8 @@ A scan or apply runs while the screen stays live and counts the seconds it has
 taken, since a process probe can take minutes on a loaded machine. During a
 scan `q` or Ctrl-C stops it and quits, killing every command it started; during
 an apply no key quits until it returns, because quitting could leave a target
-half removed. A SIGINT or SIGTERM, whenever it arrives, restores the terminal
-and kills every command devtrim started, exiting 130 or 143. A category that
+half removed. A SIGINT, SIGTERM or SIGHUP, whenever it arrives, restores the terminal
+and kills every command devtrim started, exiting 130, 143 or 129. A category that
 failed to scan, such as one whose liveness probe did not answer, is counted in
 the results title and named in the status line, and `r` retries it, from the
 failure screen too.

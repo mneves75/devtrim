@@ -5,6 +5,11 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ## [0.12.1] - Unreleased
 
 ### Fixed
+- Closing the terminal window (SIGHUP) stops a run the way SIGINT does: every command devtrim started is killed and it exits 129. The hangup reached devtrim only, so its commands, each in a process group of its own, kept running.
+- The TUI confirmation reports a mismatched answer inside itself; at the minimum 64×18 it covers the footer, where the message used to appear unseen. A typed answer stops at 32 characters.
+- On the too-small-terminal screen only `q` and Ctrl-C quit; `Esc`, which means back everywhere else, no longer ends the session.
+- `r` on the apply outcome scans again, as the help says it does.
+- Terminal text keeps quotes literal: `John's app` no longer prints as `John\'s app`.
 - `analyze` and `status --watch` restore the terminal when they receive SIGINT or SIGTERM, as the TUI does; they used to exit at once and leave the shell in raw mode on the alternate screen.
 - The TUI ignores a key carrying Alt, Control or Super (Ctrl-C still quits) and turns on bracketed paste, so neither `ESC y` (how a terminal sends Alt+y) nor a pasted answer can approve a plan on the confirmation screen.
 - `node-modules`, `artifacts` and `purge` no longer fail on a machine where another user runs a process named like a build tool (a root-owned `node` service): the build-process probe now asks for the current user's processes only. A build another user runs inside your repository is not seen; SECURITY.md records the limit.

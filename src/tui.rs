@@ -24,6 +24,10 @@ const MIN_WIDTH: u16 = 64;
 const MIN_HEIGHT: u16 = 18;
 /// Rows PgUp and PgDn move, in every list and scrolling view.
 const PAGE_ROWS: u16 = 8;
+/// Longer than every typed acknowledgment (`PURGE ` and a `u64` of
+/// gigabytes), so a held key or a stuck repeat cannot grow the answer
+/// without bound.
+const MAX_CONFIRMATION_INPUT: usize = 32;
 /// The Error screen's status: nothing was authorized, and `r` scans again.
 const FAILED_CLOSED: &str = "Failed closed; no new action was authorized. r rescans.";
 
@@ -693,10 +697,9 @@ impl App {
                     Intent::None
                 }
                 // A failure may be transient, a probe that did not answer under
-                // load; scanning again is a fresh preview, never a retried apply.
-                KeyCode::Char('r') if self.screen == Screen::Error => {
-                    self.operation.map_or(Intent::None, Intent::Load)
-                }
+                // load, and an apply leaves something to look at again; either
+                // way scanning again is a fresh preview, never a retried apply.
+                KeyCode::Char('r') => self.operation.map_or(Intent::None, Intent::Load),
                 code => {
                     self.scroll_by(code);
                     Intent::None
@@ -859,14 +862,8 @@ impl App {
                 _ => Intent::None,
             },
             ConfirmationKind::Critical { expected_gb, .. } => match key {
-                KeyCode::Char(value) if value.is_ascii_digit() => {
-                    self.input.push(value);
-                    Intent::None
-                }
-                KeyCode::Backspace => {
-                    self.input.pop();
-                    Intent::None
-                }
+                KeyCode::Char(value) if value.is_ascii_digit() => self.type_answer(value),
+                KeyCode::Backspace => self.erase_answer(),
                 KeyCode::Enter if self.input == expected_gb.to_string() => {
                     self.approve(Approval::CriticalGigabytes(expected_gb))
                 }
@@ -881,13 +878,9 @@ impl App {
                 KeyCode::Char(value)
                     if value.is_ascii_alphanumeric() || value == ' ' || value == '-' =>
                 {
-                    self.input.push(value);
-                    Intent::None
+                    self.type_answer(value)
                 }
-                KeyCode::Backspace => {
-                    self.input.pop();
-                    Intent::None
-                }
+                KeyCode::Backspace => self.erase_answer(),
                 KeyCode::Enter if self.input == format!("PURGE {expected_gb}") => {
                     self.approve(Approval::TrashPurgeGigabytes(expected_gb))
                 }
@@ -899,6 +892,21 @@ impl App {
                 _ => Intent::None,
             },
         }
+    }
+
+    fn type_answer(&mut self, value: char) -> Intent {
+        if self.input.len() < MAX_CONFIRMATION_INPUT {
+            self.input.push(value);
+        } else {
+            self.status = "The answer is longer than any acknowledgment; Backspace erases.".into();
+        }
+        Intent::None
+    }
+
+    fn erase_answer(&mut self) -> Intent {
+        self.input.pop();
+        self.status.clear();
+        Intent::None
     }
 
     fn approve(&self, approval: Approval) -> Intent {
@@ -1153,7 +1161,9 @@ fn handle_visible_key(app: &mut App, key: KeyEvent, area: Rect) -> Intent {
         return Intent::Quit;
     }
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => Intent::Quit,
+        // The screen offers only q; Esc, which means back on every other
+        // screen, never ends the session.
+        KeyCode::Char('q') => Intent::Quit,
         _ => Intent::None,
     }
 }
@@ -1872,7 +1882,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         }
         Screen::Detail => "↑/↓ or j/k scroll · Esc back to the results · ? keys".into(),
         Screen::Confirm => "Esc cancel · type the exact requested acknowledgment".into(),
-        Screen::Outcome => "↑/↓ or j/k scroll · b back to menu · ? keys".into(),
+        Screen::Outcome => "↑/↓ or j/k scroll · r rescan · b back to menu · ? keys".into(),
         Screen::Error => "↑/↓ or j/k scroll · r rescan · b back to menu · ? keys".into(),
         Screen::Loading if applying(app) => {
             "Applying the approved plan · q works once it returns".into()
@@ -1944,6 +1954,9 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("> "),
             Span::styled(app.input.as_str(), app.theme.bold(Token::Accent)),
         ]),
+        // The popup covers the footer at the minimum size, so a mismatch or a
+        // refused key is reported here, under the answer it concerns.
+        Line::styled(app.status.as_str(), app.theme.style(Token::Warning)),
     ]);
     frame.render_widget(
         Paragraph::new(text)
@@ -2427,6 +2440,84 @@ mod tests {
         assert!(!output.contains("terminal too small"));
     }
 
+    fn critical_confirmation(app: &mut App) {
+        app.finish_results(
+            Operation::Clean(Target::Caches),
+            vec![Finding::new(
+                "cache",
+                Some(std::path::PathBuf::from(
+                    "/Users/example/Library/Caches/pip",
+                )),
+                3 * 1024 * 1024 * 1024,
+                "test",
+                9,
+                Action::Shred,
+            )],
+            Vec::new(),
+            Vec::new(),
+        );
+        app.begin_confirmation();
+        assert!(matches!(
+            app.confirmation,
+            Some(ConfirmationKind::Critical { .. })
+        ));
+    }
+
+    #[test]
+    fn a_mismatch_is_reported_on_the_confirmation_at_the_minimum_size() {
+        let mut app = App::default();
+        critical_confirmation(&mut app);
+        app.handle_key(key(KeyCode::Char('9')));
+        app.handle_key(key(KeyCode::Enter));
+
+        let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+
+        // The popup covers the footer there, so the feedback lives inside it.
+        assert!(
+            output.contains("Confirmation mismatch"),
+            "PV tui/confirmation-feedback: {output}"
+        );
+        assert!(output.contains("understand the request."), "{output}");
+        assert!(output.contains("> "));
+    }
+
+    #[test]
+    fn a_typed_answer_stops_at_its_length_limit() {
+        let mut app = App::default();
+        critical_confirmation(&mut app);
+        for _ in 0..1000 {
+            app.handle_key(key(KeyCode::Char('7')));
+        }
+
+        assert_eq!(
+            app.input.len(),
+            MAX_CONFIRMATION_INPUT,
+            "PV tui/input-limit"
+        );
+        assert!(app.status.contains("longer than"), "{}", app.status);
+        assert!(rendered(&app, MIN_WIDTH, MIN_HEIGHT).contains("longer than"));
+        app.handle_key(key(KeyCode::Backspace));
+        assert!(app.status.is_empty());
+    }
+
+    #[test]
+    fn r_on_the_outcome_scans_again() {
+        let operation = Operation::Clean(Target::Caches);
+        let mut app = App {
+            screen: Screen::Outcome,
+            operation: Some(operation),
+            ..App::default()
+        };
+
+        // The help lists r as rescan; after an apply that is what is left.
+        assert_eq!(
+            app.handle_key(key(KeyCode::Char('r'))),
+            Intent::Load(operation),
+            "PV tui/outcome-rescan"
+        );
+        assert!(rendered(&app, MIN_WIDTH, MIN_HEIGHT).contains("r rescan"));
+    }
+
     #[test]
     fn small_terminal_blocks_hidden_confirmation_input() {
         let mut app = App::default();
@@ -2452,6 +2543,12 @@ mod tests {
         );
         assert_eq!(app.screen, Screen::Confirm);
         assert!(app.input.is_empty());
+        // Esc means back everywhere else; here it must not end the session.
+        assert_eq!(
+            handle_visible_key(&mut app, key(KeyCode::Esc), too_small),
+            Intent::None,
+            "PV tui/small-esc"
+        );
         assert_eq!(
             handle_visible_key(&mut app, key(KeyCode::Char('q')), too_small),
             Intent::Quit
