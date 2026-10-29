@@ -21,7 +21,9 @@
     "typescript-native": "npm:typescript@7.0.2"
   },
   "overrides": {
-    "typescript-eslint": "^8.67.0"
+    "fast-uri": "3.1.9",
+    "typescript-eslint": "^8.67.0",
+    "zod": "4.6.7"
   },
   "scripts": {
     "dev": "remotion studio",

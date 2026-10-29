@@ -26,6 +26,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - `installers` names a linked `~/Downloads` or `~/Desktop` in a warning instead of previewing archives the apply would refuse.
 
 ### Changed
+- The demo video's build pins `zod` 4.6.7 and `fast-uri` 3.1.9 through npm overrides, clearing GHSA-mrhx-c7xc-m3w5 (high) and four `fast-uri` advisories; Remotion 4.0.539, the latest, still pins `zod` 4.5.4.
 - Cargo.lock refreshed to the latest patches compatible with Rust 1.88.
 
 ## [0.12.0] - 2026-10-18
