@@ -287,7 +287,7 @@ Non-negotiable boundaries:
   gitlink when the directory lies in that superproject outside the
   repositories nested there (a superproject's build, from its top or from a
   folder such as `tools`, reads its submodules' installs; a build in a nested
-  worktree keeps only that worktree), not every repository the agent edits by absolute path. Only the
+  worktree keeps only that worktree), not every repository the agent edits by absolute path. A Git query that fails while judging that superproject chain makes the repository an error finding, never a busy build that would pass silently. Only the
   current user's processes are probed (`pgrep -U <uid>`): `lsof` cannot read
   another user's working directory, and a root-owned `node` service refused
   every project cleanup on the development machine. A build another user runs

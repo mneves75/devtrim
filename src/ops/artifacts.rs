@@ -109,7 +109,7 @@ impl Op for Artifacts {
                     orphans.push(owner.clone());
                     return Ok(());
                 }
-                if repo_has_active_build(&owner, observations.process_cwds()?, &ctx.home) {
+                if repo_has_active_build(&owner, observations.process_cwds()?, &ctx.home)? {
                     build_active = build_active.saturating_add(candidates.len());
                     busy.push(owner.clone());
                     return Ok(());
@@ -304,7 +304,7 @@ impl Artifacts {
                     path.display()
                 );
             }
-            if repo_has_active_build(&owner, &process_cwds, &ctx.home) {
+            if repo_has_active_build(&owner, &process_cwds, &ctx.home)? {
                 anyhow::bail!(
                     "build process active in {}; refusing {}",
                     owner.display(),

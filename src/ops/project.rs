@@ -766,37 +766,50 @@ fn error_finding(label: String, message: String) -> Finding {
 /// Spelling alone misses one folder reached two ways — `lsof` names a working
 /// directory its own way, through the `/System/Volumes/Data` firmlink or in
 /// another case than the scan walked — so folders are also compared by device
-/// and inode. Anything that cannot be read counts as busy.
-pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home: &Path) -> bool {
+/// and inode. With no build process there is nothing to ask; a repository or
+/// superproject that cannot be read is an error for that repository, never a
+/// busy build.
+pub(crate) fn repo_has_active_build(
+    repo: &Path,
+    process_cwds: &[PathBuf],
+    home: &Path,
+) -> Result<bool> {
     use std::os::unix::fs::MetadataExt as _;
 
+    if process_cwds.is_empty() {
+        return Ok(false);
+    }
     let identity_of = |path: &Path| {
         std::fs::metadata(path)
             .ok()
             .map(|metadata| (metadata.dev(), metadata.ino()))
     };
-    if process_cwds.iter().any(|cwd| cwd.starts_with(repo)) {
-        return true;
-    }
-    let Some(identity) = identity_of(repo) else {
-        return true;
+    let read_identity = |path: &Path| {
+        identity_of(path).with_context(|| {
+            format!(
+                "cannot read {} to compare it with build processes",
+                path.display()
+            )
+        })
     };
+    if process_cwds.iter().any(|cwd| cwd.starts_with(repo)) {
+        return Ok(true);
+    }
+    let identity = read_identity(repo)?;
     if process_cwds.iter().any(|cwd| {
         cwd.ancestors()
             .any(|folder| identity_of(folder) == Some(identity))
     }) {
-        return true;
+        return Ok(true);
     }
     // A build works on a superproject when its working directory lies inside
     // it, reached by spelling or identity, and outside every repository nested
     // there: a worktree kept in an ignored folder is its own project. A folder
     // whose Git marker cannot be read counts as no repository, so the build
     // still counts.
-    let builds_in = |superproject: &Path| {
-        let Some(identity) = identity_of(superproject) else {
-            return true;
-        };
-        process_cwds.iter().any(|cwd| {
+    let builds_in = |superproject: &Path| -> Result<bool> {
+        let identity = read_identity(superproject)?;
+        Ok(process_cwds.iter().any(|cwd| {
             for folder in cwd.ancestors() {
                 if folder == superproject || identity_of(folder) == Some(identity) {
                     return true;
@@ -806,25 +819,21 @@ pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home:
                 }
             }
             false
-        })
+        }))
     };
     // Up through each superproject that records the repository below it as a
     // submodule, to the first that does not; a build working on any of them
     // reads what that superproject records.
     let mut submodule = repo.to_path_buf();
     loop {
-        let superproject = match owning_repo(&submodule, home) {
-            Ok(Some(superproject)) => superproject,
-            Ok(None) => return false,
-            Err(_) => return true,
+        let Some(superproject) = owning_repo(&submodule, home)? else {
+            return Ok(false);
         };
-        match records_submodule(&superproject, &submodule) {
-            Ok(true) => {}
-            Ok(false) => return false,
-            Err(_) => return true,
+        if !records_submodule(&superproject, &submodule)? {
+            return Ok(false);
         }
-        if builds_in(&superproject) {
-            return true;
+        if builds_in(&superproject)? {
+            return Ok(true);
         }
         submodule = superproject;
     }

@@ -782,6 +782,73 @@ fn eval_a_build_in_the_superproject_keeps_its_submodules() {
     }
 }
 
+/// The superproject check is liveness evidence, never a verdict of its own.
+/// With no build process anywhere it asks Git nothing, so a superproject Git
+/// cannot read leaves its submodules judged as usual. With a build running
+/// elsewhere, a Git failure there is that repository's error, reported with a
+/// nonzero exit, never "a build process is active".
+#[test]
+fn eval_a_superproject_git_failure_is_an_error_not_a_busy_build() {
+    let sandbox = Sandbox::in_target("eval-superproject-failure");
+    sandbox.script(
+        "git",
+        "case \"$*\" in\n  *'ls-files --stage'*) echo 'fatal: not a git repository' >&2; exit 128 ;;\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+    );
+    let dev = sandbox.path().join("dev");
+    write(&dev.join("outer/.git/HEAD"), "ref: refs/heads/main\n");
+    for repo in ["outer/vendor/inner", "plain"] {
+        let repo = dev.join(repo);
+        write(&repo.join(".git/HEAD"), "ref: refs/heads/main\n");
+        write(&repo.join("package.json"), "{}");
+        write(&repo.join("node_modules/pkg/file"), "dependency");
+    }
+    let dev = dev.canonicalize().unwrap();
+    let root = dev.to_str().unwrap();
+    let (inner, plain) = (
+        dev.join("outer/vendor/inner/node_modules"),
+        dev.join("plain/node_modules"),
+    );
+
+    sandbox.script("pgrep", "exit 1");
+    let idle = run(
+        &sandbox,
+        &["clean", "node-modules", "--root", root, "--json"],
+    );
+    let mut offered = actionable_targets(&json(&idle));
+    offered.sort();
+    assert_eq!(
+        offered,
+        vec![inner.clone(), plain.clone()],
+        "PV eval/superproject-failure: no build anywhere: {}",
+        json(&idle)
+    );
+    assert!(idle.status.success(), "{}", json(&idle));
+
+    sandbox.script("pgrep", "printf '42\\n'");
+    sandbox.script("lsof", "printf 'p42\\nn/elsewhere\\n'");
+    let busy_elsewhere = run(
+        &sandbox,
+        &["clean", "node-modules", "--root", root, "--json"],
+    );
+    let document = json(&busy_elsewhere);
+    let stderr = String::from_utf8_lossy(&busy_elsewhere.stderr);
+    assert_eq!(
+        actionable_targets(&document),
+        vec![plain],
+        "PV eval/superproject-failure: an unread superproject offered its submodule: {document}"
+    );
+    assert!(
+        !busy_elsewhere.status.success()
+            && document["errors"]
+                .as_array()
+                .is_some_and(|errors| errors.iter().any(|error| error
+                    .as_str()
+                    .is_some_and(|error| error.contains("submodule check failed"))))
+            && !stderr.contains("build process is active"),
+        "PV eval/superproject-failure: a Git failure read as a busy build: {document} {stderr}"
+    );
+}
+
 /// A busy repository is kept whatever spelling `lsof` gives its working
 /// directory: the kernel may name it through the data-volume firmlink or in
 /// another case than the scan walked, while APFS reaches the same folder by

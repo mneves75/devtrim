@@ -489,6 +489,10 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
             }
         };
         let mut removal_started = false;
+        // Folders whose owner permissions were repaired, kept only until the
+        // first removal: a removal refused before then restores the tree as it
+        // was, modes included.
+        let mut repaired: Vec<(cap_std::fs::Dir, PathBuf, rustix::fs::Mode)> = Vec::new();
         let removal_result = (|| -> Result<()> {
             let handle_identity = file_identity_for_dir(&target_dir).with_context(|| {
                 format!(
@@ -517,7 +521,9 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                 writability,
             )
             .context("permanent deletion preflight failed")?;
-            make_removable(&target_dir, &quarantine_path, writability)?;
+            if let Some(mode) = make_removable(&target_dir, &quarantine_path, writability)? {
+                repaired.push((target_dir.try_clone()?, quarantine_path.clone(), mode));
+            }
             struct RemovalFrame {
                 dir: cap_std::fs::Dir,
                 path: PathBuf,
@@ -594,7 +600,11 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                             let names = directory_entry_names(&child, &child_path)?;
                             let scope = git_marker_scope(rules, child_depth, &name);
                             refuse_git_repository_root_names(&child, &names, &child_path, scope)?;
-                            make_removable(&child, &child_path, writability)?;
+                            if let Some(mode) = make_removable(&child, &child_path, writability)?
+                                && !removal_started
+                            {
+                                repaired.push((child.try_clone()?, child_path.clone(), mode));
+                            }
                             RemovalStep::Descend(RemovalFrame {
                                 dir: child,
                                 path: child_path,
@@ -619,6 +629,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                                 format!("cannot delete entry: {}", child_path.display())
                             })?;
                             removal_started = true;
+                            repaired.clear();
                             RemovalStep::Continue
                         }
                     } else {
@@ -648,6 +659,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
                             format!("cannot delete open directory: {}", frame.path.display())
                         })?;
                         removal_started = true;
+                        repaired.clear();
                     }
                 }
             }
@@ -657,12 +669,25 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
             if removal_started {
                 return Err(error);
             }
+            let unrestored_modes = repaired
+                .iter()
+                .rev()
+                .filter(|(dir, _, mode)| rustix::fs::fchmod(dir, *mode).is_err())
+                .map(|(_, path, _)| path.display().to_string())
+                .collect::<Vec<_>>();
             if let Err(restore_error) =
                 restore_quarantined_target(&dir, leaf, &quarantine_name, &quarantine_path)
             {
                 anyhow::bail!(
                     "permanent deletion preparation refused {}; restore failed and nothing was deleted: {restore_error:#} (preparation error: {error:#})",
                     quarantine_path.display()
+                );
+            }
+            if !unrestored_modes.is_empty() {
+                anyhow::bail!(
+                    "permanent deletion preparation refused {}; nothing was deleted and the name was restored, but the permissions of {} could not be restored (preparation error: {error:#})",
+                    path.display(),
+                    unrestored_modes.join(", ")
                 );
             }
             return Err(restored_error(
@@ -980,9 +1005,13 @@ fn check_removable(dir: &cap_std::fs::Dir, path: &Path, writability: Writability
 /// Under [`Writability::RepairOwned`], adds owner write and search permission
 /// to a folder the preflight accepted, through its open handle, just before
 /// its entries are removed.
-fn make_removable(dir: &cap_std::fs::Dir, path: &Path, writability: Writability) -> Result<()> {
+fn make_removable(
+    dir: &cap_std::fs::Dir,
+    path: &Path,
+    writability: Writability,
+) -> Result<Option<rustix::fs::Mode>> {
     if writability != Writability::RepairOwned || removable_now(dir, path)? {
-        return Ok(());
+        return Ok(None);
     }
     if !owned_by_current_user(dir, path)? {
         anyhow::bail!(
@@ -993,10 +1022,11 @@ fn make_removable(dir: &cap_std::fs::Dir, path: &Path, writability: Writability)
     let status = rustix::fs::fstat(dir)
         .map_err(std::io::Error::from)
         .with_context(|| format!("cannot inspect {}", path.display()))?;
-    let mode = rustix::fs::Mode::from_raw_mode((status.st_mode & 0o7777) | 0o700);
-    rustix::fs::fchmod(dir, mode)
+    let original = rustix::fs::Mode::from_raw_mode(status.st_mode & 0o7777);
+    rustix::fs::fchmod(dir, original | rustix::fs::Mode::RWXU)
         .map_err(std::io::Error::from)
-        .with_context(|| format!("cannot make {} writable for its removal", path.display()))
+        .with_context(|| format!("cannot make {} writable for its removal", path.display()))?;
+    Ok(Some(original))
 }
 
 fn next_quarantine_name(dir: &cap_std::fs::Dir) -> Result<PathBuf> {
@@ -2013,6 +2043,64 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".devtrim-quarantine-")
         }));
+    }
+
+    /// A permanent removal that may repair owner permissions (a Go module
+    /// cache in the Trash) and is then refused before removing anything hands
+    /// the tree back exactly as it was, its folders' modes included.
+    #[test]
+    fn a_refused_removal_restores_the_permissions_it_repaired() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        struct Unlock(PathBuf);
+        impl Drop for Unlock {
+            fn drop(&mut self) {
+                for (program, args) in [
+                    ("/usr/bin/chflags", ["-R", "nouchg"]),
+                    ("/bin/chmod", ["-R", "u+rwx"]),
+                ] {
+                    std::process::Command::new(program)
+                        .args(args)
+                        .arg(&self.0)
+                        .status()
+                        .ok();
+                }
+            }
+        }
+        let (_fixture, home) = sink_test_home("refused-repaired-modes");
+        let trash = home.join(".Trash");
+        let item = trash.join("mod");
+        let sub = item.join("cache");
+        std::fs::create_dir_all(&sub).unwrap();
+        let locked = sub.join("locked");
+        std::fs::write(&locked, "keep").unwrap();
+        let _unlock = Unlock(home.clone());
+        assert!(
+            std::process::Command::new("/usr/bin/chflags")
+                .arg("uchg")
+                .arg(&locked)
+                .status()
+                .is_ok_and(|status| status.success()),
+            "chflags uchg failed"
+        );
+        for folder in [&sub, &item] {
+            std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+        }
+        let finding = Finding::new("mod", Some(item.clone()), 0, "test", 9, Action::Shred);
+
+        let error = apply_trashed_finding(&finding, &context(home.clone()), &trash).unwrap_err();
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(
+            std::fs::read_to_string(&locked).unwrap(),
+            "keep",
+            "{error:#}"
+        );
+        assert_eq!(
+            (mode(&item), mode(&sub)),
+            (0o500, 0o500),
+            "PV sink/restored-modes: {error:#}"
+        );
     }
 
     #[test]

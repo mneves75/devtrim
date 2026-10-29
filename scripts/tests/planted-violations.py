@@ -362,6 +362,34 @@ CASES = (
         marker="PV status/health-missing",
     ),
     Case(
+        name="liveness/no-process-asks-nothing",
+        relative_path="src/ops/project.rs",
+        # With no build process, a superproject Git cannot read withholds its
+        # submodules as an error.
+        before="    if process_cwds.is_empty() {\n        return Ok(false);\n    }\n",
+        after="",
+        tests=("eval_a_superproject_git_failure_is_an_error_not_a_busy_build",),
+        marker="PV eval/superproject-failure", target="eval_safety",
+    ),
+    Case(
+        name="liveness/superproject-error",
+        relative_path="src/ops/project.rs",
+        # A superproject Git cannot read is read as recording the submodule.
+        before="        if !records_submodule(&superproject, &submodule)? {\n",
+        after="        if !records_submodule(&superproject, &submodule).unwrap_or(true) {\n",
+        tests=("eval_a_superproject_git_failure_is_an_error_not_a_busy_build",),
+        marker="PV eval/superproject-failure", target="eval_safety",
+    ),
+    Case(
+        name="sink/restored-modes",
+        relative_path="src/ops/mod.rs",
+        # A refused removal hands back folders whose permissions it repaired.
+        before="                .filter(|(dir, _, mode)| rustix::fs::fchmod(dir, *mode).is_err())\n",
+        after="                .filter(|(_, _, _)| false)\n",
+        tests=("ops::tests::a_refused_removal_restores_the_permissions_it_repaired",),
+        marker="PV sink/restored-modes",
+    ),
+    Case(
         name="trash/unmeasurable-item",
         relative_path="src/ops/mod.rs",
         before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",
@@ -652,8 +680,8 @@ CASES = (
     Case(
         name="eval/safety-build-busy",
         relative_path="src/ops/project.rs",
-        before="pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home: &Path) -> bool {\n",
-        after="pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home: &Path) -> bool {\n    if true {\n        let _ = (repo, process_cwds, home);\n        return false;\n    }\n",
+        before="    if process_cwds.is_empty() {\n        return Ok(false);\n    }\n",
+        after="    if true {\n        let _ = (repo, process_cwds, home);\n        return Ok(false);\n    }\n",
         tests=("eval_build_process_liveness_keeps_only_the_busy_repository",),
         marker="PV eval/build-busy", target="eval_safety",
     ),
