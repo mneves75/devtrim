@@ -861,6 +861,9 @@ fn run_watch(ctx: &Ctx) -> Result<std::process::ExitCode> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!("status --watch requires an interactive terminal; use --json for automation");
     }
+    // Before the terminal changes, so no signal can leave it in raw mode.
+    let interrupts =
+        crate::process::forward_interrupts().context("cannot install the interrupt handler")?;
     let stop = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = channel();
     let worker_stop = Arc::clone(&stop);
@@ -887,6 +890,9 @@ fn run_watch(ctx: &Ctx) -> Result<std::process::ExitCode> {
     let outcome = (|| -> Result<std::process::ExitCode> {
         let mut redraw = true;
         loop {
+            if let Some(signal) = interrupts.received() {
+                crate::tui::restore_and_exit(signal);
+            }
             while let Ok(report) = receiver.try_recv() {
                 latest = Some(report);
                 redraw = true;

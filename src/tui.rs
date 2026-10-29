@@ -944,9 +944,22 @@ pub fn run(ctx: &Ctx) -> Result<ExitCode> {
 /// command devtrim started is killed, and it exits 128 plus `signal`. Only the
 /// thread that owns the terminal calls it.
 fn stop(terminal: &mut DefaultTerminal, signal: i32) -> ! {
-    crossterm::execute!(io::stdout(), event::DisableBracketedPaste).ok();
-    ratatui::try_restore().ok();
     terminal.show_cursor().ok();
+    restore_and_exit(signal)
+}
+
+/// What every full-screen view does with a SIGINT or SIGTERM that
+/// [`process::forward_interrupts`] recorded: leave bracketed paste, restore
+/// the terminal and show the cursor, then end the run as an interrupt does.
+/// Only the thread that owns the terminal calls it.
+pub(crate) fn restore_and_exit(signal: i32) -> ! {
+    crossterm::execute!(
+        io::stdout(),
+        event::DisableBracketedPaste,
+        crossterm::cursor::Show
+    )
+    .ok();
+    ratatui::try_restore().ok();
     process::kill_and_exit(signal)
 }
 

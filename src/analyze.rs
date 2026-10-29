@@ -666,8 +666,11 @@ pub fn run(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("analyze requires an interactive terminal, or --json for automation");
     }
+    // Before the terminal changes, so no signal can leave it in raw mode.
+    let interrupts =
+        crate::process::forward_interrupts().context("cannot install the interrupt handler")?;
     let mut terminal = ratatui::try_init().context("cannot initialize analyze terminal")?;
-    let result = run_loop(&mut terminal, root, ctx);
+    let result = run_loop(&mut terminal, root, ctx, &interrupts);
     let restore = ratatui::try_restore().context("cannot restore terminal after analyze exit");
     match (result, restore) {
         (Err(error), _) => Err(error),
@@ -676,11 +679,20 @@ pub fn run(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
     }
 }
 
-fn run_loop(terminal: &mut DefaultTerminal, root: PathBuf, ctx: &Ctx) -> Result<ExitCode> {
+fn run_loop(
+    terminal: &mut DefaultTerminal,
+    root: PathBuf,
+    ctx: &Ctx,
+    interrupts: &crate::process::Interrupts,
+) -> Result<ExitCode> {
     let mut explorer = Explorer::new(root, Theme::from_env());
     explorer.begin_scan();
     let mut redraw = true;
     let outcome = loop {
+        if let Some(signal) = interrupts.received() {
+            explorer.cancel.store(true, Ordering::Relaxed);
+            crate::tui::restore_and_exit(signal);
+        }
         redraw |= explorer.drain_progress();
         if redraw {
             terminal.draw(|frame| render(frame, &explorer))?;

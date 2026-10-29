@@ -94,6 +94,26 @@ class View:
         assert b"\x1b[?25h" in self.output, "cursor was not restored"
         return time.monotonic() - started
 
+    def stop(self, signal_number):
+        """A signal from outside ends the view as it ends the CLI, exit
+        128 + signal, but only after the terminal is restored."""
+        os.kill(self.process.pid, signal_number)
+        started = time.monotonic()
+        while self.process.poll() is None and time.monotonic() - started < 2:
+            self.read()
+        expected = 128 + signal_number
+        assert self.process.poll() == expected, (
+            f"PV views/signal-restore: signal {signal_number} gave status {self.process.poll()},"
+            f" expected {expected}"
+        )
+        while select.select([self.master], [], [], 0)[0] and self.read(0):
+            pass
+        assert termios.tcgetattr(self.master) == self.original, (
+            f"PV views/signal-restore: terminal mode was not restored after signal {signal_number}"
+        )
+        assert b"\x1b[?1049l" in self.output, "alternate screen was not restored after a signal"
+        assert b"\x1b[?25h" in self.output, "cursor was not restored after a signal"
+
     def close(self):
         if self.process.poll() is None:
             self.process.kill()
@@ -157,6 +177,18 @@ def exercise(binary, home):
         view.resize(24, 90)
         view.wait("health", start)
         view.quit(expected=1)  # The empty PATH deliberately reports unavailable metrics.
+    finally:
+        view.close()
+    view = View(binary, home, ["analyze", str(corpus)])
+    try:
+        view.wait("Contents")
+        view.stop(signal.SIGTERM)
+    finally:
+        view.close()
+    view = View(binary, home, ["status", "--watch"])
+    try:
+        view.wait("health")
+        view.stop(signal.SIGINT)
     finally:
         view.close()
     stub = home / "bin/sysctl"
