@@ -674,7 +674,9 @@ impl BlockingFamily {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        panic!("devtrim did not exit within 60 s of {signal}");
+        // Not exiting is the same failure as a wrong status: the signal was
+        // ignored, as it is when the test runs under `nohup`.
+        panic!("PV process/interrupt-status: devtrim did not exit within 60 s of {signal}");
     }
 
     /// Whether the process is gone within forty-five seconds. A killed process is
