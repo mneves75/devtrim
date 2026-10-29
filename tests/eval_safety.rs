@@ -716,44 +716,61 @@ fn eval_noninteractive_apply_requires_explicit_consent() {
     }
 }
 
-/// A build working in a superproject keeps the repositories nested inside it:
-/// `npm run build` at the top of a checkout reads its submodules' installs. A
-/// build in a folder above that is in no repository protects nothing below it.
+/// A build working in a superproject keeps its submodules: `npm run build` at
+/// the top of a checkout reads the installs of the submodules it records. A
+/// repository nested there that the superproject does not record (a worktree
+/// in an ignored `.scratch`) is its own project and is still offered, and a
+/// build in a folder above the superproject protects nothing.
 #[test]
-fn eval_a_build_in_the_enclosing_repository_keeps_a_nested_one() {
+fn eval_a_build_in_the_superproject_keeps_its_submodules() {
     let sandbox = Sandbox::in_target("eval-build-superproject");
-    sandbox.script("git", &support::git_activity("2020-01-01", "2020-01-01"));
+    // Every query dates the repositories long ago; only the superproject's
+    // index lists a gitlink, for `vendor/inner`.
+    sandbox.script(
+        "git",
+        "case \"$*\" in\n  *'ls-files --stage'*vendor/inner) printf '160000 0123456789abcdef0123456789abcdef01234567 0\\tvendor/inner\\0' ;;\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+    );
     let dev = sandbox.path().join("dev");
     let outer = dev.join("outer");
-    let inner = outer.join("vendor/inner");
     write(&outer.join(".git/HEAD"), "ref: refs/heads/main\n");
-    write(&inner.join(".git"), "gitdir: ../../.git/modules/inner\n");
+    for (nested, gitdir) in [
+        ("vendor/inner", "../../.git/modules/inner"),
+        (".scratch/wt", "../../.git/worktrees/wt"),
+    ] {
+        let nested = outer.join(nested);
+        write(&nested.join(".git"), &format!("gitdir: {gitdir}\n"));
+        write(&nested.join("package.json"), "{}");
+        write(&nested.join("node_modules/pkg/file"), "dependency");
+    }
     write(
         &outer.join(".git/modules/inner/HEAD"),
         "ref: refs/heads/main\n",
     );
-    write(&inner.join("package.json"), "{}");
-    write(&inner.join("node_modules/pkg/file"), "dependency");
+    write(
+        &outer.join(".git/worktrees/wt/HEAD"),
+        "ref: refs/heads/main\n",
+    );
     let dev = dev.canonicalize().unwrap();
     let root = dev.to_str().unwrap();
+    let inner = dev.join("outer/vendor/inner/node_modules");
+    let worktree = dev.join("outer/.scratch/wt/node_modules");
     sandbox.script("pgrep", "printf '42\\n'");
     for (cwd, offered) in [
-        (dev.join("outer"), false),
-        (dev.join("outer/vendor"), false),
-        (dev.clone(), true),
+        (dev.join("outer"), vec![worktree.clone()]),
+        (dev.join("outer/vendor"), vec![worktree.clone()]),
+        (dev.clone(), vec![worktree.clone(), inner.clone()]),
     ] {
         sandbox.script("lsof", &format!("printf 'p42\\nn{}\\n'", cwd.display()));
         let preview = json(&run(
             &sandbox,
             &["clean", "node-modules", "--root", root, "--json"],
         ));
-        let expected = if offered {
-            vec![dev.join("outer/vendor/inner/node_modules")]
-        } else {
-            Vec::new()
-        };
+        let mut targets = actionable_targets(&preview);
+        targets.sort();
+        let mut expected = offered;
+        expected.sort();
         assert_eq!(
-            actionable_targets(&preview),
+            targets,
             expected,
             "PV eval/superproject-build: build in {}: {preview}",
             cwd.display()

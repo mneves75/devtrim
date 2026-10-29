@@ -760,15 +760,12 @@ fn error_finding(label: String, message: String) -> Finding {
 }
 
 /// Whether a build process works in `repo`: its working directory is `repo` or
-/// lies below it, or it is a folder above `repo` that is itself inside a
-/// repository — a superproject's build reads the installs of the repositories
-/// nested in it. Spelling alone misses one folder reached two ways — realpath
-/// keeps the `/System/Volumes/Data` firmlink spelling and the case a root was
-/// typed in, while `lsof` names a directory its own way — so folders are also
-/// compared by device and inode. A folder above `repo` counts only inside a
-/// repository that does not hold the home folder, so a shell at `~` with
-/// dotfiles kept there protects nothing. Anything that cannot be read counts
-/// as busy.
+/// lies below it, or `repo` is a submodule and the build works in its
+/// superproject, which reads the installs of the submodules it records.
+/// Spelling alone misses one folder reached two ways — realpath keeps the
+/// `/System/Volumes/Data` firmlink spelling and the case a root was typed in,
+/// while `lsof` names a directory its own way — so folders are also compared
+/// by device and inode. Anything that cannot be read counts as busy.
 pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
 
@@ -793,23 +790,59 @@ pub(crate) fn repo_has_active_build(repo: &Path, process_cwds: &[PathBuf], home:
         .iter()
         .filter_map(|cwd| identity_of(cwd))
         .collect::<std::collections::BTreeSet<_>>();
-    repo.ancestors().skip(1).any(|folder| {
-        let works_here = process_cwds.iter().any(|cwd| cwd == folder)
-            || identity_of(folder).is_some_and(|folder| cwds.contains(&folder));
-        works_here && in_repository(folder, home)
-    })
+    let works_in = |folder: &Path| {
+        process_cwds.iter().any(|cwd| cwd == folder)
+            || identity_of(folder).is_some_and(|folder| cwds.contains(&folder))
+    };
+    // Up through each superproject that records the repository below it as a
+    // submodule, to the first that does not; a build in any folder between
+    // works on what that superproject records.
+    let mut submodule = repo.to_path_buf();
+    loop {
+        let superproject = match owning_repo(&submodule, home) {
+            Ok(Some(superproject)) => superproject,
+            Ok(None) => return false,
+            Err(_) => return true,
+        };
+        match records_submodule(&superproject, &submodule) {
+            Ok(true) => {}
+            Ok(false) => return false,
+            Err(_) => return true,
+        }
+        if submodule
+            .ancestors()
+            .skip(1)
+            .take_while(|folder| folder.starts_with(&superproject))
+            .any(works_in)
+        {
+            return true;
+        }
+        submodule = superproject;
+    }
 }
 
-/// Whether `folder` is inside a repository that can own it, failing closed.
-fn in_repository(folder: &Path, home: &Path) -> bool {
-    let marked = match has_git_marker(folder) {
-        Ok(marked) => marked,
-        Err(_) => return true,
-    };
-    if marked && !crate::safety::holds_home(folder, home) {
-        return true;
-    }
-    owning_repo(folder, home).map_or(true, |owner| owner.is_some())
+/// Whether `superproject`'s index records `submodule`, a folder inside it, as
+/// a submodule: a gitlink (mode `160000`) at its path. A nested repository it
+/// does not record — a worktree kept in an ignored folder, a clone inside a
+/// checkout — is its own project, which a build in the outer one does not read.
+fn records_submodule(superproject: &Path, submodule: &Path) -> Result<bool> {
+    let relative = submodule.strip_prefix(superproject).with_context(|| {
+        format!(
+            "{} is not inside {}",
+            submodule.display(),
+            superproject.display()
+        )
+    })?;
+    let mut command = hardened_git(superproject, "git");
+    command
+        .args(["--literal-pathspecs", "ls-files", "--stage", "-z", "--"])
+        .arg(relative);
+    let listed = hardened_output(command, || {
+        format!("Git submodule check failed for {}", superproject.display())
+    })?;
+    Ok(listed
+        .split(|byte| *byte == 0)
+        .any(|entry| entry.starts_with(b"160000 ")))
 }
 
 #[cfg(test)]

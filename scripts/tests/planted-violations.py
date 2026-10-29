@@ -241,11 +241,10 @@ CASES = (
     Case(
         name="liveness/superproject-build",
         relative_path="src/ops/project.rs",
-        # A build working in a superproject no longer keeps the repositories
-        # nested inside it.
-        before="        works_here && in_repository(folder, home)\n",
-        after="        works_here && false\n",
-        tests=("eval_a_build_in_the_enclosing_repository_keeps_a_nested_one",),
+        # A build working in a superproject no longer keeps its submodules.
+        before="            .any(works_in)\n",
+        after="            .any(|_| false)\n",
+        tests=("eval_a_build_in_the_superproject_keeps_its_submodules",),
         marker="PV eval/superproject-build", target="eval_safety",
     ),
     Case(
