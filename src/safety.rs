@@ -277,8 +277,16 @@ pub(crate) fn resolve_roots(
         .map(|root| PathBuf::from(shellexpand(root, home)))
         .map(|root| {
             if root.exists() {
-                root.canonicalize()
-                    .with_context(|| format!("cannot resolve scan root: {}", root.display()))
+                let resolved = root
+                    .canonicalize()
+                    .with_context(|| format!("cannot resolve scan root: {}", root.display()))?;
+                if let Some(protected) = protected_system_root(&resolved) {
+                    warnings.push(format!(
+                        "scan root {} is inside {protected}, which devtrim never removes from; nothing under it is offered",
+                        resolved.display()
+                    ));
+                }
+                Ok(resolved)
             } else {
                 warnings.push(format!(
                     "scan root does not exist and was skipped: {}",
@@ -904,6 +912,11 @@ fn directory_contains_git_metadata_entry(path: &Path) -> Result<bool> {
 }
 
 pub(crate) fn is_config_protected(path: &Path, protect: &[PathBuf]) -> bool {
+    // No entries protect nothing; skip the parent resolution each finding
+    // would otherwise pay for.
+    if configured_protect_values(protect).is_empty() {
+        return false;
+    }
     let literal = abs(path);
     if is_config_protected_abs(&literal, protect) {
         return true;
@@ -980,23 +993,28 @@ pub fn validate_trash_root(home: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// The built-in protected system folder `path` lies in, if any (`/` aside,
+/// which protects only itself).
+fn protected_system_root(path: &Path) -> Option<&'static str> {
+    PROTECTED.iter().copied().find(|protected| {
+        *protected != "/" && path_starts_with_ignore_ascii_case(path, Path::new(protected))
+    })
+}
+
 pub fn is_protected(path: &Path, home: &Path) -> bool {
     is_protected_abs(&abs(path), home)
 }
 
 fn is_protected_abs(path: &Path, home: &Path) -> bool {
-    if path_eq_ignore_ascii_case(path, home)
+    // The home folder and every folder above it: removing one removes the
+    // home folder, its Trash and every protected folder inside it.
+    if path_starts_with_ignore_ascii_case(home, path)
         || path_eq_ignore_ascii_case(path, &home.join(".Trash"))
     {
         return true;
     }
-    for protected in PROTECTED {
-        let protected = Path::new(protected);
-        if path_eq_ignore_ascii_case(path, protected)
-            || (protected != Path::new("/") && path_starts_with_ignore_ascii_case(path, protected))
-        {
-            return true;
-        }
+    if protected_system_root(path).is_some() {
+        return true;
     }
     let Some(relative) = path_relative_to_ignore_ascii_case(path, home) else {
         return false;
@@ -2187,9 +2205,49 @@ mod tests {
         crate::ops::remove_test_path(empty);
     }
 
+    /// Every folder at or above the home folder is protected, not only the
+    /// home folder: removing `/Users` would remove the home folder with it.
+    #[test]
+    fn folders_above_the_home_folder_are_protected() {
+        let home = Path::new("/Users/example");
+        for path in ["/", "/Users", "/users", "/Users/example", "/Users/Example"] {
+            assert!(
+                is_protected(Path::new(path), home),
+                "PV protect/home-ancestors: {path}"
+            );
+        }
+        for path in ["/Users/other", "/Users/example/dev", "/Users/examples"] {
+            assert!(!is_protected(Path::new(path), home), "{path}");
+        }
+    }
+
+    /// A scan root inside a protected system folder is named in a warning:
+    /// nothing below it can be offered, and saying so beats an empty preview.
+    #[test]
+    fn a_root_inside_a_protected_system_folder_is_named() {
+        // The checkout's `target`, not the temporary folder, which resolves
+        // inside the protected `/private/var`.
+        let home = std::env::current_dir().unwrap().join("target");
+        let inside = resolve_roots(&["/Volumes".to_owned()], &[], &home).unwrap();
+        assert!(
+            inside
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("/Volumes")),
+            "{:?}",
+            inside.warnings
+        );
+        let outside = resolve_roots(&[home.display().to_string()], &[], &home).unwrap();
+        assert!(outside.warnings.is_empty(), "{:?}", outside.warnings);
+    }
+
     #[test]
     fn explicit_roots_replace_the_defaults() {
-        let home = temp("explicit-roots").canonicalize().unwrap();
+        // Under `target`: the temporary folder resolves inside the protected
+        // `/private/var`, which adds a warning for every root.
+        let fixture = crate::ops::TestFixture::new("devtrim-explicit-roots");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
         std::fs::create_dir_all(home.join("dev")).unwrap();
         std::fs::create_dir_all(home.join("Projects")).unwrap();
 
@@ -2205,7 +2263,6 @@ mod tests {
         );
         assert_eq!(configured.warnings.len(), 1);
         assert!(configured.warnings[0].contains("missing"));
-        crate::ops::remove_test_path(home);
     }
 
     /// Lowering the project window must never shorten how long irreplaceable

@@ -294,7 +294,7 @@ fn finding_paths(value: &Value) -> Vec<String> {
 /// `target` beside it is the positive control.
 #[test]
 fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() {
-    let sandbox = Sandbox::new("tracked-real-git");
+    let sandbox = Sandbox::in_target("tracked-real-git");
     let resolved = Command::new("sh")
         .args(["-c", "command -v git"])
         .output()
@@ -379,7 +379,7 @@ fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() 
 /// same fixture is offered once the probe answers.
 #[test]
 fn project_cleanup_probe_failures_are_nonzero_json_errors() {
-    let sandbox = Sandbox::new("project-probe-failure");
+    let sandbox = Sandbox::in_target("project-probe-failure");
     let project = sandbox.path().join("dev/project");
     std::fs::create_dir_all(project.join(".git")).unwrap();
     std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
@@ -477,7 +477,7 @@ fn status_reads_system_tools_in_the_c_locale() {
 
 #[test]
 fn shred_is_explicit_in_preview() {
-    let sandbox = Sandbox::new("shred-preview");
+    let sandbox = Sandbox::in_target("shred-preview");
     std::fs::create_dir_all(sandbox.path().join(".cache/uv")).unwrap();
     std::fs::write(sandbox.path().join(".cache/uv/file"), "x").unwrap();
     let output = run(&sandbox, &["clean", "caches", "--shred", "--json"]);

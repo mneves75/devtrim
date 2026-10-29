@@ -55,7 +55,7 @@ cp target/release/devtrim /usr/local/bin/
   - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
 - **Typed deletion boundary.** Exact `PathBuf` targets must become an internal `VerifiedTarget` immediately before the single deletion sink can consume them. Display strings are never deletion authority.
 - **Typed command boundary.** A displayed command action is not enough to execute; a private closed capability binds the exact operation and its validated arguments. Docker cleanup accepts only the previewed absolute local Unix-socket endpoint; simulator cleanup accepts only the previewed device UDID and rechecks that it is still unavailable.
-- **Protected physical paths.** System roots, user secrets, the home root, Trash root, paths reached through symlinked ancestors, and owner-reported cache paths outside npm/Homebrew namespaces are refused.
+- **Protected physical paths.** System roots (`/Volumes` among them, so another mounted disk is never cleaned), user secrets, the home root and every folder above it, Trash root, paths reached through symlinked ancestors, and owner-reported cache paths outside npm/Homebrew namespaces are refused.
 - **Volumes are sacred.** Docker volumes are never pruned.
 - **Archives are sacred.** Xcode Archives are visible but never actionable.
 - **Capability-scoped flags.** Mutation flags are rejected when a command cannot use them; they never become silent no-ops. `scan --shred` remains meaningful because it changes the previewed action, while report-only commands reject it.

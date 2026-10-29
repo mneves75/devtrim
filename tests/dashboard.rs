@@ -13,8 +13,10 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::process::Command;
 use support::{Allowed, Sandbox, Tree, git_activity, json, run, write};
 
+/// Under `target`: a home in the temporary folder resolves inside the
+/// protected `/private/var`, where no cleanup preview offers anything.
 fn fixture(name: &str) -> Sandbox {
-    let sandbox = Sandbox::new(name);
+    let sandbox = Sandbox::in_target(name);
     sandbox.script("xcrun", "if [ \"$1\" = --version ]; then printf 'xcrun version 70\\n'; else printf '{\"devices\":{}}\\n'; fi");
     sandbox
 }

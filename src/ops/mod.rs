@@ -282,6 +282,9 @@ pub fn scan_all(ctx: &Ctx) -> ScanResult {
     }
 }
 
+/// Drops actionable findings the sink would refuse as protected — a built-in
+/// protected path (`/Volumes`, `~/Library` outside its carve-out) or a
+/// configured `protect` entry — so a preview never offers what apply refuses.
 pub fn filter_protected_findings(findings: &mut Vec<Finding>, ctx: &Ctx) {
     findings.retain(|finding| {
         let protected = finding
@@ -289,7 +292,10 @@ pub fn filter_protected_findings(findings: &mut Vec<Finding>, ctx: &Ctx) {
             .is_actionable()
             .then(|| finding.target())
             .flatten()
-            .filter(|target| crate::safety::is_config_protected(target, &ctx.protect));
+            .filter(|target| {
+                crate::safety::is_protected(target, &ctx.home)
+                    || crate::safety::is_config_protected(target, &ctx.protect)
+            });
         if let Some(target) = protected {
             ctx.diagnostic(
                 "info",
@@ -1406,6 +1412,46 @@ mod tests {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
         }
+    }
+
+    /// A preview never offers what the sink refuses as protected: a target in
+    /// a built-in protected folder is dropped at preview like a configured one.
+    #[test]
+    fn a_built_in_protected_target_is_never_previewed() {
+        let home = PathBuf::from("/Users/example");
+        let ctx = context(home.clone());
+        let mut findings = [
+            "/Volumes/External/dev/node_modules",
+            "/Users/example/dev/node_modules",
+        ]
+        .into_iter()
+        .map(|path| {
+            Finding::new(
+                "node_modules",
+                Some(PathBuf::from(path)),
+                1,
+                "test",
+                5,
+                Action::Trash,
+            )
+        })
+        .collect::<Vec<_>>();
+        filter_protected_findings(&mut findings, &ctx);
+        let kept = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kept,
+            vec![Path::new("/Users/example/dev/node_modules")],
+            "PV protect/built-in-preview: a protected target was previewed"
+        );
+        assert!(
+            ctx.take_diagnostics()
+                .iter()
+                .any(|line| line.contains("/Volumes/External")),
+            "the dropped target is named"
+        );
     }
 
     #[test]
