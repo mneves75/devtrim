@@ -2,6 +2,17 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.12.3] - 2026-10-30
+
+### Fixed
+- `optimize --task launch-services` runs again. It called `lsregister -kill -r -domain local -domain user`, and macOS 27's `lsregister` has neither `-kill` nor `-domain`, so the task exited 64 and changed nothing (journaled as a failure). It now runs `lsregister -gc -r -f -apps local,user`, options the installed tool lists in its own help: it garbage-collects stale records, compacts the database and re-registers the apps of the local and user domains. It no longer resets the database first, as `-kill` did, and needs no reboot (`-delete` would); its danger drops from 4 to 3.
+
+### Added
+- A contract test reads the installed `lsregister -h` and fails when the task's argv uses an option or domain that tool does not list. The tool lives at an absolute path that the eval's stubs could not replace, which is how the dropped options went unseen.
+
+### Changed
+- The landing page links the stable 0.12.2 release.
+
 ## [0.12.2] - 2026-10-30
 
 ### Fixed

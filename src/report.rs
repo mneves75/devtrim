@@ -76,7 +76,7 @@ impl MaintenanceTask {
                 "regenerates on demand; running apps may need a restart to pick up fonts"
             }
             Self::LaunchServices => {
-                "rebuilds the Open With database; takes a while and resets custom app associations"
+                "garbage-collects stale Launch Services records and re-registers apps; takes a while"
             }
         }
     }
@@ -85,7 +85,7 @@ impl MaintenanceTask {
         match self {
             Self::QuickLookCache => 2,
             Self::FontCaches => 3,
-            Self::LaunchServices => 4,
+            Self::LaunchServices => 3,
         }
     }
 }
@@ -120,7 +120,10 @@ impl CommandAuthority {
                     MaintenanceTask::FontCaches => ("atsutil", &["databases", "-removeUser"]),
                     MaintenanceTask::LaunchServices => (
                         "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
-                        &["-kill", "-r", "-domain", "local", "-domain", "user"],
+                        // macOS 27 dropped `-kill` and `-domain`; `-delete` needs a
+                        // reboot. Collect stale records, then re-register the
+                        // local and user domains' apps.
+                        &["-gc", "-r", "-f", "-apps", "local,user"],
                     ),
                 };
                 (program, args.iter().map(|arg| (*arg).to_string()).collect())

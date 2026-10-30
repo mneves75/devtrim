@@ -1,6 +1,33 @@
 # Project Memory
 
-## Current production state (0.12.1)
+## Current production state (0.12.2)
+
+0.12.2 closes the 0.12.1 follow-ups the owner asked for on 2026-10-30 ("do it
+all"): bare `~` roots, the home-root warning, `applied: false` when the journal
+is unwritable, `verify-live.sh`, the gate verdict in the tag, hash-only CSP for
+styles with `csp.py`'s own tokenizer, and the manual fixes. Story and evidence:
+`memory/2026-10-30.md`. Main `702d0959b18d3e9291add7369cb6d8a47a486339` (tree
+`ec4c0b4`), content reviewed and gated at `2feb6df` (gate reused by tree).
+Immutable `v0.12.2-beta1` and stable `v0.12.2` (tag object `e44a357`) point at
+that commit and carry the same ZIP (SHA-256
+`06c03a06d881a5edf790aeaee78a0c9ec4ca31c7dacc89bd5841ed4bb58603c7`). The
+production publish job failed once with a GitHub API HTTP 500; with no release
+created and main unchanged it was rerun (`gh run rerun 41119216014 --failed`)
+and passed, then release.sh's tail (verification, `update-homebrew.sh 0.12.2`)
+ran by hand. Homebrew (tap `f5f15de`) upgraded to 0.12.2;
+`/opt/homebrew/bin/devtrim` is the sole visible binary (SHA-256
+`2f1e2e7e75d629d7ed40d4682b56d415b2ffa281966cbc5781be938a4894592f`).
+Proof: all gates at `2feb6df` (`.scratch/verify-0.12.2/gates-2feb6df-summary.log`),
+mneves-verify (Sol) round 9 PASS after round 8 FAIL
+(`.scratch/verify-0.12.2/sol-verify9/verdict.md`), autoreview clean, security
+gate PASS staging and production (`.scratch/security-gate/702d095…/`, reused
+from `2feb6df…`). Release CI and beta were not skipped: release.sh requires
+them. Known defect found during verification: `optimize --task
+launch-services` exits 64 on macOS 27 (`lsregister` lost `-kill`/`-domain`),
+fixed in 0.12.3. npm 12 refuses `config get cache` for a path containing a
+UUID ("protected"); devtrim fails closed for the npm cache only.
+
+## Previous production state (0.12.1)
 
 0.12.1 is the owner's 2026-10-29 request: a full source audit of 0.12.0, its
 fixes with failing-first proof, a TUI review, the landing-page redesign around

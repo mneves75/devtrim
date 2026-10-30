@@ -1706,9 +1706,7 @@ fn eval_optimize_runs_exactly_the_selected_fixed_argv() {
         vec![
             quicklook.clone(),
             fonts.clone(),
-            argv(&[
-                LSREGISTER, "-kill", "-r", "-domain", "local", "-domain", "user"
-            ]),
+            argv(&[LSREGISTER, "-gc", "-r", "-f", "-apps", "local,user"]),
         ],
         "PV eval/optimize-plan: the catalog's fixed argv, with no root-requiring task"
     );
@@ -1786,6 +1784,68 @@ fn eval_optimize_runs_exactly_the_selected_fixed_argv() {
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], 2);
     assert_journaled_commands(&sandbox, "optimize", &[quicklook, fonts]);
+}
+
+/// The Launch Services argv is checked against the installed `lsregister`'s
+/// own help, the only authority on its options: macOS 27 dropped `-kill` and
+/// `-domain`, which the task ran for releases, and the eval's stubs could not
+/// see it because the binary is an absolute path. Read-only: `-h` registers
+/// nothing.
+#[test]
+fn eval_optimize_launch_services_argv_matches_the_installed_lsregister() {
+    if !Path::new(LSREGISTER).exists() {
+        eprintln!("skipped: {LSREGISTER} is absent on this host");
+        return;
+    }
+    let sandbox = Sandbox::in_target("eval-optimize-lsregister");
+    let preview = run(
+        &sandbox,
+        &["optimize", "--task", "launch-services", "--json"],
+    );
+    let document = json(&preview);
+    let plan = command_plan(&document);
+    assert_eq!(plan.len(), 1, "{document}");
+    let (program, args) = plan[0].split_first().unwrap();
+    assert_eq!(program, LSREGISTER);
+
+    let help = std::process::Command::new(LSREGISTER)
+        .arg("-h")
+        .output()
+        .expect("lsregister -h runs");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&help.stdout),
+        String::from_utf8_lossy(&help.stderr)
+    );
+    let options: Vec<&str> = text
+        .split(|character: char| character.is_whitespace() || "[]".contains(character))
+        .filter(|token| token.len() > 1 && token.starts_with('-'))
+        .collect();
+    assert!(
+        options.contains(&"-h"),
+        "eval/lsregister-contract: the help was not read: {text}"
+    );
+    // The usage line names the domains: "system", "local", "network", "user".
+    let mut expects_domains = false;
+    for arg in args {
+        if expects_domains {
+            for domain in arg.split(',') {
+                assert!(
+                    text.contains(&format!("\"{domain}\"")),
+                    "eval/lsregister-contract: {domain} is not a domain this lsregister names: {text}"
+                );
+            }
+            expects_domains = false;
+        } else {
+            assert!(
+                options.contains(&arg.as_str()),
+                "eval/lsregister-contract: the installed lsregister does not offer {arg}: {text}"
+            );
+            expects_domains = ["-apps", "-libs", "-all"].contains(&arg.as_str());
+        }
+    }
+    assert!(!expects_domains, "a domain option ends the argv: {args:?}");
+    assert!(preview.status.success(), "{document}");
 }
 
 // ---------- trash-empty ----------
