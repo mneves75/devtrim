@@ -12,9 +12,10 @@ no hash can admit. --write rewrites the two lists in place.
 The page is read with the standard library's HTML tokenizer, not patterns,
 and must stay inside the simple subset these pages are written in: only the
 elements they use, every one closed in order, no event-handler or srcdoc
-attribute, no "<!--" or "</" inside a script or style, no NUL, and the policy
-meta preceded by nothing but the doctype, <html>, <head>, other metas and
-whitespace, so the browser cannot have left the head before it. Anything else
+attribute, no "<!--" or "</" inside a script or style, each ending with its
+exact end tag, no NUL, and the policy meta preceded by nothing but the doctype,
+<html>, <head>, other metas and whitespace, so the browser cannot have left
+the head before it. Anything else
 is refused rather than modelled; a real browser load stays the ground truth.
 """
 
@@ -150,8 +151,17 @@ class Inventory(HTMLParser):
             self.inline = None
 
 
+# Python versions disagree with each other and with browsers on end tags
+# such as "</ script>" or "</script/x>", so a script or style may end only
+# with its exact end tag.
+LOOSE_END_TAG = re.compile(r"</(?:[\s/]+(?:script|style)|(?:script|style)(?!>))", re.I)
+
+
 def inventory(page: str) -> Inventory:
     found = Inventory()
+    loose = LOOSE_END_TAG.search(page)
+    if loose:
+        found.ambiguous.append(f"{loose.group(0)!r} is not written as </script> or </style>")
     if "\x00" in page:
         # The browser replaces NUL before tokenizing, so it hashes other text.
         found.ambiguous.append("a NUL character")

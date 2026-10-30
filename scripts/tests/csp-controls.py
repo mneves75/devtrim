@@ -12,7 +12,8 @@ left unclosed at the end, markup outside the subset csp.py reads (an unlisted
 element such as iframe or template, srcdoc or an event handler, a mis-nested end
 tag, anything before the policy meta but the doctype, <html>, <head>, other
 metas and whitespace, the policy meta outside <head>, "<!--" or "</" in any
-script or style, a NUL), a second policy meta, and an 'unsafe-inline' source
+script or style, a script or style end tag spelled other than </script> or
+</style>, a NUL), a second policy meta, and an 'unsafe-inline' source
 must each fail.
 """
 
@@ -42,7 +43,7 @@ def check(page: Path, mode: str = "--check") -> subprocess.CompletedProcess[str]
 
 # Plants rewritten with --write before --check, so a stale hash cannot be
 # what refuses them.
-REWRITTEN = {"double-escaped-script", "double-escaped-src-script", "nul-in-style", "end-tag-like-text-in-script"}
+REWRITTEN = {"double-escaped-script", "double-escaped-src-script", "nul-in-style", "end-tag-like-text-in-script", "spaced-script-end-tag", "end-tag-not-exactly-spelled"}
 
 
 def hashed_in_svg(manual: str, opening: str = "<svg>") -> str:
@@ -130,6 +131,13 @@ def main() -> int:
         "end-tag-like-text-in-script": manual.replace("</body>", "<script>x = '</script/x>';</script></body>", 1),
         # A browser ignores src on a style and checks its text as inline CSS.
         "style-with-src": manual.replace("</body>", '<style src="ignored">p { color: red; }</style></body>', 1),
+        # Python 3.12.0 and 3.13.0 end a script at "</ script>"; a browser
+        # keeps reading it as script text.
+        "spaced-script-end-tag": manual.replace(
+            "</body>", "<script>window.x=1;</ script><script>window.y=1;</script></body>", 1
+        ),
+        # Refused by the end-tag rule alone on a patched Python.
+        "end-tag-not-exactly-spelled": manual.replace("</body>", "<script>window.x=1;</script ></body>", 1),
         "nul-in-style": manual.replace("</body>", "<style>p::after { content: '\x00'; }</style></body>", 1),
         "srcdoc-iframe": manual.replace(
             "</body>", '<iframe srcdoc="<style>p{color:red}</style>"></iframe></body>', 1
