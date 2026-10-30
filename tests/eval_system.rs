@@ -2349,3 +2349,124 @@ fn eval_commands_reject_flags_they_cannot_honor_and_change_nothing() {
         "PV eval/flags-nothing-changed",
     );
 }
+
+/// A toolchain that cannot be measured offers nothing and is named in one
+/// error; the unreferenced toolchains beside it are still offered.
+#[test]
+fn eval_toolchains_list_every_finding_past_an_unreadable_toolchain() {
+    let sandbox = Sandbox::in_target("eval-toolchains-unreadable");
+    let targets = toolchains_fixture(&sandbox);
+    let locked = sandbox
+        .path()
+        .join("Library/Developer/Toolchains/swift-5.6-RELEASE.xctoolchain");
+    write(&locked.join("usr/bin/swift"), "unreadable toolchain");
+    let _locked = Unreadable::new(locked.join("usr"));
+
+    let preview = run(&sandbox, &["clean", "toolchains", "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        targets,
+        "eval/toolchains-unreadable: one unreadable toolchain hid the others"
+    );
+    assert!(
+        error_text(&document).contains("swift-5.6-RELEASE.xctoolchain"),
+        "eval/toolchains-unreadable: the unreadable toolchain must be named: {document}"
+    );
+    assert!(!preview.status.success(), "{document}");
+}
+
+/// An unavailable device whose data cannot be measured offers nothing and is
+/// named in one error; the other unavailable device is still offered.
+#[test]
+fn eval_simulators_list_every_device_past_an_unreadable_one() {
+    let sandbox = Sandbox::in_target("eval-simulators-unreadable");
+    let devices = simulator_devices(&sandbox);
+    let listing = simctl_list(&[(GONE_TWO, false), (WORKING, true), (GONE_ONE, false)]);
+    simulator_stub(&sandbox, &listing, &listing);
+    let _locked = Unreadable::new(devices.join(GONE_TWO).join("data"));
+
+    let preview = run(&sandbox, &["clean", "simulators", "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        command_plan(&document),
+        vec![argv(&["xcrun", "simctl", "delete", GONE_ONE])],
+        "eval/simulators-unreadable: one unreadable device hid the others"
+    );
+    assert!(
+        error_text(&document).contains(GONE_TWO),
+        "eval/simulators-unreadable: the unreadable device must be named: {document}"
+    );
+    assert!(!preview.status.success(), "{document}");
+}
+
+/// An Archives folder that cannot be measured is one error; DeviceSupport
+/// beside it is still offered.
+#[test]
+fn eval_an_unreadable_archive_never_withholds_device_support() {
+    let sandbox = Sandbox::in_target("eval-xcode-archives-unreadable");
+    let xcode = sandbox.path().join("Library/Developer/Xcode");
+    let symbols = xcode.join("iOS DeviceSupport/iPhone18,2 27.0 (24A437)");
+    write(&symbols.join("Symbols/dyld"), "regenerable");
+    write(
+        &xcode.join("Archives/2026-01-01/App.xcarchive/Info.plist"),
+        "archive",
+    );
+    let locked = xcode.join("Archives/2026-01-02");
+    write(&locked.join("App.xcarchive/Info.plist"), "archive");
+    let _locked = Unreadable::new(locked);
+
+    let preview = run(&sandbox, &["clean", "xcode", "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        vec![symbols],
+        "eval/xcode-archives-unreadable: an unreadable archive hid DeviceSupport"
+    );
+    assert!(
+        error_text(&document).contains("Archives"),
+        "eval/xcode-archives-unreadable: the unreadable archive must be named: {document}"
+    );
+    assert!(!preview.status.success(), "{document}");
+}
+
+/// A folder the leftovers walk cannot read is named in one error; the agent
+/// evidence beside it is still reported.
+#[test]
+fn eval_leftovers_report_every_folder_past_an_unreadable_one() {
+    let sandbox = Sandbox::in_target("eval-leftovers-unreadable");
+    let dev = sandbox.path().join("dev");
+    let evidence = dev.join(".supergoal/evidence");
+    write(&evidence.join("run.log"), "log");
+    let sealed = dev.join("sealed");
+    write(&sealed.join(".supergoal/evidence/run.log"), "hidden");
+    let _sealed = Unreadable::new(sealed.clone());
+
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            dev.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let document = json(&output);
+    let listed: Vec<PathBuf> = document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|finding| finding["path"].as_str().map(PathBuf::from))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![evidence],
+        "eval/leftovers-unreadable: an unreadable folder hid the evidence beside it"
+    );
+    assert!(
+        error_text(&document).contains(&sealed.display().to_string()),
+        "eval/leftovers-unreadable: the unreadable folder must be named: {document}"
+    );
+    assert!(!output.status.success(), "{document}");
+}
