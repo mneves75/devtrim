@@ -5,7 +5,9 @@ The shipped pages must pass (positive control). Copies with a stale style hash,
 an inline style element or style attribute spelled any way a browser accepts
 (upper case, whitespace before an end tag's bracket, an attribute after a
 slash, a style inside SVG), an inline script whose only "src" is data-src, a
-second policy meta, and an 'unsafe-inline' source must each fail.
+self-closing script or style and a repeated attribute (each read one way by the
+browser and another by a naive reader), a second policy meta, and an
+'unsafe-inline' source must each fail.
 """
 
 from __future__ import annotations
@@ -50,6 +52,9 @@ def main() -> int:
         "slash-separated-attribute": manual.replace("</body>", '<div/style="color: red">x</div></body>', 1),
         "data-src-inline-script": manual.replace("</body>", '<script data-SRC="unused">window.x = 1;</script></body>', 1),
         "style-in-svg": manual.replace("</body>", "<svg><style>p { color: red; }</style></svg></body>", 1),
+        "self-closing-style": manual.replace("</body>", "<style/>p { color: red; }</style></body>", 1),
+        "self-closing-script": manual.replace("</body>", "<script/>window.x = 1;</script></body>", 1),
+        "duplicate-rel-attribute": manual.replace("</head>", '<link rel="stylesheet" rel="icon" href="x.css"></head>', 1),
         "second-policy-meta": manual.replace(
             "<head>", '<head><meta http-equiv="content-security-policy" content="default-src *">', 1
         ),

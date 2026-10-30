@@ -38,12 +38,19 @@ class Inventory(HTMLParser):
         self.style_attributes: list[str] = []
         self.stylesheet = False
         self.policies: list[str] = []
+        self.ambiguous: list[str] = []
         self.inline: str | None = None
         self.text = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         names = {name for name, _ in attrs}
-        values = {name: value or "" for name, value in attrs}
+        if len(names) != len(attrs):
+            # A browser keeps the first of two equal attributes; refuse rather
+            # than guess which one a reader of this page would act on.
+            self.ambiguous.append(f"<{tag}> repeats an attribute")
+        values: dict[str, str] = {}
+        for name, value in attrs:
+            values.setdefault(name, value or "")
         if "style" in names:
             self.style_attributes.append(tag)
         if tag == "link" and "stylesheet" in values.get("rel", "").lower().split():
@@ -54,6 +61,10 @@ class Inventory(HTMLParser):
             self.inline, self.text = tag, ""
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # A browser ignores the slash on an HTML script or style and reads
+        # what follows as its contents; the tokenizer here would not.
+        if tag in ("script", "style"):
+            self.ambiguous.append(f"<{tag}/> is not self-closing in HTML")
         self.handle_starttag(tag, attrs)
         self.inline = None
 
@@ -111,6 +122,8 @@ def main() -> int:
             failures.append(f"{name}: needs exactly one Content-Security-Policy meta, written as http-equiv then content")
             continue
         match = metas[0]
+        if found.ambiguous:
+            failures.append(f"{name}: ambiguous markup: {found.ambiguous[0]}")
         if found.style_attributes:
             failures.append(
                 f"{name}: a style=\"\" attribute on <{found.style_attributes[0]}> cannot be admitted by hash; use a class"
