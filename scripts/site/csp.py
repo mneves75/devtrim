@@ -39,6 +39,7 @@ class Inventory(HTMLParser):
         self.stylesheet = False
         self.policies: list[str] = []
         self.ambiguous: list[str] = []
+        self.foreign = 0
         self.inline: str | None = None
         self.text = ""
 
@@ -57,6 +58,12 @@ class Inventory(HTMLParser):
             self.stylesheet = True
         if tag == "meta" and values.get("http-equiv", "").lower() == "content-security-policy":
             self.policies.append(values.get("content", ""))
+        if tag in ("svg", "math"):
+            self.foreign += 1
+        if tag in ("script", "style") and self.foreign:
+            # Foreign content decodes entities in its text, so the hash a
+            # browser computes is not the hash of the raw text read here.
+            self.ambiguous.append(f"<{tag}> inside <svg> or <math> is parsed as foreign content")
         if (tag == "script" and "src" not in names) or tag == "style":
             self.inline, self.text = tag, ""
 
@@ -73,6 +80,8 @@ class Inventory(HTMLParser):
             self.text += data
 
     def handle_endtag(self, tag: str) -> None:
+        if tag in ("svg", "math") and self.foreign:
+            self.foreign -= 1
         if tag == self.inline:
             (self.scripts if tag == "script" else self.styles).append(self.text)
             self.inline = None
@@ -82,6 +91,9 @@ def inventory(page: str) -> Inventory:
     found = Inventory()
     found.feed(page)
     found.close()
+    if found.inline:
+        # A browser runs an element left open at the end of the page.
+        found.ambiguous.append(f"<{found.inline}> is never closed")
     return found
 
 

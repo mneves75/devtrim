@@ -6,12 +6,16 @@ an inline style element or style attribute spelled any way a browser accepts
 (upper case, whitespace before an end tag's bracket, an attribute after a
 slash, a style inside SVG), an inline script whose only "src" is data-src, a
 self-closing script or style and a repeated attribute (each read one way by the
-browser and another by a naive reader), a second policy meta, and an
-'unsafe-inline' source must each fail.
+browser and another by a naive reader), any script or style inside SVG or
+MathML (parsed as foreign content), an element left unclosed at the end, a
+second policy meta, and an 'unsafe-inline' source must each fail.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +33,15 @@ def check(page: Path) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=60,
     )
+
+
+def hashed_in_svg(manual: str) -> str:
+    """A style inside SVG whose raw-text hash is admitted by the policy."""
+    body = "p::after { content: '&amp;'; }"
+    digest = "'sha256-" + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode() + "'"
+    page = manual.replace("</body>", f"<svg><style>{body}</style></svg></body>", 1)
+    # Appended last, where csp.py --write would put the element's hash.
+    return re.sub(r"(style-src [^;\"]*)", lambda match: f"{match.group(1)} {digest}", page, count=1)
 
 
 def main() -> int:
@@ -51,7 +64,11 @@ def main() -> int:
         "end-tag-whitespace": manual.replace("</body>", "<style>p { color: red; }</style ></body>", 1),
         "slash-separated-attribute": manual.replace("</body>", '<div/style="color: red">x</div></body>', 1),
         "data-src-inline-script": manual.replace("</body>", '<script data-SRC="unused">window.x = 1;</script></body>', 1),
+        # Inside SVG a style is parsed as foreign content (entities decoded),
+        # so its hash cannot be read off the raw text; any such style refuses.
         "style-in-svg": manual.replace("</body>", "<svg><style>p { color: red; }</style></svg></body>", 1),
+        "hashed-style-in-svg": hashed_in_svg(manual),
+        "unclosed-style-at-end": manual + "<style>p { color: red; }",
         "self-closing-style": manual.replace("</body>", "<style/>p { color: red; }</style></body>", 1),
         "self-closing-script": manual.replace("</body>", "<script/>window.x = 1;</script></body>", 1),
         "duplicate-rel-attribute": manual.replace("</head>", '<link rel="stylesheet" rel="icon" href="x.css"></head>', 1),

@@ -714,6 +714,10 @@ write_gate_record production waived pass '{"a": {"id": "SEC-19", "owner": "@owne
 expect_gate_refusal 1.2.3 'does not clear' 'waivers keyed as an object'
 write_gate_record production waived pass '[{"id": "SEC-19", "owner": "@owner", "reason": "fixture", "expires": "2099-02-31T00:00:00Z"}]'
 expect_gate_refusal 1.2.3 'does not clear' 'an impossible expiry date'
+# jq's $ also matches before a final newline; an ID ending in one would split
+# the tag message's verdict line.
+write_gate_record production waived pass '[{"id": "SEC-19\n", "owner": "@owner", "reason": "fixture", "expires": "2099-01-02T00:00:00Z"}]'
+expect_gate_refusal 1.2.3 'does not clear' 'a waiver ID ending in a newline'
 write_gate_record staging pass blocked '[]'
 
 homebrew_invocations="$test_root/homebrew-invocations"

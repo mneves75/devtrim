@@ -161,9 +161,9 @@ if ! gate_verdict=$(jq -ser --arg commit "$release_commit" --arg tree "$release_
   | select((.waivers | type) == "array")
   | if .verdict == "pass" and (.waivers | length) == 0 then "PASS"
     elif .verdict == "waived" and (.waivers | length) > 0
-      and all(.waivers[]; (.id | type) == "string" and (.id | test("^[A-Za-z0-9:._-]+$"))
+      and all(.waivers[]; (.id | type) == "string" and (.id | test("\\A[A-Za-z0-9:._-]+\\z"))
         and (.expires | type) == "string"
-        and (.expires | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+        and (.expires | test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\\z"))
         and (.expires | fromdateiso8601 | todateiso8601) == .expires
         and (.expires | fromdateiso8601) > now)
     then "WAIVED " + ([.waivers[].id] | join(" "))
