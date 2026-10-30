@@ -11,7 +11,8 @@ has opened (parsed as foreign content, even past a stray end tag), an element
 left unclosed at the end, markup outside the subset csp.py reads (an unlisted
 element such as iframe or template, srcdoc or an event handler, a mis-nested end
 tag, anything before the policy meta but the doctype, <html>, <head>, other
-metas and whitespace, the policy meta outside <head>), a second policy meta, and an
+metas and whitespace, the policy meta outside <head>, "<!--" in a script), a second
+policy meta, and an
 'unsafe-inline' source must each fail.
 """
 
@@ -30,13 +31,18 @@ ROOT = Path(__file__).resolve().parents[2]
 CHECK = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "scripts" / "site" / "csp.py"
 
 
-def check(page: Path) -> subprocess.CompletedProcess[str]:
+def check(page: Path, mode: str = "--check") -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-B", str(CHECK), "--check", str(page)],
+        [sys.executable, "-B", str(CHECK), mode, str(page)],
         capture_output=True,
         text=True,
         timeout=60,
     )
+
+
+# Plants rewritten with --write before --check, so a stale hash cannot be
+# what refuses them.
+REWRITTEN = {"double-escaped-script"}
 
 
 def hashed_in_svg(manual: str, opening: str = "<svg>") -> str:
@@ -108,6 +114,11 @@ def main() -> int:
             1,
         ),
         "body-before-head": manual.replace("<head>", "<body></body><head>", 1),
+        # "<!--" in script text enters the browser's escaped states, where
+        # a later </script> may not end the script where the tokenizer says.
+        "double-escaped-script": manual.replace(
+            "</body>", "<script><!--<script></script><style></script></style></body>", 1
+        ),
         "srcdoc-iframe": manual.replace(
             "</body>", '<iframe srcdoc="<style>p{color:red}</style>"></iframe></body>', 1
         ),
@@ -127,6 +138,9 @@ def main() -> int:
                 continue
             page = base / f"{label}.html"
             page.write_text(text)
+            if label in REWRITTEN:
+                # The attack hashes what csp.py reads; only a refusal stops it.
+                check(page, "--write")
             if check(page).returncode == 0:
                 failures.append(f"{label}: csp.py --check accepted a page it must refuse")
     finally:

@@ -12,9 +12,9 @@ no hash can admit. --write rewrites the two lists in place.
 The page is read with the standard library's HTML tokenizer, not patterns,
 and must stay inside the simple subset these pages are written in: only the
 elements they use, every one closed in order, no event-handler or srcdoc
-attribute, and the policy meta preceded by nothing but the doctype, <html>,
-<head>, other metas and whitespace, so the browser cannot have left the head
-before it. Anything else is refused rather than modelled; a real browser load
+attribute, no "<!--" in a script, and the policy meta preceded by nothing but
+the doctype, <html>, <head>, other metas and whitespace, so the browser cannot
+have left the head before it. Anything else is refused rather than modelled; a real browser load
 stays the ground truth.
 """
 
@@ -137,6 +137,10 @@ class Inventory(HTMLParser):
             # check does not model.
             self.ambiguous.append(f"</{tag}> does not close the element open there")
         if tag == self.inline:
+            if tag == "script" and "<!--" in self.text:
+                # The browser's escaped script states start at "<!--"; in them
+                # a </script> may not end the script where it ends here.
+                self.ambiguous.append('"<!--" inside a <script>')
             (self.scripts if tag == "script" else self.styles).append(self.text)
             self.inline = None
 
