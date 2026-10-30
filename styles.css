@@ -13,7 +13,7 @@
   --cyan: #6fd3e8;
   --blue: #86a8ff;
   --page: min(100% - 2.5rem, 76rem);
-  --radius: 0.75rem;
+  --radius: 0.25rem;
   --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
@@ -83,6 +83,8 @@ h1 {
   max-width: 17ch;
 }
 .pitch { max-width: 56ch; font-size: 1.15rem; }
+.hero-head .cta-row { margin-block-end: 0; }
+.hero-fig { margin-block-start: clamp(2.5rem, 6vh, 4rem); }
 .facts { color: var(--muted); }
 .cta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-block: 1.8rem 3rem; }
 .cta-row.center { justify-content: center; }
@@ -111,9 +113,19 @@ figcaption { color: var(--muted); font-size: 0.95rem; margin-block-start: 0.85re
   font-size: 0.85rem; line-height: 1.3;
   color: #d9d9d4; overflow-x: auto;
 }
-/* A frame scales its font so all of its columns fit the width it is given. */
+/* A frame scales its font so all of its columns fit the width it is given,
+   down to a legible floor; below it the frame scrolls inside its own box.
+   The frame hugs its columns instead of leaving a dead strip on the right. */
 .term-frame { container-type: inline-size; }
-.term-frame .term { font-size: min(0.92rem, calc((100cqw - 2rem) / (var(--cols) * 0.61))); }
+.term-frame .term {
+  font-size: max(0.6875rem, min(0.92rem, calc((100cqw - 2rem) / (var(--cols) * 0.61))));
+  inline-size: fit-content; max-inline-size: 100%;
+}
+/* frames:cols (written by scripts/site/frames.py) */
+.term-frame[data-cols="84"] { --cols: 84; }
+.term-frame[data-cols="100"] { --cols: 100; }
+.term-frame[data-cols="105"] { --cols: 105; }
+/* /frames:cols */
 .term code { background: none; padding: 0; font-size: 1em; white-space: pre; display: block; }
 .term .r { color: var(--red); }
 .term .y { color: var(--amber); }
@@ -146,11 +158,13 @@ video { width: 100%; background: #000; aspect-ratio: 16 / 9; }
 .transcript li::marker { color: var(--accent); font-weight: 700; }
 
 /* features */
-.scan-fig { margin-block-end: 3.5rem; max-width: 64rem; }
-.commands { margin: 0; display: grid; gap: 2rem 3.5rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); }
-.commands dt { font-size: 1.1rem; font-weight: 700; margin-block-end: 0.35rem; }
+.scan-fig { margin-block-end: 4.5rem; }
+.command-groups { display: grid; gap: 3rem clamp(2rem, 4vw, 3.5rem); grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); align-items: start; }
+.command-group h3 { font-size: 1.35rem; margin-block-end: 1.4rem; }
+.commands { margin: 0; display: grid; gap: 1.6rem; }
+.commands dt { font-size: 1.05rem; font-weight: 700; margin-block-end: 0.3rem; }
 .commands dt code { color: var(--accent); background: none; padding: 0; font-size: 1em; }
-.commands dd { margin: 0; color: var(--muted); }
+.commands dd { margin: 0; }
 
 /* trust */
 .negations { margin: 0; padding-inline-start: 1.2rem; display: grid; gap: 0.8rem; max-width: 58ch; }
@@ -158,7 +172,7 @@ video { width: 100%; background: #000; aspect-ratio: 16 / 9; }
 
 /* install */
 .install-grid { display: grid; gap: 3rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); align-items: start; }
-.install-grid p { color: var(--muted); }
+.install-grid p { margin-block-start: 0.2rem; }
 
 /* final */
 .final { text-align: center; }
@@ -173,10 +187,22 @@ footer { padding-block: 2.5rem 3rem; }
 /* reveal-on-scroll: content is visible without script (noscript) and under reduced motion */
 [data-reveal] { opacity: 0; transform: translateY(18px); }
 [data-reveal].is-visible { opacity: 1; transform: none; transition: opacity 520ms ease, transform 520ms cubic-bezier(0.16, 1, 0.3, 1); }
-.why-list article:nth-of-type(2), .commands > div:nth-child(3n + 2) { transition-delay: 70ms; }
-.why-list article:nth-of-type(3), .commands > div:nth-child(3n) { transition-delay: 140ms; }
+.why-list article:nth-of-type(2), .command-group:nth-child(2) { transition-delay: 70ms; }
+.why-list article:nth-of-type(3), .command-group:nth-child(3) { transition-delay: 140ms; }
 @media (prefers-reduced-motion: reduce) {
   [data-reveal] { opacity: 1; transform: none; transition: none; }
+}
+@media print {
+  [data-reveal] { opacity: 1; transform: none; }
+}
+
+@media (min-width: 64rem) {
+  .hero-head { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: clamp(2rem, 4vw, 4rem); align-items: end; }
+  .hero-head h1 { margin-block-end: 0; max-width: none; font-size: clamp(2.6rem, 4.6vw, 4.6rem); }
+  .hero-head .pitch { font-size: 1.1rem; }
+  /* The frames hug their columns; the caption takes the width they leave. */
+  .hero-fig, .scan-fig { display: grid; grid-template-columns: minmax(0, 1fr) 16rem; gap: clamp(2rem, 3vw, 3rem); align-items: end; }
+  .hero-fig figcaption, .scan-fig figcaption { margin: 0; }
 }
 
 @media (max-width: 56rem) {
@@ -186,5 +212,5 @@ footer { padding-block: 2.5rem 3rem; }
 
 @media (max-width: 40rem) {
   .cta-row .btn { width: 100%; justify-content: center; }
-  .bar-links a:not(.btn) { display: none; }
+  .bar-links a[href^="https://github.com"] { display: none; }
 }

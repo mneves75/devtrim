@@ -12,7 +12,9 @@ to the interface:
 
 The demo home is the fixed `/private/tmp/devtrim-demo`, so the paths the frames
 show are the same on every run; it must not exist beforehand and is removed on
-exit. The real HOME is never read or changed.
+exit. The real HOME is never read or changed. Each frame's column count goes
+into `styles.css` between the `frames:cols` markers, since the page's CSP
+admits no inline style attribute to carry it.
 """
 
 import html
@@ -207,7 +209,7 @@ def scan_summary(binary, home):
 
 def block(name, columns, body):
     return (
-        f'<div class="term-frame" style="--cols: {columns}" data-ui>'
+        f'<div class="term-frame" data-cols="{columns}" data-ui>'
         f'<pre class="term" tabindex="0" aria-label="devtrim screen: {name}"><code>{body}</code></pre></div>'
     )
 
@@ -253,7 +255,19 @@ def main():
         if count != 1:
             raise AssertionError(f"{page} must hold exactly one {name} marker pair, found {count}")
     page.write_text(source)
-    print(f"wrote {len(frames)} frames into {page}")
+    stylesheet = page.with_name("styles.css")
+    widths = sorted({int(width) for width in re.findall(r'data-cols="(\d+)"', source)})
+    rules = "".join(f'.term-frame[data-cols="{width}"] {{ --cols: {width}; }}\n' for width in widths)
+    css, count = re.subn(
+        r"(/\* frames:cols \(written by scripts/site/frames\.py\) \*/\n).*?(/\* /frames:cols \*/)",
+        lambda match: match.group(1) + rules + match.group(2),
+        stylesheet.read_text(),
+        flags=re.S,
+    )
+    if count != 1:
+        raise AssertionError(f"{stylesheet} must hold exactly one frames:cols marker pair, found {count}")
+    stylesheet.write_text(css)
+    print(f"wrote {len(frames)} frames into {page} and {len(widths)} widths into {stylesheet}")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="devtrim is a local-first disk cleaner for macOS developer machines. It measures, classifies and trims caches and build output, previews every action, scores its danger and moves files to the Trash first.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'sha256-Nhg61JhiS+NUPAGVlBYOekQ045ifU3ykr9ovN3pC1XM='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'sha256-zUkhgr6s1jFnpZUQeDeBq7ykhp8vILMX97GuRwVAspQ='; script-src 'sha256-Nhg61JhiS+NUPAGVlBYOekQ045ifU3ykr9ovN3pC1XM='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>devtrim — measure · classify · trim</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -28,18 +28,22 @@
 
 <header class="hero" id="top">
   <div class="wrap">
+    <div class="hero-head">
     <h1>Clean your Mac like you deploy code.</h1>
+    <div>
     <p class="pitch">devtrim is a local-first disk cleaner for macOS developer machines.
       It shows what every cache and build folder costs before anything moves, scores
       each action 1–10 for danger, and moves files to the Trash, recoverable until you empty it.</p>
     <p class="facts">Free and open source · Apache-2.0 · macOS 13+ · latest release v0.12.1</p>
     <div class="cta-row">
-      <a class="btn primary" href="#install">Download v0.12.1</a>
+      <a class="btn primary" href="#install">Install v0.12.1</a>
       <a class="btn ghost" href="MANUAL.html">Read the manual</a>
+    </div>
+    </div>
     </div>
     <figure class="hero-fig" data-reveal>
 <!-- tui:results -->
-<div class="term-frame" style="--cols: 100" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: purge preview"><code>┌ TRASH-FIRST · 4/4 selected · 7.8 GB · danger-5 ──────────────────────────────────────────────────┐
+<div class="term-frame" data-cols="100" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: purge preview"><code>┌ TRASH-FIRST · 4/4 selected · 7.8 GB · danger-5 ──────────────────────────────────────────────────┐
 │<span class="b">› </span>[x]   1. danger-5   5.9 GB  TRASH    <span class="b">stale target artifacts</span>  …vtrim-demo/dev/payments-api/target│
 │  [x]   2. danger-5   1.1 GB  TRASH    <span class="b">stale node_modules</span>  …vtrim-demo/dev/storefront/node_modules│
 │  [x]   3. danger-5   614 MB  TRASH    <span class="b">stale .next artifacts</span>  …p/devtrim-demo/dev/storefront/.next│
@@ -96,7 +100,7 @@
     </div>
     <figure class="why-fig" data-reveal>
 <!-- tui:confirm -->
-<div class="term-frame" style="--cols: 84" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: confirm exact plan"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
+<div class="term-frame" data-cols="84" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: confirm exact plan"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
 │ ┌ Confirm exact plan ──────────────────────────────────────────────────────────┐t│
 │ │<span class="b">DATA-LOSS WARNING</span>                                                             │s│
 │<span class="b">›</span>│This plan: 3 of 4 selected · 1 left out                                       │t│
@@ -149,7 +153,7 @@
     <h2 id="feat-h">One interactive TUI. Explicit commands for automation.</h2>
     <figure class="scan-fig" data-reveal>
 <!-- cli:scan -->
-<div class="term-frame" style="--cols: 105" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
+<div class="term-frame" data-cols="105" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
 Categories
   artifacts        6.7 GB      3 finding(s)   devtrim clean artifacts --apply
   node-modules     1.1 GB      1 finding(s)   devtrim clean node-modules --apply
@@ -177,20 +181,35 @@ Pick items one by one in the interactive view: devtrim. Project build output tog
 <!-- /cli:scan -->
       <figcaption>The same two demo projects through <code>devtrim scan</code>: one line per category, largest first, with the command that acts on it.</figcaption>
     </figure>
-    <dl class="commands">
-      <div data-reveal><dt><code>devtrim</code> / <code>tui</code></dt><dd>Keyboard-first scan, preview, and confirmation with written risk labels. It reuses the same cleanup owners and rejects CLI bypass flags.</dd></div>
-      <div data-reveal><dt><code>scan</code></dt><dd>Read-only report with estimated logical sizes, danger levels, and one-document JSON output for agents.</dd></div>
-      <div data-reveal><dt><code>caches</code></dt><dd>Hugging Face models, npm, Homebrew, uv, bun, cargo, Corepack, Gradle, Go modules, CocoaPods, the GitHub CLI and a closed list of editor and toolchain caches. All regenerate on demand; devtrim tells you the bandwidth cost instead of deciding for you.</dd></div>
-      <div data-reveal><dt><code>dashboard</code></dt><dd>A private, self-contained HTML snapshot of disk use: responsive treemap, folder navigation and search, volume free-space metrics and the existing category cleanup previews. <code>--output</code> saves it, <code>--no-open</code> skips the browser, and no inventory path ever becomes deletion authority.</dd></div>
-      <div data-reveal><dt><code>node-modules</code></dt><dd>Applies exact previewed paths only when Git activity is conclusively older than 30 days. Unknown state is refused.</dd></div>
-      <div data-reveal><dt><code>artifacts</code></dt><dd>Rust targets, virtualenvs, Pods, Gradle, Next.js, Turbo and Parcel caches, only with ecosystem corroboration, only in conclusively stale repos, never ambiguous names like <code>build</code> or <code>dist</code>.</dd></div>
-      <div data-reveal><dt><code>history</code></dt><dd>Every apply is journaled write-ahead. Review what was attempted and what completed; an interrupted apply shows up as interrupted.</dd></div>
-      <div data-reveal><dt><code>xcode</code></dt><dd>iOS, watchOS, tvOS and visionOS DeviceSupport symbols and DerivedData. Archives are always listed but never touched.</dd></div>
-      <div data-reveal><dt><code>docker</code></dt><dd>Unused images and build cache. Volumes are never pruned: a volume may hold your live database.</dd></div>
-      <div data-reveal><dt><code>simulators</code></dt><dd>Deletes devices whose runtime is gone. Confirmation flags never add an unpreviewed erase-all.</dd></div>
-      <div data-reveal><dt><code>toolchains</code> + <code>leftovers</code></dt><dd>Only provably unreferenced Swift toolchains are actionable, never one swiftly installed. Agent leftovers, ignored <code>.scratch</code> folders and <code>devtrim worktrees</code> are report-only.</dd></div>
-      <div data-reveal><dt><code>icloud</code></dt><dd>Large iCloud Drive files with logical and locally allocated sizes: a truthful storage inventory, not an upload-progress guess.</dd></div>
-    </dl>
+    <div class="command-groups">
+      <div class="command-group" data-reveal>
+        <h3>See before anything moves</h3>
+        <dl class="commands">
+          <div><dt><code>devtrim</code> / <code>tui</code></dt><dd>Keyboard-first scan, preview, and confirmation with written risk labels. It reuses the same cleanup owners and rejects CLI bypass flags.</dd></div>
+          <div><dt><code>scan</code></dt><dd>Read-only report with estimated logical sizes, danger levels, and one-document JSON output for agents.</dd></div>
+          <div><dt><code>dashboard</code></dt><dd>A private, self-contained HTML snapshot of disk use: responsive treemap, folder navigation and search, volume free-space metrics and the existing category cleanup previews. <code>--output</code> saves it, <code>--no-open</code> skips the browser, and no inventory path ever becomes deletion authority.</dd></div>
+          <div><dt><code>history</code></dt><dd>Every apply is journaled write-ahead. Review what was attempted and what completed; an interrupted apply shows up as interrupted.</dd></div>
+          <div><dt><code>icloud</code></dt><dd>Large iCloud Drive files with logical and locally allocated sizes: a truthful storage inventory, not an upload-progress guess.</dd></div>
+        </dl>
+      </div>
+      <div class="command-group" data-reveal>
+        <h3>Move to the Trash first</h3>
+        <dl class="commands">
+          <div><dt><code>caches</code></dt><dd>Hugging Face models, npm, Homebrew, uv, bun, cargo, Corepack, Gradle, Go modules, CocoaPods, the GitHub CLI and a closed list of editor and toolchain caches. All regenerate on demand; devtrim tells you the bandwidth cost instead of deciding for you.</dd></div>
+          <div><dt><code>node-modules</code></dt><dd>Applies exact previewed paths only when Git activity is conclusively older than 30 days. Unknown state is refused.</dd></div>
+          <div><dt><code>artifacts</code></dt><dd>Rust targets, virtualenvs, Pods, Gradle, Next.js, Turbo and Parcel caches, only with ecosystem corroboration, only in conclusively stale repos, never ambiguous names like <code>build</code> or <code>dist</code>.</dd></div>
+          <div><dt><code>xcode</code></dt><dd>iOS, watchOS, tvOS and visionOS DeviceSupport symbols and DerivedData. Archives are always listed but never touched.</dd></div>
+          <div><dt><code>toolchains</code> + <code>leftovers</code></dt><dd>Only provably unreferenced Swift toolchains are actionable, never one swiftly installed. Agent leftovers, ignored <code>.scratch</code> folders and <code>devtrim worktrees</code> are report-only.</dd></div>
+        </dl>
+      </div>
+      <div class="command-group" data-reveal>
+        <h3>Remove by typed command</h3>
+        <dl class="commands">
+          <div><dt><code>docker</code></dt><dd>Unused images and build cache. Volumes are never pruned: a volume may hold your live database.</dd></div>
+          <div><dt><code>simulators</code></dt><dd>Deletes devices whose runtime is gone. Confirmation flags never add an unpreviewed erase-all.</dd></div>
+        </dl>
+      </div>
+    </div>
   </div>
 </section>
 
