@@ -11,10 +11,11 @@ no hash can admit. --write rewrites the two lists in place.
 
 The page is read with the standard library's HTML tokenizer, not patterns,
 and must stay inside the simple subset these pages are written in: only the
-elements they use, every one closed in order and where these pages put it (so
-the browser never closes the head early), no event-handler or srcdoc
-attribute, and the policy meta a direct child of <head>. Anything else is
-refused rather than modelled; a real browser load stays the ground truth.
+elements they use, every one closed in order, no event-handler or srcdoc
+attribute, and the policy meta preceded by nothing but the doctype, <html>,
+<head>, other metas and whitespace, so the browser cannot have left the head
+before it. Anything else is refused rather than modelled; a real browser load
+stays the ground truth.
 """
 
 from __future__ import annotations
@@ -32,23 +33,18 @@ META = re.compile(r'(<meta\s+http-equiv="Content-Security-Policy"\s+content=")([
 
 
 # The elements index.html and MANUAL.html use. Others (svg, math, template,
-# iframe, object, textarea, ...) change how the browser parses what follows.
+# iframe, noscript, textarea, ...) change how the browser parses what follows.
 ELEMENTS = frozenset(
     """a article b body button code dd details div dl dt em figcaption figure
     footer h1 h2 h3 head header html i input kbd label li link main meta nav
-    noscript ol output p pre script section span strong style summary table
-    tbody td th thead title tr track ul video""".split()
+    ol output p pre script section span strong style summary table tbody td
+    th thead title tr track ul video""".split()
 )
 VOID = frozenset({"input", "link", "meta", "track"})
-# What these pages put directly inside the document, its root and its head. A
-# browser closes the head by itself at anything else (a body element, text),
-# so a policy meta written after it would land in the body and be ignored.
-CONTENT = {
-    (): {"html"},
-    ("html",): {"head", "body"},
-    ("html", "head"): {"meta", "link", "title", "style", "script", "noscript"},
-    ("html", "head", "noscript"): {"meta", "link", "style"},
-}
+# All that may precede the policy meta: none of it can make the browser close
+# the head, so the meta is in the head the browser builds and is enforced.
+PREFIX = frozenset({"html", "head", "meta"})
+HTML_SPACE = " \t\n\f\r"
 
 
 class Inventory(HTMLParser):
@@ -63,15 +59,15 @@ class Inventory(HTMLParser):
         self.policies: list[str] = []
         self.ambiguous: list[str] = []
         self.open: list[str] = []
+        self.policy_seen = False
         self.inline: str | None = None
         self.text = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag not in ELEMENTS:
             self.ambiguous.append(f"<{tag}> is outside the elements this check reads")
-        allowed = CONTENT.get(tuple(self.open))
-        if allowed is not None and tag not in allowed:
-            self.ambiguous.append(f"<{tag}> is not allowed directly inside {self.where()}")
+        if not self.policy_seen and tag not in PREFIX:
+            self.before_policy(f"<{tag}>")
         names = {name for name, _ in attrs}
         if len(names) != len(attrs):
             # A browser keeps the first of two equal attributes; refuse rather
@@ -88,10 +84,10 @@ class Inventory(HTMLParser):
         if tag == "link" and "stylesheet" in values.get("rel", "").lower().split():
             self.stylesheet = True
         if tag == "meta" and values.get("http-equiv", "").lower() == "content-security-policy":
-            # A browser ignores a policy meta anywhere but in the head.
             if self.open != ["html", "head"]:
                 self.ambiguous.append("the policy meta is not a direct child of <head>")
             self.policies.append(values.get("content", ""))
+            self.policy_seen = True
         if tag not in VOID:
             self.open.append(tag)
         if (tag == "script" and "src" not in names) or tag == "style":
@@ -107,13 +103,33 @@ class Inventory(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self.inline:
             self.text += data
-        elif tuple(self.open) in CONTENT and data.strip():
-            self.ambiguous.append(f"text directly inside {self.where()}")
+        elif not self.policy_seen and data.strip(HTML_SPACE):
+            self.before_policy("text")
 
-    def where(self) -> str:
-        return f"<{self.open[-1]}>" if self.open else "the document"
+    def handle_entityref(self, name: str) -> None:
+        if not self.policy_seen:
+            self.before_policy(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        if not self.policy_seen:
+            self.before_policy(f"&#{name};")
+
+    def handle_comment(self, data: str) -> None:
+        if not self.policy_seen:
+            self.before_policy("a comment")
+
+    def handle_pi(self, data: str) -> None:
+        self.ambiguous.append("a processing instruction is not HTML")
+
+    def unknown_decl(self, data: str) -> None:
+        self.ambiguous.append(f"<![{data[:20]}...]> is not HTML")
+
+    def before_policy(self, what: str) -> None:
+        self.ambiguous.append(f"{what} comes before the policy meta")
 
     def handle_endtag(self, tag: str) -> None:
+        if not self.policy_seen:
+            self.before_policy(f"</{tag}>")
         if self.open and self.open[-1] == tag:
             self.open.pop()
         else:
