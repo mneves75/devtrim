@@ -14,7 +14,8 @@ tag, anything before the policy meta but the doctype, <html>, <head>, other
 metas and whitespace, the policy meta outside <head>, "<!--" or "</" in any
 script or style, a script or style end tag spelled other than </script> or
 </style>, a comment a browser may end elsewhere, an unquoted attribute value, a
-bare "<" in text, a bogus declaration, a NUL), a second policy meta, and an
+bare "<" in text, a bogus declaration, a NUL, a character reference in an
+attribute value, title text holding markup), a second policy meta, and an
 'unsafe-inline' source must each fail.
 """
 
@@ -44,7 +45,7 @@ def check(page: Path, mode: str = "--check") -> subprocess.CompletedProcess[str]
 
 # Plants rewritten with --write before --check, so a stale hash cannot be
 # what refuses them.
-REWRITTEN = {"double-escaped-script", "double-escaped-src-script", "nul-in-style", "end-tag-like-text-in-script", "spaced-script-end-tag", "end-tag-not-exactly-spelled"}
+REWRITTEN = {"double-escaped-script", "double-escaped-src-script", "nul-in-style", "end-tag-like-text-in-script", "spaced-script-end-tag", "end-tag-not-exactly-spelled", "title-rcdata-escape", "comment-spaced-close"}
 
 
 def hashed_in_svg(manual: str, opening: str = "<svg>") -> str:
@@ -147,6 +148,16 @@ def main() -> int:
         "unquoted-attribute-value": manual.replace("</body>", "<div class=x>y</div></body>", 1),
         "bare-less-than-in-text": manual.replace("</body>", "<p>a < b</p></body>", 1),
         "bogus-markup-declaration": manual.replace("</body>", "<!x></body>", 1),
+        # Title text ends at its first "</title>" in a browser; some Python
+        # versions read it as markup and see an attribute there instead.
+        "title-rcdata-escape": manual.replace(
+            "<title>devtrim — Manual</title>",
+            '<title><span title="</title><script>window.x=1</script>"></span></title>',
+            1,
+        ),
+        # A browser keeps a comment open past "-- >"; older Python ends it there.
+        "comment-spaced-close": manual.replace("</body>", "<!-- -- ><script>--><script>window.x=1</script></body>", 1),
+        "entity-in-attribute": manual.replace("</body>", '<div class="a&amp;b">x</div></body>', 1),
         "nul-in-style": manual.replace("</body>", "<style>p::after { content: '\x00'; }</style></body>", 1),
         "srcdoc-iframe": manual.replace(
             "</body>", '<iframe srcdoc="<style>p{color:red}</style>"></iframe></body>', 1
