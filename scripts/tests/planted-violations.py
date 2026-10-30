@@ -1933,9 +1933,10 @@ CASES = (
         # A failed attempt record no longer stops the mutation it precedes.
         before="    append_at(&location, &record)\n        .with_context(|| format!(\"cannot write apply journal: {}\", ctx.journal_path.display()))?;\n    Ok(JournalAttempt {",
         after="    let _ = append_at(&location, &record);\n    Ok(JournalAttempt {",
-        tests=("eval_an_unwritable_journal_prevents_every_removal",),
+        # The apply's journal preflight refuses an unwritable journal first,
+        # so the attempt record's own refusal is reached by its unit test.
+        tests=("journal::tests::an_attempt_that_cannot_be_journaled_is_an_error",),
         marker="PV eval/write-ahead",
-        target="evals",
     ),
     # A command that never answers must be killed and reported as a timeout,
     # and a liveness probe that never answers must refuse, not read as exit 1.

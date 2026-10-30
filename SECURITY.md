@@ -58,6 +58,11 @@ for `mneves75/devtrim`, or email the repository owner if private reporting is
 unavailable. Do not publish an unpatched deletion-boundary bypass in a public
 issue.
 
+There is no `security.txt`. RFC 9116 places it at `/.well-known/security.txt`
+on the host root, and the site is a GitHub project page served under
+`/devtrim/` on a host this repository does not own, so it cannot publish one
+there; this section is the disclosure policy.
+
 Useful reports include the devtrim/macOS version, exact command, preview output,
 whether `--apply`/`--shred` was used, and whether symlinks, custom roots, Git,
 Docker, Xcode, or Trash were involved.

@@ -1142,6 +1142,44 @@ mod tests {
         assert_eq!(result.id, first.id);
     }
 
+    // The apply's preflight refuses a journal unwritable from the start, so
+    // only this test reaches the attempt record's own refusal: the journal
+    // can still stop accepting writes after the preflight, mid-plan.
+    #[test]
+    fn an_attempt_that_cannot_be_journaled_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp("unwritable-attempt");
+        let path = root.join("journal.jsonl");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
+            active_days: 30,
+            retain_days: 30,
+            protect: Vec::new(),
+            journal_path: path.clone(),
+            home: root.clone(),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
+        let record =
+            JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
+
+        let error = begin(&ctx, record).err();
+        assert!(
+            error.is_some_and(|error| format!("{error:#}").contains("cannot write apply journal")),
+            "PV eval/write-ahead: an attempt that cannot be journaled must refuse its mutation"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        crate::ops::remove_test_path(&root);
+    }
+
     #[test]
     fn journal_paths_never_follow_symlinks() {
         let root = temp("nofollow");

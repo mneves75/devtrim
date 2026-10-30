@@ -2,7 +2,7 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.12.2] - Unreleased
+## [0.12.2] - 2026-10-30
 
 ### Fixed
 - `roots = ["~"]` and `--root ~` scan the home folder. A bare `~` read as a relative folder named `~`, so the run warned that the root did not exist and scanned nothing; `~/dev` always worked.
@@ -20,7 +20,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - The landing page shows its real purge preview on the first screen, keeps terminal frames legible on a phone (they shrank to 5 px; now at least 11 px, scrolling inside their box), and groups the commands by what happens: see before anything moves, move to the Trash first, remove by typed command.
 - The manual shares the landing page's palette and wordmark, groups its commands as READ-ONLY, TRASH and PERMANENT in the TUI's own words, drops its decorative section numerals, grid lines and monospace labels, opens with its title on a phone, and gives copy buttons and the theme toggle 24 px targets.
 - The repository's `.gitignore` ignores `/.scratch/`, where release-gate records and evidence live.
-- AGENTS.md names the hosted tool pins (TruffleHog 3.97.1, npm 11.17.0 and the rest) as authoritative for release evidence.
+- AGENTS.md names the hosted tool pins (TruffleHog 3.97.1, npm 11.17.0 and the rest) as authoritative for release evidence, and `release-policy.sh` now also asserts the Node 24.19.0, npm 11.17.0 and actionlint 1.7.12 pins in the workflows. This release's local gates ran TruffleHog 3.99.7, Gitleaks 8.30.1, actionlint 1.7.12, ShellCheck 0.11.0, Node 26.12.1 and npm 12.2.1; the hosted run on the pinned versions is the authoritative one.
+- The write-ahead journal check has a unit test of its own: the new journal preflight refuses an unwritable journal first, which left the planted-violation case for the attempt record without a test that could reach it.
+- SECURITY.md says why there is no `security.txt`: RFC 9116 places it on the host root, which a GitHub project page under `/devtrim/` cannot publish to.
 - The brag video's Remotion build (`media/brag/source/remotion`) pins `zod` 4.6.7 and `fast-uri` 3.1.9 through npm overrides, as `video/` does, clearing GHSA-mrhx-c7xc-m3w5 (high) and four `fast-uri` advisories Dependabot reported there.
 
 ## [0.12.1] - 2026-10-29

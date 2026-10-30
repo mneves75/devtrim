@@ -314,6 +314,12 @@ require_fixed "$ci_workflow" 'gitleaks git --redact --no-banner .'
 require_fixed "$ci_workflow" 'trufflehog git "file://$(pwd)" --results=verified,unknown --fail'
 require_fixed "$ci_workflow" '--fail-on-scan-errors --no-update --no-color'
 require_fixed "$release_workflow" 'shellcheck-v0.11.0.darwin.x86_64.tar.gz'
+require_fixed "$release_workflow" 'gh release download v1.7.12 -R rhysd/actionlint'
+for workflow in "$ci_workflow" "$release_workflow"; do
+  require_fixed "$workflow" 'node-version: 24.19.0'
+  require_fixed "$workflow" 'npm install --global npm@11.17.0 --ignore-scripts'
+  require_fixed "$workflow" "npm --version | grep -Fqx '11.17.0'"
+done
 require_fixed "$release_workflow" 'c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51'
 require_fixed "$release_workflow" 'scripts/tests/gitleaks-positive-control.sh "$tool_bin/gitleaks"'
 require_before "$ci_workflow" \
