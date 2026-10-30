@@ -1633,7 +1633,10 @@ fn eval_a_bare_tilde_root_is_the_home_folder_and_is_disclosed() {
         vec![project.join(".next")],
         "eval/tilde-root: `roots = [\"~\"]` must scan the home folder: {stderr}"
     );
-    assert!(stderr.contains(&warning), "eval/home-root-warning: {stderr}");
+    assert!(
+        stderr.contains(&warning),
+        "eval/home-root-warning: {stderr}"
+    );
 
     // The control: a root inside the home folder is not the home folder.
     let inside = run(
