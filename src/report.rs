@@ -304,7 +304,9 @@ impl Finding {
 }
 
 pub fn terminal_safe(value: &str) -> String {
-    escape_for_terminal(value, |_| false)
+    // A quote drives nothing, and with every backslash escaped a literal one
+    // stays unambiguous, so `John's app` reads as written.
+    escape_for_terminal(value, |character| matches!(character, '\'' | '"'))
 }
 
 /// Escapes what could drive or reorder the terminal while keeping line breaks,
@@ -724,6 +726,12 @@ mod tests {
         // A decomposed (NFD) accent reads as written; a mark with nothing to
         // sit on, a stack past two, and a variation selector stay escaped.
         assert_eq!(terminal_safe("cafe\u{301}"), "cafe\u{301}");
+        assert_eq!(
+            terminal_safe("John's \"app\""),
+            "John's \"app\"",
+            "PV report/quotes-literal"
+        );
+        assert_eq!(terminal_safe("a\\'b"), "a\\\\'b");
         assert_eq!(terminal_safe("\u{301}x"), "\\u{301}x");
         assert_eq!(
             terminal_safe("a\u{301}\u{301}\u{301}"),

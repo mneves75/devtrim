@@ -24,6 +24,10 @@ const MIN_WIDTH: u16 = 64;
 const MIN_HEIGHT: u16 = 18;
 /// Rows PgUp and PgDn move, in every list and scrolling view.
 const PAGE_ROWS: u16 = 8;
+/// Longer than every typed acknowledgment (`PURGE ` and a `u64` of
+/// gigabytes), so a held key or a stuck repeat cannot grow the answer
+/// without bound.
+const MAX_CONFIRMATION_INPUT: usize = 32;
 /// The Error screen's status: nothing was authorized, and `r` scans again.
 const FAILED_CLOSED: &str = "Failed closed; no new action was authorized. r rescans.";
 
@@ -654,6 +658,13 @@ impl App {
         if key.modifiers.contains(event::KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Intent::Quit;
         }
+        // A modified key is not the letter it carries: Alt+y arrives as `ESC y`,
+        // so a stray Escape before a `y` would approve a plan. Shift is part of
+        // the typed character (`Y`, a typed `PURGE`).
+        let modified = key.modifiers.difference(event::KeyModifiers::SHIFT);
+        if !modified.is_empty() {
+            return Intent::None;
+        }
         // The help overlay is deliberately unavailable on the confirmation
         // screen: that screen demands an exact typed acknowledgment, and
         // stacking a second overlay over it would obscure the plan being
@@ -686,10 +697,9 @@ impl App {
                     Intent::None
                 }
                 // A failure may be transient, a probe that did not answer under
-                // load; scanning again is a fresh preview, never a retried apply.
-                KeyCode::Char('r') if self.screen == Screen::Error => {
-                    self.operation.map_or(Intent::None, Intent::Load)
-                }
+                // load, and an apply leaves something to look at again; either
+                // way scanning again is a fresh preview, never a retried apply.
+                KeyCode::Char('r') => self.operation.map_or(Intent::None, Intent::Load),
                 code => {
                     self.scroll_by(code);
                     Intent::None
@@ -852,14 +862,8 @@ impl App {
                 _ => Intent::None,
             },
             ConfirmationKind::Critical { expected_gb, .. } => match key {
-                KeyCode::Char(value) if value.is_ascii_digit() => {
-                    self.input.push(value);
-                    Intent::None
-                }
-                KeyCode::Backspace => {
-                    self.input.pop();
-                    Intent::None
-                }
+                KeyCode::Char(value) if value.is_ascii_digit() => self.type_answer(value),
+                KeyCode::Backspace => self.erase_answer(),
                 KeyCode::Enter if self.input == expected_gb.to_string() => {
                     self.approve(Approval::CriticalGigabytes(expected_gb))
                 }
@@ -874,13 +878,9 @@ impl App {
                 KeyCode::Char(value)
                     if value.is_ascii_alphanumeric() || value == ' ' || value == '-' =>
                 {
-                    self.input.push(value);
-                    Intent::None
+                    self.type_answer(value)
                 }
-                KeyCode::Backspace => {
-                    self.input.pop();
-                    Intent::None
-                }
+                KeyCode::Backspace => self.erase_answer(),
                 KeyCode::Enter if self.input == format!("PURGE {expected_gb}") => {
                     self.approve(Approval::TrashPurgeGigabytes(expected_gb))
                 }
@@ -892,6 +892,21 @@ impl App {
                 _ => Intent::None,
             },
         }
+    }
+
+    fn type_answer(&mut self, value: char) -> Intent {
+        if self.input.len() < MAX_CONFIRMATION_INPUT {
+            self.input.push(value);
+        } else {
+            self.status = "Longer than any acknowledgment; Backspace erases.".into();
+        }
+        Intent::None
+    }
+
+    fn erase_answer(&mut self) -> Intent {
+        self.input.pop();
+        self.status.clear();
+        Intent::None
     }
 
     fn approve(&self, approval: Approval) -> Intent {
@@ -919,7 +934,12 @@ pub fn run(ctx: &Ctx) -> Result<ExitCode> {
     let interrupts =
         process::forward_interrupts().context("cannot install the interrupt handler")?;
     let mut terminal = ratatui::try_init().context("cannot initialize TUI terminal")?;
-    let result = run_loop(&mut terminal, ctx, &interrupts);
+    // A paste arrives as one `Event::Paste`, which no screen acts on, instead
+    // of a burst of keys that could type an approval.
+    let result = crossterm::execute!(io::stdout(), event::EnableBracketedPaste)
+        .context("cannot enable bracketed paste")
+        .and_then(|()| run_loop(&mut terminal, ctx, &interrupts));
+    crossterm::execute!(io::stdout(), event::DisableBracketedPaste).ok();
     let restore = ratatui::try_restore().context("cannot restore terminal after TUI exit");
     match (result, restore) {
         (Err(error), _) => Err(error),
@@ -932,8 +952,22 @@ pub fn run(ctx: &Ctx) -> Result<ExitCode> {
 /// command devtrim started is killed, and it exits 128 plus `signal`. Only the
 /// thread that owns the terminal calls it.
 fn stop(terminal: &mut DefaultTerminal, signal: i32) -> ! {
-    ratatui::try_restore().ok();
     terminal.show_cursor().ok();
+    restore_and_exit(signal)
+}
+
+/// What every full-screen view does with a SIGINT or SIGTERM that
+/// [`process::forward_interrupts`] recorded: leave bracketed paste, restore
+/// the terminal and show the cursor, then end the run as an interrupt does.
+/// Only the thread that owns the terminal calls it.
+pub(crate) fn restore_and_exit(signal: i32) -> ! {
+    crossterm::execute!(
+        io::stdout(),
+        event::DisableBracketedPaste,
+        crossterm::cursor::Show
+    )
+    .ok();
+    ratatui::try_restore().ok();
     process::kill_and_exit(signal)
 }
 
@@ -1127,7 +1161,9 @@ fn handle_visible_key(app: &mut App, key: KeyEvent, area: Rect) -> Intent {
         return Intent::Quit;
     }
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => Intent::Quit,
+        // The screen offers only q; Esc, which means back on every other
+        // screen, never ends the session.
+        KeyCode::Char('q') => Intent::Quit,
         _ => Intent::None,
     }
 }
@@ -1572,7 +1608,9 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     // ladder, because moderate carries no modifier and high carries BOLD. The
     // theme's own test cannot see this — it exercises `style()` — so the
     // distinction has to be preserved at the call site.
-    let danger = format!("{:>3}. danger-{} ", row + 1, finding.danger);
+    // Wide enough for the last row's number, so every column stays aligned.
+    let number = app.findings.len().to_string().len().max(3);
+    let danger = format!("{:>number$}. danger-{} ", row + 1, finding.danger);
     let size = format!(
         "{:>8}  {:<8} ",
         report::gb(finding.size_bytes),
@@ -1846,7 +1884,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         }
         Screen::Detail => "↑/↓ or j/k scroll · Esc back to the results · ? keys".into(),
         Screen::Confirm => "Esc cancel · type the exact requested acknowledgment".into(),
-        Screen::Outcome => "↑/↓ or j/k scroll · b back to menu · ? keys".into(),
+        Screen::Outcome => "↑/↓ or j/k scroll · r rescan · b back to menu · ? keys".into(),
         Screen::Error => "↑/↓ or j/k scroll · r rescan · b back to menu · ? keys".into(),
         Screen::Loading if applying(app) => {
             "Applying the approved plan · q works once it returns".into()
@@ -1918,6 +1956,9 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("> "),
             Span::styled(app.input.as_str(), app.theme.bold(Token::Accent)),
         ]),
+        // The popup covers the footer at the minimum size, so a mismatch or a
+        // refused key is reported here, under the answer it concerns.
+        Line::styled(app.status.as_str(), app.theme.style(Token::Warning)),
     ]);
     frame.render_widget(
         Paragraph::new(text)
@@ -2401,6 +2442,126 @@ mod tests {
         assert!(!output.contains("terminal too small"));
     }
 
+    fn critical_confirmation(app: &mut App) {
+        app.finish_results(
+            Operation::Clean(Target::Caches),
+            vec![Finding::new(
+                "cache",
+                Some(std::path::PathBuf::from(
+                    "/Users/example/Library/Caches/pip",
+                )),
+                3 * 1024 * 1024 * 1024,
+                "test",
+                9,
+                Action::Shred,
+            )],
+            Vec::new(),
+            Vec::new(),
+        );
+        app.begin_confirmation();
+        assert!(matches!(
+            app.confirmation,
+            Some(ConfirmationKind::Critical { .. })
+        ));
+    }
+
+    #[test]
+    fn a_mismatch_is_reported_on_the_confirmation_at_the_minimum_size() {
+        let mut app = App::default();
+        critical_confirmation(&mut app);
+        app.handle_key(key(KeyCode::Char('9')));
+        app.handle_key(key(KeyCode::Enter));
+
+        let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+
+        // The popup covers the footer there, so the feedback lives inside it.
+        assert!(
+            output.contains(&app.status) && app.status.contains("Confirmation mismatch"),
+            "PV tui/confirmation-feedback: {output}"
+        );
+        assert!(output.contains("understand the request."), "{output}");
+        assert!(output.contains("> "));
+    }
+
+    #[test]
+    fn a_typed_answer_stops_at_its_length_limit() {
+        let mut app = App::default();
+        critical_confirmation(&mut app);
+        for _ in 0..1000 {
+            app.handle_key(key(KeyCode::Char('7')));
+        }
+
+        assert_eq!(
+            app.input.len(),
+            MAX_CONFIRMATION_INPUT,
+            "PV tui/input-limit"
+        );
+        assert!(app.status.contains("Longer than"), "{}", app.status);
+        // Whole on one line, in the popup at the minimum size and in the
+        // footer, which does not wrap, on a larger terminal.
+        assert!(rendered(&app, MIN_WIDTH, MIN_HEIGHT).contains(&app.status));
+        assert!(rendered(&app, 100, 30).contains(&app.status));
+        app.handle_key(key(KeyCode::Backspace));
+        assert!(app.status.is_empty());
+    }
+
+    #[test]
+    fn r_on_the_outcome_scans_again() {
+        let operation = Operation::Clean(Target::Caches);
+        let mut app = App {
+            screen: Screen::Outcome,
+            operation: Some(operation),
+            ..App::default()
+        };
+
+        // The help lists r as rescan; after an apply that is what is left.
+        assert_eq!(
+            app.handle_key(key(KeyCode::Char('r'))),
+            Intent::Load(operation),
+            "PV tui/outcome-rescan"
+        );
+        assert!(rendered(&app, MIN_WIDTH, MIN_HEIGHT).contains("r rescan"));
+    }
+
+    #[test]
+    fn row_numbers_keep_every_column_aligned_past_999_findings() {
+        let mut app = App::default();
+        let findings = (0..1200)
+            .map(|index| {
+                Finding::new(
+                    format!("item{index}"),
+                    Some(std::path::PathBuf::from(format!("/Users/example/x{index}"))),
+                    1,
+                    "test",
+                    3,
+                    Action::Trash,
+                )
+            })
+            .collect();
+        app.finish_results(
+            Operation::Clean(Target::Caches),
+            findings,
+            Vec::new(),
+            Vec::new(),
+        );
+        let text = |row| {
+            result_row(&app, row, 120)
+                .spans
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect::<String>()
+        };
+
+        let (first, last) = (text(0), text(1199));
+        let column = |line: &str| line.find("danger-").map(|end| line[..end].chars().count());
+        assert_eq!(
+            column(&first),
+            column(&last),
+            "PV tui/row-number-width: {first:?} vs {last:?}"
+        );
+        assert!(last.contains("1200. danger-3"), "{last:?}");
+    }
+
     #[test]
     fn small_terminal_blocks_hidden_confirmation_input() {
         let mut app = App::default();
@@ -2426,6 +2587,12 @@ mod tests {
         );
         assert_eq!(app.screen, Screen::Confirm);
         assert!(app.input.is_empty());
+        // Esc means back everywhere else; here it must not end the session.
+        assert_eq!(
+            handle_visible_key(&mut app, key(KeyCode::Esc), too_small),
+            Intent::None,
+            "PV tui/small-esc"
+        );
         assert_eq!(
             handle_visible_key(&mut app, key(KeyCode::Char('q')), too_small),
             Intent::Quit
@@ -2452,6 +2619,34 @@ mod tests {
             Vec::new(),
         );
         app
+    }
+
+    /// A modified key is not the letter it carries: a terminal sends Alt+y as
+    /// `ESC y`, and a stray Escape before a `y` must not approve a plan. Shift
+    /// still counts, since `Y` and a typed `PURGE` arrive with it.
+    #[test]
+    fn modified_keys_never_approve_a_plan() {
+        for modifiers in [
+            KeyModifiers::ALT,
+            KeyModifiers::CONTROL,
+            KeyModifiers::SUPER,
+            KeyModifiers::META,
+        ] {
+            let mut app = cleanup(vec![trash("first", 1, 2)]);
+            app.begin_confirmation();
+            assert_eq!(
+                app.handle_key(KeyEvent::new(KeyCode::Char('y'), modifiers)),
+                Intent::None,
+                "PV tui/modified-key-approval: {modifiers:?}"
+            );
+            assert_eq!(app.screen, Screen::Confirm);
+        }
+        let mut app = cleanup(vec![trash("first", 1, 2)]);
+        app.begin_confirmation();
+        assert!(matches!(
+            app.handle_key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT)),
+            Intent::Apply(_)
+        ));
     }
 
     /// Deselecting only narrows: a finding left out must never reach the plan

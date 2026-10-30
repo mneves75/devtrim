@@ -2,7 +2,33 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.12.1] - Unreleased
+## [0.12.1] - 2026-10-29
+
+### Fixed
+- `status --watch` names the signals its health score lacks, as `status` does, and with none readable says the health is unknown instead of `100/100 (healthy)`.
+- TUI result rows past the 999th keep every column aligned.
+- Closing the terminal window (SIGHUP) stops a run the way SIGINT does: every command devtrim started is killed and it exits 129. The hangup reached devtrim only, so its commands, each in a process group of its own, kept running. A run started under `nohup` now stops too, since devtrim cannot safely read that SIGHUP was ignored; run one that must outlive its terminal in `tmux`, `screen` or a launchd job.
+- The TUI confirmation reports a mismatched answer inside itself; at the minimum 64×18 it covers the footer, where the message used to appear unseen. A typed answer stops at 32 characters.
+- On the too-small-terminal screen only `q` and Ctrl-C quit; `Esc`, which means back everywhere else, no longer ends the session.
+- `r` on the apply outcome scans again, as the help says it does.
+- Terminal text keeps quotes literal: `John's app` no longer prints as `John\'s app`.
+- `analyze` and `status --watch` restore the terminal when they receive SIGINT or SIGTERM, as the TUI does; they used to exit at once and leave the shell in raw mode on the alternate screen.
+- The TUI ignores a key carrying Alt, Control or Super (Ctrl-C still quits) and turns on bracketed paste, so neither `ESC y` (how a terminal sends Alt+y) nor a pasted answer can approve a plan on the confirmation screen.
+- `node-modules`, `artifacts` and `purge` no longer fail on a machine where another user runs a process named like a build tool (a root-owned `node` service): the build-process probe now asks for the current user's processes only. A build another user runs inside your repository is not seen; SECURITY.md records the limit.
+- A repository with a build running is kept whatever spelling the scan root uses. A root typed through `/System/Volumes/Data` or in another case (`~/DEV` for `~/dev`) used to make the liveness check miss the build's working directory, which `lsof` names its own way, and offer the busy repository's `node_modules` and build output.
+- A build running anywhere in a superproject, from its top or from a folder such as `tools`, keeps the submodules its index records (their `node_modules` and build output); before, only the repository holding the build's working directory was kept. A nested repository the superproject does not record, such as a worktree in an ignored `.scratch`, is judged on its own, and a build inside it keeps only that worktree. A Git failure while reading the superproject's index makes that repository an error, and the run exits nonzero, instead of reading as a running build; with no build process at all, no Git query is made.
+- The preview drops a target the sink would refuse as built-in protected (anything under `/Volumes`, for instance, when a scan root sits on another disk), and a scan root inside a protected system folder is named in a warning. Before, such targets were previewed and then refused at apply. Every folder above the home folder (`/Users`) is now protected too, not only the home folder itself.
+- `agents`, `toolchains`, `simulators`, `leftovers` and the Xcode Archives total contain a folder they cannot read or measure to that folder: it is named in one error finding and the run exits nonzero, while every other finding is still listed. Before, one unreadable folder emptied the whole category.
+- A failing `npm` or `brew` (a stale version-manager shim, say) withholds only its own cache, as a failing `go` already did; every other cache is still offered. `npm` is asked with `npm_config_logs_max=0` and `npm_config_update_notifier=false`, so a preview no longer writes a debug log into `~/.npm/_logs` when npm fails.
+- A `~/.gradle` linked to another folder is resolved like `GRADLE_USER_HOME`: inside the home folder its real caches are offered and removed; outside it nothing is offered and a warning says why. Before, the preview offered a target the apply refused.
+- A permanent removal refused at its very first entry (an immutable file, say) is restored to its own name, with the permissions it added to read-only folders it owns put back. Before, nothing was removed yet the target was left under its hidden `.devtrim-quarantine-*` name.
+- A failed command or removal whose message is longer than a journal record may hold (a command's whole stderr, say) is journaled with an 8 KiB excerpt of it. Before, the result record could not be written and `history` showed the finished operation as interrupted. A journal that cannot be written before a typed command now names the journal and the command.
+- `installers` names a linked `~/Downloads` or `~/Desktop` in a warning instead of previewing archives the apply would refuse.
+
+### Changed
+- The landing page shows devtrim itself: its results, confirmation, refusal and `devtrim scan` screens are captured from the real binary in a sized terminal against a disposable demo home (`scripts/site/frames.py`), and the video gets a poster frame and fixed dimensions.
+- The demo video's build pins `zod` 4.6.7 and `fast-uri` 3.1.9 through npm overrides, clearing GHSA-mrhx-c7xc-m3w5 (high) and four `fast-uri` advisories; Remotion 4.0.539, the latest, still pins `zod` 4.5.4.
+- Cargo.lock refreshed to the latest patches compatible with Rust 1.88.
 
 ## [0.12.0] - 2026-10-18
 

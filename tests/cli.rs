@@ -294,7 +294,7 @@ fn finding_paths(value: &Value) -> Vec<String> {
 /// `target` beside it is the positive control.
 #[test]
 fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() {
-    let sandbox = Sandbox::new("tracked-real-git");
+    let sandbox = Sandbox::in_target("tracked-real-git");
     let resolved = Command::new("sh")
         .args(["-c", "command -v git"])
         .output()
@@ -379,7 +379,7 @@ fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() 
 /// same fixture is offered once the probe answers.
 #[test]
 fn project_cleanup_probe_failures_are_nonzero_json_errors() {
-    let sandbox = Sandbox::new("project-probe-failure");
+    let sandbox = Sandbox::in_target("project-probe-failure");
     let project = sandbox.path().join("dev/project");
     std::fs::create_dir_all(project.join(".git")).unwrap();
     std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
@@ -477,7 +477,7 @@ fn status_reads_system_tools_in_the_c_locale() {
 
 #[test]
 fn shred_is_explicit_in_preview() {
-    let sandbox = Sandbox::new("shred-preview");
+    let sandbox = Sandbox::in_target("shred-preview");
     std::fs::create_dir_all(sandbox.path().join(".cache/uv")).unwrap();
     std::fs::write(sandbox.path().join(".cache/uv/file"), "x").unwrap();
     let output = run(&sandbox, &["clean", "caches", "--shred", "--json"]);
@@ -674,7 +674,9 @@ impl BlockingFamily {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        panic!("devtrim did not exit within 60 s of {signal}");
+        // Not exiting is the same failure as a wrong status: the signal was
+        // ignored, as it is when the test runs under `nohup`.
+        panic!("PV process/interrupt-status: devtrim did not exit within 60 s of {signal}");
     }
 
     /// Whether the process is gone within forty-five seconds. A killed process is
@@ -721,7 +723,11 @@ fn an_interrupted_scan_kills_the_commands_it_started(signal: &str, status: i32) 
 
     let (code, stderr) = family.interrupt(signal);
 
-    assert_eq!(code, Some(status), "{stderr}");
+    assert_eq!(
+        code,
+        Some(status),
+        "PV process/interrupt-status: {signal} gave {code:?}: {stderr}"
+    );
     assert!(
         BlockingFamily::gone(&stub),
         "PV process/interrupt-kill: the stub command {stub} survived {signal}"
@@ -740,6 +746,13 @@ fn sigint_kills_every_command_a_scan_started_and_exits_130() {
 #[test]
 fn sigterm_kills_every_command_a_scan_started_and_exits_143() {
     an_interrupted_scan_kills_the_commands_it_started("TERM", 143);
+}
+
+/// Closing the terminal window sends SIGHUP to devtrim, never to the commands
+/// in their own process groups, so the default action would leave them running.
+#[test]
+fn sighup_kills_every_command_a_scan_started_and_exits_129() {
+    an_interrupted_scan_kills_the_commands_it_started("HUP", 129);
 }
 
 /// A typed mutation command in flight: `docker image prune` blocks as a

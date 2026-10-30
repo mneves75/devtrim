@@ -219,6 +219,177 @@ CASES = (
         marker="PV eval/trash-empty-read-only", target="eval_system",
     ),
     Case(
+        name="liveness/current-user-only",
+        relative_path="src/safety.rs",
+        # The probe counts every user's build processes again, so a root-owned
+        # `node` whose directory lsof cannot read refuses every project cleanup.
+        before='            .args(["-U", &uid])\n',
+        after="",
+        tests=("eval_another_users_build_process_does_not_refuse_project_cleanup",),
+        marker="PV liveness/current-user-only", target="eval_system",
+    ),
+    Case(
+        name="liveness/repository-identity",
+        relative_path="src/ops/project.rs",
+        # Liveness compares spellings only, so a root typed through the
+        # data-volume firmlink or in another case offers a busy repository.
+        before="        cwd.ancestors()\n            .any(|folder| identity_of(folder) == Some(identity))\n",
+        after="        cwd.ancestors()\n            .take(0)\n            .any(|folder| identity_of(folder) == Some(identity))\n",
+        tests=("eval_build_liveness_matches_the_repository_under_any_spelling",),
+        marker="PV eval/busy-repository-spelling", target="eval_safety",
+    ),
+    Case(
+        name="liveness/superproject-build",
+        relative_path="src/ops/project.rs",
+        # A build working in a superproject no longer keeps its submodules.
+        before="                if folder == superproject || identity_of(folder) == Some(identity) {\n                    return true;\n",
+        after="                if folder == superproject || identity_of(folder) == Some(identity) {\n                    return false;\n",
+        tests=("eval_a_build_in_the_superproject_keeps_its_submodules",),
+        marker="PV eval/superproject-build", target="eval_safety",
+    ),
+    Case(
+        name="liveness/superproject-nested-repository",
+        relative_path="src/ops/project.rs",
+        # A build in a worktree nested in the superproject keeps its submodules.
+        before="                if matches!(has_git_marker(folder), Ok(true)) {\n",
+        after="                if matches!(has_git_marker(folder), Ok(false)) {\n",
+        tests=("eval_a_build_in_the_superproject_keeps_its_submodules",),
+        marker="PV eval/superproject-build", target="eval_safety",
+    ),
+    Case(
+        name="protect/built-in-preview",
+        relative_path="src/ops/mod.rs",
+        # The preview filter checks configured entries only, so a target in a
+        # built-in protected folder is offered and then refused at apply.
+        before="                crate::safety::is_protected(target, &ctx.home)\n                    || crate::safety::is_config_protected(target, &ctx.protect)\n",
+        after="                crate::safety::is_config_protected(target, &ctx.protect)\n",
+        tests=("ops::tests::a_built_in_protected_target_is_never_previewed",),
+        marker="PV protect/built-in-preview",
+    ),
+    Case(
+        name="protect/home-ancestors",
+        relative_path="src/safety.rs",
+        # Only the home folder itself is protected again, not the folders above it.
+        before="    if path_starts_with_ignore_ascii_case(home, path)\n",
+        after="    if path_eq_ignore_ascii_case(path, home)\n",
+        tests=("safety::tests::folders_above_the_home_folder_are_protected",),
+        marker="PV protect/home-ancestors",
+    ),
+    Case(
+        name="journal/bounded-error",
+        relative_path="src/journal.rs",
+        # A result record keeps the whole failure message again, so a long
+        # stderr makes it too large to write.
+        before="                record.error = Some(error_excerpt(format!(\"{error:#}\")));\n",
+        after="                record.error = Some(format!(\"{error:#}\"));\n",
+        tests=("journal::tests::a_long_failure_message_is_journaled_as_an_excerpt",),
+        marker="PV journal/bounded-error",
+    ),
+    Case(
+        name="tui/modified-key-approval",
+        relative_path="src/tui.rs",
+        # Keys with Alt, Control or Super count as their letter again, so
+        # `ESC y` approves a plan.
+        before="        if !modified.is_empty() {\n",
+        after="        if false {\n",
+        tests=("tui::tests::modified_keys_never_approve_a_plan",),
+        marker="PV tui/modified-key-approval",
+    ),
+    Case(
+        name="tui/confirmation-feedback",
+        relative_path="src/tui.rs",
+        # The popup covers the footer at 64x18, so a mismatch said only there
+        # is never seen.
+        before="        Line::styled(app.status.as_str(), app.theme.style(Token::Warning)),\n    ]);\n",
+        after="    ]);\n",
+        tests=("tui::tests::a_mismatch_is_reported_on_the_confirmation_at_the_minimum_size",),
+        marker="PV tui/confirmation-feedback",
+    ),
+    Case(
+        name="tui/input-limit",
+        relative_path="src/tui.rs",
+        before="        if self.input.len() < MAX_CONFIRMATION_INPUT {\n",
+        after="        if true {\n",
+        tests=("tui::tests::a_typed_answer_stops_at_its_length_limit",),
+        marker="PV tui/input-limit",
+    ),
+    Case(
+        name="tui/small-esc",
+        relative_path="src/tui.rs",
+        before="        KeyCode::Char('q') => Intent::Quit,\n        _ => Intent::None,\n",
+        after="        KeyCode::Char('q') | KeyCode::Esc => Intent::Quit,\n        _ => Intent::None,\n",
+        tests=("tui::tests::small_terminal_blocks_hidden_confirmation_input",),
+        marker="PV tui/small-esc",
+    ),
+    Case(
+        name="tui/outcome-rescan",
+        relative_path="src/tui.rs",
+        before="                KeyCode::Char('r') => self.operation.map_or(Intent::None, Intent::Load),\n",
+        after="                KeyCode::Char('r') if self.screen == Screen::Error => {\n                    self.operation.map_or(Intent::None, Intent::Load)\n                }\n",
+        tests=("tui::tests::r_on_the_outcome_scans_again",),
+        marker="PV tui/outcome-rescan",
+    ),
+    Case(
+        name="process/hangup",
+        relative_path="src/process.rs",
+        before="    signal_hook::consts::SIGHUP,\n];\n",
+        after="    signal_hook::consts::SIGUSR2,\n];\n",
+        tests=("sighup_kills_every_command_a_scan_started_and_exits_129",),
+        marker="PV process/interrupt-status", target="cli",
+    ),
+    Case(
+        name="report/quotes-literal",
+        relative_path="src/report.rs",
+        before="    escape_for_terminal(value, |character| matches!(character, '\\'' | '\"'))\n",
+        after="    escape_for_terminal(value, |_| false)\n",
+        tests=("report::tests::finding_preserves_json_text_and_escapes_only_for_terminals",),
+        marker="PV report/quotes-literal",
+    ),
+    Case(
+        name="tui/row-number-width",
+        relative_path="src/tui.rs",
+        before="    let number = app.findings.len().to_string().len().max(3);\n",
+        after="    let number = 3;\n",
+        tests=("tui::tests::row_numbers_keep_every_column_aligned_past_999_findings",),
+        marker="PV tui/row-number-width",
+    ),
+    Case(
+        name="status/health-missing",
+        relative_path="src/status.rs",
+        before="    if health.missing_inputs.is_empty() {\n",
+        after="    if true {\n",
+        tests=("status::tests::a_score_never_claims_a_band_over_signals_it_could_not_read",),
+        marker="PV status/health-missing",
+    ),
+    Case(
+        name="liveness/no-process-asks-nothing",
+        relative_path="src/ops/project.rs",
+        # With no build process, a superproject Git cannot read withholds its
+        # submodules as an error.
+        before="    if process_cwds.is_empty() {\n        return Ok(false);\n    }\n",
+        after="",
+        tests=("eval_a_superproject_git_failure_is_an_error_not_a_busy_build",),
+        marker="PV eval/superproject-failure", target="eval_safety",
+    ),
+    Case(
+        name="liveness/superproject-error",
+        relative_path="src/ops/project.rs",
+        # A superproject Git cannot read is read as recording the submodule.
+        before="        if !records_submodule(&superproject, &submodule)? {\n",
+        after="        if !records_submodule(&superproject, &submodule).unwrap_or(true) {\n",
+        tests=("eval_a_superproject_git_failure_is_an_error_not_a_busy_build",),
+        marker="PV eval/superproject-failure", target="eval_safety",
+    ),
+    Case(
+        name="sink/restored-modes",
+        relative_path="src/ops/mod.rs",
+        # A refused removal hands back folders whose permissions it repaired.
+        before="                .filter(|(dir, _, mode)| rustix::fs::fchmod(dir, *mode).is_err())\n",
+        after="                .filter(|(_, _, _)| false)\n",
+        tests=("ops::tests::a_refused_removal_restores_the_permissions_it_repaired",),
+        marker="PV sink/restored-modes",
+    ),
+    Case(
         name="trash/unmeasurable-item",
         relative_path="src/ops/mod.rs",
         before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",
@@ -509,8 +680,8 @@ CASES = (
     Case(
         name="eval/safety-build-busy",
         relative_path="src/ops/project.rs",
-        before="    process_cwds.iter().any(|cwd| cwd.starts_with(repo))\n",
-        after="    let _ = (repo, process_cwds); false\n",
+        before="    if process_cwds.is_empty() {\n        return Ok(false);\n    }\n",
+        after="    if true {\n        let _ = (repo, process_cwds, home);\n        return Ok(false);\n    }\n",
         tests=("eval_build_process_liveness_keeps_only_the_busy_repository",),
         marker="PV eval/build-busy", target="eval_safety",
     ),
@@ -634,6 +805,16 @@ CASES = (
         after="    dir.rename(from, dir, to)\n",
         tests=("ops::tests::quarantine_rename_never_replaces_an_occupied_name",),
         marker="PV sink/rename-no-replace",
+    ),
+    Case(
+        name="sink/refused-removal-restored",
+        relative_path="src/ops/mod.rs",
+        # The sink counts a removal as started before anything is removed, so
+        # a refusal at the first entry leaves the target under its quarantine name.
+        before="        let mut removal_started = false;\n",
+        after="        let mut removal_started = true;\n",
+        tests=("ops::tests::a_removal_refused_before_anything_is_deleted_is_restored",),
+        marker="PV sink/refused-removal-restored",
     ),
     Case(
         name="liveness/lsof-escape",

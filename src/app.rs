@@ -329,10 +329,17 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
     }
     let ctx = safety::Ctx::from_cli(&cli)?;
     let command = cli.command.take().unwrap_or(cli::Command::Tui);
-    // The TUI runs in raw mode, where Ctrl-C is a key, and must restore its
-    // terminal before it exits, so `tui::run` installs its own forwarding
-    // handler; every other run kills the commands it started and exits at once.
-    if !matches!(command, cli::Command::Tui) {
+    // The full-screen views — the TUI, `analyze` and `status --watch` — run in
+    // raw mode, where Ctrl-C is a key, and must restore their terminal before
+    // they exit, so each installs its own forwarding handler; every other run
+    // kills the commands it started and exits at once.
+    let full_screen = match command {
+        cli::Command::Tui => true,
+        cli::Command::Analyze { .. } => !ctx.json,
+        cli::Command::Status { watch } => watch && !ctx.json,
+        _ => false,
+    };
+    if !full_screen {
         process::exit_on_interrupt().context("cannot install the interrupt handler")?;
     }
 

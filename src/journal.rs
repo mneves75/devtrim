@@ -147,11 +147,35 @@ impl JournalRecord {
             Ok(_) => record.status = Some("ok".into()),
             Err(error) => {
                 record.status = Some("error".into());
-                record.error = Some(format!("{error:#}"));
+                record.error = Some(error_excerpt(format!("{error:#}")));
             }
         }
         record
     }
+}
+
+/// The most of a failure message a result record keeps. JSON escapes a
+/// control character in six bytes, so even a message of nothing else fits
+/// well inside `MAX_JOURNAL_RECORD_BYTES` beside the record's paths.
+const MAX_JOURNAL_ERROR_BYTES: usize = 8 * 1024;
+
+/// A failure message cut to `MAX_JOURNAL_ERROR_BYTES` at a character
+/// boundary, saying how much was left out. Without the cut, a command's long
+/// stderr made the result record too large to write, and history reported a
+/// finished command as interrupted.
+fn error_excerpt(message: String) -> String {
+    if message.len() <= MAX_JOURNAL_ERROR_BYTES {
+        return message;
+    }
+    let mut end = MAX_JOURNAL_ERROR_BYTES;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}... ({} bytes omitted)",
+        &message[..end],
+        message.len() - end
+    )
 }
 
 #[derive(Debug)]
@@ -1286,6 +1310,29 @@ mod tests {
         crate::ops::remove_test_path(root);
     }
 
+    /// A failure whose message is longer than a record may be (a command's
+    /// whole stderr) is still journaled, its message cut to a bounded excerpt,
+    /// so the attempt never reads as interrupted.
+    #[test]
+    fn a_long_failure_message_is_journaled_as_an_excerpt() {
+        let attempt =
+            JournalRecord::filesystem_attempt("docker", "command", Path::new("/tmp/x"), 0);
+        let error: Result<()> = Err(anyhow::anyhow!("{}", "\u{1}".repeat(200 * 1024)));
+        let record = JournalRecord::result(&attempt, &error);
+        let line = serde_json::to_vec(&record).unwrap();
+        assert!(
+            line.len() <= MAX_JOURNAL_RECORD_BYTES,
+            "PV journal/bounded-error: {} bytes",
+            line.len()
+        );
+        assert!(record.error.as_deref().unwrap().contains("bytes omitted"));
+        let short: Result<()> = Err(anyhow::anyhow!("short"));
+        assert_eq!(
+            JournalRecord::result(&attempt, &short).error.as_deref(),
+            Some("short")
+        );
+    }
+
     #[test]
     fn finish_keeps_successful_result_when_journal_write_fails() {
         use std::os::unix::fs::PermissionsExt;
@@ -1396,7 +1443,8 @@ mod tests {
         assert!(!rotated_path(&path, 1).exists());
 
         attempt.finish(&ctx, Ok(())).unwrap();
-        assert!(rotate_if_needed(&path).unwrap().is_empty());
+        let warnings = rotate_if_needed(&path).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert!(!path.exists());
 
         let mut rotated = File::open(rotated_path(&path, 1)).unwrap();

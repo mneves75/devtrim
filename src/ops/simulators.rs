@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 
+use super::project::{UnreadFolder, unread_folders_finding};
 use super::{Action, ApplyOutcome, Finding, Op, command_stdout, dir_size, optional_command_stdout};
 use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
 use crate::report::CommandAuthority;
@@ -100,25 +101,39 @@ fn simulator_states(output: &str) -> Result<BTreeMap<String, bool>> {
 
 fn findings_from_simctl(output: &str, ctx: &Ctx) -> Result<Vec<Finding>> {
     let device_root = ctx.home.join("Library/Developer/CoreSimulator/Devices");
-    let mut findings: Vec<Finding> = simulator_states(output)?
-        .into_iter()
-        .filter(|(_, is_available)| !is_available)
-        .map(|(udid, _)| {
-            let path = simulator_device_path(&device_root, &udid)?;
-            let size = dir_size(&path)
-                .with_context(|| format!("cannot measure simulator device {}", path.display()))?;
-            Ok(Finding::command(
-                format!("unavailable Apple simulator device {udid}"),
-                size,
-                format!(
-                    "references a missing runtime; its device data uses ~{}",
-                    crate::report::gb(size)
-                ),
-                escalate(4, size),
-                CommandAuthority::DeleteSimulator { udid },
-            ))
-        })
-        .collect::<Result<_>>()?;
+    let mut findings = Vec::new();
+    // A device whose data cannot be measured offers nothing and is named in
+    // one error finding (S8); the other devices are still offered. A malformed
+    // identifier is not a measurement and still fails the category.
+    let mut unread = Vec::new();
+    for (udid, is_available) in simulator_states(output)? {
+        if is_available {
+            continue;
+        }
+        let path = simulator_device_path(&device_root, &udid)?;
+        let size = match dir_size(&path)
+            .with_context(|| format!("cannot measure simulator device {}", path.display()))
+        {
+            Ok(size) => size,
+            Err(error) => {
+                unread.push(UnreadFolder::new(&path, &error));
+                continue;
+            }
+        };
+        findings.push(Finding::command(
+            format!("unavailable Apple simulator device {udid}"),
+            size,
+            format!(
+                "references a missing runtime; its device data uses ~{}",
+                crate::report::gb(size)
+            ),
+            escalate(4, size),
+            CommandAuthority::DeleteSimulator { udid },
+        ));
+    }
+    if !unread.is_empty() {
+        findings.push(unread_folders_finding("simulator devices", &unread));
+    }
     findings.extend(available_device_disclosure(output, device_root, ctx));
     Ok(findings)
 }
@@ -459,6 +474,46 @@ mod tests {
             "the disclosure was treated as a command: {errors}"
         );
         assert_eq!(outcome.summary.items_touched, 0);
+    }
+
+    /// One unavailable device whose data cannot be measured offers nothing
+    /// and is named in one error finding; the others are still offered.
+    #[test]
+    fn an_unmeasurable_device_withholds_only_itself() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-simulators-unread")
+            .tempdir()
+            .unwrap();
+        let mut ctx = test_ctx();
+        ctx.home = home.path().to_path_buf();
+        let devices = ctx.home.join("Library/Developer/CoreSimulator/Devices");
+        let readable = "11111111-1111-1111-1111-111111111111";
+        let sealed_udid = "22222222-2222-2222-2222-222222222222";
+        std::fs::create_dir_all(devices.join(readable).join("data")).unwrap();
+        std::fs::write(devices.join(readable).join("data/file"), "x").unwrap();
+        let sealed = crate::ops::Unreadable::new(&devices.join(sealed_udid).join("data"), 0o000);
+        let output = format!(
+            r#"{{"devices":{{"runtime":[{{"isAvailable":false,"udid":"{readable}"}},{{"isAvailable":false,"udid":"{sealed_udid}"}}]}}}}"#
+        );
+
+        let findings = findings_from_simctl(&output, &ctx).unwrap();
+
+        drop(sealed);
+        let commands = findings
+            .iter()
+            .filter(|finding| matches!(finding.action, Action::Command { .. }))
+            .map(|finding| finding.label.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            commands,
+            vec![format!("unavailable Apple simulator device {readable}")]
+        );
+        let errors = findings
+            .iter()
+            .filter_map(Finding::scan_error)
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1, "{findings:?}");
+        assert!(errors[0].contains(sealed_udid), "{errors:?}");
     }
 
     #[test]

@@ -297,6 +297,93 @@ fn eval_gradle_caches_need_gradle_and_no_repository() {
     }
 }
 
+/// An owner command that fails withholds only its own cache: a broken `npm`
+/// or `brew` (a stale version-manager shim) is one error finding each, the
+/// run exits nonzero, and every other cache is still offered and removed.
+#[test]
+fn eval_a_failing_owner_command_withholds_only_its_cache() {
+    let sandbox = Sandbox::in_target("eval-owner-command-fails");
+    let other = cache(&sandbox, ".cache/gh");
+    for program in ["npm", "brew"] {
+        sandbox.script(program, "echo \"$0: broken shim\" >&2\nexit 1");
+    }
+    let preview = run(&sandbox, &["clean", "caches", "--json"]);
+    let document = json(&preview);
+    assert!(!preview.status.success(), "{document}");
+    assert_eq!(
+        actionable_targets(&document),
+        vec![other.clone()],
+        "{document}"
+    );
+    let text = document.to_string();
+    for subject in ["npm cache folder", "Homebrew cache"] {
+        assert!(
+            text.contains(&format!("cannot judge the {subject}")),
+            "{document}"
+        );
+    }
+    let applied = apply(&sandbox, "caches");
+    assert!(!other.exists(), "{}", json(&applied));
+}
+
+/// The default Gradle user home is resolved like `GRADLE_USER_HOME`: a
+/// `~/.gradle` linked to a folder inside the home folder offers its real
+/// caches, which apply then removes; one linked outside the home folder
+/// offers nothing and says why, instead of previewing a target apply refuses.
+#[test]
+fn eval_a_linked_default_gradle_home_is_resolved() {
+    let sandbox = Sandbox::in_target("eval-gradle-linked");
+    let outside = Sandbox::in_target("eval-gradle-linked-outside");
+    let home = sandbox.path().canonicalize().unwrap();
+    let inside = home.join("dotfiles/gradle");
+    let foreign = outside.path().canonicalize().unwrap().join("gradle");
+    for gradle in [&inside, &foreign] {
+        write(&gradle.join("caches/modules-2/files-2.1/x.jar"), "module");
+    }
+    let link = home.join(".gradle");
+    let caches = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+            .args(args)
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", sandbox.bin())
+            .output()
+            .unwrap()
+    };
+
+    symlink(&foreign, &link).unwrap();
+    let pristine = Tree::snapshot(outside.path());
+    let preview = caches(&["clean", "caches", "--json"]);
+    assert_eq!(
+        actionable_targets(&json(&preview)),
+        Vec::<PathBuf>::new(),
+        "a Gradle home linked outside the home folder was offered"
+    );
+    let stderr = String::from_utf8_lossy(&preview.stderr);
+    assert!(stderr.contains("Gradle user home"), "{stderr}");
+    caches(&["clean", "caches", "--apply", "--shred", "--yolo", "--json"]);
+    pristine.assert_only(
+        &Tree::snapshot(outside.path()),
+        &Allowed {
+            removed: Vec::new(),
+            scratch: Vec::new(),
+        },
+        "linked-outside gradle apply",
+    );
+
+    std::fs::remove_file(&link).unwrap();
+    symlink(&inside, &link).unwrap();
+    let preview = json(&caches(&["clean", "caches", "--json"]));
+    assert_eq!(
+        actionable_targets(&preview),
+        vec![inside.join("caches")],
+        "{preview}"
+    );
+    let apply = caches(&["clean", "caches", "--apply", "--shred", "--yolo", "--json"]);
+    assert!(apply.status.success(), "{}", json(&apply));
+    assert!(!inside.join("caches").exists(), "{}", json(&apply));
+}
+
 /// Gradle locks its caches only among its own processes, so they are kept
 /// while any Gradle process runs: left out of a preview taken then, and refused
 /// at apply when Gradle starts after the preview. The other caches still go.
@@ -627,6 +714,204 @@ fn eval_noninteractive_apply_requires_explicit_consent() {
         assert_eq!(pair[1].id, pair[0].id);
         assert_eq!(pair[1].status.as_deref(), Some("ok"));
     }
+}
+
+/// A build working in a superproject keeps its submodules: `npm run build` at
+/// the top of a checkout, or in any of its folders such as `tools`, reads the
+/// installs of the submodules it records. A repository nested there that the
+/// superproject does not record (a worktree in an ignored `.scratch`) is its
+/// own project: it is still offered, and a build inside it keeps only itself.
+/// A build in a folder above the superproject protects nothing.
+#[test]
+fn eval_a_build_in_the_superproject_keeps_its_submodules() {
+    let sandbox = Sandbox::in_target("eval-build-superproject");
+    // Every query dates the repositories long ago; only the superproject's
+    // index lists a gitlink, for `vendor/inner`.
+    sandbox.script(
+        "git",
+        "case \"$*\" in\n  *'ls-files --stage'*vendor/inner) printf '160000 0123456789abcdef0123456789abcdef01234567 0\\tvendor/inner\\0' ;;\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+    );
+    let dev = sandbox.path().join("dev");
+    let outer = dev.join("outer");
+    write(&outer.join(".git/HEAD"), "ref: refs/heads/main\n");
+    for (nested, gitdir) in [
+        ("vendor/inner", "../../.git/modules/inner"),
+        (".scratch/wt", "../../.git/worktrees/wt"),
+    ] {
+        let nested = outer.join(nested);
+        write(&nested.join(".git"), &format!("gitdir: {gitdir}\n"));
+        write(&nested.join("package.json"), "{}");
+        write(&nested.join("node_modules/pkg/file"), "dependency");
+    }
+    write(
+        &outer.join(".git/modules/inner/HEAD"),
+        "ref: refs/heads/main\n",
+    );
+    write(
+        &outer.join(".git/worktrees/wt/HEAD"),
+        "ref: refs/heads/main\n",
+    );
+    write(&outer.join("tools/build.js"), "");
+    let dev = dev.canonicalize().unwrap();
+    let root = dev.to_str().unwrap();
+    let inner = dev.join("outer/vendor/inner/node_modules");
+    let worktree = dev.join("outer/.scratch/wt/node_modules");
+    sandbox.script("pgrep", "printf '42\\n'");
+    for (cwd, offered) in [
+        (dev.join("outer"), vec![worktree.clone()]),
+        (dev.join("outer/vendor"), vec![worktree.clone()]),
+        (dev.join("outer/tools"), vec![worktree.clone()]),
+        (dev.join("outer/.scratch/wt"), vec![inner.clone()]),
+        (dev.clone(), vec![worktree.clone(), inner.clone()]),
+    ] {
+        sandbox.script("lsof", &format!("printf 'p42\\nn{}\\n'", cwd.display()));
+        let preview = json(&run(
+            &sandbox,
+            &["clean", "node-modules", "--root", root, "--json"],
+        ));
+        let mut targets = actionable_targets(&preview);
+        targets.sort();
+        let mut expected = offered;
+        expected.sort();
+        assert_eq!(
+            targets,
+            expected,
+            "PV eval/superproject-build: build in {}: {preview}",
+            cwd.display()
+        );
+    }
+}
+
+/// The superproject check is liveness evidence, never a verdict of its own.
+/// With no build process anywhere it asks Git nothing, so a superproject Git
+/// cannot read leaves its submodules judged as usual. With a build running
+/// elsewhere, a Git failure there is that repository's error, reported with a
+/// nonzero exit, never "a build process is active".
+#[test]
+fn eval_a_superproject_git_failure_is_an_error_not_a_busy_build() {
+    let sandbox = Sandbox::in_target("eval-superproject-failure");
+    sandbox.script(
+        "git",
+        "case \"$*\" in\n  *'ls-files --stage'*) echo 'fatal: not a git repository' >&2; exit 128 ;;\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+    );
+    let dev = sandbox.path().join("dev");
+    write(&dev.join("outer/.git/HEAD"), "ref: refs/heads/main\n");
+    for repo in ["outer/vendor/inner", "plain"] {
+        let repo = dev.join(repo);
+        write(&repo.join(".git/HEAD"), "ref: refs/heads/main\n");
+        write(&repo.join("package.json"), "{}");
+        write(&repo.join("node_modules/pkg/file"), "dependency");
+    }
+    let dev = dev.canonicalize().unwrap();
+    let root = dev.to_str().unwrap();
+    let (inner, plain) = (
+        dev.join("outer/vendor/inner/node_modules"),
+        dev.join("plain/node_modules"),
+    );
+
+    sandbox.script("pgrep", "exit 1");
+    let idle = run(
+        &sandbox,
+        &["clean", "node-modules", "--root", root, "--json"],
+    );
+    let mut offered = actionable_targets(&json(&idle));
+    offered.sort();
+    assert_eq!(
+        offered,
+        vec![inner.clone(), plain.clone()],
+        "PV eval/superproject-failure: no build anywhere: {}",
+        json(&idle)
+    );
+    assert!(idle.status.success(), "{}", json(&idle));
+
+    sandbox.script("pgrep", "printf '42\\n'");
+    sandbox.script("lsof", "printf 'p42\\nn/elsewhere\\n'");
+    let busy_elsewhere = run(
+        &sandbox,
+        &["clean", "node-modules", "--root", root, "--json"],
+    );
+    let document = json(&busy_elsewhere);
+    let stderr = String::from_utf8_lossy(&busy_elsewhere.stderr);
+    assert_eq!(
+        actionable_targets(&document),
+        vec![plain],
+        "PV eval/superproject-failure: an unread superproject offered its submodule: {document}"
+    );
+    assert!(
+        !busy_elsewhere.status.success()
+            && document["errors"]
+                .as_array()
+                .is_some_and(|errors| errors.iter().any(|error| error
+                    .as_str()
+                    .is_some_and(|error| error.contains("submodule check failed"))))
+            && !stderr.contains("build process is active"),
+        "PV eval/superproject-failure: a Git failure read as a busy build: {document} {stderr}"
+    );
+}
+
+/// A busy repository is kept whatever spelling `lsof` gives its working
+/// directory: the kernel may name it through the data-volume firmlink or in
+/// another case than the scan walked, while APFS reaches the same folder by
+/// each, so liveness compares identities, not spellings. A scan root typed in
+/// another case reaches it too. (A root typed through the firmlink lies under
+/// the protected `/System` and offers nothing, so it proves nothing here.)
+#[cfg(target_os = "macos")]
+#[test]
+fn eval_build_liveness_matches_the_repository_under_any_spelling() {
+    let sandbox = Sandbox::in_target("eval-build-spelling");
+    sandbox.script("git", &support::git_activity("2020-01-01", "2020-01-01"));
+    let dev = sandbox.path().join("dev");
+    let busy = dev.join("busy");
+    write(&busy.join(".git/HEAD"), "ref: refs/heads/main\n");
+    write(&busy.join("package.json"), "{}");
+    write(&busy.join("node_modules/pkg/file"), "dependency");
+    write(&busy.join("src/main.js"), "");
+    let dev = dev.canonicalize().unwrap();
+    let firmlink = Path::new("/System/Volumes/Data").join(dev.strip_prefix("/").unwrap());
+    assert!(
+        firmlink.is_dir(),
+        "no data-volume firmlink at {}",
+        firmlink.display()
+    );
+    let upper = dev.parent().unwrap().join("DEV");
+    assert!(upper.is_dir(), "case-sensitive volume: {}", upper.display());
+    sandbox.script("pgrep", "printf '42\\n'");
+    let preview = |root: &Path, cwd: &Path| {
+        sandbox.script("lsof", &format!("printf 'p42\\nn{}\\n'", cwd.display()));
+        run(
+            &sandbox,
+            &[
+                "clean",
+                "node-modules",
+                "--root",
+                root.to_str().unwrap(),
+                "--json",
+            ],
+        )
+    };
+    for (root, cwd) in [
+        (&dev, firmlink.join("busy/src")),
+        (&dev, upper.join("busy/src")),
+        (&upper, dev.join("busy/src")),
+    ] {
+        let preview = preview(root, &cwd);
+        assert_eq!(
+            actionable_targets(&json(&preview)),
+            Vec::<PathBuf>::new(),
+            "PV eval/busy-repository-spelling: root {} with a build in {} offered a busy repository: {}",
+            root.display(),
+            cwd.display(),
+            json(&preview)
+        );
+        assert!(preview.status.success(), "{}", json(&preview));
+    }
+    let control = preview(&dev, Path::new("/elsewhere"));
+    assert_eq!(
+        actionable_targets(&json(&control)),
+        vec![dev.join("busy/node_modules")],
+        "positive control: {}",
+        json(&control)
+    );
 }
 
 #[test]

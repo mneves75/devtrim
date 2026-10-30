@@ -177,6 +177,23 @@ impl Xcode {
                 }
             }
         }
+        // Archives are listed for visibility only: one that cannot be measured
+        // joins the unread folders rather than withholding what was judged.
+        let archives = ctx.home.join("Library/Developer/Xcode/Archives");
+        let archive_size = dir_size(&archives).unwrap_or_else(|error| {
+            unread.push(UnreadFolder::new(&archives, &error));
+            0
+        });
+        if archive_size > 0 {
+            findings.push(Finding::new(
+                "Xcode Archives",
+                Some(archives),
+                archive_size,
+                "EXCLUDED: release artifacts; listed for visibility only",
+                0,
+                Action::None,
+            ));
+        }
         if !unread.is_empty() {
             findings.push(unread_folders_finding("Xcode support folders", &unread));
         }
@@ -188,18 +205,6 @@ impl Xcode {
                     activity_window(ctx.active_days)
                 ),
             );
-        }
-        let archives = ctx.home.join("Library/Developer/Xcode/Archives");
-        let archive_size = dir_size(&archives)?;
-        if archive_size > 0 {
-            findings.push(Finding::new(
-                "Xcode Archives",
-                Some(archives),
-                archive_size,
-                "EXCLUDED: release artifacts; listed for visibility only",
-                0,
-                Action::None,
-            ));
         }
         Ok(findings)
     }
@@ -1391,6 +1396,39 @@ mod tests {
                 .iter()
                 .filter_map(Finding::scan_error)
                 .any(|error| error.contains("Locked-b")),
+            "{findings:?}"
+        );
+    }
+
+    /// Archives are listed for visibility only, so one that cannot be
+    /// measured is reported beside the folders that were judged and never
+    /// withholds them.
+    #[test]
+    fn an_unmeasurable_archive_never_withholds_device_support() {
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-archives");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let symbols = home.join("Library/Developer/Xcode/iOS DeviceSupport/18.0 (22A3354)");
+        aged_file(&symbols.join("Symbols/dyld"), 10);
+        let archives = home.join("Library/Developer/Xcode/Archives");
+        aged_file(&archives.join("2026-01-01/App.xcarchive/Info.plist"), 10);
+        let locked = crate::ops::Unreadable::new(&archives.join("2026-01-02"), 0o000);
+
+        let findings = Xcode
+            .scan_with_xcode_build_state(&test_context(home.clone()), Ok(XcodeActivity::Idle))
+            .unwrap();
+
+        drop(locked);
+        let offered = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        assert_eq!(offered, vec![symbols.as_path()]);
+        assert!(
+            findings
+                .iter()
+                .filter_map(Finding::scan_error)
+                .any(|error| error.contains("Archives")),
             "{findings:?}"
         );
     }

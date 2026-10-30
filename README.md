@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.12.0.
+This source tree and its packaged documentation describe devtrim v0.12.1.
 
 ## Install
 
@@ -55,7 +55,7 @@ cp target/release/devtrim /usr/local/bin/
   - ≥9: typed numeric confirmation (`--yolo` skips confirmation only)
 - **Typed deletion boundary.** Exact `PathBuf` targets must become an internal `VerifiedTarget` immediately before the single deletion sink can consume them. Display strings are never deletion authority.
 - **Typed command boundary.** A displayed command action is not enough to execute; a private closed capability binds the exact operation and its validated arguments. Docker cleanup accepts only the previewed absolute local Unix-socket endpoint; simulator cleanup accepts only the previewed device UDID and rechecks that it is still unavailable.
-- **Protected physical paths.** System roots, user secrets, the home root, Trash root, paths reached through symlinked ancestors, and owner-reported cache paths outside npm/Homebrew namespaces are refused.
+- **Protected physical paths.** System roots (`/Volumes` among them, so another mounted disk is never cleaned), user secrets, the home root and every folder above it, Trash root, paths reached through symlinked ancestors, and owner-reported cache paths outside npm/Homebrew namespaces are refused.
 - **Volumes are sacred.** Docker volumes are never pruned.
 - **Archives are sacred.** Xcode Archives are visible but never actionable.
 - **Capability-scoped flags.** Mutation flags are rejected when a command cannot use them; they never become silent no-ops. `scan --shred` remains meaningful because it changes the previewed action, while report-only commands reject it.
@@ -490,8 +490,8 @@ A scan or apply runs while the screen stays live and counts the seconds it has
 taken, since a process probe can take minutes on a loaded machine. During a
 scan `q` or Ctrl-C stops it and quits, killing every command it started; during
 an apply no key quits until it returns, because quitting could leave a target
-half removed. A SIGINT or SIGTERM, whenever it arrives, restores the terminal
-and kills every command devtrim started, exiting 130 or 143. A category that
+half removed. A SIGINT, SIGTERM or SIGHUP, whenever it arrives, restores the terminal
+and kills every command devtrim started, exiting 130, 143 or 129. A category that
 failed to scan, such as one whose liveness probe did not answer, is counted in
 the results title and named in the status line, and `r` retries it, from the
 failure screen too.
@@ -536,7 +536,9 @@ was absent from the preview.
 Localized scan failures remain visible and non-actionable in the TUI and make
 its eventual exit nonzero; a later successful scan does not clear that failure.
 Build-process liveness refuses decoded `lsof` CWD names that are not absolute,
-including diagnostics, at both preview and apply.
+including diagnostics, at both preview and apply. It probes only your own
+processes: `lsof` cannot read another user's working directory, so a build
+another user (root, say) runs inside your repository is not seen.
 
 `status` uses the Data volume when layout inspection finds its directory.
 A failed or malformed Data metric stays unavailable with a reason and nonzero

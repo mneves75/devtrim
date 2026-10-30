@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use super::project::{is_directory_if_present, unjudged_finding};
+use super::project::{
+    UnreadFolder, is_directory_if_present, unjudged_finding, unread_folders_finding,
+};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, escalate};
 
@@ -41,6 +43,9 @@ impl Op for Toolchains {
             }
         };
         let mut findings = Vec::new();
+        // A toolchain that cannot be inspected or measured offers nothing and
+        // is named in one error finding (S8); the others are still judged.
+        let mut unread = Vec::new();
         for entry in std::fs::read_dir(&directory)? {
             let entry = entry?;
             let file_type = entry.file_type()?;
@@ -52,44 +57,14 @@ impl Op for Toolchains {
             {
                 continue;
             }
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            let metadata = std::fs::symlink_metadata(&path)
-                .with_context(|| format!("cannot verify toolchain {}", path.display()))?;
-            if let Some(owner) = references.swiftly.get(&(metadata.dev(), metadata.ino())) {
-                let size = dir_size(&path)?;
-                let state = if owner.in_use { " and in use" } else { "" };
-                findings.push(Finding::new(
-                    format!("Swift toolchain {name} (swiftly)"),
-                    Some(path),
-                    size,
-                    format!(
-                        "EXCLUDED: installed by swiftly{state}; `swiftly uninstall {}` removes it",
-                        owner.version
-                    ),
-                    0,
-                    Action::None,
-                ));
-                continue;
+            match toolchain_finding(path.clone(), &references) {
+                Ok(Some(finding)) => findings.push(finding),
+                Ok(None) => {}
+                Err(error) => unread.push(UnreadFolder::new(&path, &error)),
             }
-            let canonical = path
-                .canonicalize()
-                .with_context(|| format!("cannot verify toolchain {}", path.display()))?;
-            if references.linked.contains(&canonical) {
-                continue;
-            }
-            let size = dir_size(&path)?;
-            findings.push(Finding::new(
-                format!("Swift toolchain {name}"),
-                Some(path),
-                size,
-                "not referenced by any verified Toolchains symlink or by swiftly; reinstallable from swift.org",
-                escalate(6, size),
-                Action::Trash,
-            ));
+        }
+        if !unread.is_empty() {
+            findings.push(unread_folders_finding("Swift toolchains", &unread));
         }
         Ok(findings)
     }
@@ -124,6 +99,48 @@ impl Op for Toolchains {
 
 /// Everything that says a toolchain is in use, read afresh by each scan and
 /// each apply.
+/// The finding for one toolchain folder: report-only when swiftly installed
+/// it, none when a verified symlink references it, otherwise offered.
+fn toolchain_finding(path: PathBuf, references: &References) -> Result<Option<Finding>> {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let metadata = std::fs::symlink_metadata(&path)
+        .with_context(|| format!("cannot verify toolchain {}", path.display()))?;
+    if let Some(owner) = references.swiftly.get(&(metadata.dev(), metadata.ino())) {
+        let size = dir_size(&path)?;
+        let state = if owner.in_use { " and in use" } else { "" };
+        return Ok(Some(Finding::new(
+            format!("Swift toolchain {name} (swiftly)"),
+            Some(path),
+            size,
+            format!(
+                "EXCLUDED: installed by swiftly{state}; `swiftly uninstall {}` removes it",
+                owner.version
+            ),
+            0,
+            Action::None,
+        )));
+    }
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("cannot verify toolchain {}", path.display()))?;
+    if references.linked.contains(&canonical) {
+        return Ok(None);
+    }
+    let size = dir_size(&path)?;
+    Ok(Some(Finding::new(
+        format!("Swift toolchain {name}"),
+        Some(path),
+        size,
+        "not referenced by any verified Toolchains symlink or by swiftly; reinstallable from swift.org",
+        escalate(6, size),
+        Action::Trash,
+    )))
+}
+
 struct References {
     /// Canonical targets of the verified symlinks in the Toolchains folder.
     linked: BTreeSet<PathBuf>,
@@ -453,6 +470,42 @@ mod tests {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
         }
+    }
+
+    /// A toolchain that cannot be measured offers nothing and is named in one
+    /// error finding; the toolchains beside it are still judged.
+    #[test]
+    fn an_unmeasurable_toolchain_withholds_only_itself() {
+        let (_fixture, root) = target_temp("unread");
+        let home = root.canonicalize().unwrap();
+        let directory = home.join("Library/Developer/Toolchains");
+        let readable = directory.join("swift-1.xctoolchain");
+        std::fs::create_dir_all(readable.join("usr/bin")).unwrap();
+        std::fs::write(readable.join("usr/bin/swift"), "binary").unwrap();
+        let sealed = crate::ops::Unreadable::new(&directory.join("swift-2.xctoolchain/usr"), 0o000);
+        std::fs::create_dir_all(directory.join("swift-3.xctoolchain")).unwrap();
+        symlink(
+            "swift-3.xctoolchain",
+            directory.join("swift-latest.xctoolchain"),
+        )
+        .unwrap();
+
+        let findings = Toolchains
+            .scan(&test_context(home.clone()), &Default::default())
+            .unwrap();
+
+        drop(sealed);
+        let offered = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        assert_eq!(offered, vec![readable.as_path()]);
+        let errors = findings
+            .iter()
+            .filter_map(Finding::scan_error)
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1, "{findings:?}");
+        assert!(errors[0].contains("swift-2.xctoolchain"), "{errors:?}");
     }
 
     #[test]

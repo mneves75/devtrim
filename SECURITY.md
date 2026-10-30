@@ -126,8 +126,13 @@ Non-negotiable boundaries:
 - Filesystem targets go to Trash unless permanent deletion is explicitly shown; apply derives the mode from that typed preview action.
 - Literal and physically resolved parents must agree; symlinked ancestors fail closed. Any ASCII-case variant of a `.git` path component is refused.
 - `trash-empty` leaves a direct Trash child named as an ASCII-case variant of `.git` in place with a warning, so the shared metadata denial does not block other exact previewed children. An item the sink refuses at apply — a trashed project that still holds its repository — is recorded and skipped; the purge continues with the other exact items and reports nonzero. `--only-devtrim` narrows the purge to items whose device, inode and birth time match a Trash move devtrim journaled as successful, so another program's item — even one carrying a name devtrim's item had — is never offered; a history that cannot be read whole refuses the purge and offers nothing.
-- System roots and descendants (including ASCII case variants), the user home
-  root, Trash root, `.ssh`, `.gnupg`, and wholesale `~/Library` are protected.
+- System roots and descendants (including ASCII case variants: `/System`, `/usr`,
+  `/etc`, `/var`, `/private/var`, `/Applications`, `/Library`, and `/Volumes`, so
+  nothing on another mounted volume is ever removed), the user home root and
+  every folder above it, Trash root, `.ssh`, `.gnupg`, and wholesale
+  `~/Library` are protected. The preview drops a target the sink would refuse
+  as protected, built-in or configured, and a scan root inside a protected
+  system folder is named in a warning.
   Only named managed Library subpaths are eligible. The `~/Library/Caches`
   half of that carve-out is `safety::MANAGED_LIBRARY_CACHES`, a closed list of
   exact directory names that is also the sole source the `caches` category
@@ -275,10 +280,19 @@ Non-negotiable boundaries:
   wrapper), `claude`, and Claude Code's own process name, its version number
   (`2.1.294`), matched only as a whole dotted triple of digits with an
   optional SemVer pre-release suffix (`2.2.0-beta.1`). Protection follows the
-  process's own working directory: the repository containing it is
-  protected, not every repository the agent edits by absolute path. As with
-  any build process, one `lsof` cannot read, another user's for example,
-  refuses the probe.
+  process's own working directory, matched by spelling or by device and inode
+  (`lsof` may spell it through the `/System/Volumes/Data` firmlink or in
+  another case than the scan walked): the repository containing it is
+  protected, and so is every submodule its superproject's index records as a
+  gitlink when the directory lies in that superproject outside the
+  repositories nested there (a superproject's build, from its top or from a
+  folder such as `tools`, reads its submodules' installs; a build in a nested
+  worktree keeps only that worktree), not every repository the agent edits by absolute path. A Git query that fails while judging that superproject chain makes the repository an error finding, never a busy build that would pass silently. Only the
+  current user's processes are probed (`pgrep -U <uid>`): `lsof` cannot read
+  another user's working directory, and a root-owned `node` service refused
+  every project cleanup on the development machine. A build another user runs
+  inside this user's repository is therefore not seen. A process of this user
+  that `lsof` cannot read still refuses the probe.
   `lsof` exiting 0 is trusted only when it reported every requested process; one
   it left out is judged as below. `lsof` exiting 1 is accepted only when every process it did not report is
   absent from a fresh `pgrep`, so a build that exited between the probes does
@@ -338,7 +352,7 @@ Non-negotiable boundaries:
 - The TUI accepts no CLI confirmation bypass. It runs each scan and apply on a worker thread and drops every key typed meanwhile except a quit, then discards input still queued when the result is drawn, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
 - TUI selection can only narrow a plan. The approved plan is the displayed findings minus those the operator left out; danger and the typed confirmation are computed over that subset, the confirmation states how many findings it covers and how many were left out, and a selection change invalidates an earlier approval. Read-only results and non-actionable rows cannot be selected. Each row shows the action and danger the current Trash or permanent mode gives it, through the same policy the plan uses.
 - `purge` adds no deletion authority. It is the `node-modules` and `artifacts` scanners in one plan, and each finding is applied by its own category, which reasserts its exact target shape, staleness and build liveness; a finding routed to the other category is refused.
-- Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time. The Go module cache `go env GOMODCACHE` reports (asked with `GOTOOLCHAIN=local`, so no toolchain is downloaded) must lie inside the home folder and hold Go's `cache/download`, and `go` is asked again at apply. Go keeps the cache read-only, so a permanent removal is refused before anything changes when any folder in it is read-only, and a move to the Trash when the cache folder itself is. Gradle's `caches` and `wrapper/dists` under `GRADLE_USER_HOME`, which must be absolute and inside the home folder, are refused at scan and at each apply while a Gradle process runs (`pgrep -a -f` for the daemon, a daemon-less build and the Wrapper); a probe that fails refuses them.
+- Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time. The Go module cache `go env GOMODCACHE` reports (asked with `GOTOOLCHAIN=local`, so no toolchain is downloaded) must lie inside the home folder and hold Go's `cache/download`, and `go` is asked again at apply. Go keeps the cache read-only, so a permanent removal is refused before anything changes when any folder in it is read-only, and a move to the Trash when the cache folder itself is. Gradle's `caches` and `wrapper/dists` under `GRADLE_USER_HOME` (default `~/.gradle`, resolved through any link), which must be absolute and inside the home folder, are refused at scan and at each apply while a Gradle process runs (`pgrep -a -f` for the daemon, a daemon-less build and the Wrapper); a probe that fails refuses them.
 - Hugging Face cleanup is limited to `~/.cache/huggingface/hub`. Its parent contains authentication and other state and is never an authorized built-in cache target. A real-binary regression requires model data to be removed while synthetic tokens and settings survive.
 - Complete human-facing actions, findings, errors, outcome notes, and command-line parse errors (which quote argv) escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values and JSON retains its original data.
 - Failed or partial work returns nonzero; successful earlier actions remain visible in the summary.
@@ -406,7 +420,7 @@ Non-negotiable boundaries:
 
 - `Cargo.lock` is committed and release builds use `--locked`.
 - `signal-hook` 0.3 (iterator feature, default features off) runs the interrupt
-  handler: it receives SIGINT and SIGTERM on a thread, so the kill-and-exit
+  handler: it receives SIGINT, SIGTERM and SIGHUP on a thread, so the kill-and-exit
   code is ordinary safe Rust. It adds no crate: crossterm's event support
   already pulls it (and `signal-hook-registry`, `libc`) into `Cargo.lock`, so
   `cargo audit` already covers it, and its minimum Rust version is far below the
@@ -525,7 +539,11 @@ Non-negotiable boundaries:
   reported failure. A descendant still holding the output after the command
   exited cleanly is abandoned, not killed. Because a group of its own never
   receives the terminal's Ctrl-C, every non-TUI run installs a handler
-  (`process::exit_on_interrupt`) for SIGINT and SIGTERM. Live groups are kept
+  (`process::exit_on_interrupt`) for SIGINT, SIGTERM and SIGHUP; a hangup
+  reaches devtrim only, so without it closing the terminal left them running.
+  The handler replaces a SIGHUP ignored at startup, so a `nohup` run stops when
+  its terminal closes: there is no safe way to read the earlier disposition,
+  and stopping journals the attempt in flight as interrupted. Live groups are kept
   in one registry in `src/process.rs`. The lock is not held across a spawn: a
   counter of spawns in flight covers the gap until the new group is
   registered, and an interrupt waits for that counter (at most two seconds)
@@ -533,7 +551,7 @@ Non-negotiable boundaries:
   its leader, so the handler never signals a group whose leader was reaped (its
   id could then name an unrelated process). On a signal the handler refuses
   later spawns, kills every registered group while holding the lock and exits
-  130 (SIGINT) or 143 (SIGTERM). It writes no message, because a write to a
+  130 (SIGINT), 143 (SIGTERM) or 129 (SIGHUP). It writes no message, because a write to a
   full or unread stderr would stall the exit while the run kept deleting, and
   a second signal exits at once without waiting for the first kill. It cannot reap the leaders, whose handles belong to other threads;
   the kernel reparents and reaps them at exit. An apply attempt in flight

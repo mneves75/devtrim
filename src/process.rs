@@ -250,8 +250,17 @@ fn poll_exit(child: &mut Child) -> io::Result<Option<ExitStatus>> {
     Ok(status)
 }
 
-/// Kills every command devtrim started when it receives SIGINT or SIGTERM,
-/// then exits with the conventional status: 130 or 143.
+/// The signals that stop a run: Ctrl-C, a polite kill, and the terminal
+/// closing. A hangup reaches devtrim only, never the commands leading process
+/// groups of their own, so its default action would leave them running.
+const STOP_SIGNALS: [i32; 3] = [
+    signal_hook::consts::SIGINT,
+    signal_hook::consts::SIGTERM,
+    signal_hook::consts::SIGHUP,
+];
+
+/// Kills every command devtrim started when it receives SIGINT, SIGTERM or
+/// SIGHUP, then exits with the conventional status: 130, 143 or 129.
 ///
 /// Each command leads a process group of its own, so the terminal's SIGINT
 /// never reaches it; without this an interrupted run would leave a `docker`
@@ -266,15 +275,18 @@ fn poll_exit(child: &mut Child) -> io::Result<Option<ExitStatus>> {
 ///
 /// Installing the handler replaces a SIGINT that was ignored at startup, as in
 /// a background job of a non-interactive shell: such a run now stops on SIGINT.
-/// std and rustix offer no safe way to read the earlier disposition.
+/// It replaces an ignored SIGHUP the same way, so a run started under `nohup`
+/// stops when its terminal closes instead of finishing: stopping is the safe
+/// direction, since the attempt in flight is journaled as interrupted and every
+/// command is killed. std and rustix offer no safe way to read the earlier
+/// disposition, and the crate forbids `unsafe`; a run that must outlive its
+/// terminal belongs in `tmux`, `screen` or a launchd job.
 ///
 /// Not installed for the TUI, which runs in raw mode where Ctrl-C is a key and
 /// must restore its terminal before it exits: it installs
 /// [`forward_interrupts`] instead.
 pub(crate) fn exit_on_interrupt() -> io::Result<()> {
-    use signal_hook::consts::{SIGINT, SIGTERM};
-
-    let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?;
+    let mut signals = signal_hook::iterator::Signals::new(STOP_SIGNALS)?;
     thread::Builder::new()
         .name("devtrim-interrupt".into())
         .spawn(move || {
@@ -346,17 +358,15 @@ fn kill_and_reap(child: &mut Child) -> bool {
 
 /// What the TUI installs in place of [`exit_on_interrupt`]. Its terminal is in
 /// raw mode and must be restored before devtrim exits, and only the TUI's own
-/// thread writes to it, so a SIGINT or SIGTERM is recorded for that thread
+/// thread writes to it, so a SIGINT, SIGTERM or SIGHUP is recorded for that thread
 /// instead of ending the run here: the TUI restores the terminal and then
 /// calls [`kill_and_exit`] with the signal. A second signal kills every
 /// command and exits at once, leaving the terminal as it is, so a TUI that
 /// stopped polling cannot keep devtrim or its commands alive.
 pub(crate) fn forward_interrupts() -> io::Result<Interrupts> {
-    use signal_hook::consts::{SIGINT, SIGTERM};
-
     let received = Arc::new(AtomicI32::new(0));
     let recorded = Arc::clone(&received);
-    let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?;
+    let mut signals = signal_hook::iterator::Signals::new(STOP_SIGNALS)?;
     thread::Builder::new()
         .name("devtrim-interrupt".into())
         .spawn(move || {
@@ -373,7 +383,7 @@ pub(crate) fn forward_interrupts() -> io::Result<Interrupts> {
 pub(crate) struct Interrupts(Arc<AtomicI32>);
 
 impl Interrupts {
-    /// The first SIGINT or SIGTERM received, once one has been.
+    /// The first stop signal received, once one has been.
     pub(crate) fn received(&self) -> Option<i32> {
         Some(self.0.load(Ordering::SeqCst)).filter(|signal| *signal != 0)
     }
