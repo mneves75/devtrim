@@ -605,6 +605,131 @@ fn eval_a_symlinked_journal_refuses_apply_without_touching_its_destination() {
     assert_journaled(&sandbox, "caches", "shred", &[target]);
 }
 
+/// A journal that cannot be opened refuses the apply before it starts, so the
+/// document says nothing was applied: `applied` is false, no summary claims
+/// zero work done, and the target is still there. The control is the same
+/// plan with a writable journal.
+#[test]
+fn eval_an_unwritable_journal_refuses_before_the_apply_starts() {
+    let sandbox = Sandbox::in_target("eval-journal-unwritable");
+    let target = cache(&sandbox, ".cache/node/corepack");
+    std::fs::create_dir_all(sandbox.journal()).unwrap();
+    std::fs::set_permissions(
+        sandbox.journal().parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let result = apply(&sandbox, "caches");
+    let document = json(&result);
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            scratch: vec![sandbox.journal().with_file_name("journal.lock")],
+            ..Allowed::default()
+        },
+        "eval/journal-unwritable",
+    );
+    assert!(target.exists());
+    assert!(!result.status.success(), "{document}");
+    assert_eq!(
+        document["applied"], false,
+        "PV eval/journal-preflight: an apply refused before it started claimed to have applied: {document}"
+    );
+    assert!(document.get("summary").is_none(), "{document}");
+    assert!(
+        document["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error.as_str().unwrap().contains("apply journal")),
+        "{document}"
+    );
+
+    let control = Sandbox::in_target("eval-journal-unwritable-control");
+    let target = cache(&control, ".cache/node/corepack");
+    let result = apply(&control, "caches");
+    assert!(result.status.success(), "{}", json(&result));
+    assert_eq!(json(&result)["applied"], true);
+    assert!(!target.exists());
+}
+
+/// A plan with nothing to confirm — no findings, or only report rows — still
+/// starts an apply, so an unwritable journal refuses it the same way. The
+/// controls are the same plans with a writable journal.
+#[test]
+fn eval_an_unwritable_journal_refuses_a_plan_with_nothing_to_confirm() {
+    let plant = |sandbox: &Sandbox, category: &str| {
+        // No `docker` on PATH: the VM image is one report-only finding.
+        if category == "docker" {
+            write(
+                &sandbox
+                    .path()
+                    .join("Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw"),
+                &"v".repeat(64 * 1024),
+            );
+        }
+    };
+    for (label, category) in [("empty", "caches"), ("report-only", "docker")] {
+        let argv = ["clean", category, "--apply", "--yolo", "--json"];
+        let sandbox = Sandbox::in_target(&format!("eval-journal-unwritable-{label}"));
+        plant(&sandbox, category);
+        std::fs::create_dir_all(sandbox.journal()).unwrap();
+        let result = run(&sandbox, &argv);
+        let document = json(&result);
+        assert_eq!(
+            document["applied"], false,
+            "PV eval/unconfirmed-journal-preflight: a {label} plan with an unwritable journal claimed to have applied: {document}"
+        );
+        assert!(!result.status.success(), "{label}: {document}");
+        assert!(document.get("summary").is_none(), "{label}: {document}");
+
+        let control = Sandbox::in_target(&format!("eval-journal-unwritable-{label}-control"));
+        plant(&control, category);
+        let result = run(&control, &argv);
+        assert!(result.status.success(), "{label}: {}", json(&result));
+        let document = json(&result);
+        assert_eq!(document["applied"], true, "{label}");
+        let findings = document["findings"].as_array().unwrap();
+        assert_eq!(findings.is_empty(), label == "empty", "{label}: {document}");
+    }
+}
+
+/// `trash-empty` has its own apply path; it must refuse an unwritable journal
+/// the same way, before its purge starts.
+#[test]
+fn eval_trash_empty_refuses_an_unwritable_journal_before_the_purge() {
+    let trash_empty = ["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"];
+    let sandbox = Sandbox::in_target("eval-trash-journal-unwritable");
+    let item = sandbox.path().join(".Trash/old-notes.txt");
+    write(&item, "notes");
+    std::fs::create_dir_all(sandbox.journal()).unwrap();
+    std::fs::set_permissions(
+        sandbox.journal().parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+
+    let result = run(&sandbox, &trash_empty);
+    let document = json(&result);
+    assert!(item.exists());
+    assert!(!result.status.success(), "{document}");
+    assert_eq!(
+        document["applied"], false,
+        "PV eval/trash-journal-preflight: a purge refused before it started claimed to have applied: {document}"
+    );
+    assert!(document.get("summary").is_none(), "{document}");
+
+    let control = Sandbox::in_target("eval-trash-journal-unwritable-control");
+    let item = control.path().join(".Trash/old-notes.txt");
+    write(&item, "notes");
+    let result = run(&control, &trash_empty);
+    assert!(result.status.success(), "{}", json(&result));
+    assert_eq!(json(&result)["applied"], true);
+    assert!(!item.exists());
+}
+
 /// Hardlinks an unrelated sentinel as `leaf` in the journal folder and proves
 /// apply refuses before changing the sentinel's bytes or mode, or the cache.
 fn assert_hardlinked_journal_leaf_refused(leaf: &str, allowed: &[&str], marker: &str) {

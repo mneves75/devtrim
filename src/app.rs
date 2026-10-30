@@ -460,6 +460,9 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             {
                 return command_error("trash-empty", false, &findings, &ctx, error);
             }
+            if let Err(error) = crate::journal::check_writable(&ctx) {
+                return command_error("trash-empty", false, &findings, &ctx, error);
+            }
             match ops::purge_trash(&findings, &ctx) {
                 Ok(outcome) => print_outcome("trash-empty", &findings, &outcome, &ctx),
                 Err(error) => command_error("trash-empty", true, &findings, &ctx, error),
@@ -580,6 +583,12 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
         });
     }
 
+    // A plan with nothing to confirm still starts an apply, so it is refused
+    // here; an actionable plan is checked after its confirmation below.
+    if !actionable && let Err(error) = crate::journal::check_writable(ctx) {
+        return command_error(operation.name(), false, &findings, ctx, error);
+    }
+
     if findings.is_empty() {
         if ctx.json {
             let outcome = ops::ApplyOutcome::new(operation.name());
@@ -606,6 +615,11 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
 
     let danger = safety::plan_danger(&findings);
     if let Err(error) = safety::gate(danger, ctx, &findings) {
+        return command_error(operation.name(), false, &findings, ctx, error);
+    }
+    // After the confirmation, so a declined plan creates nothing, and before
+    // the apply: a plan whose first attempt could not be journaled never starts.
+    if let Err(error) = crate::journal::check_writable(ctx) {
         return command_error(operation.name(), false, &findings, ctx, error);
     }
     match operation.apply(&findings, ctx) {

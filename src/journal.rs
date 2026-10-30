@@ -281,13 +281,7 @@ fn append_at(location: &JournalLocation, record: &JournalRecord) -> Result<()> {
         anyhow::bail!("apply journal record exceeds {MAX_JOURNAL_RECORD_BYTES} byte limit");
     }
     line.push(b'\n');
-    let mut file = open_regular_at(
-        &location.parent,
-        &location.leaf,
-        OFlags::RDWR | OFlags::APPEND | OFlags::CREATE,
-        Mode::from(0o600),
-    )?;
-    file.set_permissions(Permissions::from_mode(0o600))?;
+    let mut file = open_journal_file(location)?;
     flock(&file, FlockOperation::LockExclusive).map_err(io::Error::from)?;
     // A write cut short (ENOSPC is likely on the disk this tool is cleaning)
     // leaves a line with no terminator. Appending straight onto it would fuse
@@ -303,6 +297,30 @@ fn append_at(location: &JournalLocation, record: &JournalRecord) -> Result<()> {
     file.write_all(&line)?;
     file.flush()?;
     file.sync_data()?;
+    Ok(())
+}
+
+fn open_journal_file(location: &JournalLocation) -> io::Result<File> {
+    let file = open_regular_at(
+        &location.parent,
+        &location.leaf,
+        OFlags::RDWR | OFlags::APPEND | OFlags::CREATE,
+        Mode::from(0o600),
+    )?;
+    file.set_permissions(Permissions::from_mode(0o600))?;
+    Ok(file)
+}
+
+/// Opens the journal, its folder and its lock exactly as `begin` will, writing
+/// no record, so an apply that could not journal its first attempt is refused
+/// before it starts rather than after the operation has begun.
+pub(crate) fn check_writable(ctx: &Ctx) -> Result<()> {
+    let location = JournalLocation::open(&ctx.journal_path, ParentMode::Create)
+        .with_context(|| format!("cannot open apply journal: {}", ctx.journal_path.display()))?
+        .ok_or_else(|| anyhow::anyhow!("journal parent unexpectedly disappeared"))?;
+    drop(acquire_apply_lock(&location)?);
+    open_journal_file(&location)
+        .with_context(|| format!("cannot write apply journal: {}", ctx.journal_path.display()))?;
     Ok(())
 }
 
@@ -1122,6 +1140,44 @@ mod tests {
         assert!(first.id.as_ref().is_some_and(|id| !id.is_empty()));
         assert_ne!(first.id, second.id);
         assert_eq!(result.id, first.id);
+    }
+
+    // The apply's preflight refuses a journal unwritable from the start, so
+    // only this test reaches the attempt record's own refusal: the journal
+    // can still stop accepting writes after the preflight, mid-plan.
+    #[test]
+    fn an_attempt_that_cannot_be_journaled_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp("unwritable-attempt");
+        let path = root.join("journal.jsonl");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let ctx = Ctx {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
+            active_days: 30,
+            retain_days: 30,
+            protect: Vec::new(),
+            journal_path: path.clone(),
+            home: root.clone(),
+            interactive: false,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+        };
+        let record =
+            JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
+
+        let error = begin(&ctx, record).err();
+        assert!(
+            error.is_some_and(|error| format!("{error:#}").contains("cannot write apply journal")),
+            "PV eval/write-ahead: an attempt that cannot be journaled must refuse its mutation"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        crate::ops::remove_test_path(&root);
     }
 
     #[test]

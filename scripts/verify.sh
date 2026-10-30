@@ -24,6 +24,9 @@ export PATH="$compiler_bin:$PATH"
 export CARGO_NET_OFFLINE=true
 run agent-docs cmp -s AGENTS.md CLAUDE.md
 run pageload-control-validation python3 -B scripts/tests/pageload-controls-validation.py
+run verify-live-controls python3 -B scripts/tests/verify-live-controls.py
+run csp python3 -B scripts/site/csp.py --check index.html MANUAL.html
+run csp-controls python3 -B scripts/tests/csp-controls.py
 run compiler rustc --version
 run format cargo fmt --all -- --check
 run structure-tests ast-grep test --skip-snapshot-tests
@@ -34,7 +37,7 @@ run build cargo build --locked
 run tui python3 scripts/tests/tui.py "${CARGO_TARGET_DIR:-target}/debug/devtrim"
 run read-only-views python3 scripts/tests/read-only-views.py "${CARGO_TARGET_DIR:-target}/debug/devtrim"
 if [[ "$mode" == offline ]]; then
-  for script in scripts/verify.sh scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh scripts/perf/ab.sh scripts/perf/corpus.sh; do
+  for script in scripts/verify.sh scripts/release.sh scripts/verify-live.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh scripts/perf/ab.sh scripts/perf/corpus.sh; do
     run "bash-syntax:$script" bash -n "$script"
   done
   for script in .githooks/pre-commit scripts/tests/shellcheck-tracked.sh scripts/tests/gitleaks-positive-control.sh; do

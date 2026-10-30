@@ -121,6 +121,59 @@ fi
   exit 1
 }
 
+# The deploy gate's verdict for this exact commit and target goes into the tag
+# message, so a later rollback can reuse it from the tag alone. Beta releases
+# deploy to staging; stable releases to production.
+gate_target=production
+[[ -z "$prerelease_suffix" ]] || gate_target=staging
+gate_record=".scratch/security-gate/${release_commit}/${gate_target}.json"
+release_tree=$(git rev-parse "${release_commit}^{tree}")
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required to read the security-gate record"; exit 1; }
+[[ -f "$gate_record" && ! -L "$gate_record" ]] || {
+  echo "ERROR: no security-gate record for commit ${release_commit} and target ${gate_target}"
+  echo "ACTION: run the mneves-security deploy gate on this exact commit and write ${gate_record}"
+  exit 1
+}
+# jq keeps the last of two equal keys, so a block verdict or a waiver list
+# overridden later in the same object would clear. Python's parser reports
+# every object member as written: a repeated name, or a second document,
+# makes the record ambiguous and it is refused.
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required to read the security-gate record"; exit 1; }
+if ! python3 -I -c '
+import json, sys
+def unique(pairs):
+    names = [name for name, _ in pairs]
+    if len(names) != len(set(names)):
+        raise ValueError("repeated key")
+    return dict(pairs)
+with open(sys.argv[1], encoding="utf-8") as record:
+    json.load(record, object_pairs_hook=unique)
+' "$gate_record" 2>/dev/null; then
+  echo "ERROR: security-gate record ${gate_record} does not clear ${release_commit}: it must be one JSON document without a repeated key"
+  exit 1
+fi
+# Slurped, so a file holding several documents is refused whole rather than
+# judged one document at a time.
+if ! gate_verdict=$(jq -ser --arg commit "$release_commit" --arg tree "$release_tree" --arg target "$gate_target" '
+  select(length == 1) | .[0]
+  | select(.schema == 1 and .commit == $commit and .tree == $tree and .target == $target and .open_blockers == 0)
+  | select($target != "production" or .independent_acceptance == "pass")
+  | select((.waivers | type) == "array")
+  | if .verdict == "pass" and (.waivers | length) == 0 then "PASS"
+    elif .verdict == "waived" and (.waivers | length) > 0
+      and all(.waivers[]; (.id | type) == "string" and (.id | test("\\A[A-Za-z0-9:._-]+\\z"))
+        and (.expires | type) == "string"
+        and (.expires | test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\\z"))
+        and (.expires | fromdateiso8601 | todateiso8601) == .expires
+        and (.expires | fromdateiso8601) > now)
+    then "WAIVED " + ([.waivers[].id] | join(" "))
+    else empty end' "$gate_record"); then
+  echo "ERROR: security-gate record ${gate_record} does not clear ${release_commit} (tree ${release_tree}) for ${gate_target}"
+  echo "ACTION: the record must name this commit, tree and target with no open blocker and a pass verdict, or a waived one whose every waiver has an ID and an unexpired YYYY-MM-DDTHH:MM:SSZ expiry"
+  exit 1
+fi
+echo "==> security gate: ${gate_verdict} (${gate_target})"
+
 echo "==> rechecking current default-branch head before tagging"
 git -c submodule.recurse=false fetch --quiet --no-tags origin \
   "refs/heads/${default_branch}:refs/remotes/origin/${default_branch}" || {
@@ -143,7 +196,7 @@ api_commit=$(gh api "repos/${repo}/commits/${default_branch}" --jq .sha) || {
 
 echo "==> tag + hosted release workflow"
 gh auth status
-git tag --no-sign -a "$tag" -m "$tag"
+git tag --no-sign -a "$tag" -m "$tag" -m "security gate: ${gate_verdict} (${gate_target}, tree ${release_tree})"
 if ! git push --no-verify origin "refs/tags/${tag}:refs/tags/${tag}"; then
   echo "ERROR: local tag $tag was created but the push failed"
   echo "RECOVER: inspect git ls-remote --tags origin refs/tags/$tag before acting"
