@@ -6,8 +6,8 @@ an inline style element or style attribute spelled any way a browser accepts
 (upper case, whitespace before an end tag's bracket, an attribute after a
 slash, a style inside SVG), an inline script whose only "src" is data-src, a
 self-closing script or style and a repeated attribute (each read one way by the
-browser and another by a naive reader), any script or style inside SVG or
-MathML (parsed as foreign content), an element left unclosed at the end, a
+browser and another by a naive reader), any script or style once SVG or
+MathML has opened (parsed as foreign content, even past a stray end tag), an element left unclosed at the end, a
 second policy meta, and an 'unsafe-inline' source must each fail.
 """
 
@@ -35,11 +35,11 @@ def check(page: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def hashed_in_svg(manual: str) -> str:
+def hashed_in_svg(manual: str, opening: str = "<svg>") -> str:
     """A style inside SVG whose raw-text hash is admitted by the policy."""
     body = "p::after { content: '&amp;'; }"
     digest = "'sha256-" + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode() + "'"
-    page = manual.replace("</body>", f"<svg><style>{body}</style></svg></body>", 1)
+    page = manual.replace("</body>", f"{opening}<style>{body}</style></svg></body>", 1)
     # Appended last, where csp.py --write would put the element's hash.
     return re.sub(r"(style-src [^;\"]*)", lambda match: f"{match.group(1)} {digest}", page, count=1)
 
@@ -68,6 +68,8 @@ def main() -> int:
         # so its hash cannot be read off the raw text; any such style refuses.
         "style-in-svg": manual.replace("</body>", "<svg><style>p { color: red; }</style></svg></body>", 1),
         "hashed-style-in-svg": hashed_in_svg(manual),
+        # The browser ignores an unmatched end tag and stays inside SVG.
+        "hashed-style-after-stray-end-tag": hashed_in_svg(manual, "<svg></math>"),
         "unclosed-style-at-end": manual + "<style>p { color: red; }",
         "self-closing-style": manual.replace("</body>", "<style/>p { color: red; }</style></body>", 1),
         "self-closing-script": manual.replace("</body>", "<script/>window.x = 1;</script></body>", 1),

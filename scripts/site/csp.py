@@ -39,7 +39,7 @@ class Inventory(HTMLParser):
         self.stylesheet = False
         self.policies: list[str] = []
         self.ambiguous: list[str] = []
-        self.foreign = 0
+        self.foreign = False
         self.inline: str | None = None
         self.text = ""
 
@@ -59,11 +59,14 @@ class Inventory(HTMLParser):
         if tag == "meta" and values.get("http-equiv", "").lower() == "content-security-policy":
             self.policies.append(values.get("content", ""))
         if tag in ("svg", "math"):
-            self.foreign += 1
+            # Where foreign content ends depends on tree-construction rules
+            # (stray end tags are ignored, some HTML tags break out), which
+            # this reader does not model, so the flag never clears.
+            self.foreign = True
         if tag in ("script", "style") and self.foreign:
             # Foreign content decodes entities in its text, so the hash a
             # browser computes is not the hash of the raw text read here.
-            self.ambiguous.append(f"<{tag}> inside <svg> or <math> is parsed as foreign content")
+            self.ambiguous.append(f"<{tag}> after <svg> or <math> may be parsed as foreign content")
         if (tag == "script" and "src" not in names) or tag == "style":
             self.inline, self.text = tag, ""
 
@@ -80,8 +83,6 @@ class Inventory(HTMLParser):
             self.text += data
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in ("svg", "math") and self.foreign:
-            self.foreign -= 1
         if tag == self.inline:
             (self.scripts if tag == "script" else self.styles).append(self.text)
             self.inline = None
