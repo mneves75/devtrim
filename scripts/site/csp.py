@@ -32,7 +32,7 @@ from pathlib import Path
 
 # Only to rewrite the policy text in place; the tokenizer decides which meta
 # is the policy and that there is exactly one.
-META = re.compile(r'(<meta\s+http-equiv="Content-Security-Policy"\s+content=")([^"]*)(")', re.I)
+META = re.compile(r'(<meta\s+http-equiv="Content-Security-Policy"\s+content=")([^"]*)(")', re.I | re.A)
 
 # The elements index.html and MANUAL.html use. Others (svg, math, template,
 # iframe, noscript, textarea, ...) change how the browser parses what follows.
@@ -50,12 +50,15 @@ RAW = frozenset({"script", "style", "title"})
 PREFIX = frozenset({"html", "head", "meta"})
 HTML_SPACE = " \t\n\f\r"
 SPACE = "[ \t\n\f\r]"
-DOCTYPE = re.compile(r"<!doctype html>", re.I)
+DOCTYPE = re.compile(r"<!doctype html>", re.I | re.A)
 END_TAG = re.compile(r"</([a-zA-Z][a-zA-Z0-9]*)>")
 START_TAG = re.compile(
     rf'<([a-zA-Z][a-zA-Z0-9]*)((?:{SPACE}+[a-zA-Z][a-zA-Z0-9-]*(?:="[^"]*")?)*){SPACE}*(/?)>'
 )
 ATTRIBUTE = re.compile(r'([a-zA-Z][a-zA-Z0-9-]*)(?:="([^"]*)")?')
+# A browser folds case and splits tokens in ASCII only; Python's lower(), split()
+# and re.I also fold and split non-ASCII text (a dotless i, a Kelvin sign, NBSP).
+ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 class Inventory:
@@ -143,15 +146,15 @@ def inventory(page: str) -> Inventory:
                 refuse(f"<{name}> has a character reference in {key}")
         if "style" in names:
             found.style_attributes.append(name)
-        if name == "link" and "stylesheet" in values.get("rel", "").lower().split():
+        if name == "link" and "stylesheet" in re.split(f"{SPACE}+", values.get("rel", "").translate(ASCII_LOWER)):
             found.stylesheet = True
-        if name == "meta" and values.get("http-equiv", "").lower() == "content-security-policy":
+        if name == "meta" and values.get("http-equiv", "").translate(ASCII_LOWER) == "content-security-policy":
             if found.open != ["html", "head"]:
                 refuse("the policy meta is not a direct child of <head>")
             found.policies.append(values.get("content", ""))
         at = start_tag.end()
         if name in RAW:
-            close = re.compile(f"</{name}>", re.I).search(page, at)
+            close = re.compile(f"</{name}>", re.I | re.A).search(page, at)
             body = "" if close is None else page[at : close.start()]
             # With no "</" or "<!--" inside (the escaped script states), the
             # exact end tag is where a browser ends the text; title text also
