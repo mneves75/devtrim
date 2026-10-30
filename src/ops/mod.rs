@@ -2083,14 +2083,20 @@ mod tests {
                 .is_ok_and(|status| status.success()),
             "chflags uchg failed"
         );
-        for folder in [&sub, &item] {
-            std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o500)).unwrap();
-        }
+        // Only the inner folder is read-only: macOS 15 refuses to rename a
+        // read-only directory at all, which refuses the item before the
+        // quarantine and never reaches the repair this proves.
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        let item_mode = mode(&item);
         let finding = Finding::new("mod", Some(item.clone()), 0, "test", 9, Action::Shred);
 
         let error = apply_trashed_finding(&finding, &context(home.clone()), &trash).unwrap_err();
 
-        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        assert!(
+            format!("{error:#}").contains("entry was restored"),
+            "the removal must be refused after quarantine, or nothing was repaired: {error:#}"
+        );
         assert_eq!(
             std::fs::read_to_string(&locked).unwrap(),
             "keep",
@@ -2098,7 +2104,7 @@ mod tests {
         );
         assert_eq!(
             (mode(&item), mode(&sub)),
-            (0o500, 0o500),
+            (item_mode, 0o500),
             "PV sink/restored-modes: {error:#}"
         );
     }
