@@ -1,42 +1,48 @@
-# DESIGN.md — devtrim docs visual world (v2, replaces v1)
+# DESIGN.md — devtrim site visual world (v3, replaces v2)
 
-## Committed direction (imagegen framework)
-- **Theme paradigm:** Deep Dark default — graphite `oklch(16% 0.012 260)`, elegant
-  phosphor-green accent; pristine light mode as first-class alternative.
-- **Background character:** subtle technical grid (fine 1px lines / dot field),
-  never flat-dead, never gradient blobs.
-- **Typography:** Swiss rational grotesk system stack (`system-ui` set) with
-  strong scale contrast + terminal mono. Tight tracking on display sizes.
-- **Hero architecture:** Giant statement masthead — oversized wordmark,
-  hairline rules, one-line tagline, version chip. No illustration.
-- **Section system:** Swiss grid discipline with a persistent left rail.
-- **Narrative spine:** Tool / precision instrument — calibrated meters,
-  machined hairlines, honest labels.
-- **Signature components (4):** vertical rhythm lines · danger meter strip ·
-  product UI panel stack (terminal window mockups) · off-grid editorial notes.
-- **Second-read moment:** giant ghost section numerals (01–10) anchoring each
-  section's top-left, structural not decorative.
+v3 (2026-10-30) makes the landing page and the manual one world and drops v2's
+decorative devices — ghost section numerals, a background grid, hairline
+rules, a tagline and monospace labels — after an impeccable and taste review
+found them generic and against the owner's rules.
 
-## Palette (dark)
-bg oklch(15% 0.012 260) · surface oklch(19% 0.014 260) · ink oklch(93% 0.008 260)
-muted oklch(66% 0.014 260) · line oklch(28% 0.014 260)
-accent (signal green) oklch(78% 0.17 155) · warn amber oklch(80% 0.14 80) · bad red oklch(68% 0.18 25)
+## Direction
+- **The proof is the product.** The pictures are devtrim's own screens,
+  rendered from the real binary (`scripts/site/frames.py`); no mock-ups, no
+  stock imagery, no illustration.
+- **Theme:** near-black ground, one signal accent; the manual also has a
+  first-class light mode that follows the OS until the visitor chooses.
+- **Type:** the platform sans for everything readable; the monospace face only
+  for real code, commands, terminal frames and keys. Strong scale contrast,
+  tight tracking on display sizes, headlines of two lines or fewer.
+- **Surfaces:** separated by a step in tone, never a line or a shadow; real
+  tables and form fields may keep their lines. Near-square corners
+  (`--radius: 0.25rem`), flat buttons, no gradients, no glows.
+- **Order is shown by position and words**, never by `01/02/03` numbering; a
+  real sequence is an `<ol>`.
+- **Commands are grouped by what happens**, in the TUI's own words:
+  READ-ONLY (see before anything moves), TRASH (moves to the Trash first),
+  PERMANENT (a typed command or `--shred`).
 
-## Palette (light)
-bg oklch(97.5% 0.004 260) · surface white · ink oklch(22% 0.02 260)
-muted oklch(46% 0.02 260) · line oklch(88% 0.008 260)
-accent oklch(50% 0.16 155) · warn oklch(62% 0.14 70) · bad oklch(52% 0.19 25)
+## Palette (dark, both pages)
+bg #0a0a0a · surface #121212 · raised #1a1a1a · ink #efefec · muted #b4b4ae
+(secondary notes only; running text is full ink) · accent #c8ff38 on ink
+#101400 · amber #ffc53d · red #ff6b57
 
-## Hard rules from critique (must-fix in v2)
-1. Theme toggle must actually override: set `documentElement.style.colorScheme`.
-2. All content reflows at 320px: tables become stacked definition lists, `pre`
-   gets horizontal scroll within its own box only.
-3. Copy buttons: only on single safe commands. Multi-step recipes copy nothing;
-   output samples get no button. Danger-carrying blocks show a warning chip.
-4. Command cards grouped by task: Inspect → Reclaim → Nuclear.
-5. Chevron/rotation transitions inside `prefers-reduced-motion: no-preference`.
-6. Filter shows empty-state message + result count.
-7. Em-dash density in prose reduced (detector advisory).
+## Palette (light, manual)
+Neutral white ground, ink near #141414, an accent dark enough for AA on white,
+and AA amber/red variants. Never a cream or warm off-white ground.
+
+## Rules
+1. Danger semantics: green = safe, amber = think, red = irreversible, and each
+   meaning is also written (READ-ONLY, TRASH, PERMANENT).
+2. All content reflows at 320 px; terminal frames keep an 11 px floor and
+   scroll inside their own box; tables stack into labelled rows.
+3. Copy buttons only on single safe commands; multi-step recipes copy nothing.
+4. Inline scripts and styles are admitted by CSP hash only; no `style`
+   attributes (`scripts/site/csp.py`).
+5. Motion is transform and opacity, with a `prefers-reduced-motion` fallback
+   and a print style that shows everything.
+6. Targets at least 24×24 px, visible focus rings, AA contrast.
 
 ## Offline disk dashboard
 

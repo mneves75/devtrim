@@ -4,7 +4,23 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [0.12.2] - Unreleased
 
+### Fixed
+- `roots = ["~"]` and `--root ~` scan the home folder. A bare `~` read as a relative folder named `~`, so the run warned that the root did not exist and scanned nothing; `~/dev` always worked.
+- An explicit root (`--root` or `roots`) that is the home folder or contains it is still scanned, and the run now says so in a warning: the walk enters every folder under it, which is slow and can trigger macOS privacy prompts. The default roots skip such a folder.
+- An apply whose journal cannot be opened for writing is refused before it starts, after the confirmation, and `--json` reports `"applied": false` with no summary. It used to report `"applied": true` with a zero summary beside the journal error. The JSON contract now says when `applied` is true.
+- The manual's danger scale is drawn again (it had no styles and read "12345678910"), and its theme toggle switches the page between light and dark; before, it changed only the label.
+
+### Added
+- `scripts/verify-live.sh [<version>]`: the live proof after each deploy. It checks that the site serves the reviewed `index.html`, `MANUAL.html` and `styles.css` byte for byte over HTTPS with their CSP, and, given a version, that the release is immutable and its asset matches its checksum and provenance attestation. `scripts/tests/verify-live-controls.py` proves it fails on drift.
+- `scripts/release.sh` requires the security-gate record for the exact commit and target (beta: staging, stable: production) before it tags, and writes the verdict into the annotated tag message (`security gate: PASS`, or `WAIVED` with the waived IDs).
+- `scripts/site/csp.py --check|--write` keeps each page's policy to the exact hashes of its inline scripts and styles.
+
 ### Changed
+- Both pages admit their inline styles by hash: `style-src` no longer carries `'unsafe-inline'`, and no page has a `style` attribute.
+- The landing page shows its real purge preview on the first screen, keeps terminal frames legible on a phone (they shrank to 5 px; now at least 11 px, scrolling inside their box), and groups the commands by what happens: see before anything moves, move to the Trash first, remove by typed command.
+- The manual shares the landing page's palette and wordmark, groups its commands as READ-ONLY, TRASH and PERMANENT in the TUI's own words, drops its decorative section numerals, grid lines and monospace labels, opens with its title on a phone, and gives copy buttons and the theme toggle 24 px targets.
+- The repository's `.gitignore` ignores `/.scratch/`, where release-gate records and evidence live.
+- AGENTS.md names the hosted tool pins (TruffleHog 3.97.1, npm 11.17.0 and the rest) as authoritative for release evidence.
 - The brag video's Remotion build (`media/brag/source/remotion`) pins `zod` 4.6.7 and `fast-uri` 3.1.9 through npm overrides, as `video/` does, clearing GHSA-mrhx-c7xc-m3w5 (high) and four `fast-uri` advisories Dependabot reported there.
 
 ## [0.12.1] - 2026-10-29

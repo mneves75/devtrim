@@ -469,7 +469,7 @@ Non-negotiable boundaries:
   targets, a strict clean npm install plus low-severity audit/lint/format/build
   gates for the demo video, Gitleaks, and TruffleHog; results are recorded in
   the matching changelog section only after they execute.
-- Shipped HTML uses a deny-by-default CSP; inline scripts are admitted only by exact SHA-256 hashes.
+- Shipped HTML uses a deny-by-default CSP; inline scripts and `<style>` elements are admitted only by exact SHA-256 hashes, never `'unsafe-inline'`, and the pages carry no `style` attributes. `scripts/site/csp.py --check` fails a stale hash; `scripts/verify-live.sh` checks the served pages after each deploy.
 
 ## Known limitations
 
