@@ -6,9 +6,12 @@ an inline style element or style attribute spelled any way a browser accepts
 (upper case, whitespace before an end tag's bracket, an attribute after a
 slash, a style inside SVG), an inline script whose only "src" is data-src, a
 self-closing script or style and a repeated attribute (each read one way by the
-browser and another by a naive reader), any script or style once SVG or
-MathML has opened (parsed as foreign content, even past a stray end tag), an element left unclosed at the end, a
-second policy meta, and an 'unsafe-inline' source must each fail.
+browser and another by a naive reader), any script or style once SVG or MathML
+has opened (parsed as foreign content, even past a stray end tag), an element
+left unclosed at the end, markup outside the subset csp.py reads (an unlisted
+element such as iframe or template, srcdoc or an event handler, a mis-nested end
+tag, the policy meta outside <head>), a second policy meta, and an
+'unsafe-inline' source must each fail.
 """
 
 from __future__ import annotations
@@ -44,6 +47,12 @@ def hashed_in_svg(manual: str, opening: str = "<svg>") -> str:
     return re.sub(r"(style-src [^;\"]*)", lambda match: f"{match.group(1)} {digest}", page, count=1)
 
 
+def csp_moved(manual: str, opening: str, closing: str) -> str:
+    """The page with its policy meta moved out of <head> into the body."""
+    meta = re.search(r'<meta http-equiv="Content-Security-Policy"[^>]*>', manual).group(0)
+    return manual.replace(meta, "", 1).replace("</body>", f"{opening}{meta}{closing}</body>", 1)
+
+
 def main() -> int:
     failures = []
     for name in ("index.html", "MANUAL.html"):
@@ -74,6 +83,18 @@ def main() -> int:
         "self-closing-style": manual.replace("</body>", "<style/>p { color: red; }</style></body>", 1),
         "self-closing-script": manual.replace("</body>", "<script/>window.x = 1;</script></body>", 1),
         "duplicate-rel-attribute": manual.replace("</head>", '<link rel="stylesheet" rel="icon" href="x.css"></head>', 1),
+        # The subset rule: only the elements these pages use, closed in
+        # order, no srcdoc or event handler, the policy meta in <head>.
+        "policy-meta-in-template": csp_moved(manual, "<template>", "</template>"),
+        "policy-meta-in-noscript": csp_moved(manual, "<noscript>", "</noscript>"),
+        "policy-meta-in-body": csp_moved(manual, "<div>", "</div>"),
+        "srcdoc-iframe": manual.replace(
+            "</body>", '<iframe srcdoc="<style>p{color:red}</style>"></iframe></body>', 1
+        ),
+        "bare-iframe": manual.replace("</body>", "<iframe></iframe></body>", 1),
+        "unlisted-element": manual.replace("</body>", "<aside>x</aside></body>", 1),
+        "misnested-end-tag": manual.replace("</body>", "<p><span>x</p></span></body>", 1),
+        "event-handler-attribute": manual.replace("</body>", '<div onclick="x()">x</div></body>', 1),
         "second-policy-meta": manual.replace(
             "<head>", '<head><meta http-equiv="content-security-policy" content="default-src *">', 1
         ),
@@ -87,7 +108,7 @@ def main() -> int:
             page = base / f"{label}.html"
             page.write_text(text)
             if check(page).returncode == 0:
-                failures.append(f"{label}: csp.py --check accepted a page a browser would block")
+                failures.append(f"{label}: csp.py --check accepted a page it must refuse")
     finally:
         shutil.rmtree(base)
 

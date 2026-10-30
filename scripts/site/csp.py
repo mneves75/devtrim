@@ -9,9 +9,11 @@ policy is left as written. --check fails when a page's policy lists anything
 else, admits 'unsafe-inline', or the page carries a style="" attribute, which
 no hash can admit. --write rewrites the two lists in place.
 
-The page is read with the standard library's HTML tokenizer, not patterns:
-a browser accepts <STYLE>, </style >, <div/style=...> and data-src as
-written, and the inventory must see what the browser sees.
+The page is read with the standard library's HTML tokenizer, not patterns,
+and must stay inside the simple subset these pages are written in: only the
+elements they use, every one closed in order, no event-handler or srcdoc
+attribute, and the policy meta a direct child of <head>. Anything else is
+refused rather than modelled; a real browser load stays the ground truth.
 """
 
 from __future__ import annotations
@@ -28,6 +30,17 @@ from pathlib import Path
 META = re.compile(r'(<meta\s+http-equiv="Content-Security-Policy"\s+content=")([^"]*)(")', re.I)
 
 
+# The elements index.html and MANUAL.html use. Others (svg, math, template,
+# iframe, object, textarea, ...) change how the browser parses what follows.
+ELEMENTS = frozenset(
+    """a article b body button code dd details div dl dt em figcaption figure
+    footer h1 h2 h3 head header html i input kbd label li link main meta nav
+    noscript ol output p pre script section span strong style summary table
+    tbody td th thead title tr track ul video""".split()
+)
+VOID = frozenset({"input", "link", "meta", "track"})
+
+
 class Inventory(HTMLParser):
     """Inline scripts, style elements, style attributes, stylesheets and CSP metas."""
 
@@ -39,16 +52,21 @@ class Inventory(HTMLParser):
         self.stylesheet = False
         self.policies: list[str] = []
         self.ambiguous: list[str] = []
-        self.foreign = False
+        self.open: list[str] = []
         self.inline: str | None = None
         self.text = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in ELEMENTS:
+            self.ambiguous.append(f"<{tag}> is outside the elements this check reads")
         names = {name for name, _ in attrs}
         if len(names) != len(attrs):
             # A browser keeps the first of two equal attributes; refuse rather
             # than guess which one a reader of this page would act on.
             self.ambiguous.append(f"<{tag}> repeats an attribute")
+        for name in names:
+            if name == "srcdoc" or name.startswith("on"):
+                self.ambiguous.append(f"<{tag}> carries {name}, which holds code or a page")
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")
@@ -57,32 +75,33 @@ class Inventory(HTMLParser):
         if tag == "link" and "stylesheet" in values.get("rel", "").lower().split():
             self.stylesheet = True
         if tag == "meta" and values.get("http-equiv", "").lower() == "content-security-policy":
+            # A browser ignores a policy meta anywhere but in the head.
+            if self.open != ["html", "head"]:
+                self.ambiguous.append("the policy meta is not a direct child of <head>")
             self.policies.append(values.get("content", ""))
-        if tag in ("svg", "math"):
-            # Where foreign content ends depends on tree-construction rules
-            # (stray end tags are ignored, some HTML tags break out), which
-            # this reader does not model, so the flag never clears.
-            self.foreign = True
-        if tag in ("script", "style") and self.foreign:
-            # Foreign content decodes entities in its text, so the hash a
-            # browser computes is not the hash of the raw text read here.
-            self.ambiguous.append(f"<{tag}> after <svg> or <math> may be parsed as foreign content")
+        if tag not in VOID:
+            self.open.append(tag)
         if (tag == "script" and "src" not in names) or tag == "style":
             self.inline, self.text = tag, ""
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        # A browser ignores the slash on an HTML script or style and reads
-        # what follows as its contents; the tokenizer here would not.
-        if tag in ("script", "style"):
+        # A browser ignores the slash on an HTML element that is not void and
+        # reads what follows as its contents; the tokenizer here would not.
+        if tag not in VOID:
             self.ambiguous.append(f"<{tag}/> is not self-closing in HTML")
         self.handle_starttag(tag, attrs)
-        self.inline = None
 
     def handle_data(self, data: str) -> None:
         if self.inline:
             self.text += data
 
     def handle_endtag(self, tag: str) -> None:
+        if self.open and self.open[-1] == tag:
+            self.open.pop()
+        else:
+            # A browser repairs mis-nesting by tree-construction rules this
+            # check does not model.
+            self.ambiguous.append(f"</{tag}> does not close the element open there")
         if tag == self.inline:
             (self.scripts if tag == "script" else self.styles).append(self.text)
             self.inline = None
@@ -92,9 +111,9 @@ def inventory(page: str) -> Inventory:
     found = Inventory()
     found.feed(page)
     found.close()
-    if found.inline:
-        # A browser runs an element left open at the end of the page.
-        found.ambiguous.append(f"<{found.inline}> is never closed")
+    if found.open:
+        # A browser runs a script or style left open at the end of the page.
+        found.ambiguous.append(f"<{found.open[-1]}> is never closed")
     return found
 
 
