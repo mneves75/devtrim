@@ -139,11 +139,14 @@ if ! gate_verdict=$(jq -er --arg commit "$release_commit" --arg tree "$release_t
   | select($target != "production" or .independent_acceptance == "pass")
   | if .verdict == "pass" and (.waivers | length) == 0 then "PASS"
     elif .verdict == "waived" and (.waivers | length) > 0
-      and all(.waivers[]; (.id | type) == "string" and (.id | test("^[A-Za-z0-9:._-]+$")))
+      and all(.waivers[]; (.id | type) == "string" and (.id | test("^[A-Za-z0-9:._-]+$"))
+        and (.expires | type) == "string"
+        and (.expires | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+        and (.expires | fromdateiso8601) > now)
     then "WAIVED " + ([.waivers[].id] | join(" "))
     else empty end' "$gate_record"); then
   echo "ERROR: security-gate record ${gate_record} does not clear ${release_commit} (tree ${release_tree}) for ${gate_target}"
-  echo "ACTION: the record must name this commit, tree and target with no open blocker and a pass or waived verdict"
+  echo "ACTION: the record must name this commit, tree and target with no open blocker and a pass verdict, or a waived one whose every waiver has an ID and an unexpired YYYY-MM-DDTHH:MM:SSZ expiry"
   exit 1
 fi
 echo "==> security gate: ${gate_verdict} (${gate_target})"

@@ -12,7 +12,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ### Added
 - `scripts/verify-live.sh [<version>]`: the live proof after each deploy. It checks that the site serves the reviewed `index.html`, `MANUAL.html` and `styles.css` byte for byte over HTTPS with their CSP, and, given a version, that the release is immutable and its asset matches its checksum and provenance attestation. `scripts/tests/verify-live-controls.py` proves it fails on drift.
-- `scripts/release.sh` requires the security-gate record for the exact commit and target (beta: staging, stable: production) before it tags, and writes the verdict into the annotated tag message (`security gate: PASS`, or `WAIVED` with the waived IDs).
+- `scripts/release.sh` requires the security-gate record for the exact commit and target (beta: staging, stable: production) before it tags, and writes the verdict into the annotated tag message (`security gate: PASS`, or `WAIVED` with the waived IDs). A waived record clears only while every waiver carries an ID and an unexpired `YYYY-MM-DDTHH:MM:SSZ` expiry.
 - `scripts/site/csp.py --check|--write` keeps each page's policy to the exact hashes of its inline scripts and styles.
 
 ### Changed

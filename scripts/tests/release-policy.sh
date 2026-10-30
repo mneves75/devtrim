@@ -679,6 +679,12 @@ write_gate_record staging pass blocked '[]' "$(printf '0%.0s' {1..40})"
 expect_gate_refusal 1.2.3-beta1 'does not clear' 'a record for another tree'
 write_gate_record production pass blocked '[]'
 expect_gate_refusal 1.2.3 'does not clear' 'production without independent acceptance'
+write_gate_record production waived pass '[{"id": "SEC-19", "owner": "@owner", "reason": "fixture", "expires": "2000-01-01T00:00:00Z"}]'
+expect_gate_refusal 1.2.3 'does not clear' 'an expired waiver'
+write_gate_record production waived pass '[{"id": "SEC-19", "owner": "@owner", "reason": "fixture", "expires": "next month"}]'
+expect_gate_refusal 1.2.3 'does not clear' 'a malformed waiver expiry'
+write_gate_record production waived pass '[{"id": "SEC-19", "owner": "@owner", "reason": "fixture"}]'
+expect_gate_refusal 1.2.3 'does not clear' 'a waiver without an expiry'
 write_gate_record staging pass blocked '[]'
 
 homebrew_invocations="$test_root/homebrew-invocations"
