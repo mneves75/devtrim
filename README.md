@@ -594,7 +594,9 @@ offered. Unset, it is `active_days` or 30, whichever is longer, so lowering
 
 Explicit `--root` flags replace configured roots, which replace the default
 project folders. Existing roots are resolved before preview; an explicit root
-that does not exist is warned about instead of silently scanning nothing, a
+that does not exist is warned about instead of silently scanning nothing, a bare
+`~` names the home folder, an explicit root that is the home folder or contains
+it is scanned with a warning, a
 default folder that is absent is simply not scanned, and one that cannot be
 resolved or read, or that links to the home folder or above it, is skipped with
 a warning. Two names for one folder are
@@ -614,7 +616,7 @@ Cleanup JSON mode returns one envelope, including empty and failed results:
 }
 ```
 
-Applied commands additionally include `summary`. If a target fails, the summary still records the work that succeeded, `errors` names each failure, and the process exits nonzero; `caches`, `agents`, `trash-empty`, `xcode`, `artifacts`, and `node-modules` continue past a refused item — `artifacts` and `node-modules` after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and `purge` runs its `node-modules` and `artifacts` halves independently. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string. `summary.bytes_trashed_estimate` is the part of `bytes_freed_estimate` that was moved to Trash and is still on disk until the Trash is emptied. Findings from `node-modules`, `artifacts`, and `purge` carry `project`, the repository that owns the target — for grouping only, never deletion authority.
+`applied` is true once the apply phase has started, even when every target is then refused; it is false for a preview and for an apply refused before it starts — a declined confirmation, a missing consent flag, or a journal that cannot be opened for writing. Applied commands additionally include `summary`. If a target fails, the summary still records the work that succeeded, `errors` names each failure, and the process exits nonzero; `caches`, `agents`, `trash-empty`, `xcode`, `artifacts`, and `node-modules` continue past a refused item — `artifacts` and `node-modules` after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and `purge` runs its `node-modules` and `artifacts` halves independently. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string. `summary.bytes_trashed_estimate` is the part of `bytes_freed_estimate` that was moved to Trash and is still on disk until the Trash is emptied. Findings from `node-modules`, `artifacts`, and `purge` carry `project`, the repository that owns the target — for grouping only, never deletion authority.
 
 `devtrim history --json` emits its own single document —
 `{"operation":"history","entries":[…],"errors":[…]}` — where each entry is a

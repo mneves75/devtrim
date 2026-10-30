@@ -638,6 +638,34 @@ CASES = (
         marker="PV eval/agents-continue", target="eval_safety",
     ),
     Case(
+        name="eval/safety-journal-preflight",
+        relative_path="src/app.rs",
+        # The journal is first opened by the sink, after the apply has begun,
+        # so a refused journal reports `applied: true`.
+        before="    if let Err(error) = crate::journal::check_writable(ctx) {\n",
+        after="    if let Err(error) = Ok::<(), anyhow::Error>(()) {\n",
+        tests=("eval_an_unwritable_journal_refuses_before_the_apply_starts",),
+        marker="PV eval/journal-preflight", target="eval_safety",
+    ),
+    Case(
+        name="eval/tilde-root",
+        relative_path="src/safety.rs",
+        # A bare `~` is taken as written again: a relative folder named `~`.
+        before='    if value == "~" {\n',
+        after="    if false {\n",
+        tests=("eval_a_bare_tilde_root_is_the_home_folder_and_is_disclosed",),
+        marker="PV eval/tilde-root", target="evals",
+    ),
+    Case(
+        name="eval/home-root-warning",
+        relative_path="src/safety.rs",
+        # An explicit root holding the home folder is scanned without a word.
+        before="                if holds_home(&resolved, home) {\n",
+        after="                if false {\n",
+        tests=("eval_a_bare_tilde_root_is_the_home_folder_and_is_disclosed",),
+        marker="PV eval/home-root-warning", target="evals",
+    ),
+    Case(
         name="eval/safety-journal-symlink",
         relative_path="src/journal.rs",
         before="            flags | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,\n",

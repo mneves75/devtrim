@@ -604,6 +604,11 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
         };
     }
 
+    // Before the confirmation: a plan whose first attempt could not be
+    // journaled never starts, so nobody approves an apply that cannot run.
+    if let Err(error) = crate::journal::check_writable(ctx) {
+        return command_error(operation.name(), false, &findings, ctx, error);
+    }
     let danger = safety::plan_danger(&findings);
     if let Err(error) = safety::gate(danger, ctx, &findings) {
         return command_error(operation.name(), false, &findings, ctx, error);

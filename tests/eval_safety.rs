@@ -605,6 +605,56 @@ fn eval_a_symlinked_journal_refuses_apply_without_touching_its_destination() {
     assert_journaled(&sandbox, "caches", "shred", &[target]);
 }
 
+/// A journal that cannot be opened refuses the apply before it starts, so the
+/// document says nothing was applied: `applied` is false, no summary claims
+/// zero work done, and the target is still there. The control is the same
+/// plan with a writable journal.
+#[test]
+fn eval_an_unwritable_journal_refuses_before_the_apply_starts() {
+    let sandbox = Sandbox::in_target("eval-journal-unwritable");
+    let target = cache(&sandbox, ".cache/node/corepack");
+    std::fs::create_dir_all(sandbox.journal()).unwrap();
+    std::fs::set_permissions(
+        sandbox.journal().parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let result = apply(&sandbox, "caches");
+    let document = json(&result);
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            scratch: vec![sandbox.journal().with_file_name("journal.lock")],
+            ..Allowed::default()
+        },
+        "eval/journal-unwritable",
+    );
+    assert!(target.exists());
+    assert!(!result.status.success(), "{document}");
+    assert_eq!(
+        document["applied"], false,
+        "PV eval/journal-preflight: an apply refused before it started claimed to have applied: {document}"
+    );
+    assert!(document.get("summary").is_none(), "{document}");
+    assert!(
+        document["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error.as_str().unwrap().contains("apply journal")),
+        "{document}"
+    );
+
+    let control = Sandbox::in_target("eval-journal-unwritable-control");
+    let target = cache(&control, ".cache/node/corepack");
+    let result = apply(&control, "caches");
+    assert!(result.status.success(), "{}", json(&result));
+    assert_eq!(json(&result)["applied"], true);
+    assert!(!target.exists());
+}
+
 /// Hardlinks an unrelated sentinel as `leaf` in the journal folder and proves
 /// apply refuses before changing the sentinel's bytes or mode, or the cache.
 fn assert_hardlinked_journal_leaf_refused(leaf: &str, allowed: &[&str], marker: &str) {

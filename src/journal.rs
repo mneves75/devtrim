@@ -281,13 +281,7 @@ fn append_at(location: &JournalLocation, record: &JournalRecord) -> Result<()> {
         anyhow::bail!("apply journal record exceeds {MAX_JOURNAL_RECORD_BYTES} byte limit");
     }
     line.push(b'\n');
-    let mut file = open_regular_at(
-        &location.parent,
-        &location.leaf,
-        OFlags::RDWR | OFlags::APPEND | OFlags::CREATE,
-        Mode::from(0o600),
-    )?;
-    file.set_permissions(Permissions::from_mode(0o600))?;
+    let mut file = open_journal_file(location)?;
     flock(&file, FlockOperation::LockExclusive).map_err(io::Error::from)?;
     // A write cut short (ENOSPC is likely on the disk this tool is cleaning)
     // leaves a line with no terminator. Appending straight onto it would fuse
@@ -303,6 +297,30 @@ fn append_at(location: &JournalLocation, record: &JournalRecord) -> Result<()> {
     file.write_all(&line)?;
     file.flush()?;
     file.sync_data()?;
+    Ok(())
+}
+
+fn open_journal_file(location: &JournalLocation) -> io::Result<File> {
+    let file = open_regular_at(
+        &location.parent,
+        &location.leaf,
+        OFlags::RDWR | OFlags::APPEND | OFlags::CREATE,
+        Mode::from(0o600),
+    )?;
+    file.set_permissions(Permissions::from_mode(0o600))?;
+    Ok(file)
+}
+
+/// Opens the journal, its folder and its lock exactly as `begin` will, writing
+/// no record, so an apply that could not journal its first attempt is refused
+/// before it starts rather than after the operation has begun.
+pub(crate) fn check_writable(ctx: &Ctx) -> Result<()> {
+    let location = JournalLocation::open(&ctx.journal_path, ParentMode::Create)
+        .with_context(|| format!("cannot open apply journal: {}", ctx.journal_path.display()))?
+        .ok_or_else(|| anyhow::anyhow!("journal parent unexpectedly disappeared"))?;
+    drop(acquire_apply_lock(&location)?);
+    open_journal_file(&location)
+        .with_context(|| format!("cannot write apply journal: {}", ctx.journal_path.display()))?;
     Ok(())
 }
 

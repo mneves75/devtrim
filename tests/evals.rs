@@ -1615,11 +1615,11 @@ fn eval_a_bare_tilde_root_is_the_home_folder_and_is_disclosed() {
     assert_eq!(
         actionable_targets(&json(&flagged)),
         vec![project.join(".next")],
-        "eval/tilde-root: `--root ~` must scan the home folder: {stderr}"
+        "PV eval/tilde-root: `--root ~` must scan the home folder: {stderr}"
     );
     assert!(
         stderr.contains(&warning),
-        "eval/home-root-warning: an explicit home root must be disclosed: {stderr}"
+        "PV eval/home-root-warning: an explicit home root must be disclosed: {stderr}"
     );
 
     write(
