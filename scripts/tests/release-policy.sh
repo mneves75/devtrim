@@ -705,6 +705,9 @@ write_gate_record production pass pass '[]'
 sed -i.bak 's/"verdict": "pass",/"verdict": "block", "verdict": "pass",/' \
   "$subject/.scratch/security-gate/$current_head/production.json"
 expect_gate_refusal 1.2.3 'without a repeated key' 'a record repeating a key'
+# A repeated container key leaves no repeated leaf path behind it.
+write_gate_record production pass pass '[{"id": "SEC-19", "expires": "2000-01-01T00:00:00Z"}], "waivers": []'
+expect_gate_refusal 1.2.3 'without a repeated key' 'a record repeating a container key'
 write_gate_record production pass pass '{}'
 expect_gate_refusal 1.2.3 'does not clear' 'waivers that are not a list'
 write_gate_record production waived pass '{"a": {"id": "SEC-19", "owner": "@owner", "reason": "fixture", "expires": "2099-01-02T00:00:00Z"}}'

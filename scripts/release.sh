@@ -134,11 +134,22 @@ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required to read the secur
   echo "ACTION: run the mneves-security deploy gate on this exact commit and write ${gate_record}"
   exit 1
 }
-# jq keeps the last of two equal keys; its stream form lists each leaf path as
-# written, so a repeated path is a repeated key and the record is ambiguous.
-if ! repeated_keys=$(jq -c --stream 'select(length == 2) | .[0]' "$gate_record" | sort | uniq -d) ||
-  [[ -n "$repeated_keys" ]]; then
-  echo "ERROR: security-gate record ${gate_record} does not clear ${release_commit}: it must be one JSON document without a repeated key (repeated: ${repeated_keys//$'\n'/ })"
+# jq keeps the last of two equal keys, so a block verdict or a waiver list
+# overridden later in the same object would clear. Python's parser reports
+# every object member as written: a repeated name, or a second document,
+# makes the record ambiguous and it is refused.
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required to read the security-gate record"; exit 1; }
+if ! python3 -I -c '
+import json, sys
+def unique(pairs):
+    names = [name for name, _ in pairs]
+    if len(names) != len(set(names)):
+        raise ValueError("repeated key")
+    return dict(pairs)
+with open(sys.argv[1], encoding="utf-8") as record:
+    json.load(record, object_pairs_hook=unique)
+' "$gate_record" 2>/dev/null; then
+  echo "ERROR: security-gate record ${gate_record} does not clear ${release_commit}: it must be one JSON document without a repeated key"
   exit 1
 fi
 # Slurped, so a file holding several documents is refused whole rather than
