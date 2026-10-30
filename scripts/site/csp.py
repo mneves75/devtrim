@@ -11,7 +11,8 @@ no hash can admit. --write rewrites the two lists in place.
 
 The page is read with the standard library's HTML tokenizer, not patterns,
 and must stay inside the simple subset these pages are written in: only the
-elements they use, every one closed in order, no event-handler or srcdoc
+elements they use, every one closed in order and where these pages put it (so
+the browser never closes the head early), no event-handler or srcdoc
 attribute, and the policy meta a direct child of <head>. Anything else is
 refused rather than modelled; a real browser load stays the ground truth.
 """
@@ -39,6 +40,15 @@ ELEMENTS = frozenset(
     tbody td th thead title tr track ul video""".split()
 )
 VOID = frozenset({"input", "link", "meta", "track"})
+# What these pages put directly inside the document, its root and its head. A
+# browser closes the head by itself at anything else (a body element, text),
+# so a policy meta written after it would land in the body and be ignored.
+CONTENT = {
+    (): {"html"},
+    ("html",): {"head", "body"},
+    ("html", "head"): {"meta", "link", "title", "style", "script", "noscript"},
+    ("html", "head", "noscript"): {"meta", "link", "style"},
+}
 
 
 class Inventory(HTMLParser):
@@ -59,6 +69,9 @@ class Inventory(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag not in ELEMENTS:
             self.ambiguous.append(f"<{tag}> is outside the elements this check reads")
+        allowed = CONTENT.get(tuple(self.open))
+        if allowed is not None and tag not in allowed:
+            self.ambiguous.append(f"<{tag}> is not allowed directly inside {self.where()}")
         names = {name for name, _ in attrs}
         if len(names) != len(attrs):
             # A browser keeps the first of two equal attributes; refuse rather
@@ -94,6 +107,11 @@ class Inventory(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self.inline:
             self.text += data
+        elif tuple(self.open) in CONTENT and data.strip():
+            self.ambiguous.append(f"text directly inside {self.where()}")
+
+    def where(self) -> str:
+        return f"<{self.open[-1]}>" if self.open else "the document"
 
     def handle_endtag(self, tag: str) -> None:
         if self.open and self.open[-1] == tag:

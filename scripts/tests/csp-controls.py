@@ -10,7 +10,7 @@ browser and another by a naive reader), any script or style once SVG or MathML
 has opened (parsed as foreign content, even past a stray end tag), an element
 left unclosed at the end, markup outside the subset csp.py reads (an unlisted
 element such as iframe or template, srcdoc or an event handler, a mis-nested end
-tag, the policy meta outside <head>), a second policy meta, and an
+tag, a body element or text in <head>, the policy meta outside <head>), a second policy meta, and an
 'unsafe-inline' source must each fail.
 """
 
@@ -88,6 +88,14 @@ def main() -> int:
         "policy-meta-in-template": csp_moved(manual, "<template>", "</template>"),
         "policy-meta-in-noscript": csp_moved(manual, "<noscript>", "</noscript>"),
         "policy-meta-in-body": csp_moved(manual, "<div>", "</div>"),
+        # A body element or text in the head makes the browser close the
+        # head there, so the policy meta after it lands in the body.
+        "body-element-before-policy": manual.replace(
+            '<meta http-equiv="Content-Security-Policy"', '<div></div><meta http-equiv="Content-Security-Policy"', 1
+        ),
+        "text-before-policy": manual.replace(
+            '<meta http-equiv="Content-Security-Policy"', 'x<meta http-equiv="Content-Security-Policy"', 1
+        ),
         "srcdoc-iframe": manual.replace(
             "</body>", '<iframe srcdoc="<style>p{color:red}</style>"></iframe></body>', 1
         ),
