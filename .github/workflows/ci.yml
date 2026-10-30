@@ -143,6 +143,7 @@ jobs:
           python3 scripts/tests/tui.py target/debug/devtrim
           python3 scripts/tests/read-only-views.py target/debug/devtrim
           python3 -B scripts/tests/pageload-controls-validation.py
+          python3 -B scripts/tests/verify-live-controls.py
           python3 scripts/tests/planted-violations.py
 
       - name: MSRV tests

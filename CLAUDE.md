@@ -41,6 +41,7 @@ checked 2026-09-04. User instructions take precedence over skill procedures.
 
 ## Commands
 - Rust-focused local checks: `bash scripts/verify.sh focused`; broader cached/offline checks: `bash scripts/verify.sh offline`. Neither replaces fresh audits, TruffleHog, fuzz, video, or review gates.
+- Live proof after each deploy and before the next tag: `scripts/verify-live.sh [<version>]` checks the served site (HTTP 200 over TLS, CSP meta, bytes equal to `origin/main`) and, given a version, the immutable release, its checksum and attestation; `python3 -B scripts/tests/verify-live-controls.py` proves it fails on drift.
 - Real terminal smoke: `python3 scripts/tests/tui.py target/debug/devtrim` (isolated HOME/PATH, explicit terminal dimensions, visible-content assertions).
 - Feature evals: `rustup run 1.98.1 cargo test --locked --test evals --test eval_system --test eval_reports --test eval_safety` (part of the test gate; every command against planted fixtures through the real binary).
 - Native Docker (opt-in, needs Apple `container`, the Docker CLI with buildx, and network): `scripts/tests/native-docker.sh target/debug/devtrim`.
@@ -188,7 +189,7 @@ the project's own deployment target.
 ## Release
 1. Bump `Cargo.toml` and every version reference packaged with the artifact. This includes regenerating `fuzz/Cargo.lock` (`cd fuzz && cargo update -p devtrim --precise <version>`): the fuzz crate depends on `devtrim` by path, so its tracked lockfile still pins the old version and the hosted "fuzz gates leave the checkout clean" step fails on a dirty `fuzz/Cargo.lock` after every bump.
 2. Add the dated `CHANGELOG.md` section; update README, manual, security, and agent docs. Keep the production landing page on the live stable version during beta staging.
-3. Run every command above; MSRV must execute and may never be skipped. Also run a real PTY TUI cancel flow against a disposable home, shell syntax and ShellCheck for every script under the release policy, `actionlint`, Gitleaks, and TruffleHog.
+3. Run every command above; MSRV must execute and may never be skipped. Also run a real PTY TUI cancel flow against a disposable home, shell syntax and ShellCheck for every script under the release policy, `actionlint`, Gitleaks, and TruffleHog. The hosted workflows pin the authoritative tool versions — TruffleHog 3.97.1, Gitleaks 8.30.1, actionlint 1.7.12, ShellCheck 0.11.0, Node 24.19.0 with npm 11.17.0 (`release-policy.sh` asserts the pins); a local gate run names the versions it used beside its result, and a newer local TruffleHog or npm counts only next to the pinned hosted run.
 4. Run the local autoreview helper in local mode and inspect the final diff.
 5. Commit and push a clean tree.
 6. GitHub immutable releases must be enabled. Stage with `scripts/release.sh <version>-beta<N>`; every retry uses a new `N`. The credential-bearing script performs provenance-only preflight and pushes an annotated tag; read-only hosted jobs rerun every gate before the no-checkout publisher receives release-write/OIDC authority.
