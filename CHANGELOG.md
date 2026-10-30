@@ -7,12 +7,12 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ### Fixed
 - `roots = ["~"]` and `--root ~` scan the home folder. A bare `~` read as a relative folder named `~`, so the run warned that the root did not exist and scanned nothing; `~/dev` always worked.
 - An explicit root (`--root` or `roots`) that is the home folder or contains it is still scanned, and the run now says so in a warning: the walk enters every folder under it, which is slow and can trigger macOS privacy prompts. The default roots skip such a folder.
-- An apply whose journal cannot be opened for writing is refused before it starts, after the confirmation, and `--json` reports `"applied": false` with no summary. It used to report `"applied": true` with a zero summary beside the journal error. The JSON contract now says when `applied` is true.
+- An apply whose journal cannot be opened for writing (`trash-empty` included) is refused before it starts, after the confirmation, and `--json` reports `"applied": false` with no summary. It used to report `"applied": true` with a zero summary beside the journal error. The JSON contract now says when `applied` is true.
 - The manual's danger scale is drawn again (it had no styles and read "12345678910"), and its theme toggle switches the page between light and dark; before, it changed only the label.
 
 ### Added
 - `scripts/verify-live.sh [<version>]`: the live proof after each deploy. It checks that the site serves the reviewed `index.html`, `MANUAL.html` and `styles.css` byte for byte over HTTPS with their CSP, and, given a version, that the release is immutable and its asset matches its checksum and provenance attestation. `scripts/tests/verify-live-controls.py` proves it fails on drift.
-- `scripts/release.sh` requires the security-gate record for the exact commit and target (beta: staging, stable: production) before it tags, and writes the verdict into the annotated tag message (`security gate: PASS`, or `WAIVED` with the waived IDs). A waived record clears only while every waiver carries an ID and an unexpired `YYYY-MM-DDTHH:MM:SSZ` expiry.
+- `scripts/release.sh` requires the security-gate record for the exact commit and target (beta: staging, stable: production) before it tags, and writes the verdict into the annotated tag message (`security gate: PASS`, or `WAIVED` with the waived IDs). A waived record clears only while every waiver carries an ID and an unexpired `YYYY-MM-DDTHH:MM:SSZ` expiry, and a record file holding more than one JSON document is refused whole.
 - `scripts/site/csp.py --check|--write` keeps each page's policy to the exact hashes of its inline scripts and styles.
 
 ### Changed

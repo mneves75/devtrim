@@ -648,6 +648,15 @@ CASES = (
         marker="PV eval/journal-preflight", target="eval_safety",
     ),
     Case(
+        name="eval/trash-journal-preflight",
+        relative_path="src/app.rs",
+        before="            if let Err(error) = crate::journal::check_writable(&ctx) {\n",
+        after="            if let Err(error) = Ok::<(), anyhow::Error>(()) {\n",
+        tests=("eval_trash_empty_refuses_an_unwritable_journal_before_the_purge",),
+        marker="PV eval/trash-journal-preflight",
+        target="eval_safety",
+    ),
+    Case(
         name="eval/tilde-root",
         relative_path="src/safety.rs",
         # A bare `~` is taken as written again: a relative folder named `~`.

@@ -134,8 +134,11 @@ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required to read the secur
   echo "ACTION: run the mneves-security deploy gate on this exact commit and write ${gate_record}"
   exit 1
 }
-if ! gate_verdict=$(jq -er --arg commit "$release_commit" --arg tree "$release_tree" --arg target "$gate_target" '
-  select(.schema == 1 and .commit == $commit and .tree == $tree and .target == $target and .open_blockers == 0)
+# Slurped, so a file holding several documents is refused whole rather than
+# judged one document at a time.
+if ! gate_verdict=$(jq -ser --arg commit "$release_commit" --arg tree "$release_tree" --arg target "$gate_target" '
+  select(length == 1) | .[0]
+  | select(.schema == 1 and .commit == $commit and .tree == $tree and .target == $target and .open_blockers == 0)
   | select($target != "production" or .independent_acceptance == "pass")
   | if .verdict == "pass" and (.waivers | length) == 0 then "PASS"
     elif .verdict == "waived" and (.waivers | length) > 0

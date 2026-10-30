@@ -460,6 +460,9 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             {
                 return command_error("trash-empty", false, &findings, &ctx, error);
             }
+            if let Err(error) = crate::journal::check_writable(&ctx) {
+                return command_error("trash-empty", false, &findings, &ctx, error);
+            }
             match ops::purge_trash(&findings, &ctx) {
                 Ok(outcome) => print_outcome("trash-empty", &findings, &outcome, &ctx),
                 Err(error) => command_error("trash-empty", true, &findings, &ctx, error),

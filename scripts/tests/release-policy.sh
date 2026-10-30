@@ -691,6 +691,14 @@ write_gate_record production waived pass '[{"id": "SEC-19", "owner": "@owner", "
 expect_gate_refusal 1.2.3 'does not clear' 'a malformed waiver expiry'
 write_gate_record production waived pass '[{"id": "SEC-19", "owner": "@owner", "reason": "fixture"}]'
 expect_gate_refusal 1.2.3 'does not clear' 'a waiver without an expiry'
+# A record is one JSON document: a passing one followed by a blocking one
+# must not clear because jq would judge each document of the stream alone.
+write_gate_record production pass pass '[]'
+blocking_record=$(mktemp "$test_root/blocking-record.XXXXXX")
+cp "$subject/.scratch/security-gate/$current_head/production.json" "$blocking_record"
+sed -i.bak 's/"verdict": "pass"/"verdict": "block"/; s/"open_blockers": 0/"open_blockers": 1/' "$blocking_record"
+cat "$blocking_record" >> "$subject/.scratch/security-gate/$current_head/production.json"
+expect_gate_refusal 1.2.3 'does not clear' 'a passing record followed by a blocking one'
 write_gate_record staging pass blocked '[]'
 
 homebrew_invocations="$test_root/homebrew-invocations"

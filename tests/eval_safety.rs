@@ -655,6 +655,40 @@ fn eval_an_unwritable_journal_refuses_before_the_apply_starts() {
     assert!(!target.exists());
 }
 
+/// `trash-empty` has its own apply path; it must refuse an unwritable journal
+/// the same way, before its purge starts.
+#[test]
+fn eval_trash_empty_refuses_an_unwritable_journal_before_the_purge() {
+    let trash_empty = ["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"];
+    let sandbox = Sandbox::in_target("eval-trash-journal-unwritable");
+    let item = sandbox.path().join(".Trash/old-notes.txt");
+    write(&item, "notes");
+    std::fs::create_dir_all(sandbox.journal()).unwrap();
+    std::fs::set_permissions(
+        sandbox.journal().parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+
+    let result = run(&sandbox, &trash_empty);
+    let document = json(&result);
+    assert!(item.exists());
+    assert!(!result.status.success(), "{document}");
+    assert_eq!(
+        document["applied"], false,
+        "PV eval/trash-journal-preflight: a purge refused before it started claimed to have applied: {document}"
+    );
+    assert!(document.get("summary").is_none(), "{document}");
+
+    let control = Sandbox::in_target("eval-trash-journal-unwritable-control");
+    let item = control.path().join(".Trash/old-notes.txt");
+    write(&item, "notes");
+    let result = run(&control, &trash_empty);
+    assert!(result.status.success(), "{}", json(&result));
+    assert_eq!(json(&result)["applied"], true);
+    assert!(!item.exists());
+}
+
 /// Hardlinks an unrelated sentinel as `leaf` in the journal folder and proves
 /// apply refuses before changing the sentinel's bytes or mode, or the cache.
 fn assert_hardlinked_journal_leaf_refused(leaf: &str, allowed: &[&str], marker: &str) {
