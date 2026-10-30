@@ -9,7 +9,7 @@
     "@remotion/cli": "4.0.532",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "remotion": "4.0.532"
+    "remotion": "4.0.538"
   },
   "devDependencies": {
     "@remotion/eslint-config-flat": "4.0.532",
