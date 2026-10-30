@@ -583,6 +583,12 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
         });
     }
 
+    // A plan with nothing to confirm still starts an apply, so it is refused
+    // here; an actionable plan is checked after its confirmation below.
+    if !actionable && let Err(error) = crate::journal::check_writable(ctx) {
+        return command_error(operation.name(), false, &findings, ctx, error);
+    }
+
     if findings.is_empty() {
         if ctx.json {
             let outcome = ops::ApplyOutcome::new(operation.name());

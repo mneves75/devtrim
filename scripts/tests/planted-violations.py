@@ -648,6 +648,15 @@ CASES = (
         marker="PV eval/journal-preflight", target="eval_safety",
     ),
     Case(
+        name="eval/unconfirmed-journal-preflight",
+        relative_path="src/app.rs",
+        # An empty or report-only plan has no confirmation to come after.
+        before="    if !actionable && let Err(error) = crate::journal::check_writable(ctx) {\n",
+        after="    if !actionable && let Err(error) = Ok::<(), anyhow::Error>(()) {\n",
+        tests=("eval_an_unwritable_journal_refuses_a_plan_with_nothing_to_confirm",),
+        marker="PV eval/unconfirmed-journal-preflight", target="eval_safety",
+    ),
+    Case(
         name="eval/trash-journal-preflight",
         relative_path="src/app.rs",
         before="            if let Err(error) = crate::journal::check_writable(&ctx) {\n",

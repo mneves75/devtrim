@@ -655,6 +655,47 @@ fn eval_an_unwritable_journal_refuses_before_the_apply_starts() {
     assert!(!target.exists());
 }
 
+/// A plan with nothing to confirm — no findings, or only report rows — still
+/// starts an apply, so an unwritable journal refuses it the same way. The
+/// controls are the same plans with a writable journal.
+#[test]
+fn eval_an_unwritable_journal_refuses_a_plan_with_nothing_to_confirm() {
+    let plant = |sandbox: &Sandbox, category: &str| {
+        // No `docker` on PATH: the VM image is one report-only finding.
+        if category == "docker" {
+            write(
+                &sandbox
+                    .path()
+                    .join("Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw"),
+                &"v".repeat(64 * 1024),
+            );
+        }
+    };
+    for (label, category) in [("empty", "caches"), ("report-only", "docker")] {
+        let argv = ["clean", category, "--apply", "--yolo", "--json"];
+        let sandbox = Sandbox::in_target(&format!("eval-journal-unwritable-{label}"));
+        plant(&sandbox, category);
+        std::fs::create_dir_all(sandbox.journal()).unwrap();
+        let result = run(&sandbox, &argv);
+        let document = json(&result);
+        assert_eq!(
+            document["applied"], false,
+            "PV eval/unconfirmed-journal-preflight: a {label} plan with an unwritable journal claimed to have applied: {document}"
+        );
+        assert!(!result.status.success(), "{label}: {document}");
+        assert!(document.get("summary").is_none(), "{label}: {document}");
+
+        let control = Sandbox::in_target(&format!("eval-journal-unwritable-{label}-control"));
+        plant(&control, category);
+        let result = run(&control, &argv);
+        assert!(result.status.success(), "{label}: {}", json(&result));
+        let document = json(&result);
+        assert_eq!(document["applied"], true, "{label}");
+        let findings = document["findings"].as_array().unwrap();
+        assert_eq!(findings.is_empty(), label == "empty", "{label}: {document}");
+    }
+}
+
 /// `trash-empty` has its own apply path; it must refuse an unwritable journal
 /// the same way, before its purge starts.
 #[test]
