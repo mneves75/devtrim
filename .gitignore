@@ -8,6 +8,9 @@
 /media/brag/source/remotion/out.mp4
 /raw.wav
 
+# Agent evidence and release-gate records stay local; they are cited by path, never committed.
+/.scratch/
+
 # Local credentials and signing material must never enter the repository.
 .env*
 !.env.example

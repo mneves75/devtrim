@@ -280,6 +280,14 @@ pub(crate) fn resolve_roots(
                 let resolved = root
                     .canonicalize()
                     .with_context(|| format!("cannot resolve scan root: {}", root.display()))?;
+                // Named explicitly, the home folder is honoured, but the
+                // defaults refuse it for reasons the operator should see.
+                if holds_home(&resolved, home) {
+                    warnings.push(format!(
+                        "scan root {} is the home folder or contains it; the walk enters every folder under it, which is slow and can trigger macOS privacy prompts for Desktop, Documents and Downloads",
+                        resolved.display()
+                    ));
+                }
                 if let Some(protected) = protected_system_root(&resolved) {
                     warnings.push(format!(
                         "scan root {} is inside {protected}, which devtrim never removes from; nothing under it is offered",
@@ -428,7 +436,12 @@ fn dirs_home() -> Result<PathBuf> {
         .with_context(|| format!("cannot resolve $HOME: {}", home.display()))
 }
 
+/// `~` is the home folder and `~/rest` a path inside it, as a shell reads
+/// them; anything else is taken as written.
 fn shellexpand(value: &str, home: &Path) -> String {
+    if value == "~" {
+        return home.display().to_string();
+    }
     value.strip_prefix("~/").map_or_else(
         || value.to_string(),
         |rest| home.join(rest).display().to_string(),
@@ -2237,7 +2250,9 @@ mod tests {
             "{:?}",
             inside.warnings
         );
-        let outside = resolve_roots(&[home.display().to_string()], &[], &home).unwrap();
+        // The checkout's `src`: neither protected nor holding the home folder.
+        let source = std::env::current_dir().unwrap().join("src");
+        let outside = resolve_roots(&[source.display().to_string()], &[], &home).unwrap();
         assert!(outside.warnings.is_empty(), "{:?}", outside.warnings);
     }
 

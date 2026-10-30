@@ -1596,6 +1596,61 @@ fn eval_terminal_output_keeps_quotes_literal() {
     assert!(output.status.success(), "{stderr}");
 }
 
+/// A bare `~` names the home folder, as `~/` names a folder in it, whether
+/// typed as `--root` or set as `roots`; it never reads as a relative folder
+/// called `~`. A root that is the home folder is still scanned when named
+/// explicitly, and the run says so: the defaults refuse it.
+#[test]
+fn eval_a_bare_tilde_root_is_the_home_folder_and_is_disclosed() {
+    let sandbox = Sandbox::in_target("eval-tilde-root");
+    let project = sandbox.path().join("dev/ws");
+    stale_next_project(&sandbox, &project);
+    let warning = format!(
+        "scan root {} is the home folder or contains it",
+        sandbox.path().canonicalize().unwrap().display()
+    );
+
+    let flagged = run(&sandbox, &["clean", "artifacts", "--root", "~", "--json"]);
+    let stderr = String::from_utf8_lossy(&flagged.stderr);
+    assert_eq!(
+        actionable_targets(&json(&flagged)),
+        vec![project.join(".next")],
+        "eval/tilde-root: `--root ~` must scan the home folder: {stderr}"
+    );
+    assert!(
+        stderr.contains(&warning),
+        "eval/home-root-warning: an explicit home root must be disclosed: {stderr}"
+    );
+
+    write(
+        &sandbox.path().join(".config/devtrim.toml"),
+        "roots = [\"~\"]\n",
+    );
+    let configured = run(&sandbox, &["clean", "artifacts", "--json"]);
+    let stderr = String::from_utf8_lossy(&configured.stderr);
+    assert_eq!(
+        actionable_targets(&json(&configured)),
+        vec![project.join(".next")],
+        "eval/tilde-root: `roots = [\"~\"]` must scan the home folder: {stderr}"
+    );
+    assert!(stderr.contains(&warning), "eval/home-root-warning: {stderr}");
+
+    // The control: a root inside the home folder is not the home folder.
+    let inside = run(
+        &sandbox,
+        &["clean", "artifacts", "--root", "~/dev", "--json"],
+    );
+    let stderr = String::from_utf8_lossy(&inside.stderr);
+    assert!(
+        !stderr.contains("is the home folder or contains it"),
+        "{stderr}"
+    );
+    assert_eq!(
+        actionable_targets(&json(&inside)),
+        vec![project.join(".next")]
+    );
+}
+
 /// A stale repository with corroborated build output.
 fn stale_next_project(sandbox: &Sandbox, project: &Path) {
     sandbox.script("git", &support::git_activity("2000-01-01", "2000-01-01"));
