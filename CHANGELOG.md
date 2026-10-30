@@ -4,6 +4,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [0.12.2] - Unreleased
 
+### Changed
+- The brag video's Remotion build (`media/brag/source/remotion`) pins `zod` 4.6.7 and `fast-uri` 3.1.9 through npm overrides, as `video/` does, clearing GHSA-mrhx-c7xc-m3w5 (high) and four `fast-uri` advisories Dependabot reported there.
+
 ## [0.12.1] - 2026-10-29
 
 ### Fixed

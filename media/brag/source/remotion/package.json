@@ -15,5 +15,9 @@
     "@types/react": "19.3.0",
     "@types/web": "0.0.166",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "fast-uri": "3.1.9",
+    "zod": "4.6.7"
   }
 }
