@@ -18,11 +18,13 @@ import re
 import sys
 from pathlib import Path
 
-META = re.compile(r'(<meta http-equiv="Content-Security-Policy" content=")([^"]*)(")')
-SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.S)
-STYLE = re.compile(r"<style[^>]*>(.*?)</style>", re.S)
-STYLE_ATTRIBUTE = re.compile(r"<[a-zA-Z][^>]*\sstyle\s*=", re.S)
-STYLESHEET = re.compile(r'<link[^>]*rel="stylesheet"')
+# HTML tag and attribute names are case-insensitive, so every pattern is too:
+# a browser enforces the policy on <STYLE> as on <style>.
+META = re.compile(r'(<meta http-equiv="Content-Security-Policy" content=")([^"]*)(")', re.I)
+SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.S | re.I)
+STYLE = re.compile(r"<style[^>]*>(.*?)</style>", re.S | re.I)
+STYLE_ATTRIBUTE = re.compile(r"<[a-zA-Z][^>]*\sstyle\s*=", re.S | re.I)
+STYLESHEET = re.compile(r'<link[^>]*rel="stylesheet"', re.I)
 
 
 def digest(text: str) -> str:

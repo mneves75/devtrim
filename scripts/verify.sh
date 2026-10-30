@@ -26,6 +26,7 @@ run agent-docs cmp -s AGENTS.md CLAUDE.md
 run pageload-control-validation python3 -B scripts/tests/pageload-controls-validation.py
 run verify-live-controls python3 -B scripts/tests/verify-live-controls.py
 run csp python3 -B scripts/site/csp.py --check index.html MANUAL.html
+run csp-controls python3 -B scripts/tests/csp-controls.py
 run compiler rustc --version
 run format cargo fmt --all -- --check
 run structure-tests ast-grep test --skip-snapshot-tests
