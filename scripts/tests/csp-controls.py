@@ -2,9 +2,10 @@
 """Prove scripts/site/csp.py --check can fail.
 
 The shipped pages must pass (positive control). Copies with a stale style hash,
-an inline style element or style attribute spelled in upper case (HTML tag and
-attribute names are case-insensitive, so a browser enforces the policy on them),
-and an 'unsafe-inline' source must each fail.
+an inline style element or style attribute spelled any way a browser accepts
+(upper case, whitespace before an end tag's bracket, an attribute after a
+slash, a style inside SVG), an inline script whose only "src" is data-src, a
+second policy meta, and an 'unsafe-inline' source must each fail.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CHECK = ROOT / "scripts" / "site" / "csp.py"
+CHECK = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "scripts" / "site" / "csp.py"
 
 
 def check(page: Path) -> subprocess.CompletedProcess[str]:
@@ -44,10 +45,21 @@ def main() -> int:
         ),
         "uppercase-style-attribute": manual.replace("<body", '<body STYLE="color: red"', 1),
         "unsafe-inline": manual.replace("style-src 'sha256-", "style-src 'unsafe-inline' 'sha256-", 1),
+        # Spellings the HTML tokenizer accepts and a pattern match would miss.
+        "end-tag-whitespace": manual.replace("</body>", "<style>p { color: red; }</style ></body>", 1),
+        "slash-separated-attribute": manual.replace("</body>", '<div/style="color: red">x</div></body>', 1),
+        "data-src-inline-script": manual.replace("</body>", '<script data-SRC="unused">window.x = 1;</script></body>', 1),
+        "style-in-svg": manual.replace("</body>", "<svg><style>p { color: red; }</style></svg></body>", 1),
+        "second-policy-meta": manual.replace(
+            "<head>", '<head><meta http-equiv="content-security-policy" content="default-src *">', 1
+        ),
     }
     base = Path(tempfile.mkdtemp(prefix="devtrim-csp-controls."))
     try:
         for label, text in planted.items():
+            if text == manual:
+                failures.append(f"{label}: the planted change did not apply")
+                continue
             page = base / f"{label}.html"
             page.write_text(text)
             if check(page).returncode == 0:

@@ -8,6 +8,10 @@ SHA-256 of its exact text goes into script-src or style-src; the rest of the
 policy is left as written. --check fails when a page's policy lists anything
 else, admits 'unsafe-inline', or the page carries a style="" attribute, which
 no hash can admit. --write rewrites the two lists in place.
+
+The page is read with the standard library's HTML tokenizer, not patterns:
+a browser accepts <STYLE>, </style >, <div/style=...> and data-src as
+written, and the inventory must see what the browser sees.
 """
 
 from __future__ import annotations
@@ -16,26 +20,68 @@ import base64
 import hashlib
 import re
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
-# HTML tag and attribute names are case-insensitive, so every pattern is too:
-# a browser enforces the policy on <STYLE> as on <style>.
-META = re.compile(r'(<meta http-equiv="Content-Security-Policy" content=")([^"]*)(")', re.I)
-SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.S | re.I)
-STYLE = re.compile(r"<style[^>]*>(.*?)</style>", re.S | re.I)
-STYLE_ATTRIBUTE = re.compile(r"<[a-zA-Z][^>]*\sstyle\s*=", re.S | re.I)
-STYLESHEET = re.compile(r'<link[^>]*rel="stylesheet"', re.I)
+# Only to rewrite the policy text in place; the tokenizer decides which meta
+# is the policy and that there is exactly one.
+META = re.compile(r'(<meta\s+http-equiv="Content-Security-Policy"\s+content=")([^"]*)(")', re.I)
+
+
+class Inventory(HTMLParser):
+    """Inline scripts, style elements, style attributes, stylesheets and CSP metas."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.scripts: list[str] = []
+        self.styles: list[str] = []
+        self.style_attributes: list[str] = []
+        self.stylesheet = False
+        self.policies: list[str] = []
+        self.inline: str | None = None
+        self.text = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        names = {name for name, _ in attrs}
+        values = {name: value or "" for name, value in attrs}
+        if "style" in names:
+            self.style_attributes.append(tag)
+        if tag == "link" and "stylesheet" in values.get("rel", "").lower().split():
+            self.stylesheet = True
+        if tag == "meta" and values.get("http-equiv", "").lower() == "content-security-policy":
+            self.policies.append(values.get("content", ""))
+        if (tag == "script" and "src" not in names) or tag == "style":
+            self.inline, self.text = tag, ""
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.inline = None
+
+    def handle_data(self, data: str) -> None:
+        if self.inline:
+            self.text += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == self.inline:
+            (self.scripts if tag == "script" else self.styles).append(self.text)
+            self.inline = None
+
+
+def inventory(page: str) -> Inventory:
+    found = Inventory()
+    found.feed(page)
+    found.close()
+    return found
 
 
 def digest(text: str) -> str:
     return "'sha256-" + base64.b64encode(hashlib.sha256(text.encode()).digest()).decode() + "'"
 
 
-def expected_policy(page: str, policy: str) -> str:
+def expected_policy(found: Inventory, policy: str) -> str:
     sources = {
-        "script-src": [digest(body) for body in SCRIPT.findall(page)],
-        "style-src": (["'self'"] if STYLESHEET.search(page) else [])
-        + [digest(body) for body in STYLE.findall(page)],
+        "script-src": [digest(body) for body in found.scripts],
+        "style-src": (["'self'"] if found.stylesheet else []) + [digest(body) for body in found.styles],
     }
     directives = [part.strip() for part in policy.split(";") if part.strip()]
     rebuilt = []
@@ -59,13 +105,17 @@ def main() -> int:
     for name in sys.argv[2:]:
         path = Path(name)
         page = path.read_text()
-        match = META.search(page)
-        if not match:
-            failures.append(f"{name}: no Content-Security-Policy meta")
+        found = inventory(page)
+        metas = list(META.finditer(page))
+        if len(found.policies) != 1 or len(metas) != 1 or metas[0].group(2) != found.policies[0]:
+            failures.append(f"{name}: needs exactly one Content-Security-Policy meta, written as http-equiv then content")
             continue
-        if STYLE_ATTRIBUTE.search(page):
-            failures.append(f"{name}: a style=\"\" attribute cannot be admitted by hash; use a class")
-        wanted = expected_policy(page, match.group(2))
+        match = metas[0]
+        if found.style_attributes:
+            failures.append(
+                f"{name}: a style=\"\" attribute on <{found.style_attributes[0]}> cannot be admitted by hash; use a class"
+            )
+        wanted = expected_policy(found, match.group(2))
         if "'unsafe-inline'" in wanted:
             failures.append(f"{name}: the policy admits 'unsafe-inline'")
         if wanted == match.group(2):
