@@ -177,6 +177,10 @@ def main() -> int:
             1,
         ),
         "missing-charset": manual.replace('<meta charset="utf-8">', "", 1),
+        # Directives the browser applies over the hashes csp.py keeps.
+        "style-src-elem-override": manual.replace("style-src 'sha256-", "style-src-elem 'none'; style-src 'sha256-", 1),
+        "script-src-elem-override": manual.replace("script-src 'sha256-", "script-src-elem 'none'; script-src 'sha256-", 1),
+        "upper-case-directive-first": manual.replace("style-src 'sha256-", "STYLE-SRC 'none'; style-src 'sha256-", 1),
         "charset-beyond-prescan": manual.replace(
             '<meta charset="utf-8">', f'<meta name="filler" content="{"x" * 1024}"><meta charset="utf-8">', 1
         ),

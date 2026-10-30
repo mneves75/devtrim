@@ -11,17 +11,20 @@ no hash can admit. --write rewrites the two lists in place.
 
 The page is read by a small tokenizer of its own, not the standard library's
 HTML parser, whose behavior changes between Python versions. It accepts only
-the markup these pages are written in, which it reads exactly as a browser
-does: the doctype, comments with no "--" inside, plain end tags, start tags
-with double-quoted attribute values free of "&", script and style text that
-runs to its exact end tag with no "</" or "<!--" inside, and title text with
-no "<" or "&", folding case and splitting tokens in ASCII only. The page
-declares one <meta charset="utf-8"> in its first 1024 bytes, since the hashes
-are of the UTF-8 text. Only the elements these pages use are accepted, every
-one closed in order, with no event-handler or srcdoc attribute and no NUL, and
-the policy meta preceded by nothing but the doctype, <html>, <head>, other metas and
-whitespace, so the browser cannot have left the head before it. Anything else
-is refused rather than modelled; a real browser load stays the ground truth.
+a narrow subset of the markup these pages are written in, chosen so that it
+and a browser read it alike: the doctype, comments with no "--" inside, plain
+end tags, start tags with double-quoted attribute values free of "&", script
+and style text that runs to its exact end tag with no "</" or "<!--" inside,
+and title text with no "<" or "&", folding case and splitting tokens in ASCII
+only. The page declares one <meta charset="utf-8"> in its first 1024 bytes,
+since the hashes are of the UTF-8 text. Only the elements these pages use are
+accepted, every one closed in order, with no event-handler or srcdoc attribute
+and no NUL, and the policy meta preceded by nothing but the doctype, <html>,
+<head>, other metas and whitespace, so the browser cannot have left the head
+before it. Anything else is refused rather than modelled. Policy directive names must be lower case,
+and no -elem or -attr directive may override script-src or style-src. This is
+a lint for these pages, not a proof of browser equivalence; a real browser
+load stays the ground truth.
 """
 
 from __future__ import annotations
@@ -192,6 +195,25 @@ def digest(text: str) -> str:
     return "'sha256-" + base64.b64encode(hashlib.sha256(text.encode()).digest()).decode() + "'"
 
 
+# A browser folds directive names in ASCII and applies the first of a repeated
+# name, and these override script-src and style-src for elements or attributes.
+OVERRIDING = frozenset({"script-src-elem", "script-src-attr", "style-src-elem", "style-src-attr"})
+
+
+def policy_problem(policy: str) -> str | None:
+    for part in policy.split(";"):
+        if not part.strip():
+            continue
+        name = part.split()[0]
+        if name != name.translate(ASCII_LOWER):
+            # expected_policy matches names as written; an upper-case one would
+            # escape it and could still be the one the browser applies.
+            return f"the directive {name} is not written in lower case"
+        if name in OVERRIDING:
+            return f"{name} overrides the hashes kept in {name.rsplit('-', 1)[0]}"
+    return None
+
+
 def expected_policy(found: Inventory, policy: str) -> str:
     sources = {
         "script-src": [digest(body) for body in found.scripts],
@@ -231,6 +253,9 @@ def main() -> int:
             failures.append(
                 f"{name}: a style=\"\" attribute on <{found.style_attributes[0]}> cannot be admitted by hash; use a class"
             )
+        problem = policy_problem(match.group(2))
+        if problem:
+            failures.append(f"{name}: {problem}")
         wanted = expected_policy(found, match.group(2))
         if "'unsafe-inline'" in wanted:
             failures.append(f"{name}: the policy admits 'unsafe-inline'")
