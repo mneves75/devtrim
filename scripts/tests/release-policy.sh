@@ -534,7 +534,8 @@ printf '%s\n' '[package]' 'name = "fixture"' 'version = "1.2.3"' > "$seed/Cargo.
 printf '%s\n' '# Changelog' '## [1.2.3] - 2099-01-01' '- fixture' > "$seed/CHANGELOG.md"
 printf '%s\n' 'This source tree and its packaged documentation describe devtrim v1.2.3.' > "$seed/README.md"
 printf '%s\n' '    <span class="chip g">v1.2.3</span>' '  <span>devtrim <b>v1.2.3</b></span>' > "$seed/MANUAL.html"
-git -C "$seed" add Cargo.toml CHANGELOG.md README.md MANUAL.html scripts/release.sh scripts/update-homebrew.sh
+printf '%s\n' '/.scratch/' > "$seed/.gitignore"
+git -C "$seed" add .gitignore Cargo.toml CHANGELOG.md README.md MANUAL.html scripts/release.sh scripts/update-homebrew.sh
 git -C "$seed" commit -m 'fixture: release candidate' >/dev/null
 git -C "$seed" remote add origin "$origin"
 git -C "$seed" push -u origin main >/dev/null
@@ -631,6 +632,55 @@ grep -Fq 'manual local autoreview and final-diff inspection are required' <<<"$c
   fail "current-head release did not reach the exact-commit autoreview prerequisite"
 [[ -z "$(git -C "$subject" tag --list v1.2.3)" ]] || fail "preflight-only release created a tag"
 
+# write_gate_record <target> <verdict> <independent_acceptance> <waivers> [tree]
+write_gate_record() {
+  local record_dir="$subject/.scratch/security-gate/$current_head"
+  mkdir -p "$record_dir"
+  cat > "$record_dir/$1.json" <<JSON
+{
+  "schema": 1,
+  "unit": ".",
+  "target": "$1",
+  "commit": "$current_head",
+  "tree": "${5:-$(git -C "$subject" rev-parse "$current_head^{tree}")}",
+  "verdict": "$2",
+  "open_blockers": $([[ "$2" == block ]] && echo 1 || echo 0),
+  "blockers": "",
+  "independent_acceptance": "$3",
+  "reused_from": "",
+  "created_at": "2099-01-01T00:00:00Z",
+  "waivers": $4
+}
+JSON
+}
+
+# expect_gate_refusal <version> <expected message> <description>
+expect_gate_refusal() {
+  local output status
+  set +e
+  output=$(
+    DEVTRIM_RELEASE_POLICY_MOCK=1 \
+    DEVTRIM_RELEASE_POLICY_HEAD="$current_head" \
+    DEVTRIM_AUTOREVIEW_COMMIT="$current_head" \
+    PATH="$fake_bin:$PATH" \
+    bash "$subject/scripts/release.sh" "$1" 2>&1
+  )
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "release with $3 unexpectedly passed"
+  grep -Fq "$2" <<<"$output" || fail "release with $3 did not name the gate record: $output"
+  [[ -z "$(git -C "$subject" tag --list "v$1")" ]] || fail "release with $3 created a tag"
+}
+
+expect_gate_refusal 1.2.3-beta1 'no security-gate record for commit' 'no gate record'
+write_gate_record staging block blocked '[]'
+expect_gate_refusal 1.2.3-beta1 'does not clear' 'a blocking verdict'
+write_gate_record staging pass blocked '[]' "$(printf '0%.0s' {1..40})"
+expect_gate_refusal 1.2.3-beta1 'does not clear' 'a record for another tree'
+write_gate_record production pass blocked '[]'
+expect_gate_refusal 1.2.3 'does not clear' 'production without independent acceptance'
+write_gate_record staging pass blocked '[]'
+
 homebrew_invocations="$test_root/homebrew-invocations"
 DEVTRIM_RELEASE_POLICY_MOCK=1 \
 DEVTRIM_RELEASE_POLICY_HEAD="$current_head" \
@@ -640,6 +690,17 @@ GH_TOKEN=release-policy-token \
 PATH="$fake_bin:$PATH" \
 bash "$subject/scripts/release.sh" 1.2.3-beta1 >/dev/null
 [[ ! -e "$homebrew_invocations" ]] || fail "beta release unexpectedly invoked Homebrew publication"
+[[ "$(git -C "$subject" for-each-ref --format='%(contents)' refs/tags/v1.2.3-beta1)" == *"security gate: PASS (staging, tree "* ]] ||
+  fail "beta tag message does not record the staging gate verdict"
+
+write_gate_record production waived pass '[
+    {
+      "id": "SEC-19",
+      "owner": "@owner",
+      "reason": "release-policy fixture",
+      "expires": "2099-01-02T00:00:00Z"
+    }
+  ]'
 
 DEVTRIM_RELEASE_POLICY_MOCK=1 \
 DEVTRIM_RELEASE_POLICY_HEAD="$current_head" \
@@ -650,6 +711,8 @@ PATH="$fake_bin:$PATH" \
 bash "$subject/scripts/release.sh" 1.2.3 >/dev/null
 [[ "$(< "$homebrew_invocations")" == "1.2.3" ]] ||
   fail "production release did not invoke Homebrew publication exactly once"
+[[ "$(git -C "$subject" for-each-ref --format='%(contents)' refs/tags/v1.2.3)" == *"security gate: WAIVED SEC-19 (production, tree "* ]] ||
+  fail "production tag message does not record the waived gate verdict with its IDs"
 
 # The planted-violation gate only protects the boundaries it runs against, so
 # every place that claims to run it must actually invoke it. Dropping the call
