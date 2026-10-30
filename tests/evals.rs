@@ -1569,3 +1569,109 @@ fn eval_leftovers_reports_ignored_scratch_folders_only() {
         "leftovers",
     );
 }
+
+// ---------- what a preview shows ----------
+
+/// Terminal text keeps quotes literal: a scan root named `John's "app"` reads
+/// as typed, never `John\'s \"app\"`. Quotes drive nothing in a terminal.
+#[test]
+fn eval_terminal_output_keeps_quotes_literal() {
+    let sandbox = Sandbox::in_target("eval-quotes");
+    let root = sandbox.path().join("John's \"app\"");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let output = run(
+        &sandbox,
+        &["clean", "artifacts", "--root", root.to_str().unwrap()],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("scan roots: ~/John's \"app\" (from --root)"),
+        "eval/terminal-quotes: the root must print with its quotes as typed: {stderr}"
+    );
+    assert!(
+        !stderr.contains('\\'),
+        "eval/terminal-quotes: a quote was escaped: {stderr}"
+    );
+    assert!(output.status.success(), "{stderr}");
+}
+
+/// A stale repository with corroborated build output.
+fn stale_next_project(sandbox: &Sandbox, project: &Path) {
+    sandbox.script("git", &support::git_activity("2000-01-01", "2000-01-01"));
+    write(&project.join(".git/HEAD"), "ref: refs/heads/main\n");
+    write(&project.join("package.json"), "{}");
+    write(&project.join(".next/cache/file"), "build output");
+}
+
+/// The preview drops a target the sink would refuse as built-in protected,
+/// and a scan root inside a protected system folder is named in a warning.
+/// The temporary folder resolves inside `/private/var`; the same project under
+/// the home folder is the control proving the fixture is offerable.
+#[test]
+fn eval_preview_drops_targets_inside_a_protected_system_folder() {
+    let sandbox = Sandbox::in_target("eval-protected-root");
+    let control = sandbox.path().join("dev/ws");
+    stale_next_project(&sandbox, &control);
+    let offered = run(
+        &sandbox,
+        &[
+            "clean",
+            "artifacts",
+            "--root",
+            control.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(
+        actionable_targets(&json(&offered)),
+        vec![control.join(".next")],
+        "the control: a stale .next outside any protected folder is offered"
+    );
+
+    let system = Sandbox::new("eval-protected-root-ws");
+    let project = system.path().canonicalize().unwrap().join("ws");
+    stale_next_project(&sandbox, &project);
+    assert!(
+        project.starts_with("/private/var"),
+        "the fixture needs a temporary folder inside /private/var: {}",
+        project.display()
+    );
+    let pristine = Tree::snapshot(system.path());
+    let preview = run(
+        &sandbox,
+        &[
+            "clean",
+            "artifacts",
+            "--root",
+            project.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let document = json(&preview);
+    let stderr = String::from_utf8_lossy(&preview.stderr);
+    assert!(
+        actionable_targets(&document).is_empty(),
+        "eval/protected-preview: a target the sink refuses was previewed: {document}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "scan root {} is inside /private/var, which devtrim never removes from",
+            project.display()
+        )),
+        "eval/protected-preview: the protected scan root must be named: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "skipping protected path: {}",
+            project.join(".next").display()
+        )),
+        "eval/protected-preview: the dropped target must be named: {stderr}"
+    );
+    pristine.assert_only(
+        &Tree::snapshot(system.path()),
+        &Allowed::default(),
+        "eval/protected-preview",
+    );
+    assert!(preview.status.success(), "{document}");
+}

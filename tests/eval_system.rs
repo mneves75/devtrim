@@ -760,6 +760,42 @@ fn eval_installers_apply_refuses_an_archive_modified_after_preview() {
     );
 }
 
+/// A `Downloads` that is a link to another folder is named in a warning and
+/// offers nothing, since the sink refuses a target below a link; a real
+/// `Desktop` beside it is the control that the category still offers.
+#[test]
+fn eval_installers_name_a_linked_downloads_folder_and_offer_nothing_from_it() {
+    let sandbox = Sandbox::in_target("eval-installers-linked");
+    let home = sandbox.path();
+    write_aged(&home.join("elsewhere/old.dmg"), &"x".repeat(2048), 400);
+    symlink(home.join("elsewhere"), home.join("Downloads")).unwrap();
+    let control = home.join("Desktop/Setup.dmg");
+    write_aged(&control, &"x".repeat(2048), 400);
+    let pristine = Tree::snapshot(home);
+
+    let preview = run(&sandbox, &["clean", "installers", "--json"]);
+    let document = json(&preview);
+    let stderr = String::from_utf8_lossy(&preview.stderr);
+    assert_eq!(
+        actionable_targets(&document),
+        vec![control],
+        "eval/installers-linked: an archive below the linked Downloads was offered"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "{} is a link; skipping the installers in it",
+            home.join("Downloads").display()
+        )),
+        "eval/installers-linked: the linked folder must be named: {stderr}"
+    );
+    pristine.assert_only(
+        &Tree::snapshot(home),
+        &Allowed::default(),
+        "eval/installers-linked",
+    );
+    assert!(preview.status.success(), "{document}");
+}
+
 // ---------- clean agents ----------
 
 /// One Codex standalone release in the layout the installer writes.
@@ -1070,6 +1106,54 @@ fn eval_a_malformed_codex_homes_setting_refuses_the_run() {
             "PV eval/codex-homes-closed-apply",
         );
     }
+}
+
+/// Makes a folder unreadable and restores it when dropped, so the sandbox
+/// can still be removed after a failed assertion.
+struct Unreadable(PathBuf);
+
+impl Unreadable {
+    fn new(path: PathBuf) -> Self {
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
+    }
+}
+
+/// One history folder that cannot be read offers nothing and is named in one
+/// error finding, so the run exits nonzero; the cache and the readable stale
+/// history beside it are still offered.
+#[test]
+fn eval_agents_lists_every_finding_past_an_unreadable_history_folder() {
+    let sandbox = Sandbox::in_target("eval-agents-unreadable");
+    let home = sandbox.path();
+    let cache = home.join(".claude/cache");
+    write(&cache.join("catalog.json"), "{}");
+    let stale = home.join(".codex/sessions/2025/01/01");
+    write_aged(&stale.join("rollout.jsonl"), "{}", 400);
+    let locked = home.join(".codex/sessions/2025/01/02");
+    write_aged(&locked.join("rollout.jsonl"), "{}", 400);
+    let _locked = Unreadable::new(locked.clone());
+
+    let preview = run(&sandbox, &["clean", "agents", "--json"]);
+    let document = json(&preview);
+    assert_eq!(
+        actionable_targets(&document),
+        sorted(vec![cache, stale]),
+        "eval/agents-unreadable: one unreadable folder hid the findings beside it"
+    );
+    let errors = error_text(&document);
+    assert!(
+        errors.contains("could not be read while looking for agent caches and history")
+            && errors.contains(&locked.display().to_string()),
+        "eval/agents-unreadable: the unreadable folder must be named: {errors}"
+    );
+    assert!(!preview.status.success(), "{document}");
 }
 
 // ---------- clean simulators ----------
@@ -1534,6 +1618,73 @@ esac"#,
     }
 }
 
+/// A typed command whose stderr is longer than a journal record may hold is
+/// journaled with an 8 KiB excerpt of its failure, so `history` shows the
+/// finished command as failed, not as an interrupted attempt. The 200 KB of
+/// stderr is well past the 64 KiB record limit.
+#[test]
+fn eval_a_command_failing_with_long_stderr_is_journaled_as_a_result() {
+    let sandbox = Sandbox::in_target("eval-docker-long-stderr");
+    write(&sandbox.path().join(".docker/config.json"), "{}");
+    stub(
+        &sandbox,
+        "docker",
+        r#"case "$*" in
+  'context inspect') printf '%s\n' '[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]' ;;
+  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\n' ;;
+  '--host unix:///var/run/docker.sock system df'*) printf 'Images\t2GB\t1GB (50%%)\t0\n' ;;
+  '--host unix:///var/run/docker.sock image prune -a -f')
+    /usr/bin/head -c 200000 /dev/zero | /usr/bin/tr '\0' e >&2
+    exit 1 ;;
+  *) exit 1 ;;
+esac"#,
+    );
+    let image_prune = argv(&[
+        "docker",
+        "--host",
+        DOCKER_HOST,
+        "image",
+        "prune",
+        "-a",
+        "-f",
+    ]);
+
+    let apply = run(
+        &sandbox,
+        &["clean", "docker", "--apply", "--yolo", "--json"],
+    );
+    assert!(
+        !apply.status.success(),
+        "a failed prune must make the run nonzero: {}",
+        String::from_utf8_lossy(&apply.stdout)
+    );
+    assert!(
+        calls(&sandbox).contains(&image_prune),
+        "the failing prune never ran"
+    );
+
+    let history = run(&sandbox, &["history", "--json"]);
+    let document = json(&history);
+    let entries = document["entries"].as_array().unwrap();
+    let entry = entries
+        .iter()
+        .find(|entry| entry["argv"] == Value::from(image_prune.clone()))
+        .unwrap_or_else(|| panic!("the prune was not journaled: {document}"));
+    assert_eq!(
+        (entry["phase"].as_str(), entry["status"].as_str()),
+        (Some("result"), Some("error")),
+        "eval/journal-excerpt: the failed prune reads as unfinished: {entry}"
+    );
+    let error = entry["error"].as_str().unwrap();
+    assert!(
+        error.len() > 8 * 1024 && error.len() <= 8 * 1024 + 64 && error.ends_with("bytes omitted)"),
+        "eval/journal-excerpt: the failure must be an 8 KiB excerpt, got {} bytes ending {:?}",
+        error.len(),
+        &error[error.len().saturating_sub(40)..]
+    );
+    assert!(history.status.success(), "{document}");
+}
+
 // ---------- optimize ----------
 
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
@@ -1994,6 +2145,86 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
         sorted(purged.iter().map(PathBuf::from).collect()),
         targets,
         "EVAL journal: the purge must be journaled write-ahead"
+    );
+}
+
+/// Clears the user-immutable flag and restores write permission under a
+/// Trash when dropped, so the sandbox can be removed whatever a run left.
+struct Immutable(PathBuf);
+
+impl Drop for Immutable {
+    fn drop(&mut self) {
+        for (program, mode) in [("/usr/bin/chflags", "nouchg"), ("/bin/chmod", "u+w")] {
+            std::process::Command::new(program)
+                .args(["-R", mode])
+                .arg(&self.0)
+                .status()
+                .ok();
+        }
+    }
+}
+
+/// A permanent removal refused at its very first entry (an immutable file)
+/// is restored under its own name, with the permissions the purge gave its
+/// read-only folders put back: nothing in the Trash changes at all.
+#[test]
+fn eval_trash_empty_restores_an_item_refused_before_anything_was_removed() {
+    let sandbox = Sandbox::in_target("eval-trash-immutable");
+    let trash = sandbox.path().join(".Trash");
+    let item = trash.join("mod");
+    let file = item.join("cache/file");
+    write(&file, "locked");
+    let _immutable = Immutable(trash.clone());
+    let flagged = std::process::Command::new("/usr/bin/chflags")
+        .arg("uchg")
+        .arg(&file)
+        .status()
+        .unwrap();
+    assert!(flagged.success(), "cannot set the immutable flag");
+    for folder in [item.join("cache"), item.clone()] {
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+    }
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let apply = run(
+        &sandbox,
+        &["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"],
+    );
+    let after = Tree::snapshot(sandbox.path());
+    let document = json(&apply);
+    let quarantined: Vec<_> = std::fs::read_dir(&trash)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with(".devtrim-quarantine-"))
+        .collect();
+    assert!(
+        quarantined.is_empty(),
+        "eval/trash-empty-restore: the refused item was left as {quarantined:?}"
+    );
+    for folder in [item.clone(), item.join("cache")] {
+        let mode = std::fs::metadata(&folder).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(
+            mode,
+            0o500,
+            "eval/trash-empty-restore: {} kept the permission the purge added",
+            folder.display()
+        );
+    }
+    pristine.assert_only(
+        &after,
+        &Allowed {
+            scratch: vec![sandbox.path().join(".local/state/devtrim")],
+            ..Allowed::default()
+        },
+        "eval/trash-empty-restore",
+    );
+    assert!(
+        error_text(&document).contains("entry was restored"),
+        "{document}"
+    );
+    assert!(
+        !apply.status.success(),
+        "a refused item must make the run nonzero: {document}"
     );
 }
 
