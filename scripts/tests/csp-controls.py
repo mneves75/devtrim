@@ -128,6 +128,8 @@ def main() -> int:
         # hashes is not the text read here.
         # Parsers differ on which "</..." ends raw text.
         "end-tag-like-text-in-script": manual.replace("</body>", "<script>x = '</script/x>';</script></body>", 1),
+        # A browser ignores src on a style and checks its text as inline CSS.
+        "style-with-src": manual.replace("</body>", '<style src="ignored">p { color: red; }</style></body>', 1),
         "nul-in-style": manual.replace("</body>", "<style>p::after { content: '\x00'; }</style></body>", 1),
         "srcdoc-iframe": manual.replace(
             "</body>", '<iframe srcdoc="<style>p{color:red}</style>"></iframe></body>', 1

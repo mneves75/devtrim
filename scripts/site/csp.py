@@ -93,7 +93,7 @@ class Inventory(HTMLParser):
             self.open.append(tag)
         if tag in ("script", "style"):
             # A script with src is read too: its text drives the tokenizer.
-            self.inline, self.text, self.external = tag, "", "src" in names
+            self.inline, self.text, self.external = tag, "", tag == "script" and "src" in names
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         # A browser ignores the slash on an HTML element that is not void and
