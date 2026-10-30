@@ -12,10 +12,10 @@ no hash can admit. --write rewrites the two lists in place.
 The page is read with the standard library's HTML tokenizer, not patterns,
 and must stay inside the simple subset these pages are written in: only the
 elements they use, every one closed in order, no event-handler or srcdoc
-attribute, no "<!--" in a script, and the policy meta preceded by nothing but
-the doctype, <html>, <head>, other metas and whitespace, so the browser cannot
-have left the head before it. Anything else is refused rather than modelled; a real browser load
-stays the ground truth.
+attribute, no "<!--" or "</" inside a script or style, no NUL, and the policy
+meta preceded by nothing but the doctype, <html>, <head>, other metas and
+whitespace, so the browser cannot have left the head before it. Anything else
+is refused rather than modelled; a real browser load stays the ground truth.
 """
 
 from __future__ import annotations
@@ -61,6 +61,7 @@ class Inventory(HTMLParser):
         self.open: list[str] = []
         self.policy_seen = False
         self.inline: str | None = None
+        self.external = False
         self.text = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -90,8 +91,9 @@ class Inventory(HTMLParser):
             self.policy_seen = True
         if tag not in VOID:
             self.open.append(tag)
-        if (tag == "script" and "src" not in names) or tag == "style":
-            self.inline, self.text = tag, ""
+        if tag in ("script", "style"):
+            # A script with src is read too: its text drives the tokenizer.
+            self.inline, self.text, self.external = tag, "", "src" in names
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         # A browser ignores the slash on an HTML element that is not void and
@@ -137,16 +139,22 @@ class Inventory(HTMLParser):
             # check does not model.
             self.ambiguous.append(f"</{tag}> does not close the element open there")
         if tag == self.inline:
-            if tag == "script" and "<!--" in self.text:
-                # The browser's escaped script states start at "<!--"; in them
-                # a </script> may not end the script where it ends here.
-                self.ambiguous.append('"<!--" inside a <script>')
-            (self.scripts if tag == "script" else self.styles).append(self.text)
+            # "<!--" starts the browser's escaped script states, and parsers
+            # differ on which "</..." ends raw text; with neither inside, the
+            # first "</" is the end tag for every tokenizer.
+            for marker in ("<!--", "</"):
+                if marker in self.text:
+                    self.ambiguous.append(f'"{marker}" inside a <{tag}>')
+            if not self.external:
+                (self.scripts if tag == "script" else self.styles).append(self.text)
             self.inline = None
 
 
 def inventory(page: str) -> Inventory:
     found = Inventory()
+    if "\x00" in page:
+        # The browser replaces NUL before tokenizing, so it hashes other text.
+        found.ambiguous.append("a NUL character")
     found.feed(page)
     found.close()
     if found.open:

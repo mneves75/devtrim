@@ -11,9 +11,9 @@ has opened (parsed as foreign content, even past a stray end tag), an element
 left unclosed at the end, markup outside the subset csp.py reads (an unlisted
 element such as iframe or template, srcdoc or an event handler, a mis-nested end
 tag, anything before the policy meta but the doctype, <html>, <head>, other
-metas and whitespace, the policy meta outside <head>, "<!--" in a script), a second
-policy meta, and an
-'unsafe-inline' source must each fail.
+metas and whitespace, the policy meta outside <head>, "<!--" or "</" in any
+script or style, a NUL), a second policy meta, and an 'unsafe-inline' source
+must each fail.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def check(page: Path, mode: str = "--check") -> subprocess.CompletedProcess[str]
 
 # Plants rewritten with --write before --check, so a stale hash cannot be
 # what refuses them.
-REWRITTEN = {"double-escaped-script"}
+REWRITTEN = {"double-escaped-script", "double-escaped-src-script", "nul-in-style", "end-tag-like-text-in-script"}
 
 
 def hashed_in_svg(manual: str, opening: str = "<svg>") -> str:
@@ -119,6 +119,16 @@ def main() -> int:
         "double-escaped-script": manual.replace(
             "</body>", "<script><!--<script></script><style></script></style></body>", 1
         ),
+        "double-escaped-src-script": manual.replace(
+            "</body>",
+            '<script src=""><!--<script></script><style></script><script>window.x=1;</script></style></body>',
+            1,
+        ),
+        # The browser turns NUL into U+FFFD before tokenizing, so the text it
+        # hashes is not the text read here.
+        # Parsers differ on which "</..." ends raw text.
+        "end-tag-like-text-in-script": manual.replace("</body>", "<script>x = '</script/x>';</script></body>", 1),
+        "nul-in-style": manual.replace("</body>", "<style>p::after { content: '\x00'; }</style></body>", 1),
         "srcdoc-iframe": manual.replace(
             "</body>", '<iframe srcdoc="<style>p{color:red}</style>"></iframe></body>', 1
         ),
