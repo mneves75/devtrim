@@ -9,13 +9,14 @@ policy is left as written. --check fails when a page's policy lists anything
 else, admits 'unsafe-inline', or the page carries a style="" attribute, which
 no hash can admit. --write rewrites the two lists in place.
 
-The page is read with the standard library's HTML tokenizer, not patterns,
-and must stay inside the simple subset these pages are written in: only the
-elements they use, every one closed in order, no event-handler or srcdoc
-attribute, no "<!--" or "</" inside a script or style, each ending with its
-exact end tag, no NUL, and the policy meta preceded by nothing but the doctype,
-<html>, <head>, other metas and whitespace, so the browser cannot have left
-the head before it. Anything else
+The page must stay inside the simple subset these pages are written in. Its
+raw text is first held to a strict lexical grammar (the doctype, simple
+comments, plain end tags, start tags with double-quoted attributes); then the
+standard library's HTML tokenizer reads it, and only the elements these pages
+use are accepted, every one closed in order, with no event-handler or srcdoc
+attribute, no "<!--" or "</" inside a script or style, no NUL, and the policy
+meta preceded by nothing but the doctype, <html>, <head>, other metas and
+whitespace, so the browser cannot have left the head before it. Anything else
 is refused rather than modelled; a real browser load stays the ground truth.
 """
 
@@ -151,17 +152,52 @@ class Inventory(HTMLParser):
             self.inline = None
 
 
-# Python versions disagree with each other and with browsers on end tags
-# such as "</ script>" or "</script/x>", so a script or style may end only
-# with its exact end tag.
-LOOSE_END_TAG = re.compile(r"</(?:[\s/]+(?:script|style)|(?:script|style)(?!>))", re.I)
+# The markup these pages are written in, on which every Python version and a
+# browser tokenize alike: the doctype, simple comments, plain end tags, and
+# start tags whose attribute values are double-quoted. Python versions differ
+# with each other and with browsers on everything else ("</ script>", "<!-->",
+# "--!>", unquoted values), so anything else is refused before parsing.
+SPACE = "[ \t\n\f\r]"
+DOCTYPE = re.compile(r"<!doctype html>", re.I)
+END_TAG = re.compile(r"</[a-zA-Z][a-zA-Z0-9]*>")
+START_TAG = re.compile(rf'<([a-zA-Z][a-zA-Z0-9]*)(?:{SPACE}+[a-zA-Z][a-zA-Z0-9-]*(?:="[^"]*")?)*{SPACE}*/?>')
+
+
+def lexical_problem(page: str) -> str | None:
+    """The first markup outside that grammar, or None."""
+    at = page.find("<")
+    while at != -1:
+        if page.startswith("<!--", at):
+            end = page.find("-->", at + 4)
+            body = page[at + 4 : end]
+            # A browser ends "<!-->" and "<!--->" at once and a comment at
+            # "--!>"; Python versions differ on all three.
+            if end == -1 or body.startswith((">", "->")) or "<!--" in body or "--!>" in body:
+                return page[at : at + 20]
+            at = page.find("<", end + 3)
+            continue
+        token = DOCTYPE.match(page, at) or END_TAG.match(page, at) or START_TAG.match(page, at)
+        if token is None:
+            return page[at : at + 20]
+        after = token.end()
+        name = token.group(1).lower() if token.re is START_TAG else ""
+        if name in ("script", "style"):
+            # Raw text runs to the exact end tag, as a browser reads it. With
+            # no "</" or "<!--" inside (the escaped script states), every
+            # tokenizer ends it there too.
+            close = re.compile(f"</{name}>", re.I).search(page, after)
+            if close is None or "</" in page[after : close.start()] or "<!--" in page[after : close.start()]:
+                return page[at : at + 20]
+            after = close.end()
+        at = page.find("<", after)
+    return None
 
 
 def inventory(page: str) -> Inventory:
     found = Inventory()
-    loose = LOOSE_END_TAG.search(page)
-    if loose:
-        found.ambiguous.append(f"{loose.group(0)!r} is not written as </script> or </style>")
+    problem = lexical_problem(page)
+    if problem is not None:
+        found.ambiguous.append(f"{problem!r} is outside the markup this check reads")
     if "\x00" in page:
         # The browser replaces NUL before tokenizing, so it hashes other text.
         found.ambiguous.append("a NUL character")

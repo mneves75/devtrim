@@ -13,8 +13,9 @@ element such as iframe or template, srcdoc or an event handler, a mis-nested end
 tag, anything before the policy meta but the doctype, <html>, <head>, other
 metas and whitespace, the policy meta outside <head>, "<!--" or "</" in any
 script or style, a script or style end tag spelled other than </script> or
-</style>, a NUL), a second policy meta, and an 'unsafe-inline' source
-must each fail.
+</style>, a comment a browser may end elsewhere, an unquoted attribute value, a
+bare "<" in text, a bogus declaration, a NUL), a second policy meta, and an
+'unsafe-inline' source must each fail.
 """
 
 from __future__ import annotations
@@ -138,6 +139,14 @@ def main() -> int:
         ),
         # Refused by the end-tag rule alone on a patched Python.
         "end-tag-not-exactly-spelled": manual.replace("</body>", "<script>window.x=1;</script ></body>", 1),
+        # A browser ends "<!-->" and "<!--->" at once and "--!>" closes a
+        # comment; some Python versions read on to a later "-->".
+        "abrupt-comment-close": manual.replace("</body>", "<!--><style>p{color:red}</style><!-- --></body>", 1),
+        "bang-comment-close": manual.replace("</body>", "<!-- x --!><style>p{color:red}</style><!-- --></body>", 1),
+        # Outside the strict lexical grammar, where tokenizers part ways.
+        "unquoted-attribute-value": manual.replace("</body>", "<div class=x>y</div></body>", 1),
+        "bare-less-than-in-text": manual.replace("</body>", "<p>a < b</p></body>", 1),
+        "bogus-markup-declaration": manual.replace("</body>", "<!x></body>", 1),
         "nul-in-style": manual.replace("</body>", "<style>p::after { content: '\x00'; }</style></body>", 1),
         "srcdoc-iframe": manual.replace(
             "</body>", '<iframe srcdoc="<style>p{color:red}</style>"></iframe></body>', 1
