@@ -699,6 +699,18 @@ cp "$subject/.scratch/security-gate/$current_head/production.json" "$blocking_re
 sed -i.bak 's/"verdict": "pass"/"verdict": "block"/; s/"open_blockers": 0/"open_blockers": 1/' "$blocking_record"
 cat "$blocking_record" >> "$subject/.scratch/security-gate/$current_head/production.json"
 expect_gate_refusal 1.2.3 'does not clear' 'a passing record followed by a blocking one'
+# jq keeps the last of two equal keys, so a blocking verdict overridden later
+# in the same object must refuse as ambiguous rather than clear.
+write_gate_record production pass pass '[]'
+sed -i.bak 's/"verdict": "pass",/"verdict": "block", "verdict": "pass",/' \
+  "$subject/.scratch/security-gate/$current_head/production.json"
+expect_gate_refusal 1.2.3 'without a repeated key' 'a record repeating a key'
+write_gate_record production pass pass '{}'
+expect_gate_refusal 1.2.3 'does not clear' 'waivers that are not a list'
+write_gate_record production waived pass '{"a": {"id": "SEC-19", "owner": "@owner", "reason": "fixture", "expires": "2099-01-02T00:00:00Z"}}'
+expect_gate_refusal 1.2.3 'does not clear' 'waivers keyed as an object'
+write_gate_record production waived pass '[{"id": "SEC-19", "owner": "@owner", "reason": "fixture", "expires": "2099-02-31T00:00:00Z"}]'
+expect_gate_refusal 1.2.3 'does not clear' 'an impossible expiry date'
 write_gate_record staging pass blocked '[]'
 
 homebrew_invocations="$test_root/homebrew-invocations"

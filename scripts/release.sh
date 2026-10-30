@@ -134,17 +134,26 @@ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required to read the secur
   echo "ACTION: run the mneves-security deploy gate on this exact commit and write ${gate_record}"
   exit 1
 }
+# jq keeps the last of two equal keys; its stream form lists each leaf path as
+# written, so a repeated path is a repeated key and the record is ambiguous.
+if ! repeated_keys=$(jq -c --stream 'select(length == 2) | .[0]' "$gate_record" | sort | uniq -d) ||
+  [[ -n "$repeated_keys" ]]; then
+  echo "ERROR: security-gate record ${gate_record} does not clear ${release_commit}: it must be one JSON document without a repeated key (repeated: ${repeated_keys//$'\n'/ })"
+  exit 1
+fi
 # Slurped, so a file holding several documents is refused whole rather than
 # judged one document at a time.
 if ! gate_verdict=$(jq -ser --arg commit "$release_commit" --arg tree "$release_tree" --arg target "$gate_target" '
   select(length == 1) | .[0]
   | select(.schema == 1 and .commit == $commit and .tree == $tree and .target == $target and .open_blockers == 0)
   | select($target != "production" or .independent_acceptance == "pass")
+  | select((.waivers | type) == "array")
   | if .verdict == "pass" and (.waivers | length) == 0 then "PASS"
     elif .verdict == "waived" and (.waivers | length) > 0
       and all(.waivers[]; (.id | type) == "string" and (.id | test("^[A-Za-z0-9:._-]+$"))
         and (.expires | type) == "string"
         and (.expires | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+        and (.expires | fromdateiso8601 | todateiso8601) == .expires
         and (.expires | fromdateiso8601) > now)
     then "WAIVED " + ([.waivers[].id] | join(" "))
     else empty end' "$gate_record"); then
