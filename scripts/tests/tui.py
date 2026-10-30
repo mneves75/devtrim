@@ -635,6 +635,111 @@ def verify_blocked_apply_refuses_quit(binary):
                 os.kill(probe, signal.SIGKILL)
 
 
+def uv_cache_home(directory):
+    home = Path(directory).resolve()
+    cache = home / ".cache" / "uv"
+    cache.mkdir(parents=True)
+    (cache / "blob").write_bytes(b"x")
+    return home, cache
+
+
+def verify_confirmation_feedback_at_minimum_size(binary):
+    """At 64×18 the typed confirmation covers the footer, so it must say inside
+    itself that an answer did not match, and an answer stops at 32 characters.
+    The correct answer typed afterwards is the positive control that the same
+    confirmation applies."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home, cache = uv_cache_home(directory)
+        with Session(binary, home, rows=18, columns=64) as session:
+            session.wait_for("Scan everything")
+            session.send(b"2")
+            session.wait_for_screen("Review every finding")
+            session.send(b"sa")
+            session.wait_for_screen("This plan:")
+            session.send(b"\r")
+            session.wait_for_screen("This plan:", "Confirmation mismatch. The plan was not applied.")
+            session.send(b"7" * 40)
+            session.wait_for_screen("Longer than any acknowledgment; Backspace erases.")
+            visible = screen_text(render_screen(session.output, session.rows, session.columns))
+            longest = max(len(run) for run in re.findall(r"7+", visible))
+            if longest != 32:
+                raise AssertionError(f"the typed answer shows {longest} characters, expected 32")
+            session.send(b"\r")
+            session.wait_for_screen("This plan:", "Confirmation mismatch. The plan was not applied.")
+            if not cache.exists():
+                raise AssertionError("a mismatched answer applied the plan")
+            session.send(b"0\r")
+            session.wait_for_screen("permanently deleted uv package cache")
+            if cache.exists():
+                raise AssertionError("positive control: the typed answer did not apply")
+            session.quit()
+
+
+def verify_too_small_screen_quits_only_on_q(binary):
+    """Esc means back everywhere else, so on the too-small screen it must not end
+    the session; `q` is the positive control that the screen still quits."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        with Session(binary, Path(directory).resolve(), rows=10, columns=40) as session:
+            session.wait_for_screen("terminal too small")
+            session.send(b"\x1b")
+            session.settle(1.0)
+            if session.process.poll() is not None:
+                raise AssertionError("Esc ended the session on the too-small screen")
+            session.quit()
+
+
+def verify_outcome_rescans(binary):
+    """`r` on the apply outcome scans again: a cache recreated after the apply
+    appears in the fresh results, which only a new scan can know about."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home, cache = uv_cache_home(directory)
+        with Session(binary, home) as session:
+            session.wait_for("Scan everything")
+            session.send(b"2")
+            session.wait_for_screen("Review every finding")
+            session.send(b"sa0\r")
+            session.wait_for_screen("permanently deleted uv package cache", "r rescan")
+            cache.mkdir()
+            (cache / "blob").write_bytes(b"x")
+            session.send(b"r")
+            session.wait_for_screen("Review every finding", "uv package cache")
+            session.quit()
+
+
+def verify_row_numbers_past_999(binary):
+    """With more than 999 findings the row numbers widen, so the last rows keep
+    their columns aligned with row 999."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        downloads = home / "Downloads"
+        downloads.mkdir()
+        old = time.time() - 400 * 86400
+        for index in range(1001):
+            installer = downloads / f"setup-{index:04}.dmg"
+            installer.write_bytes(b"x")
+            os.utime(installer, (old, old))
+        with Session(binary, home) as session:
+            session.deadline = time.monotonic() + 60
+            session.wait_for("Scan everything")
+            session.send(b"d")
+            session.wait_for_screen("Review every finding")
+            session.send(b"G")
+            session.wait_for_screen("1001.", " 999.")
+            lines = render_screen(session.output, session.rows, session.columns)
+            column = {}
+            for line in lines:
+                match = re.search(r"(\d+)\. (danger-)", line)
+                if match:
+                    column[int(match.group(1))] = match.start(2)
+            if 999 not in column or 1001 not in column:
+                raise AssertionError(f"rows 999 and 1001 not both visible: {sorted(column)}")
+            if column[999] != column[1001]:
+                raise AssertionError(
+                    f"PV tui/row-number-width: row 999 at column {column[999]}, row 1001 at {column[1001]}"
+                )
+            session.quit()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -648,6 +753,10 @@ def main():
         verify_action_keys_explain_themselves(binary)
         verify_purge(binary)
         verify_minimum_size(binary)
+        verify_confirmation_feedback_at_minimum_size(binary)
+        verify_too_small_screen_quits_only_on_q(binary)
+        verify_outcome_rescans(binary)
+        verify_row_numbers_past_999(binary)
         verify_scan_error_exit(binary)
         stop_seconds = verify_slow_scan_stops(binary)
         verify_blocked_apply_refuses_quit(binary)
@@ -657,7 +766,8 @@ def main():
     print(
         "tui: menu, help, cancel, quit, terminal restoration, type-ahead discard,"
         " pasted and Alt-modified answers refused, selection, action-key explanations, project purge, the minimum-size"
-        " detail pane and view, stopping a scan blocked on its probe, and refusing to"
+        " detail pane and view, confirmation feedback and answer limit at 64×18, Esc on the too-small"
+        " screen, rescanning from the outcome, row numbers past 999, stopping a scan blocked on its probe, and refusing to"
         " quit an apply blocked on its probe passed"
     )
     print(f"tui: seconds from stop to exit during a blocked scan: {stop_seconds}")

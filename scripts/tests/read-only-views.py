@@ -172,7 +172,8 @@ def exercise(binary, home):
         view.close()
     view = View(binary, home, ["status", "--watch"])
     try:
-        view.wait("health")
+        # With an empty PATH no signal can be read, so no band may be named.
+        view.wait("health unknown (no signal could be read)")
         start = len(view.output)
         view.resize(24, 90)
         view.wait("health", start)
