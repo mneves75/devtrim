@@ -2165,8 +2165,8 @@ impl Drop for Immutable {
 }
 
 /// A permanent removal refused at its very first entry (an immutable file)
-/// is restored under its own name, with the permissions the purge gave its
-/// read-only folders put back: nothing in the Trash changes at all.
+/// is restored under its own name, with the permission the purge gave its
+/// read-only folder put back: nothing in the Trash changes at all.
 #[test]
 fn eval_trash_empty_restores_an_item_refused_before_anything_was_removed() {
     let sandbox = Sandbox::in_target("eval-trash-immutable");
@@ -2181,9 +2181,10 @@ fn eval_trash_empty_restores_an_item_refused_before_anything_was_removed() {
         .status()
         .unwrap();
     assert!(flagged.success(), "cannot set the immutable flag");
-    for folder in [item.join("cache"), item.clone()] {
-        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o500)).unwrap();
-    }
+    // Only the inner folder is read-only: macOS 15 refuses to rename a
+    // read-only directory at all, which would refuse the item before the
+    // quarantine and never reach the restore this proves.
+    std::fs::set_permissions(item.join("cache"), std::fs::Permissions::from_mode(0o500)).unwrap();
     let pristine = Tree::snapshot(sandbox.path());
 
     let apply = run(
@@ -2201,7 +2202,8 @@ fn eval_trash_empty_restores_an_item_refused_before_anything_was_removed() {
         quarantined.is_empty(),
         "eval/trash-empty-restore: the refused item was left as {quarantined:?}"
     );
-    for folder in [item.clone(), item.join("cache")] {
+    {
+        let folder = item.join("cache");
         let mode = std::fs::metadata(&folder).unwrap().permissions().mode() & 0o7777;
         assert_eq!(
             mode,
