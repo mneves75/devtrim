@@ -1,6 +1,32 @@
 # Project Memory
 
-## Current production state (0.12.0)
+## Current production state (0.12.1)
+
+0.12.1 is the owner's 2026-10-29 request: a full source audit of 0.12.0, its
+fixes with failing-first proof, a TUI review, the landing-page redesign around
+real devtrim screens, and production. Story and evidence: `memory/2026-10-29.md`.
+PR #61 squash-merged to `94ec37a7f44585162bd16ad00cbae6c3de1093aa` (tree
+`6f1d253acba34ca46b90d6251f6cd68049d8c78f`); main CI passed. Immutable
+`v0.12.1-beta1` and stable `v0.12.1` both point at that commit, and production
+reused the beta ZIP byte for byte (SHA-256
+`53f768799b9a98c1c96d24668cb034743fb6886552ee6a455fbdde2cc96533e5`). The beta
+artifact's checksum and attestation verified, and the PTY TUI and read-only-view
+suites passed against its binary. Homebrew (tap `1cb0b31`) upgraded 0.12.0 →
+0.12.1 and ran its test; `/opt/homebrew/bin/devtrim` is the sole visible binary
+and is byte-identical to the beta executable (SHA-256
+`0979dae301e6c019d5ddf660c58c20252a4f7d50b7b3464399fbc0e367527630`).
+Proof: full planted-violations 213/213 locally and in CI; mneves-verify (Fable)
+round 1 FAIL on missing end-to-end tests, corrected, round 2 PASS 7/7
+(`.scratch/verify-0.12.1/r2/verdict.md`); autoreview (Astra, P0–P2) clean on the
+release diff; security gate PASS for staging and production
+(`.scratch/security-gate/94ec37a…/`, reused from `fa849fb…`; its work logs were
+removed during cleanup, the verdict records remain). Gate plan items P-01 to P-05
+(verdict in the tag message, a scripted live check, security.txt, local tool
+versions, a repo `.gitignore` for `.scratch/`) are open for the next release. The
+site serves the main checkout byte for byte over HTTPS with its CSP. The next
+source section is 0.12.2.
+
+## Previous production state (0.12.0)
 
 0.12.0 ships the 2026-10-17 dashboard feature plus the owner's 2026-10-18
 journal/tooling/documentation hardening scope; story in
