@@ -15,9 +15,11 @@ the markup these pages are written in, which it reads exactly as a browser
 does: the doctype, comments with no "--" inside, plain end tags, start tags
 with double-quoted attribute values free of "&", script and style text that
 runs to its exact end tag with no "</" or "<!--" inside, and title text with
-no "<" or "&". Only the elements these pages use are accepted, every one closed
-in order, with no event-handler or srcdoc attribute and no NUL, and the policy
-meta preceded by nothing but the doctype, <html>, <head>, other metas and
+no "<" or "&", folding case and splitting tokens in ASCII only. The page
+declares one <meta charset="utf-8"> in its first 1024 bytes, since the hashes
+are of the UTF-8 text. Only the elements these pages use are accepted, every
+one closed in order, with no event-handler or srcdoc attribute and no NUL, and
+the policy meta preceded by nothing but the doctype, <html>, <head>, other metas and
 whitespace, so the browser cannot have left the head before it. Anything else
 is refused rather than modelled; a real browser load stays the ground truth.
 """
@@ -69,6 +71,7 @@ class Inventory:
         self.styles: list[str] = []
         self.style_attributes: list[str] = []
         self.stylesheet = False
+        self.charset = False
         self.policies: list[str] = []
         self.ambiguous: list[str] = []
         self.open: list[str] = []
@@ -148,9 +151,21 @@ def inventory(page: str) -> Inventory:
             found.style_attributes.append(name)
         if name == "link" and "stylesheet" in re.split(f"{SPACE}+", values.get("rel", "").translate(ASCII_LOWER)):
             found.stylesheet = True
+        if name == "meta" and "charset" in names:
+            # The hashes are of the UTF-8 text; the browser decodes the bytes
+            # with the first declaration its 1024-byte prescan finds.
+            if values["charset"].translate(ASCII_LOWER) != "utf-8" or found.charset or policy_seen:
+                refuse('the page must declare <meta charset="utf-8"> once, before the policy meta')
+            elif len(page[: start_tag.end()].encode()) > 1024:
+                refuse('<meta charset="utf-8"> lies beyond the first 1024 bytes')
+            found.charset = True
+        if name == "meta" and values.get("http-equiv", "").translate(ASCII_LOWER) == "content-type":
+            refuse("an http-equiv Content-Type meta can declare another encoding")
         if name == "meta" and values.get("http-equiv", "").translate(ASCII_LOWER) == "content-security-policy":
             if found.open != ["html", "head"]:
                 refuse("the policy meta is not a direct child of <head>")
+            if not found.charset:
+                refuse('the page must declare <meta charset="utf-8"> once, before the policy meta')
             found.policies.append(values.get("content", ""))
         at = start_tag.end()
         if name in RAW:
@@ -203,7 +218,7 @@ def main() -> int:
     failures = []
     for name in sys.argv[2:]:
         path = Path(name)
-        page = path.read_text()
+        page = path.read_text(encoding="utf-8")
         found = inventory(page)
         metas = list(META.finditer(page))
         if len(found.policies) != 1 or len(metas) != 1 or metas[0].group(2) != found.policies[0]:
@@ -222,7 +237,7 @@ def main() -> int:
         if wanted == match.group(2):
             continue
         if write:
-            path.write_text(page[: match.start(2)] + wanted + page[match.end(2) :])
+            path.write_text(page[: match.start(2)] + wanted + page[match.end(2) :], encoding="utf-8")
             print(f"{name}: policy updated")
         else:
             failures.append(f"{name}: stale CSP\n  served:   {match.group(2)}\n  expected: {wanted}")

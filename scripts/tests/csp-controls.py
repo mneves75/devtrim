@@ -16,7 +16,8 @@ script or style, a script or style end tag spelled other than </script> or
 </style>, a comment a browser may end elsewhere, an unquoted attribute value, a
 bare "<" in text, a bogus declaration, a NUL, a character reference in an
 attribute value, title text holding markup, an end tag or rel token matched by
-non-ASCII case folding or whitespace), a second policy meta, and an
+non-ASCII case folding or whitespace), an encoding other than one UTF-8
+charset meta before the policy, a second policy meta, and an
 'unsafe-inline' source must each fail.
 """
 
@@ -71,7 +72,7 @@ def main() -> int:
         if result.returncode != 0:
             failures.append(f"positive control: {name} failed:\n{result.stderr}")
 
-    manual = (ROOT / "MANUAL.html").read_text()
+    manual = (ROOT / "MANUAL.html").read_text(encoding="utf-8")
     assert "<style>" in manual and "<body" in manual and "style-src 'sha256-" in manual
     planted = {
         "stale-hash": manual.replace("style-src 'sha256-", "style-src 'sha256-A", 1),
@@ -167,6 +168,18 @@ def main() -> int:
         "nbsp-separated-rel": manual.replace("style-src 'sha256-", "style-src 'self' 'sha256-", 1).replace(
             "</head>", '<link rel="x\u00a0stylesheet" href="x.css"></head>', 1
         ),
+        # The hashes are of the UTF-8 text; any other declared encoding makes the
+        # browser decode different text from the same bytes.
+        "windows-1252-charset": manual.replace('<meta charset="utf-8">', '<meta charset="windows-1252">', 1),
+        "content-type-meta": manual.replace(
+            '<meta charset="utf-8">',
+            '<meta charset="utf-8"><meta http-equiv="Content-Type" content="text/html; charset=windows-1252">',
+            1,
+        ),
+        "missing-charset": manual.replace('<meta charset="utf-8">', "", 1),
+        "charset-beyond-prescan": manual.replace(
+            '<meta charset="utf-8">', f'<meta name="filler" content="{"x" * 1024}"><meta charset="utf-8">', 1
+        ),
         "nul-in-style": manual.replace("</body>", "<style>p::after { content: '\x00'; }</style></body>", 1),
         "srcdoc-iframe": manual.replace(
             "</body>", '<iframe srcdoc="<style>p{color:red}</style>"></iframe></body>', 1
@@ -186,7 +199,7 @@ def main() -> int:
                 failures.append(f"{label}: the planted change did not apply")
                 continue
             page = base / f"{label}.html"
-            page.write_text(text)
+            page.write_text(text, encoding="utf-8")
             if label in REWRITTEN:
                 # The attack hashes what csp.py reads; only a refusal stops it.
                 check(page, "--write")
