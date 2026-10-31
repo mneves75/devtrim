@@ -1,0 +1,24 @@
+devtrim demo film — ledger
+==========================
+
+Every number below was printed by a script in film/scripts/ (build.py runs
+them all) or by the named reviewer. A round's numbers are from the build that
+round reviewed.
+
+Round 0 — self-check before the first review (build of 2026-10-31)
+- Media: 1920x1080, 60 fps, 24.000 s (1440 frames), H.264 yuv420p, AAC
+  48 kHz, moov before mdat. film.mp4 5.47 MB.
+- Contrast (check_contrast.py, six colours): ink 17.18, muted 9.50, lime 16.80,
+  amber 12.54, red 7.06 on bg; bg on lime 16.80. Minimum 4.5.
+- Loudness (loudness.py, two-pass loudnorm, target -14 LUFS, ceiling -1 dBTP):
+  mix -18.5 LUFS / -3.0 dBTP -> -13.9 LUFS / -1.4 dBTP;
+  music alone -17.6 / -3.0 -> -13.9 / -1.5.
+- Sync (check_sync.py): 44 audio events (kicks, five key clicks, final chord),
+  worst offset 7.0 ms, limit 16.7 ms (one frame). Negative control: the same
+  audio delayed 33 ms fails (36 ms, exit 1).
+- Facts (check_facts.py): 35 copy lines, 35 used in src/film, 0 failures; every
+  on-screen string goes through line(), and ESLint's react/jsx-no-literals
+  refuses text written straight into the film's JSX.
+- Self-review of contact sheets: Details evidence line overflowed its panel
+  (font 46 -> 40, panel moved to top 330); pad-only sections nearly inaudible
+  (pad 0.16 -> 0.34, final pad 0.2 -> 0.5, kick 0.9 -> 0.7).

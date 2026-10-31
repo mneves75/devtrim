@@ -1,0 +1,205 @@
+{
+ "fps": 60,
+ "bpm": 120,
+ "beatFrames": 30,
+ "durationFrames": 1440,
+ "width": 1920,
+ "height": 1080,
+ "scenes": [
+  {
+   "id": "title",
+   "from": 0,
+   "to": 150
+  },
+  {
+   "id": "preview",
+   "from": 150,
+   "to": 330
+  },
+  {
+   "id": "see",
+   "from": 330,
+   "to": 450
+  },
+  {
+   "id": "details",
+   "from": 450,
+   "to": 600
+  },
+  {
+   "id": "select",
+   "from": 600,
+   "to": 780
+  },
+  {
+   "id": "approve",
+   "from": 780,
+   "to": 900
+  },
+  {
+   "id": "confirm",
+   "from": 900,
+   "to": 1110
+  },
+  {
+   "id": "trash",
+   "from": 1110,
+   "to": 1260
+  },
+  {
+   "id": "install",
+   "from": 1260,
+   "to": 1440
+  }
+ ],
+ "cues": [
+  {
+   "frame": 150,
+   "kind": "swish",
+   "scene": "preview"
+  },
+  {
+   "frame": 330,
+   "kind": "swish",
+   "scene": "see"
+  },
+  {
+   "frame": 450,
+   "kind": "swish",
+   "scene": "details"
+  },
+  {
+   "frame": 600,
+   "kind": "swish",
+   "scene": "select"
+  },
+  {
+   "frame": 630,
+   "kind": "click",
+   "key": "j"
+  },
+  {
+   "frame": 660,
+   "kind": "click",
+   "key": "j"
+  },
+  {
+   "frame": 690,
+   "kind": "click",
+   "key": "space"
+  },
+  {
+   "frame": 780,
+   "kind": "swish",
+   "scene": "approve"
+  },
+  {
+   "frame": 900,
+   "kind": "swish",
+   "scene": "confirm"
+  },
+  {
+   "frame": 930,
+   "kind": "click",
+   "key": "a"
+  },
+  {
+   "frame": 1080,
+   "kind": "click",
+   "key": "y"
+  },
+  {
+   "frame": 1110,
+   "kind": "swish",
+   "scene": "trash"
+  },
+  {
+   "frame": 1260,
+   "kind": "swish",
+   "scene": "install"
+  }
+ ],
+ "music": {
+  "chords": [
+   [
+    57,
+    60,
+    64
+   ],
+   [
+    53,
+    57,
+    60
+   ],
+   [
+    48,
+    52,
+    55
+   ],
+   [
+    55,
+    59,
+    62
+   ]
+  ],
+  "sections": [
+   {
+    "from": 0,
+    "to": 15,
+    "voices": [
+     "pad",
+     "kick",
+     "hat"
+    ]
+   },
+   {
+    "from": 15,
+    "to": 26,
+    "voices": [
+     "pad",
+     "kick",
+     "hat",
+     "bass",
+     "arp"
+    ]
+   },
+   {
+    "from": 26,
+    "to": 30,
+    "voices": [
+     "pad"
+    ]
+   },
+   {
+    "from": 30,
+    "to": 37,
+    "voices": [
+     "pad",
+     "kick",
+     "hat",
+     "bass"
+    ]
+   },
+   {
+    "from": 37,
+    "to": 42,
+    "voices": [
+     "pad",
+     "kick",
+     "hat",
+     "bass",
+     "arp"
+    ]
+   }
+  ],
+  "final": {
+   "beat": 42,
+   "chord": [
+    57,
+    60,
+    64,
+    69
+   ]
+  }
+ }
+}

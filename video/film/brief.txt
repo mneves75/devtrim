@@ -1,0 +1,61 @@
+devtrim demo film — brief and decisions
+=======================================
+
+Brief as given (2026-10-31)
+- Type: this project (devtrim).
+- Product URL: https://mneves75.github.io/devtrim/
+- Audience: junior developers. Last second: install it.
+- Everything else was left blank; each choice and its reason follows.
+
+Decisions
+- Length and format: 24 s, 16:9, 1920x1080. The landing page embeds a 16:9
+  1920x1080 player; X plays 16:9 inline. No 9:16 cut: a second layout doubles
+  build and review, and nothing in the brief asks for it.
+- Frame rate: 60 fps (UI demo default).
+- Brand: taken from the site. Colours from styles.css tokens: bg #0a0a0a,
+  ink #efefec, muted #b4b4ae, lime #c8ff38, amber #ffc53d, red #ff6b57 (six;
+  the site's cyan and blue are left out to stay at six). Every one passes
+  4.5:1 as text on bg (check_contrast.py), so no colour is shape-only.
+  Logo: the site's favicon.svg, path for path (capture/logo.svg); only its lime
+  bar's scale is animated. Fonts: the site uses system stacks (SF Pro, SF Mono)
+  and ships no web font files, so there is nothing to copy; the film names
+  system-ui first because Remotion's headless Chrome does not resolve
+  -apple-system (it fell back to Helvetica in the first still).
+- Facts source: the site itself, index.html and MANUAL.html at main (served
+  byte for byte, verify-live.sh), extracted by scripts/facts.py into
+  facts.json (419 facts). The terminal frames on the site are real binary
+  output (scripts/site/frames.py), so the TUI lines are facts too. The site's
+  own address is added as the last fact: it appears only in links, never in
+  page text. Fact ids are text digests, so editing one page line breaks only
+  the copy that quotes it.
+- Reference video: none; breakdown skipped.
+- Music: synthesized in code (scripts/music.py, stdlib, seed 7), 120 BPM,
+  A minor i-VI-III-VII, beat grid in timing.json.
+- Sound: music + sfx. No voice: no TTS key is configured, and X autoplays muted.
+- Renderer: Remotion, not HyperFrames. The repository already has an audited
+  Remotion project in video/ that CI lints, typechecks, formats and bundles,
+  and whose npm graph the release gate audits (video-audit.py). A second
+  renderer would add an unaudited dependency tree for the same result.
+- ./film: the pipeline lives in video/film/ (docs, data, scripts) and the
+  composition in video/src/film/, so the existing gates cover it.
+- Run mode: run to the end; at each pause the strongest option was taken and
+  is logged below.
+
+Pauses
+- Storyboard (3 directions from a Fable planner): chose A, "Press a" — one
+  preview, three keys (look, leave one out, approve), the Trash as the safety
+  net. Every panel line is the product's real screen, and its three keystrokes
+  show the whole promise to a muted viewer. Rejected B ("what it won't do",
+  refusals first): honest, but 13.5 s before any space comes back. Rejected C
+  (three CLI commands): it cannot show the y/N prompt with a verbatim fact.
+- Keystroke timing: the first j moved off the scene cut (beat 21, not 20) and
+  a off the confirm cut (beat 31), so the viewer sees each screen before it
+  changes.
+- Left-out row: the TUI renders `[ ]` for a finding left out (src/tui.rs,
+  `(true, true) => "[ ] "`); the film takes the x away from `[x]`.
+- Style lock (stills at frames 0, 290, 1010): kept the site's hierarchy —
+  heavy SF Pro headlines with tight tracking, SF Mono panels with ruled
+  borders, amber for danger, lime for selection and the call to action.
+- Site embed: the landing page's player has controls and no autoplay, so the
+  delivered film with audio replaces media/demo.mp4; the captions file now
+  describes the sound, and the transcript describes this film.
