@@ -173,7 +173,9 @@ for workflow in "$release_workflow" "$ci_workflow"; do
 done
 require_fixed "$repo_root/rust-toolchain.toml" 'channel = "1.98.1"'
 require_fixed "$release_workflow" 'npm ci --strict-allow-scripts'
-require_fixed "$release_workflow" 'npm audit --package-lock-only --audit-level=low'
+require_fixed "$release_workflow" 'python3 -B ../scripts/video-audit.py'
+require_fixed "$release_workflow" 'python3 -B scripts/tests/video-audit-controls.py'
+! grep -Fq -- 'npm audit' "$release_workflow" || fail "$release_workflow runs npm audit outside scripts/video-audit.py"
 require_fixed "$release_workflow" 'npm run lint'
 require_fixed "$release_workflow" 'npm run format:check'
 require_fixed "$release_workflow" 'npm run build'

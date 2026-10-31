@@ -26,7 +26,7 @@ violates one cannot merge, so reporting it wastes the review.
 | `bash -n` separately for each Bash script, `sh -n` separately for the hook and POSIX helpers, then `scripts/tests/release-policy.sh` | shell syntax (additional filename arguments to `-n` are not parsed), positive controls for difficult filenames, missing ShellCheck, and worktree failure, and that the hook, `ci.yml`, and `release.yml` still carry each pinned safety clause |
 | `npm run lint` in `video/` (ESLint followed by the explicit native TypeScript7.0.2 CLI) | Remotion lint rules and TypeScript types; classic5.9.3 remains for tooling APIs |
 | `npm run format:check` in `video/` (prettier) | all `video/src` formatting |
-| `npm ci --strict-allow-scripts` + `npm audit --package-lock-only --audit-level=low` | video advisories, and lifecycle scripts restricted to the `allowScripts` allowlist |
+| `npm ci --strict-allow-scripts` + `scripts/video-audit.py` | video advisories at any severity unless waived in date in `video/audit-waivers.json`, and lifecycle scripts restricted to the `allowScripts` allowlist |
 | `npm run build` in `video/` (`remotion bundle`) | the video bundle still builds |
 | `gitleaks git --redact --no-banner .` and `trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color` | full-history secret scans in ordinary PR/main CI and release gates; the Gitleaks installer first proves detection with a non-allowlisted synthetic PAT assembled at runtime |
 
