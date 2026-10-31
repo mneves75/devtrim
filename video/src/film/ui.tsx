@@ -156,14 +156,14 @@ export const RowText: React.FC<{ text: string; quiet?: boolean }> = ({
     </>
   );
 
-/** The box title of the preview, with the danger level picked out. */
+/** The box title of the preview (its selection, size and danger), the danger picked out. */
 export const PreviewTitle: React.FC<{ text: string }> = ({ text }) => (
   <span>
-    {text.split(/^(TRASH-FIRST)/).map((part, i) => (
+    {text.split(/(danger-5)/).map((part, i) => (
       <span
         key={i}
         style={
-          part === "TRASH-FIRST"
+          part === "danger-5"
             ? { color: C.amber, fontWeight: 700 }
             : undefined
         }

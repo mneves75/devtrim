@@ -49,7 +49,7 @@ export const PreviewPanel: React.FC<{
   part,
   font,
   lineHeight,
-  titleFont = 52,
+  titleFont = 72,
 }) => {
   const ids = part === "start" ? START_ROWS : END_ROWS;
   const title = (

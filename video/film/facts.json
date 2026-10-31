@@ -310,8 +310,8 @@
   "link": "https://mneves75.github.io/devtrim/#demo-h"
  },
  {
-  "id": "f28b0d337",
-  "text": "The purge preview of two stale demo projects lists four build folders, each with its danger, size and path: TRASH-FIRST, 4 of 4 selected, 7.8 GB, danger-5.",
+  "id": "fb19eb620",
+  "text": "The purge preview of two stale demo projects lists four build folders by size and name, each moving to the Trash: TRASH-FIRST, 4 of 4 selected, 7.8 GB, danger-5.",
   "link": "https://mneves75.github.io/devtrim/#demo-transcript"
  },
  {
@@ -320,8 +320,8 @@
   "link": "https://mneves75.github.io/devtrim/#demo-transcript"
  },
  {
-  "id": "fb64bc15f",
-  "text": "j moves down twice and Space leaves the third finding out: 3 of 4 selected, 7.2 GB.",
+  "id": "fe4c05cae",
+  "text": "Each finding is danger-5. j moves down twice and Space leaves the third finding out: 3 of 4 selected, 7.2 GB.",
   "link": "https://mneves75.github.io/devtrim/#demo-transcript"
  },
  {

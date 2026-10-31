@@ -34,7 +34,6 @@ export const Select: React.FC = () => {
           part="start"
           font={76}
           lineHeight={104}
-          titleFont={52}
           frame={frame}
           cursor={cursor}
           thirdSelected={left}

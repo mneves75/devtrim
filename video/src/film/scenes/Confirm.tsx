@@ -17,8 +17,8 @@ import { PreviewPanel } from "./PreviewPanel";
 const keys = keyCues("confirm");
 const at = (key: string) => keys.filter((k) => k.key === key)[0].at;
 
-const FONT = 54;
-const LINE_HEIGHT = 84;
+const FONT = 70;
+const LINE_HEIGHT = 100;
 
 /** Close-up: the narrowed plan holds a beat, a raises its confirmation, y approves it. */
 export const Confirm: React.FC = () => {
@@ -31,7 +31,7 @@ export const Confirm: React.FC = () => {
   const lineIn = (n: number) => enter(frame, a + 6 + n * 8, 14);
   const caretOn = Math.floor(frame / (BEAT / 2)) % 2 === 0;
   return (
-    <Stage scale={1.06 + (0.03 * frame) / length} origin="50% 45%">
+    <Stage scale={1 + (0.02 * frame) / length} origin="50% 45%">
       {/* The plan Select ended on, until a replaces it with its confirmation. */}
       <div
         style={{
@@ -55,8 +55,10 @@ export const Confirm: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: 180,
-          top: 150,
+          left: 0,
+          right: 0,
+          top: 90,
+          marginInline: "auto",
           width: "fit-content",
           padding: "28px 48px 32px",
           border: `3px solid ${RULE}`,
@@ -80,7 +82,10 @@ export const Confirm: React.FC = () => {
         <div style={{ color: C.amber, fontWeight: 700, opacity: lineIn(3) }}>
           {line("confirm.prompt")}
         </div>
-        <div style={{ opacity: lineIn(4) }}>
+        <div style={{ color: C.amber, fontWeight: 700, opacity: lineIn(4) }}>
+          {line("confirm.prompt.rest")}
+        </div>
+        <div style={{ opacity: lineIn(5) }}>
           <span style={{ color: C.lime }}>{line("confirm.caret")}</span>
           <span style={{ display: "inline-block", width: "1ch" }} />
           <span

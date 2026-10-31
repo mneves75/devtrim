@@ -8,11 +8,11 @@
   "fact": "f44663d40"
  },
  "preview.title": {
-  "text": "TRASH-FIRST · 4/4 selected · 7.8 GB · danger-5",
+  "text": "4/4 selected · 7.8 GB · danger-5",
   "fact": "f2849b585"
  },
  "preview.title.narrowed": {
-  "text": "TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5",
+  "text": "3/4 selected · 7.2 GB · danger-5",
   "fact": "f90c725fa"
  },
  "row.cursor": {
@@ -124,7 +124,11 @@
   "fact": "f078ed9fe"
  },
  "confirm.prompt": {
-  "text": "Danger-5. Press y to apply this exact plan",
+  "text": "Danger-5. Press y",
+  "fact": "ffd745f85"
+ },
+ "confirm.prompt.rest": {
+  "text": "to apply this exact plan",
   "fact": "ffd745f85"
  },
  "confirm.caret": {

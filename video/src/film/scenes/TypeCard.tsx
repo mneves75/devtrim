@@ -35,7 +35,7 @@ export const See: React.FC = () => {
           text={line("see")}
           frame={frame}
           start={0}
-          stagger={12}
+          stagger={18}
           style={{
             fontSize: 132,
             fontWeight: 800,
@@ -84,14 +84,14 @@ export const Approve: React.FC = () => {
           text={first}
           frame={frame}
           start={0}
-          stagger={12}
+          stagger={18}
           style={{ ...style, color: C.ink }}
         />
         <Words
           text={second}
           frame={frame}
-          start={BEAT}
-          stagger={12}
+          start={BEAT + 24}
+          stagger={18}
           style={{ ...style, color: C.lime }}
         />
       </div>

@@ -87,3 +87,22 @@ Round 3 — new independent reviewer: another pass (round 2 b-f fixed)
   selection and confirmation clearer"; "danger-5" still unexplained.
 - Rebuild: facts 37/37, contrast unchanged, mix -18.5/-3.0 -> -13.9 LUFS /
   -1.4 dBTP, sync 45 events worst 7.0 ms, freezedetect none.
+
+Round 4 — new independent reviewer: another pass (round 3 b, c fixed)
+- Major: on a phone the confirmation (warning about 8.7 px, plan line 9.3
+  px), the inventory and Trash header (8.5 px) and the recovery caption
+  (8.3 px) were still small. Fix: the confirmation is 70 px, centred, its
+  prompt on two lines (`Danger-5. Press y` / `to apply this exact plan`,
+  both substrings of the same fact) and its push 1.06 -> 1.00; every panel
+  title shows `4/4 selected · 7.8 GB · danger-5` (a substring of the TUI
+  title) at 72 px instead of the whole title at 52 px; the recovery caption
+  56 -> 80 px.
+- Major: the first Trash row left 0.25 s after the cut. Fix: the rows leave
+  from 0.75 s, a half beat apart.
+- Major: words entered 0.20 s apart. Fix: 0.30 s (18 frames), and the
+  second phrase of "Preview first. Approve once." starts 0.4 s later.
+- Muted test 3: every planned beat retold; "danger-5" unexplained; no
+  launch command after install.
+- Rebuild: facts 38/38, contrast unchanged, mix -18.5/-3.0 -> -13.9 LUFS /
+  -1.4 dBTP, music alone -> -13.9 / -1.5, sync 45 events worst 7.0 ms,
+  freezedetect none.
