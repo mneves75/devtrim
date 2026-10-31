@@ -128,3 +128,18 @@ Round 5 — new independent reviewer (the last allowed round): ship
 - Final build: facts 38/38, contrast min 7.06:1, mix -18.5/-3.0 -> -13.9
   LUFS / -1.4 dBTP, music alone -> -13.9 / -1.5, sync 45 events worst
   7.0 ms, freezedetect none.
+
+Pipeline review — autoreview (GPT-6.1 Sol) of the branch: three P2 false
+passes in the checks, no HTML or CSP defect. All fixed, each with a planted
+control that fails for its reason while the real film passes:
+- check_sync accepted a click on a kick from the kick alone. music.py writes
+  one effects stem per cue kind; check_sync --sfx finds each of the 14 cues in
+  its own stem (controls: missing click, missing hit, missing swish, click
+  two frames late).
+- build.py checked copy against a possibly stale facts.json. facts.py
+  --check runs first and refuses one the pages no longer give (control: one
+  edited page line).
+- check_media trusted r_frame_rate. It also requires the average rate and
+  1440 counted frames (control: a variable-rate copy reporting 60/1 with
+  1080 frames).
+- The rebuilt film.mp4 is byte-identical to media/demo.mp4.

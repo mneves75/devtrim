@@ -24,6 +24,8 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
 FILM = SCRIPTS.parent
+SITE = "https://mneves75.github.io/devtrim/"
+PAGES = [FILM.parents[1] / "index.html", FILM.parents[1] / "MANUAL.html"]
 
 
 def step(name: str, args: list[str]) -> None:
@@ -44,6 +46,7 @@ def main() -> int:
     seconds = timing["durationFrames"] / timing["fps"]
     py = [sys.executable, "-B"]
 
+    step("facts fresh", py + [str(SCRIPTS / "facts.py"), "--check", str(FILM / "facts.json"), SITE, *map(str, PAGES)])
     step("facts trace", py + [str(SCRIPTS / "check_facts.py"), str(FILM / "facts.json"), str(FILM / "copy.json"), "src"])
     step("text contrast", py + [str(SCRIPTS / "check_contrast.py"), str(FILM / "theme.json")])
     step("music", py + [str(SCRIPTS / "music.py"), str(FILM / "timing.json"), str(out)])
@@ -67,10 +70,10 @@ def main() -> int:
         size = ["--width", str(timing["width"]), "--height", str(timing["height"]), "--fps", str(timing["fps"]), "--seconds", str(seconds)]
         step("media: film", py + [str(SCRIPTS / "check_media.py"), str(out / "film.mp4"), *size, "--audio"])
         step("media: muted", py + [str(SCRIPTS / "check_media.py"), str(out / "film-muted.mp4"), *size])
-    step("sync", py + [str(SCRIPTS / "check_sync.py"), str(FILM / "timing.json"), str(out / "film.mp4")])
+    step("sync", py + [str(SCRIPTS / "check_sync.py"), str(FILM / "timing.json"), str(out / "film.mp4"), "--sfx", str(out)])
     step("contact sheets", py + [str(SCRIPTS / "contact.py"), str(out / "film.mp4"), str(out / "contact")])
     step("thumbnail sheet", py + [str(SCRIPTS / "contact.py"), str(out / "film.mp4"), str(out / "thumbs"), "--every", f"{seconds / 15:.4f}", "--per-sheet", "15"])
-    for leftover in ("mix.wav", "mix-norm.wav", "picture.mp4"):
+    for leftover in ("mix.wav", "mix-norm.wav", "sfx-swish.wav", "sfx-click.wav", "sfx-hit.wav", "picture.mp4"):
         (out / leftover).unlink(missing_ok=True)
     print(f"build.py: done -> {out}/film.mp4")
     return 0

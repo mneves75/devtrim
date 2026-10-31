@@ -204,25 +204,34 @@ def main() -> int:
         music.add(start, kick_s, 0.8)
 
     sfx = Track(seconds)
+    # One stem per kind as well: check_sync.py --sfx judges each cue on a stem where
+    # no other cue (a swish under a hit on the same cut) or music can mask it.
+    stems = {kind: Track(seconds) for kind in ("swish", "click", "hit")}
     swish_s, click_s, hit_s = swish(rng), click(), hit()
     for cue in timing["cues"]:
         t = cue["frame"] / fps
         if cue["kind"] == "swish":
             # Centre the swish's loudest moment on the cut.
-            sfx.add(t - 0.14, swish_s, 0.30)
+            placed = (t - 0.14, swish_s, 0.30)
         elif cue["kind"] == "click":
-            sfx.add(t, click_s, 0.32, pan=0.1)
+            placed = (t, click_s, 0.32)
         elif cue["kind"] == "hit":
-            sfx.add(t, hit_s, 0.5)
+            placed = (t, hit_s, 0.5)
         else:
             raise SystemExit(f"unknown cue kind {cue['kind']!r} at frame {cue['frame']}")
+        sfx.add(*placed, pan=0.1 if cue["kind"] == "click" else 0.0)
+        stems[cue["kind"]].add(*placed)
 
     mix = music.mixed_with(sfx)
     peak_normalize(music, -3)
     peak_normalize(mix, -3)
     write(music, out_dir / "music.wav")
     write(mix, out_dir / "mix.wav")
-    print(f"music.py: {seconds:.2f} s at {bpm} BPM, {len(timing['cues'])} cues -> {out_dir}/music.wav, mix.wav")
+    # The effects alone, one stem per kind: check_sync.py --sfx proves each cue sounds
+    # on its frame, which the mix cannot show where a cue shares its frame with a kick.
+    for kind, stem in stems.items():
+        write(stem, out_dir / f"sfx-{kind}.wav")
+    print(f"music.py: {seconds:.2f} s at {bpm} BPM, {len(timing['cues'])} cues -> {out_dir}/music.wav, mix.wav, sfx-*.wav")
     return 0
 
 

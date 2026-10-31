@@ -29,13 +29,13 @@ ffmpeg:
 
 | Script | Does |
 |---|---|
-| `facts.py` | regenerates `facts.json` from `../index.html` and `../MANUAL.html` |
+| `facts.py` | regenerates `facts.json` from `../index.html` and `../MANUAL.html`; `--check` (run by `build.py`) refuses a `facts.json` the pages no longer match |
 | `check_facts.py` | every `copy.json` line is a verbatim substring of its cited fact |
 | `check_contrast.py` | at most six colours; every text pair in `theme.json` at least 4.5:1 |
 | `music.py` | synthesizes music and effects from `timing.json` (fixed seed) |
 | `loudness.py` | two-pass loudnorm to -14 LUFS, true peak at most -1 dBTP, then measures |
-| `check_media.py` | size, frame rate, duration, H.264 yuv420p, AAC 48 kHz, +faststart |
-| `check_sync.py` | cuts on the beat grid with a swish; every kick, click and hit within one frame |
+| `check_media.py` | size, frame rate (timestamp base, average and counted frames), duration, H.264 yuv420p, AAC 48 kHz, +faststart |
+| `check_sync.py` | cuts on the beat grid with a swish; every kick, click and hit within one frame; with `--sfx`, each click, hit and swish present on its frame in its own effects stem |
 | `contact.py` | tiles frames into timecoded contact sheets |
 
 `film/ledger.txt` keeps the before/after numbers of every review round.
