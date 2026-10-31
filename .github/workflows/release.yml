@@ -244,6 +244,7 @@ jobs:
           python3 -B scripts/tests/verify-live-controls.py
           python3 -B scripts/site/csp.py --check index.html MANUAL.html
           python3 -B scripts/tests/csp-controls.py
+          python3 -B scripts/tests/video-audit-controls.py
           python3 scripts/tests/planted-violations.py
 
       - name: Video install, audit, lint, format, and build
@@ -251,7 +252,7 @@ jobs:
         run: |
           npm config get strict-allow-scripts | grep -Fqx 'true'
           npm ci --strict-allow-scripts
-          npm audit --package-lock-only --audit-level=low
+          python3 -B ../scripts/video-audit.py
           npm run lint
           npm run format:check
           npm run build

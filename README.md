@@ -762,7 +762,7 @@ rustup run 1.88.0 cargo test --locked --all-targets --all-features
 cargo audit
 cargo audit --file fuzz/Cargo.lock
 rustup run 1.98.1 cargo build --release --locked --target aarch64-apple-darwin
-(cd video && npm ci --strict-allow-scripts && npm audit --package-lock-only --audit-level=low && npm run lint && npm run format:check && npm run build)
+(cd video && npm ci --strict-allow-scripts && python3 -B ../scripts/video-audit.py && npm run lint && npm run format:check && npm run build)
 bash scripts/tests/release-policy.sh
 (for script in scripts/verify.sh scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh scripts/perf/ab.sh scripts/perf/corpus.sh; do
   bash -n "$script" || exit "$?"
