@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Fail the video's npm audit on any advisory not waived, in date, in video/audit-waivers.json.
 
-usage: scripts/video-audit.py [--report <npm-audit.json>] [--waivers <file>] [--today YYYY-MM-DD]
+usage: scripts/video-audit.py [--report <npm-audit.json> [--npm-exit-code N]] [--waivers <file>] [--today YYYY-MM-DD]
 
 Without --report it runs `npm audit --package-lock-only --json` in video/. Every
 advisory the report names, at any severity, must match a waiver whose expiry
 (a UTC date, inclusive) has not passed. An expired, malformed, repeated or
 stale waiver (one whose advisory the report no longer names) fails too, so a
-waiver cannot outlive its reason. --report, --waivers and --today exist for
+waiver cannot outlive its reason. --report, --npm-exit-code, --waivers and --today exist for
 scripts/tests/video-audit-controls.py.
 """
 
@@ -27,6 +27,7 @@ ADVISORY_URL = re.compile(r"https://github\.com/advisories/(" + GHSA.pattern + r
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 WAIVER_KEYS = {"id", "expires", "reason"}
 SEVERITIES = ("info", "low", "moderate", "high", "critical")
+REPORT_KEYS = {"auditReportVersion", "vulnerabilities", "metadata"}
 
 
 class Refused(Exception):
@@ -62,6 +63,9 @@ def advisories(report: object) -> set[str]:
         raise Refused(f"npm audit failed: {json.dumps(report['error'])}")
     if report.get("auditReportVersion") != 2 or not isinstance(report.get("vulnerabilities"), dict):
         raise Refused("the audit report lacks auditReportVersion 2 and its vulnerabilities")
+    if set(report) != REPORT_KEYS:
+        # An advisory under any other key would go unread.
+        raise Refused(f"the audit report has top-level keys {sorted(report)}, not {sorted(REPORT_KEYS)}")
     vulnerabilities = report["vulnerabilities"]
     # npm counts every entry by severity; a report missing entries it counted is partial.
     tally = {severity: 0 for severity in SEVERITIES}
@@ -91,6 +95,8 @@ def advisories(report: object) -> set[str]:
             match = ADVISORY_URL.fullmatch(entry.get("url", "")) if isinstance(entry, dict) else None
             if match is None:
                 raise Refused(f"{name}: an advisory without a GitHub advisory URL cannot be waived by ID")
+            if entry.get("name") != name or entry.get("dependency") != name:
+                raise Refused(f"{name}: lists an advisory that belongs to {entry.get('dependency')!r}")
             found.add(match.group(1))
             resolved.add(name)
     # Every entry must reach a concrete advisory; a cycle of paths reaches none.
@@ -129,7 +135,7 @@ def waivers(text: str, today: datetime.date) -> dict[str, datetime.date]:
     return by_id
 
 
-def npm_audit() -> str:
+def npm_audit() -> tuple[str, int]:
     result = subprocess.run(
         ["npm", "audit", "--package-lock-only", "--json"],
         cwd=VIDEO,
@@ -137,10 +143,14 @@ def npm_audit() -> str:
         text=True,
         timeout=300,
     )
-    # npm exits 1 when it finds advisories; anything else is a failed audit.
-    if result.returncode not in (0, 1):
-        raise Refused(f"npm audit exited {result.returncode}: {result.stderr.strip()}")
-    return result.stdout
+    return result.stdout, result.returncode
+
+
+def check_exit(code: int, found: set[str]) -> None:
+    # npm exits 1 when it finds advisories and 0 when it finds none; any
+    # other status, or a 1 beside an empty report, is an audit that failed.
+    if code not in (0, 1) or (code == 1 and not found):
+        raise Refused(f"npm audit exit {code} does not match a report naming {len(found)} advisories")
 
 
 def main() -> int:
@@ -148,6 +158,7 @@ def main() -> int:
     parser.add_argument("--report")
     parser.add_argument("--waivers", default=str(VIDEO / "audit-waivers.json"))
     parser.add_argument("--today")
+    parser.add_argument("--npm-exit-code", type=int, help="the exit status npm gave --report (tests)")
     options = parser.parse_args()
     try:
         today = (
@@ -155,8 +166,13 @@ def main() -> int:
             if options.today
             else datetime.datetime.now(datetime.timezone.utc).date()
         )
-        text = Path(options.report).read_text(encoding="utf-8") if options.report else npm_audit()
+        if options.report:
+            text, code = Path(options.report).read_text(encoding="utf-8"), options.npm_exit_code
+        else:
+            text, code = npm_audit()
         found = advisories(strict_json(text, "the audit report"))
+        if code is not None:
+            check_exit(code, found)
         waived = waivers(Path(options.waivers).read_text(encoding="utf-8"), today)
         problems = [f"{advisory} is reported and not waived" for advisory in sorted(found - set(waived))]
         problems += [

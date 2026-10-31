@@ -21,7 +21,7 @@ OTHER = "GHSA-c2v8-3x9q-wp4h"
 
 
 def advisory(name: str, ghsa: str | None) -> dict:
-    entry = {"source": 1, "name": name, "title": "planted", "severity": "moderate", "range": "<11.0.1"}
+    entry = {"source": 1, "name": name, "dependency": name, "title": "planted", "severity": "moderate", "range": "<11.0.1"}
     if ghsa:
         entry["url"] = f"https://github.com/advisories/{ghsa}"
     return entry
@@ -48,7 +48,13 @@ MINIMATCH = {
 }
 WAIVER = {"id": GHSA, "expires": "2026-11-30", "reason": "lint-only; no fix in eslint's range"}
 
-# name, report (dict, or raw text), waivers (list, or raw text), today, expected exit, expected text
+def foreign_advisory() -> dict:
+    vulnerabilities = json.loads(json.dumps(MINIMATCH))
+    vulnerabilities["minimatch"]["via"][0].update(name="unrelated", dependency="unrelated")
+    return vulnerabilities
+
+
+# name, report (dict, or raw text), waivers (list, or raw text), today, expected exit, expected text[, extra args]
 CASES = [
     ("clean", report({}), [], "2026-10-31", 0, "no advisories"),
     ("waived", report(MINIMATCH), [WAIVER], "2026-10-31", 0, GHSA),
@@ -110,6 +116,19 @@ CASES = [
         1,
         "metadata",
     ),
+    ("foreign-advisory", report(foreign_advisory()), [WAIVER], "2026-10-31", 1, "belongs to"),
+    (
+        "extra-top-level",
+        {**report(MINIMATCH), "advisories": {"1": advisory("zod", OTHER)}},
+        [WAIVER],
+        "2026-10-31",
+        1,
+        "top-level",
+    ),
+    ("npm-exit-1-clean", report({}), [], "2026-10-31", 1, "exit", ["--npm-exit-code", "1"]),
+    ("npm-exit-2", report({}), [], "2026-10-31", 1, "exit", ["--npm-exit-code", "2"]),
+    ("npm-exit-0-clean", report({}), [], "2026-10-31", 0, "no advisories", ["--npm-exit-code", "0"]),
+    ("npm-exit-1-found", report(MINIMATCH), [WAIVER], "2026-10-31", 0, GHSA, ["--npm-exit-code", "1"]),
     ("no-metadata", report(MINIMATCH, {}), [WAIVER], "2026-10-31", 1, "metadata"),
     ("old-format", {"vulnerabilities": {}}, [], "2026-10-31", 1, "auditReportVersion"),
     ("npm-error", {"error": {"code": "ENOLOCK", "summary": "no lockfile"}}, [], "2026-10-31", 1, "ENOLOCK"),
@@ -120,13 +139,13 @@ CASES = [
 def main() -> int:
     failures = []
     with tempfile.TemporaryDirectory() as scratch:
-        for name, planted_report, waivers, today, expected, text in CASES:
+        for name, planted_report, waivers, today, expected, text, *extra in CASES:
             report_path = Path(scratch, f"{name}-report.json")
             waivers_path = Path(scratch, f"{name}-waivers.json")
             report_path.write_text(json.dumps(planted_report), encoding="utf-8")
             waivers_path.write_text(waivers if isinstance(waivers, str) else json.dumps(waivers), encoding="utf-8")
             result = subprocess.run(
-                [sys.executable, "-B", str(SCRIPT), "--report", str(report_path), "--waivers", str(waivers_path), "--today", today],
+                [sys.executable, "-B", str(SCRIPT), "--report", str(report_path), "--waivers", str(waivers_path), "--today", today, *(extra[0] if extra else [])],
                 capture_output=True,
                 text=True,
             )
