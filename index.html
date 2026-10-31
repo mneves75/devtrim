@@ -98,6 +98,17 @@
       </article>
     </div>
     <figure class="why-fig" data-reveal>
+<!-- tui:select -->
+<div class="term-frame" data-cols="84" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: one finding left out"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
+│  [x]   1. danger-5   5.9 GB  TRASH    <span class="b">stale target artifacts</span>  …ayments-api/target│
+│  [x]   2. danger-5   1.1 GB  TRASH    <span class="b">stale node_modules</span>  …torefront/node_modules│
+│<span class="b">› </span>[ ]   3. danger-5   614 MB  TRASH    <span class="b">stale .next artifacts</span>  …ev/storefront/.next│
+│  [x]   4. danger-5   205 MB  TRASH    <span class="b">stale .turbo artifacts</span>  …/storefront/.turbo│
+│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config│
+│                                                                                  │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘</code></pre></div>
+<!-- /tui:select -->
 <!-- tui:confirm -->
 <div class="term-frame" data-cols="84" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: confirm exact plan"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
 │ ┌ Confirm exact plan ──────────────────────────────────────────────────────────┐t│
@@ -121,26 +132,27 @@
 │                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────┘</code></pre></div>
 <!-- /tui:confirm -->
-      <figcaption>The confirmation names the exact plan, how many findings it covers and how many you left out.</figcaption>
+      <figcaption>Space leaves a finding out and empties its box; the confirmation then names the exact plan, how many findings it covers and how many you left out.</figcaption>
     </figure>
   </div>
 </section>
 
 <section class="demo" aria-labelledby="demo-h">
   <div class="wrap">
-    <h2 id="demo-h">Preview first. Approve once. 27.5 GB back.</h2>
+    <h2 id="demo-h">Preview first. Approve once.</h2>
     <div class="video-card" data-reveal>
       <video controls preload="none" src="media/demo.mp4" poster="media/demo-poster.webp" width="1920" height="1080" aria-describedby="demo-transcript">
         <track kind="captions" srclang="en" label="English" src="media/demo-captions.vtt" default>
       </video>
       <div class="video-body">
-        <p class="video-head">Pick a category, read the preview, approve the exact plan. <a href="media/demo.mp4">Download the demo</a></p>
+        <p class="video-head">Read the preview, leave one out, approve the exact plan. <a href="media/demo.mp4">Download the demo</a></p>
         <ol class="transcript" id="demo-transcript">
-          <li>Bare <code>devtrim</code> opens the Ratatui interface; every operation is labelled READ-ONLY, PREVIEW, or PERMANENT before you pick it.</li>
-          <li>Selecting <strong>Caches</strong> scans first, with a clock that shows the scan is alive; <kbd>q</kbd> stops it. Applying is a separate, explicit step.</li>
-          <li>The preview lists every finding on one row with its danger, size and path: TRASH-FIRST, 4 of 4 selected, 27.5 GB, danger-7. <kbd>Space</kbd> leaves one out; the details pane shows the highlighted path whole.</li>
-          <li>Pressing <kbd>a</kbd> raises the data-loss warning, states how many findings the plan covers, and asks to confirm that exact plan; <kbd>Esc</kbd> cancels.</li>
-          <li>The outcome reports what moved to Trash: recoverable from Finder until <code>devtrim trash-empty</code> frees the space.</li>
+          <li>The purge preview of two stale demo projects lists four build folders by size and name, each moving to the Trash: 4 of 4 selected, 7.8 GB, danger-5.</li>
+          <li>The details pane shows the evidence for the first finding: the repository was last active on 2020-01-01, and a sibling <code>Cargo.toml</code> corroborates the Rust target.</li>
+          <li>Each finding is danger-5. <kbd>j</kbd> moves down twice and <kbd>Space</kbd> leaves the third finding out: 3 of 4 selected, 7.2 GB.</li>
+          <li>Pressing <kbd>a</kbd> raises the data-loss warning for that exact plan, 3 of 4 selected and 1 left out; <kbd>y</kbd> approves it.</li>
+          <li>The approved findings move to the Trash, recoverable until you empty it; the one left out stays.</li>
+          <li>Install with <code>brew install mneves75/devtrim/devtrim</code>.</li>
         </ol>
       </div>
     </div>

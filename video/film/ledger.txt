@@ -1,0 +1,168 @@
+devtrim demo film — ledger
+==========================
+
+Every number below was printed by a script in film/scripts/ (build.py runs
+them all) or by the named reviewer. A round's numbers are from the build that
+round reviewed.
+
+Round 0 — self-check before the first review (build of 2026-10-31)
+- Media: 1920x1080, 60 fps, 24.000 s (1440 frames), H.264 yuv420p, AAC
+  48 kHz, moov before mdat. film.mp4 5.47 MB.
+- Contrast (check_contrast.py, six colours): ink 17.18, muted 9.50, lime 16.80,
+  amber 12.54, red 7.06 on bg; bg on lime 16.80. Minimum 4.5.
+- Loudness (loudness.py, two-pass loudnorm, target -14 LUFS, ceiling -1 dBTP):
+  mix -18.5 LUFS / -3.0 dBTP -> -13.9 LUFS / -1.4 dBTP;
+  music alone -17.6 / -3.0 -> -13.9 / -1.5.
+- Sync (check_sync.py): 44 audio events (kicks, five key clicks, final chord),
+  worst offset 7.0 ms, limit 16.7 ms (one frame). Negative control: the same
+  audio delayed 33 ms fails (36 ms, exit 1).
+- Facts (check_facts.py): 35 copy lines, 35 used in src/film, 0 failures; every
+  on-screen string goes through line(), and ESLint's react/jsx-no-literals
+  refuses text written straight into the film's JSX.
+- Self-review of contact sheets: Details evidence line overflowed its panel
+  (font 46 -> 40, panel moved to top 330); pad-only sections nearly inaudible
+  (pad 0.16 -> 0.34, final pad 0.2 -> 0.5, kick 0.9 -> 0.7).
+
+Round 1 — independent reviewer (fresh context, sees only film.mp4 and
+facts.json): another pass
+- Blocker: the left-out row `[ ]   3. danger-5 ...` and the typed `> y` were
+  no verbatim fact. Fix: the landing page now carries the real TUI screen
+  after j, j, Space (scripts/site/frames.py, `tui:select`, rendered from the
+  binary), so `› [ ]   3. danger-5   614 MB  TRASH    stale .next artifacts`
+  is fact f00bd58da; the TUI approves on y with no echo (src/tui.rs,
+  ConfirmationKind::YesNo), so the echo was untrue and is gone.
+- Major: terminal rows about 6 px on a 390 px phone. Fix: rows end before the
+  path (a prefix is still a substring of the fact; Details shows the full
+  path), panel type 28 -> 42 px; the 28 px key footer is gone and its status
+  line is a 52 px caption; the confirmation footer 32 -> 37 px.
+- Major: the left-out row dimmed to about 4.0:1. Fix: no dimming; the row is
+  the muted colour at full opacity, 9.50:1.
+- Minor: `> y` held under 0.7 s. Fixed by removing the untrue echo.
+- Minor: more than six colours. Fix: borders are the muted colour, panels
+  have no fill, the dimmed preview behind the confirmation is gone.
+- Muted test 1: the viewer retold every planned beat (name and promise; four
+  findings with danger, size and path before anything moves; the evidence
+  for one; j, j, Space leaving one out with the total going 7.8 -> 7.2 GB;
+  the exact plan; the Trash, recoverable; the brew command and URL).
+  Confusions: small terminal text, "danger-5" unexplained, the red warning
+  reading harsher than "recoverable", no launch command after install.
+- Rebuild: facts 34/34 (footer keys line dropped), contrast unchanged,
+  mix -18.5/-3.0 -> -13.9 LUFS / -1.4 dBTP, sync worst 7.0 ms.
+
+Round 2 — new independent reviewer: another pass (round 1 a, c, d fixed)
+- Major: terminal text still about 7 px on a 390 px phone. Fix: Select is a
+  close-up whose rows end at their size (`[x]   1. danger-5   5.9 GB`, still
+  the start of each TUI line) at 76 px; its caption 52 -> 72 px; Details
+  40 -> 54 px with the evidence on two lines, each a substring of the same
+  fact; the confirmation 44 -> 58 px without its 37 px footer.
+- Minor: seven colours, the logo's warm white #f4f1e9 beside ink. Fix: the
+  logo stroke is ink.
+- Minor: a departing row crossed the panel border. Fix: panel content clips.
+- Minor: 0.52 s blank at 15.0 s. Fix: the confirmation opens on the plan
+  Select ended with, which a replaces. freezedetect n=0.001 d=0.5: none.
+- Minor: y keycap 0.5 s before the cut. Fix: y moves to beat 35 (frame 1050,
+  on the kick), 1.07 s before the cut. Half a beat earlier, on the open hat,
+  check_sync failed (-38.0 ms): the hat's noise masks the click, so the key
+  sits on a kick where its attack can be measured.
+- Minor: the 13.0 s cut had no accent (pad-only section). Fix: a hit cue on
+  the cut, under the full-screen "Preview first. Approve once.".
+- Muted test 2: every planned beat retold; confusions: "danger-5"
+  unexplained, small details, rows clipped while leaving, no total freed.
+- Rebuild: facts 38/38, contrast unchanged, mix -18.5/-3.0 -> -13.9 LUFS /
+  -1.4 dBTP, sync 45 events worst 7.0 ms.
+
+Round 3 — new independent reviewer: another pass (round 2 b-f fixed)
+- Major: the wide views (inventory, details, confirmation intro, Trash)
+  still about 6.7-8.9 px on a phone. Fix: no view shows a whole TUI line any
+  more. Preview and Trash show each line's end (`5.9 GB  TRASH    stale
+  target artifacts`) at 64 px; Select and the confirmation intro show its
+  start at 76 px; Details drops the path and is 72 px.
+- Major: the approval line crossed the dialog's right border by about 14 px
+  (SF Mono is wider than the 0.6 em estimate). Fix: the dialog's width is
+  its content's (fit-content) at 54 px.
+- Minor: the inventory before the confirmation held 0.52 s. Fix: a moves
+  to beat 32 (frame 960, on the kick), a 1.0 s hold of the Select close-up.
+- Minor: words entered 0.10 s apart. Fix: 0.20 s (12 frames).
+- Muted test 3: every planned beat retold; the close-ups "make the
+  selection and confirmation clearer"; "danger-5" still unexplained.
+- Rebuild: facts 37/37, contrast unchanged, mix -18.5/-3.0 -> -13.9 LUFS /
+  -1.4 dBTP, sync 45 events worst 7.0 ms, freezedetect none.
+
+Round 4 — new independent reviewer: another pass (round 3 b, c fixed)
+- Major: on a phone the confirmation (warning about 8.7 px, plan line 9.3
+  px), the inventory and Trash header (8.5 px) and the recovery caption
+  (8.3 px) were still small. Fix: the confirmation is 70 px, centred, its
+  prompt on two lines (`Danger-5. Press y` / `to apply this exact plan`,
+  both substrings of the same fact) and its push 1.06 -> 1.00; every panel
+  title shows `4/4 selected · 7.8 GB · danger-5` (a substring of the TUI
+  title) at 72 px instead of the whole title at 52 px; the recovery caption
+  56 -> 80 px.
+- Major: the first Trash row left 0.25 s after the cut. Fix: the rows leave
+  from 0.75 s, a half beat apart.
+- Major: words entered 0.20 s apart. Fix: 0.30 s (18 frames), and the
+  second phrase of "Preview first. Approve once." starts 0.4 s later.
+- Muted test 3: every planned beat retold; "danger-5" unexplained; no
+  launch command after install.
+- Rebuild: facts 38/38, contrast unchanged, mix -18.5/-3.0 -> -13.9 LUFS /
+  -1.4 dBTP, music alone -> -13.9 / -1.5, sync 45 events worst 7.0 ms,
+  freezedetect none.
+
+Round 5 — new independent reviewer (the last allowed round): ship
+- Rechecks: round 4 (a) phone text FIXED (warning about 11 px capitals,
+  plan line 14.2 px, headers 14.4-14.6 px, caption 14.8 px, painted glyph
+  heights on a 390 px reduction); (b) the returned inventory holds about
+  0.85 s before its first row leaves, FIXED; (c) words 0.30 s apart with a
+  0.60 s pause between phrases, FIXED. All 37 transcribed strings are exact
+  substrings of facts; freezedetect none; -13.9 LUFS / -1.2 dBTP; cuts at
+  2.5, 5.5, 7.5, 10, 13, 15, 16, 18.5 and 21 s on audio accents.
+- Minor: "Approve once." fully formed about 0.52-0.59 s before its exit.
+  Fix after the verdict: the second phrase starts 0.2 s earlier (pause
+  between phrases 0.4 s, still longer than the 0.3 s between words).
+  Measured on the muted render (lime pixels of the phrase at 95% or more of
+  their maximum): 0.62 s on the reviewed film, 0.85 s after the fix.
+- Muted test 4: every planned beat retold (name and promise, four findings
+  with sizes, the evidence, j j Space leaving one out with 7.8 -> 7.2 GB,
+  the exact plan, the Trash and its recovery, the brew command and URL).
+  Open, minor: "danger-5" is never explained; no full paths in the close-
+  ups; no total freed is shown after the move.
+- Final build: facts 38/38, contrast min 7.06:1, mix -18.5/-3.0 -> -13.9
+  LUFS / -1.4 dBTP, music alone -> -13.9 / -1.5, sync 45 events worst
+  7.0 ms, freezedetect none.
+
+Pipeline review — autoreview (GPT-6.1 Sol) of the branch: three P2 false
+passes in the checks, no HTML or CSP defect. All fixed, each with a planted
+control that fails for its reason while the real film passes:
+- check_sync accepted a click on a kick from the kick alone. music.py writes
+  one effects stem per cue kind; check_sync --sfx finds each of the 14 cues in
+  its own stem (controls: missing click, missing hit, missing swish, click
+  two frames late).
+- build.py checked copy against a possibly stale facts.json. facts.py
+  --check runs first and refuses one the pages no longer give (control: one
+  edited page line).
+- check_media trusted r_frame_rate. It also requires the average rate and
+  1440 counted frames (control: a variable-rate copy reporting 60/1 with
+  1080 frames).
+- The rebuilt film.mp4 is byte-identical to media/demo.mp4.
+
+Fix review — autoreview (GPT-6.1 Sol) of 8c17f19: two P2.
+- check_media's average rate and packet count can still pass uneven
+  presentation timestamps. Fixed: every presentation timestamp must sit
+  exactly 1/60 s after the one before (real film: 1 distinct step, 16.67 ms;
+  a copy with odd frames moved 5 ms: 6 steps, refused; the dropped-frame
+  copy: 2 steps, refused).
+- "Stems are not tied to the delivered audio": declined, with evidence.
+  music.py adds every cue to the mix and to its kind's stem from the same
+  `placed` tuple, two adjacent lines of one loop, and build.py muxes that mix
+  unchanged after loudness; a click can leave the mix while staying in its
+  stem only if that loop diverges. Named follow-up: correlate the decoded
+  delivery with mix-norm.wav if the mix stage ever stops being one function.
+
+Acceptance verifier (GPT-6.1 Sol, frozen criteria) on 9e61912: FAIL on one
+criterion. "Approve once." reached 99% full-bright coverage at 14.267 s and
+began to fade at 14.883 s: 0.617 s, under 0.7 s (my 95% coverage measure had
+read 0.85 s; the easing tail and the word's settling motion account for the
+gap). Fix: that phrase eases in over 12 frames instead of 20 and starts 3
+frames earlier (pause between phrases 0.35 s, still longer than the 0.30 s
+between words). From the easing curves, 99% opacity now holds 0.84 s
+(0.71 s before). Build: facts fresh 38/38, -13.9 LUFS / -1.4 dBTP, sync 45 +
+14 cues, one 16.67 ms frame interval. Poster unchanged in content (frame 0).

@@ -1,0 +1,154 @@
+{
+ "title.name": {
+  "text": "devtrim",
+  "fact": "fcc0f3ba3"
+ },
+ "title.head": {
+  "text": "Clean your Mac like you deploy code.",
+  "fact": "f44663d40"
+ },
+ "preview.title": {
+  "text": "4/4 selected · 7.8 GB · danger-5",
+  "fact": "f2849b585"
+ },
+ "preview.title.narrowed": {
+  "text": "3/4 selected · 7.2 GB · danger-5",
+  "fact": "f90c725fa"
+ },
+ "row.cursor": {
+  "text": "›",
+  "fact": "f1f036753"
+ },
+ "row.open": {
+  "text": "[",
+  "fact": "f1f036753"
+ },
+ "row.mark": {
+  "text": "x",
+  "fact": "f1f036753"
+ },
+ "row.close": {
+  "text": "]",
+  "fact": "f1f036753"
+ },
+ "row.1.end": {
+  "text": "5.9 GB  TRASH    stale target artifacts",
+  "fact": "f1f036753"
+ },
+ "row.1.short": {
+  "text": "1. danger-5   5.9 GB",
+  "fact": "f1f036753"
+ },
+ "row.2.end": {
+  "text": "1.1 GB  TRASH    stale node_modules",
+  "fact": "f02770cad"
+ },
+ "row.2.short": {
+  "text": "2. danger-5   1.1 GB",
+  "fact": "f02770cad"
+ },
+ "row.3.end": {
+  "text": "614 MB  TRASH    stale .next artifacts",
+  "fact": "fd3861e8e"
+ },
+ "row.3.short": {
+  "text": "3. danger-5   614 MB",
+  "fact": "fd3861e8e"
+ },
+ "row.4.end": {
+  "text": "205 MB  TRASH    stale .turbo artifacts",
+  "fact": "f4b798dd9"
+ },
+ "row.4.short": {
+  "text": "4. danger-5   205 MB",
+  "fact": "f4b798dd9"
+ },
+ "see": {
+  "text": "See before anything moves",
+  "fact": "f5a563b5c"
+ },
+ "details.title": {
+  "text": "Details",
+  "fact": "f020f3196"
+ },
+ "details.name": {
+  "text": "stale target artifacts",
+  "fact": "fb2a1def7"
+ },
+ "details.size": {
+  "text": "5.9 GB · danger-5 · move to Trash",
+  "fact": "f38fb2aaa"
+ },
+ "details.evidence.when": {
+  "text": "repo last active 2020-01-01 UTC",
+  "fact": "fda6b1f04"
+ },
+ "details.evidence.why": {
+  "text": "corroboration: sibling Cargo.toml",
+  "fact": "fda6b1f04"
+ },
+ "footer.status": {
+  "text": "Space leaves one out; a applies the rest",
+  "fact": "f6b0df191"
+ },
+ "key.j": {
+  "text": "j",
+  "fact": "faf332320"
+ },
+ "key.space": {
+  "text": "Space",
+  "fact": "f2519fb5d"
+ },
+ "key.a": {
+  "text": "a",
+  "fact": "f2519fb5d"
+ },
+ "key.y": {
+  "text": "y",
+  "fact": "ffd745f85"
+ },
+ "approve": {
+  "text": "Preview first. Approve once.",
+  "fact": "f036cdeca"
+ },
+ "confirm.title": {
+  "text": "Confirm exact plan",
+  "fact": "f3bd3e9e5"
+ },
+ "confirm.warning": {
+  "text": "DATA-LOSS WARNING",
+  "fact": "f60f4c794"
+ },
+ "confirm.plan": {
+  "text": "This plan: 3 of 4 selected · 1 left out",
+  "fact": "f078ed9fe"
+ },
+ "confirm.prompt": {
+  "text": "Danger-5. Press y",
+  "fact": "ffd745f85"
+ },
+ "confirm.prompt.rest": {
+  "text": "to apply this exact plan",
+  "fact": "ffd745f85"
+ },
+ "confirm.caret": {
+  "text": ">",
+  "fact": "f9d263011"
+ },
+ "trash.head": {
+  "text": "Move to the Trash first",
+  "fact": "f59ab0898"
+ },
+ "trash.sub": {
+  "text": "recoverable until you empty it",
+  "fact": "f1ea0a7c1"
+ },
+ "install.brew": {
+  "text": "brew install mneves75/devtrim/devtrim",
+  "fact": "f4afdc9ed"
+ },
+ "install.url": {
+  "text": "mneves75.github.io/devtrim",
+  "fact": "f3fba50bc"
+ }
+}

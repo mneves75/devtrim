@@ -6,6 +6,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ### Changed
 - The landing page links the stable 0.12.3 release.
+- A new 24 s demo film replaces the 12 s one on the landing page: the purge preview of two stale demo projects, the evidence behind one finding, `j`, `j` and `Space` leaving one finding out, `a` and `y` approving the exact plan, the approved findings moving to the Trash, and the Homebrew command. It runs at 60 fps with synthesized music and a click per key press, and every line on screen is quoted from the site, which a check enforces. The pipeline (`video/film/`) builds and checks it in one command: facts, contrast, loudness at -14 LUFS, codecs and audio sync within one frame. The landing page's transcript and captions describe it, and the page gains the real TUI screen after `j`, `j` and `Space` (rendered by `scripts/site/frames.py`), stacked above the confirmation it leads to.
 
 ## [0.12.3] - 2026-10-30
 

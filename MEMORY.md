@@ -1,5 +1,13 @@
 # Project Memory
 
+## Site since 0.12.3: the demo film (2026-10-31)
+
+The landing page's video is a new 24 s film built by `video/film/scripts/build.py`
+(facts freshness and trace, contrast, music, loudness, render, mux, media,
+sync, contact sheets); `media/demo.mp4` equals its `film.mp4`. Five review
+rounds, the last `ship`; story in `memory/2026-10-31.md`, numbers in
+`video/film/ledger.txt`. Not a binary release: CHANGELOG 0.12.4 Unreleased.
+
 ## Current production state (0.12.3)
 
 0.12.3 fixes `optimize --task launch-services` for macOS 27 (`lsregister -gc -r

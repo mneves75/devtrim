@@ -149,6 +149,7 @@ h3 { font-size: 1.2rem; margin: 0 0 0.45rem; letter-spacing: -0.015em; line-heig
 .why-list article + article { margin-block-start: 1.8rem; }
 .why-list p { margin: 0; }
 .why-fig { position: sticky; top: 2rem; }
+.why-fig .term-frame + .term-frame { margin-block-start: 1rem; }
 
 /* demo / videos */
 .video-card { border-radius: var(--radius); background: var(--surface-raised); overflow: hidden; }

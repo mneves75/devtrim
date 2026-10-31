@@ -1,0 +1,2127 @@
+[
+ {
+  "id": "f7020fc4b",
+  "text": "devtrim — measure · classify · trim",
+  "link": "https://mneves75.github.io/devtrim/"
+ },
+ {
+  "id": "fb74bf8c2",
+  "text": "Skip to content devtrim Manual GitHub Install",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f44663d40",
+  "text": "Clean your Mac like you deploy code.",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f1ea0a7c1",
+  "text": "devtrim is a local-first disk cleaner for macOS developer machines. It shows what every cache and build folder costs before anything moves, scores each action 1–10 for danger, and moves files to the Trash, recoverable until you empty it.",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f1dbac9fd",
+  "text": "Free and open source · Apache-2.0 · macOS 13+ · latest release v0.12.3",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "ff4bd2aec",
+  "text": "Install v0.12.3 Read the manual",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f2849b585",
+  "text": "┌ TRASH-FIRST · 4/4 selected · 7.8 GB · danger-5 ──────────────────────────────────────────────────┐",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f1f036753",
+  "text": "│› [x]   1. danger-5   5.9 GB  TRASH    stale target artifacts  …vtrim-demo/dev/payments-api/target│",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f02770cad",
+  "text": "│  [x]   2. danger-5   1.1 GB  TRASH    stale node_modules  …vtrim-demo/dev/storefront/node_modules│",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "fd3861e8e",
+  "text": "│  [x]   3. danger-5   614 MB  TRASH    stale .next artifacts  …p/devtrim-demo/dev/storefront/.next│",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f4b798dd9",
+  "text": "│  [x]   4. danger-5   205 MB  TRASH    stale .turbo artifacts  …devtrim-demo/dev/storefront/.turbo│",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f2552939b",
+  "text": "│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config/devtrim.toml re│",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "ffab793fa",
+  "text": "│                                                                                                  │",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f0f8369ce",
+  "text": "└──────────────────────────────────────────────────────────────────────────────────────────────────┘",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f020f3196",
+  "text": "┌ Details ─────────────────────────────────────────────────────────────────────────────────────────┐",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "fb2a1def7",
+  "text": "│stale target artifacts                                                                            │",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f38fb2aaa",
+  "text": "│5.9 GB · danger-5 · move to Trash                                                                 │",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "fbafea5ab",
+  "text": "│/private/tmp/devtrim-demo/dev/payments-api/target                                                 │",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "fda6b1f04",
+  "text": "│repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml                                │",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f8ab1d15c",
+  "text": "│project: /private/tmp/devtrim-demo/dev/payments-api                                               │",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f45350c84",
+  "text": "┌──────────────────────────────────────────────────────────────────────────────────────────────────┐",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f2519fb5d",
+  "text": "│Space pick · A none · a apply · s permanent · b back · ? keys                                     │",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f6b0df191",
+  "text": "│Review every finding. Space leaves one out; a applies the rest                                    │",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f798c5de4",
+  "text": "A purge preview of two stale demo projects: every finding, its danger, its size and its path, before anything changes.",
+  "link": "https://mneves75.github.io/devtrim/#top"
+ },
+ {
+  "id": "f9dfeabb9",
+  "text": "One careful pass replaces a risky ritual.",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "ffbfa931b",
+  "text": "Developer Macs fill up silently.",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "fbbf3c955",
+  "text": "DerivedData, model caches, simulators, Docker layers and six-month-old node_modules quietly eat hundreds of gigabytes.",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f02451c2f",
+  "text": "Classify before you delete.",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f99c97152",
+  "text": "Every target gets a danger score from 1 to 10. Rebuildable caches are amber, unavailable simulators are caution, and a permanent Trash purge is red.",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f200c5357",
+  "text": "Some doors have no handle.",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f0be5fe8c",
+  "text": "Docker volumes and Xcode Archives are never pruned. One typed deletion boundary and a protected-path denylist hold no matter which flags you pass.",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "fa71ecf7d",
+  "text": "Space you can trust back.",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "fb5c83088",
+  "text": "Files cleaned today stay recoverable from the Trash until you empty it. Permanent deletion needs a typed confirmation. Cleanup still carries data-loss risk: review the preview, keep backups, and grant macOS permissions yourself.",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f90c725fa",
+  "text": "┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f7eaed02a",
+  "text": "│  [x]   1. danger-5   5.9 GB  TRASH    stale target artifacts  …ayments-api/target│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f3696e411",
+  "text": "│  [x]   2. danger-5   1.1 GB  TRASH    stale node_modules  …torefront/node_modules│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f00bd58da",
+  "text": "│› [ ]   3. danger-5   614 MB  TRASH    stale .next artifacts  …ev/storefront/.next│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "fb308d16f",
+  "text": "│  [x]   4. danger-5   205 MB  TRASH    stale .turbo artifacts  …/storefront/.turbo│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f4ca6e479",
+  "text": "│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "fa8f87204",
+  "text": "│                                                                                  │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f0c9d1baf",
+  "text": "└──────────────────────────────────────────────────────────────────────────────────┘",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f3bd3e9e5",
+  "text": "│ ┌ Confirm exact plan ──────────────────────────────────────────────────────────┐t│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f60f4c794",
+  "text": "│ │DATA-LOSS WARNING                                                             │s│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f078ed9fe",
+  "text": "│›│This plan: 3 of 4 selected · 1 left out                                       │t│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f1a105091",
+  "text": "│ │Applying this plan can delete data. devtrim is provided AS IS, without        │o│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f5bdf594b",
+  "text": "│ │warranties; you assume the risk for the exact targets shown. Keep backups and │g│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "fe66cea2f",
+  "text": "│ │grant macOS permissions manually only when you understand the request.        │ │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f05125f04",
+  "text": "│ │                                                                              │ │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "ffd745f85",
+  "text": "└─│Danger-5. Press y to apply this exact plan, or n/Esc to cancel.               │─┘",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f9c5867ab",
+  "text": "┌ │                                                                              │─┐",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f9d263011",
+  "text": "│s│>                                                                             │ │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f748b1c0e",
+  "text": "│6│                                                                              │ │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f0618ebb1",
+  "text": "│L│                                                                              │ │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "fd969ea6c",
+  "text": "│/│                                                                              │ │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f778a9fde",
+  "text": "│r│                                                                              │ │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f449b96ae",
+  "text": "│p│                                                                              │ │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f713e2b01",
+  "text": "└─└──────────────────────────────────────────────────────────────────────────────┘─┘",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f8b9b6fba",
+  "text": "┌──────────────────────────────────────────────────────────────────────────────────┐",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f16ff7fb1",
+  "text": "│Esc cancel · type the exact requested acknowledgment                              │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f83d9af6f",
+  "text": "Space leaves a finding out and empties its box; the confirmation then names the exact plan, how many findings it covers and how many you left out.",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f036cdeca",
+  "text": "Preview first. Approve once.",
+  "link": "https://mneves75.github.io/devtrim/#demo-h"
+ },
+ {
+  "id": "f0df09397",
+  "text": "Read the preview, leave one out, approve the exact plan. Download the demo",
+  "link": "https://mneves75.github.io/devtrim/#demo-h"
+ },
+ {
+  "id": "f3c71268a",
+  "text": "The purge preview of two stale demo projects lists four build folders by size and name, each moving to the Trash: 4 of 4 selected, 7.8 GB, danger-5.",
+  "link": "https://mneves75.github.io/devtrim/#demo-transcript"
+ },
+ {
+  "id": "f1765bd22",
+  "text": "The details pane shows the evidence for the first finding: the repository was last active on 2020-01-01, and a sibling Cargo.toml corroborates the Rust target.",
+  "link": "https://mneves75.github.io/devtrim/#demo-transcript"
+ },
+ {
+  "id": "fe4c05cae",
+  "text": "Each finding is danger-5. j moves down twice and Space leaves the third finding out: 3 of 4 selected, 7.2 GB.",
+  "link": "https://mneves75.github.io/devtrim/#demo-transcript"
+ },
+ {
+  "id": "f70daa285",
+  "text": "Pressing a raises the data-loss warning for that exact plan, 3 of 4 selected and 1 left out; y approves it.",
+  "link": "https://mneves75.github.io/devtrim/#demo-transcript"
+ },
+ {
+  "id": "f7e4f3753",
+  "text": "The approved findings move to the Trash, recoverable until you empty it; the one left out stays.",
+  "link": "https://mneves75.github.io/devtrim/#demo-transcript"
+ },
+ {
+  "id": "f38823487",
+  "text": "Install with brew install mneves75/devtrim/devtrim.",
+  "link": "https://mneves75.github.io/devtrim/#demo-transcript"
+ },
+ {
+  "id": "fa1990d38",
+  "text": "One interactive TUI. Explicit commands for automation.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f1a83a7d4",
+  "text": "$ devtrim scan",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fb8b1d894",
+  "text": "Categories",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fd5d9f8b9",
+  "text": "  artifacts        6.7 GB      3 finding(s)   devtrim clean artifacts --apply",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f6c144a53",
+  "text": "  node-modules     1.1 GB      1 finding(s)   devtrim clean node-modules --apply",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f0f50505c",
+  "text": "artifacts",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f7b8f7217",
+  "text": "~/dev/payments-api · 5.9 GB in 1 item(s)",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f70eb8291",
+  "text": "   5.9 GB  danger:5  stale target artifacts  ~/dev/payments-api/target",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f3d01166d",
+  "text": "           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; action: move to Trash",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fcfb4dd30",
+  "text": "~/dev/storefront · 819 MB in 2 item(s)",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fb98b8715",
+  "text": "   614 MB  danger:5  stale .next artifacts  ~/dev/storefront/.next",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f374a0d51",
+  "text": "           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; action: move to Trash",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f976f0082",
+  "text": "   205 MB  danger:5  stale .turbo artifacts  ~/dev/storefront/.turbo",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "faa129119",
+  "text": "node-modules",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f1b5616d8",
+  "text": "~/dev/storefront · 1.1 GB in 1 item(s)",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fce23aab9",
+  "text": "   1.1 GB  danger:5  stale node_modules  ~/dev/storefront/node_modules",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f8f69efcd",
+  "text": "           └─ repo last active 2020-01-01 UTC; lockfile: none; action: move to Trash",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f0f23396c",
+  "text": "7.8 GB actionable across 4 finding(s)",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fe05e5d7d",
+  "text": "Pick items one by one in the interactive view: devtrim. Project build output together: devtrim purge.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f629af0aa",
+  "text": "The same two demo projects through devtrim scan: one line per category, largest first, with the command that acts on it.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f5a563b5c",
+  "text": "See before anything moves",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f60c50fc7",
+  "text": "devtrim / tui",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "ff7767a05",
+  "text": "Keyboard-first scan, preview, and confirmation with written risk labels. It reuses the same cleanup owners and rejects CLI bypass flags.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f59ad1b2f",
+  "text": "scan",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f19204338",
+  "text": "Read-only report with estimated logical sizes, danger levels, and one-document JSON output for agents.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f66cd9688",
+  "text": "dashboard",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f8ecb0e82",
+  "text": "A private, self-contained HTML snapshot of disk use: responsive treemap, folder navigation and search, volume free-space metrics and the existing category cleanup previews. --output saves it, --no-open skips the browser, and no inventory path ever becomes deletion authority.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f259aa8ef",
+  "text": "history",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f4b751a7f",
+  "text": "Every apply is journaled write-ahead. Review what was attempted and what completed; an interrupted apply shows up as interrupted.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fe0aa81dd",
+  "text": "icloud",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "ffbabc540",
+  "text": "Large iCloud Drive files with logical and locally allocated sizes: a truthful storage inventory, not an upload-progress guess.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f59ab0898",
+  "text": "Move to the Trash first",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fefbe9d57",
+  "text": "caches",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f58329547",
+  "text": "Hugging Face models, npm, Homebrew, uv, bun, cargo, Corepack, Gradle, Go modules, CocoaPods, the GitHub CLI and a closed list of editor and toolchain caches. All regenerate on demand; devtrim tells you the bandwidth cost instead of deciding for you.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f6e76f0be",
+  "text": "Applies exact previewed paths only when Git activity is conclusively older than 30 days. Unknown state is refused.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f83e72bd0",
+  "text": "Rust targets, virtualenvs, Pods, Gradle, Next.js, Turbo and Parcel caches, only with ecosystem corroboration, only in conclusively stale repos, never ambiguous names like build or dist.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "ffd3ea509",
+  "text": "xcode",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fc27aef10",
+  "text": "iOS, watchOS, tvOS and visionOS DeviceSupport symbols and DerivedData. Archives are always listed but never touched.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f5638bece",
+  "text": "toolchains + leftovers",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fde47845c",
+  "text": "Only provably unreferenced Swift toolchains are actionable, never one swiftly installed. Agent leftovers, ignored .scratch folders and devtrim worktrees are report-only.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f024f0041",
+  "text": "Remove by typed command",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fd548c5b8",
+  "text": "docker",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f04a4ecfc",
+  "text": "Unused images and build cache. Volumes are never pruned: a volume may hold your live database.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fe1c56e11",
+  "text": "simulators",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "fcf11fa43",
+  "text": "Deletes devices whose runtime is gone. Confirmation flags never add an unpreviewed erase-all.",
+  "link": "https://mneves75.github.io/devtrim/#feat-h"
+ },
+ {
+  "id": "f14851e16",
+  "text": "Local scans. Guardrails by default.",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "f1a102f7c",
+  "text": "No telemetry. The binary makes zero network calls of its own.",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "fc20e78c8",
+  "text": "Nothing leaves your machine to be \"analyzed\".",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "fbdbd1dff",
+  "text": "Deletion means Trash first; --shred is opt-in per run.",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "f3c0f90c4",
+  "text": "Only exact validated targets reach the single filesystem deletion sink; incomplete measurements and display strings never become authority.",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "f1b349237",
+  "text": "/System, /Applications, ~/.ssh and friends are refused unconditionally, and no flag overrides that.",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "fa422fc88",
+  "text": "Piped runs refuse to mutate unless consent is explicit.",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "f3cfd17ee",
+  "text": "macOS permission prompts require your manual decision; devtrim never bypasses Privacy & Security controls.",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "fe253bf62",
+  "text": "$ devtrim purge --apply < /dev/null",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "fa8badb0b",
+  "text": "error: non-interactive run: re-run with -y to confirm danger-5 operations",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "f1a21be8b",
+  "text": "exit 1",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "fa6d29771",
+  "text": "$ devtrim largest --apply < /dev/null",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "fba200ce8",
+  "text": "error: largest does not accept flag(s): --apply",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "fcaf36839",
+  "text": "exit 2",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "f7c8ed014",
+  "text": "Real refusals from the current binary: a piped apply without consent, and a mutation flag on a report.",
+  "link": "https://mneves75.github.io/devtrim/#trust-h"
+ },
+ {
+  "id": "f815c0020",
+  "text": "Install v0.12.3.",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "fbc49b968",
+  "text": "Homebrew",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "f4afdc9ed",
+  "text": "brew install mneves75/devtrim/devtrim",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "f8475cbf0",
+  "text": "Installs the attested release binary plus shell completions and the man page.",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "f881d4568",
+  "text": "Download for Apple silicon",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "fa45f6135",
+  "text": "SHA-256 sums are in the release assets. Verify before running:",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "fd0b299e1",
+  "text": "shasum -a 256 -c SHA256SUMS.txt",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "f590087ad",
+  "text": "gh attestation verify devtrim-*-macos-arm64.zip \\",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "f0fc712d3",
+  "text": "  --repo mneves75/devtrim \\",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "ff335a770",
+  "text": "  --signer-workflow mneves75/devtrim/.github/workflows/release.yml \\",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "fea58644d",
+  "text": "  --deny-self-hosted-runners",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "f2f6a2e83",
+  "text": "Build from source",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "fe28da5e5",
+  "text": "git clone https://github.com/mneves75/devtrim",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "f4954ba88",
+  "text": "cd devtrim",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "fae56fb7b",
+  "text": "cargo build --release --locked",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "fd83bcb45",
+  "text": "cp target/release/devtrim /usr/local/bin/",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "fbcd8fd8c",
+  "text": "Rust 1.88 or newer. No runtime dependencies beyond macOS 13+.",
+  "link": "https://mneves75.github.io/devtrim/#install-h"
+ },
+ {
+  "id": "f9f5ab96c",
+  "text": "Run the scan you've been putting off.",
+  "link": "https://mneves75.github.io/devtrim/#final-h"
+ },
+ {
+  "id": "f65490868",
+  "text": "It reads nothing it shouldn't, changes nothing without --apply, and keeps the safety net until you empty it. Provided AS IS; you accept the risk for applied targets.",
+  "link": "https://mneves75.github.io/devtrim/#final-h"
+ },
+ {
+  "id": "fde44454d",
+  "text": "Install devtrim Full manual devtrim v0.12.3 GitHub Manual Releases Apache-2.0",
+  "link": "https://mneves75.github.io/devtrim/#final-h"
+ },
+ {
+  "id": "f0f198bf0",
+  "text": "devtrim — Manual",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html"
+ },
+ {
+  "id": "fac576a66",
+  "text": "Skip to content",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html"
+ },
+ {
+  "id": "f1eb4fea7",
+  "text": "devtrim manual",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html"
+ },
+ {
+  "id": "f154e1d86",
+  "text": "v0.12.3 Ratatui TUI Apache-2.0 Trash-first deletion Protected-path denylist --json",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html"
+ },
+ {
+  "id": "fc9da6cf9",
+  "text": "Filter sections Theme: Dark",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-contents"
+ },
+ {
+  "id": "f437aea62",
+  "text": "Contents",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-contents"
+ },
+ {
+  "id": "f7f3d81eb",
+  "text": "Philosophy",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-list"
+ },
+ {
+  "id": "fc35e4eef",
+  "text": "Install & build",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-list"
+ },
+ {
+  "id": "f0eb95fb6",
+  "text": "Quick start",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-list"
+ },
+ {
+  "id": "f64a0c611",
+  "text": "Command reference",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-list"
+ },
+ {
+  "id": "f239bc056",
+  "text": "Safety model",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-list"
+ },
+ {
+  "id": "f1d15bd04",
+  "text": "Danger scoring",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-list"
+ },
+ {
+  "id": "fb332c349",
+  "text": "Configuration",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-list"
+ },
+ {
+  "id": "f036d66ce",
+  "text": "Agent integration",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-list"
+ },
+ {
+  "id": "fd664282e",
+  "text": "Recipes",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-list"
+ },
+ {
+  "id": "fc3af076f",
+  "text": "Troubleshooting",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-list"
+ },
+ {
+  "id": "fa7dbbe8e",
+  "text": "devtrim exists because cleaning a 900 GB Mac by hand is how good data dies. Three rules govern everything it does.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
+ },
+ {
+  "id": "f36d73a63",
+  "text": "Measure before cutting. scan is read-only and always free to run. Sizes are estimated logical bytes; APFS clones, sparse files, Trash, and container VMs can differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
+ },
+ {
+  "id": "fdce1933a",
+  "text": "Classify by risk. Every finding carries a danger score from 1 to 10 that decides how hard you must confirm (see Danger scoring).",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
+ },
+ {
+  "id": "fff2e7aac",
+  "text": "Trim with a net. Filesystem deletions go to macOS Trash by default — recoverable from the Trash (Finder’s “Put Back” may not remember where an item came from). Permanent deletion requires an explicit --shred.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
+ },
+ {
+  "id": "fb542ce20",
+  "text": "The tool refuses to be clever about your data:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
+ },
+ {
+  "id": "f587af981",
+  "text": "Docker volumes are never pruned — a volume can hold a live production database.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
+ },
+ {
+  "id": "f3a675eda",
+  "text": "Xcode Archives are listed but exempt — they are release artifacts.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
+ },
+ {
+  "id": "fea46f9ec",
+  "text": "Repos with recent commits are skipped, not swept.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
+ },
+ {
+  "id": "f60c524af",
+  "text": "With Homebrew (installs the attested release binary plus completions and man page):",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-install"
+ },
+ {
+  "id": "f063b6e22",
+  "text": "Or build from source:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-install"
+ },
+ {
+  "id": "f86739763",
+  "text": "cargo test --locked",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-install"
+ },
+ {
+  "id": "ffab3e058",
+  "text": "Manual installs can generate shell integration directly:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-install"
+ },
+ {
+  "id": "ff0193334",
+  "text": "devtrim completions zsh   # bash | zsh | fish",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-install"
+ },
+ {
+  "id": "f12e2a848",
+  "text": "devtrim manpage",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-install"
+ },
+ {
+  "id": "fff07fa73",
+  "text": "No runtime dependencies beyond macOS itself. The arm64 release binary is about 2.6 MB and self-contained:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-install"
+ },
+ {
+  "id": "f2f07e6db",
+  "text": "devtrim --version",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-install"
+ },
+ {
+  "id": "fac223803",
+  "text": "Rust ≥ 1.88 (edition 2024) to build. Runtime target: macOS 13+.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f1575ef34",
+  "text": "In an interactive terminal, start with the keyboard interface:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fcc0f3ba3",
+  "text": "devtrim",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fca2e8672",
+  "text": "Choose an operation, inspect its exact findings, and press a only when you intend to apply.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f7d6570bc",
+  "text": "A preview lists one finding per line with the highlighted one shown whole below; a terminal too short to hold it says how many lines it hides, and Enter shows the finding in full in a view that scrolls, where no key changes the plan and Esc returns to it.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f02aed10a",
+  "text": "Each operation's badge is explained beside the menu: READ-ONLY reports and never changes anything, PREVIEW changes nothing until you select items, press a and approve, and PERMANENT deletes for good after a typed size acknowledgment. \"Scan everything\" is read-only: its selection and apply keys name the category view that can act on the highlighted finding, such as \"b, then 2 (caches)\", and any key that cannot act on the highlighted row says why instead of doing nothing.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "ff0d66a79",
+  "text": "Keys",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fcf5ebdb3",
+  "text": "? lists every key, whole even at the minimum size.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "faf332320",
+  "text": "Arrow keys or j/k move through results.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fc79673b5",
+  "text": "In a category view Space leaves the highlighted finding out of the plan or adds it back.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f5b37be03",
+  "text": "A toggles every finding between selected and left out; everything starts selected, so the footer reads \"A none\" until something is left out and \"A all\" after. The confirmation then covers exactly what stays selected and says how many findings that is and how many were left out.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fa1b902f4",
+  "text": "Esc goes back one screen: a confirmation or the full detail view returns to the results, the results, an apply outcome or a failure return to the menu, and on the menu Esc quits.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fd1179e7f",
+  "text": "During a scan q or Ctrl-C stops it and quits, killing every command it started; during an apply no key quits until it returns, because quitting could leave a target half removed.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f80aaa63b",
+  "text": "r retries a category that failed to scan, from the failure screen too.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fcf391d81",
+  "text": "A scan or apply keeps the screen live and counts the seconds it has taken. A SIGINT, SIGTERM or SIGHUP, whenever it arrives, restores the terminal and kills every command devtrim started, exiting 130, 143 or 129. A category that failed to scan is counted in the results title and named in the status line.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f81359de8",
+  "text": "Scanner warnings and partial-apply errors remain visible in the interface. Localized scan errors make the TUI exit nonzero, even after a later successful scan. Below 64×18, operation input is blocked until the terminal is resized. The TUI labels risk in text as well as color.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "ffed2dbe0",
+  "text": "Everything starts as a dry-run preview. Look first:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fc0c93897",
+  "text": "devtrim scan",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f8729c92d",
+  "text": "devtrim clean caches",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f2af01fb2",
+  "text": "Satisfied with the preview? Act — one decision at a time:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f5760c347",
+  "text": "devtrim clean caches --apply -y",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f805fe6a6",
+  "text": "The two blocks above are separate on purpose. Pasting preview and mutation together defeats the point of previewing.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "ff78c318c",
+  "text": "Reading the output:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f472e8949",
+  "text": "   3.4 GB  danger:5  DerivedData: MyApp-abcdef  /Users/you/Library/Developer/Xcode/DerivedData/MyApp-abcdef",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fced4b150",
+  "text": "           └─ build output; rebuilt on next build; action: move to Trash",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "ff3e2deb3",
+  "text": "size — estimated logical bytes; actual immediately reclaimable space can differ.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f0a9c7096",
+  "text": "danger:N — confirmation weight; colors go green → amber → red.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f33557372",
+  "text": "path — exactly what would be affected.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fe9d31f6c",
+  "text": "└─ note — why removal is safe and how it comes back.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "f7d693692",
+  "text": "Local data and removal",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-local-data"
+ },
+ {
+  "id": "f9c673e71",
+  "text": "devtrim has no account, backend or telemetry store. HTML reports contain local paths, sizes and diagnostics. Keep the printed output path: an explicit --output, or devtrim-dashboard-<random>.html in the OS temporary directory. devtrim does not expire reports; the OS controls temporary-directory cleanup. JSON exports, terminal logs, screenshots and shared copies remain where you put them.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-local-data"
+ },
+ {
+  "id": "f354af7ce",
+  "text": "Apply history is ~/.local/state/devtrim/journal.jsonl, or <XDG_STATE_HOME>/devtrim/journal.jsonl when the override is absolute. Rotation starts at 10 MiB and keeps .1, .2 and .3; this is size-based retention, not an erasure deadline. journal.lock in the same directory coordinates access.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-local-data"
+ },
+ {
+  "id": "f790afe48",
+  "text": "To discard local data, first let every apply using that state directory finish and exit the TUI. Identify and remove only the exact report/export files and journal generations you own and intend to discard. Never remove or replace a lock while another process may use it. Removing history loses its audit trail and the ownership evidence used by trash-empty --only-devtrim; old Trash items can no longer be identified through deleted records. Preserve evidence needed for an investigation.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-local-data"
+ },
+ {
+  "id": "f346825f6",
+  "text": "Separately account for backups, cloud shares, messages, logs and restore copies under each location's policy. Restoring a backup can restore the data. Moving a report to Trash leaves it on disk; deleting a file does not guarantee physical erasure from SSDs, snapshots or backups. There is no devtrim backend deletion request.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-local-data"
+ },
+ {
+  "id": "f7e2491cf",
+  "text": "Grouped by what happens to your files. Global flags are capability-scoped: read-only/report-only commands reject mutation flags they cannot honor instead of silently ignoring them. scan --shred intentionally changes the previewed action; Docker and simulator cleanup reject --shred because they execute exact typed commands rather than filesystem deletion actions; trash-empty rejects it because its preview is already permanent. The TUI owns its confirmation and rejects CLI mutation flags plus --json.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-commands"
+ },
+ {
+  "id": "f9e4017cd",
+  "text": "tuiinteractive keyboard interface; also the bare-command default",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-commands"
+ },
+ {
+  "id": "fd33ab417",
+  "text": "Runs only when stdin and stdout are terminals. It calls the same scanners and apply owners as the CLI, shows textual risk labels, refuses CLI bypass flags, and requires a matching confirmation for the current preview. Bare devtrim prints help and exits nonzero instead when piped.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-commands"
+ },
+ {
+  "id": "f5d497412",
+  "text": "Report only",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f1761f549",
+  "text": "scanfull reclaimable-space reportREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "feeb9d576",
+  "text": "Read-only report across every category. It opens with one line per category — actionable size, finding count, and the command that acts on it, largest first — then lists each category's findings: all of them up to eight, otherwise the five largest and a count of the rest. --all lists every finding; --json is always the complete document.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "fdae53e75",
+  "text": "historyrecent journaled appliesREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "fe0d5a807",
+  "text": "Read-only view of the write-ahead apply journal: what was attempted, what completed, what errored. An attempt without a result is flagged as interrupted. --limit N bounds output; --json emits one {\"operation\":\"history\",\"entries\":[…]} document.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f34c9c4cc",
+  "text": "largestbiggest directories under scan rootsREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f268e483f",
+  "text": "Read-only ranking of the largest depth-≤2 directories under your scan roots (--top N, default 20). Unreadable entries are skipped and disclosed as a count — totals are lower bounds, never deletion authority.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "ffb61221c",
+  "text": "worktreeslinked worktrees and their sizesREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f742232a9",
+  "text": "Read-only list of every repository's linked worktrees under your scan roots, from one git worktree list --porcelain -z per repository through the same hardened Git invocation the scans use: branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is the repository's own claim, so it is measured only when it is a real directory inside a scan root whose .git file leads back to that repository; anything else is listed unsized with the reason. The main worktree is listed but not measured. Sizes follow no link, stay on one device, never count a nested worktree twice, and are lower bounds when entries cannot be read. The report never says safe, stale or removable and shows no date: uncommitted, untracked and ignored work leave none. A bare repository has no .git marker and is found only through one of its worktrees. git worktree remove <path> runs the repository's configured programs, so use it only in a repository you trust, after your own review.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "fe956ed30",
+  "text": "icloudlarge files and locally allocated storageREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f2799f411",
+  "text": "Recursively lists iCloud Drive files ≥ 100 MB with logical size and a local-allocation estimate. Sparse files, compression, clones, and dataless placeholders can make allocated bytes differ from logical bytes; devtrim does not claim to know upload progress.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f8981768f",
+  "text": "uninstallpaths named for an app bundle idREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "faa0e577c",
+  "text": "Resolves an app in /Applications or ~/Applications, reads its CFBundleIdentifier, and lists the support directories, caches, containers, preferences, saved state, HTTP storages, WebKit stores and launch agents named for that exact identifier. Matching is exact, never by display name: Amazon Kindle is com.amazon.Lassen, so a name match would find none of its files and would sweep everything containing the word. A conservative report, not an inventory: an app storing data under a product name is invisible to identifier matching — Visual Studio Code keeps ~/Library/Application Support/Code — and group containers are omitted entirely, because their names come from an arbitrary entitlement and a suffix rule would both miss real ones and misattribute others. Report-only: /Applications and most of ~/Library are refused by the protected-path boundary, and widening it would weaken every command rather than only this one.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f10cb49be",
+  "text": "dashboardlocal HTML disk mapREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f9c184c7a",
+  "text": "devtrim dashboard [PATH] generates a private, self-contained HTML snapshot and opens it in your default browser. The default is your home folder. Use --output disk-map.html --no-open to save to a chosen new file without starting a browser; existing files and symlinks are never overwritten. Explore a responsive treemap, folder breadcrumbs and searchable details beside cleanup previews from the existing categories. Those previews keep their configured project roots: mapping the whole home does not widen cleanup authority. Copied commands start fresh terminal previews; the dashboard never deletes and rejects mutation flags. Available volume space is separate from estimated logical folder sizes. Symlinks are not followed, foreign filesystems are not entered, and unreadable content produces a useful report with disclosed partial lower bounds and a nonzero exit status. There is no server, external asset or telemetry; the HTML contains local paths and should be kept private. Rerun the command to refresh the snapshot.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f9f25e708",
+  "text": "analyzeinteractive disk explorerREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "fd09ed5fd",
+  "text": "Drill into disk usage largest-first with ↑/↓, Enter to open and Esc to go up; at the top level Esc does nothing and q quits. Measurement runs on a worker thread and streams in, so a directory that takes minutes to size never freezes the screen, and leaving a directory cancels its walk. Symlinks are reported at their own size rather than followed, a different device is never measured or entered, and unreadable subtrees are disclosed as (partial) lower bounds. A lower bound is a partial result: --json lists each one in errors and exits nonzero. Never deletes — deletion in devtrim is always bound to a corroborated category, so use devtrim clean <category> for that.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f61fda3cb",
+  "text": "statusmachine vitals and health scoreREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f5d001b9d",
+  "text": "Uptime, load, memory, disk, battery, thermals, cumulative network, and the busiest processes, read through fixed-argv system tools whose parsers fail closed. A metric that cannot be read is reported as unavailable with its reason, never as a zero, and the health score names every input it was missing instead of scoring over the gap. A present Data volume with a failed or malformed disk metric stays unavailable. Root fallback requires a positively absent Data layout; an unreadable or non-directory layout is unavailable. Tools run in the C locale, because a pt_BR decimal comma would otherwise make load and processes unreadable. Memory used is stated as active + wired + compressed, because counting macOS's reclaimable inactive pages reports a healthy machine at 96%.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f674236ec",
+  "text": "leftoversreport-only review hintsREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "fe52449b7",
+  "text": "Lists possible agent scratch and .supergoal paths for manual review, and the folders inside a repository's top-level .scratch when Git ignores that folder (git check-ignore) and tracks nothing in it; a .scratch child that is a linked worktree is labelled as one. It never deletes any of them: worktree or mission staleness cannot be proven from a name, and ignored files are still somebody's data.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f9cf86ca0",
+  "text": "Trash-first",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "fe67d207c",
+  "text": "cachespackage, model, and tool download cachesTRASH",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "ff202715b",
+  "text": "Moves regenerable caches to Trash: Hugging Face models, uv, npm's whole cache folder (downloads and npx installs come back, its logs do not), Homebrew, bun, Corepack's downloaded package managers (~/.cache/node/corepack, never its parent), the cargo registry, the GitHub CLI cache, Gradle's caches and wrapper/dists under GRADLE_USER_HOME (never that folder, which holds gradle.properties and init.d; only when each holds what Gradle writes there, caches/modules-2 or a gradle-<version>-bin distribution, and the Gradle home is not inside a Git repository; refused while a Gradle daemon, build or Wrapper runs), the Go module cache go env GOMODCACHE reports (only inside the home folder and holding Go's cache/download; Go keeps it read-only, so --shred refuses it whole, devtrim trash-empty purges it once it is in the Trash, and go clean -modcache is Go's own removal), and a closed list of exact ~/Library/Caches subdirectories (Playwright browsers, the VS Code HTTP cache and its Squirrel update staging, SwiftPM, pip, the pnpm metadata cache, Go, TypeScript, CocoaPods' download cache). Hugging Face cleanup targets only ~/.cache/huggingface/hub; authentication tokens and other state in its parent remain untouched. Homebrew's cache holding a Git clone Homebrew keeps for a Git-sourced formula (<name>--git) is offered as its other direct children, and the clones stay. ~/Library stays protected wholesale — that list is the carve-out, it is the same constant the protection boundary reads, and a name is on it only when one developer tool owns the directory and rebuilds it on demand. The pnpm entry is the metadata cache, never the content-addressable store at ~/Library/pnpm/store that installed node_modules trees hard-link into. Editor logs and application data are out of scope: they live under ~/Library/Application Support and ~/Library/Logs, mixed in with real user state. ~/Library/Caches/JetBrains is excluded too — on macOS it is the IDE system directory, and each product subdirectory holds the non-regenerable LocalHistory store. Regenerated automatically on next use — mind the bandwidth for large model caches and the rebuild time for editor indexes — except Playwright's browsers and CocoaPods' downloads, which come back only through npx playwright install and pod install; those findings name the command. The uv cache is removed only while no uv process holds uv's own cache lock, the same lock uv cache clean waits for; the empty .git uv writes into its source-distribution bucket is recognized in that exact shape rather than treated as a repository.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "fd8bd8d82",
+  "text": "node-modulesexact paths in conclusively stale reposTRASH",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f46d30152",
+  "text": "Maps each node_modules to its owning Git repo, skips repos with recent activity — the newer of HEAD's commit date and its newest reflog entry, so a clone or checkout of old history counts as active — and applies only the exact paths shown. Reading that activity runs no program the repository configures. An unreadable build working directory, including a decoded lsof name that is not absolute, refuses liveness at preview and apply. Apply reasserts a real node_modules directory leaf and refuses symlinks plus .git, nested dependency-tree, or non-normal ancestors. A node_modules holding any file its repository tracks is committed content, not a stale install, and is never offered. Neither is one without a package.json beside it — the manifest an install recreates it from — such as the assets/node_modules inside an archived or unpacked iOS app bundle, whose removal would break the bundle's signature. Roots at or below .git, or below node_modules, in any ASCII case, are excluded from both project cleanup categories, including explicit and configured roots. A root exactly at a top-level node_modules install may offer that install, never nested installs. Unknown Git activity is refused: that repository offers nothing and is reported as an error, while the others are still judged. A repository with no commits yet is skipped and named.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f8dc0e965",
+  "text": "artifactscorroborated build artifacts in stale reposTRASH",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f7db1ef13",
+  "text": "Deletes a directory only when its name is on a closed list and its ecosystem corroborates it: target beside Cargo.toml, .venv containing pyvenv.cfg, Pods beside Podfile, .next-family beside package.json, .gradle beside its build files, Android's native build folder .cxx beside build.gradle, .terragrunt-cache beside terragrunt.hcl, Nuxt's .output beside nuxt.config.*, .build beside Package.swift, tool caches, or a directory carrying an exact CACHEDIR.TAG signature — always inside a conclusively stale Git repo. Ambiguous names (build, dist, vendor, bin, obj) are never matched. A directory holding any file its repository tracks is never offered — CocoaPods recommends committing Pods — nor is a tree holding a Git repository anywhere below its root, as a SwiftPM .build holds its dependencies' clones, or an entry named *-keypair.json: cargo build-sbf, which anchor build runs, writes a Solana program's keypair into target/deploy once, and a rebuild after removal mints a different program address. Corroboration, staleness, build-process liveness, tracked files, and keypairs are re-verified at apply.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "fbace6bc5",
+  "text": "purgenode_modules + build artifacts, by projectTRASH",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f4fe0ad7d",
+  "text": "devtrim purge is the project view of the two categories above: stale node_modules and corroborated build artifacts in one plan, ordered by project with the largest first and a header per project. It adds no authority of its own — each finding keeps its category's staleness and build-liveness gates and is applied by that category, which reasserts its exact shape. Like every category it moves to Trash unless you pass --shred. Like Mole's mo purge, it skips a directory holding files its repository tracks, and a build directory holding a Solana program keypair, Terraform state (*.tfstate, which Terraform's local backend writes inside .terragrunt-cache), or a nested Git repository. Unlike mo purge, it never matches ambiguous names such as build, dist, or coverage, and never touches a repository with recent Git activity. A project with no repository of its own is never judged by an enclosing repository at or above your home folder, such as dotfiles kept as a repository at ~. A folder it cannot read and a repository it cannot judge each offer nothing and are reported as errors, without emptying the plan. In the TUI it is p, where Space leaves individual projects' items out.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f501723fb",
+  "text": "xcodeDeviceSupport + DerivedDataTRASH",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "fbec05ba0",
+  "text": "Clears only direct children of the iOS, watchOS, tvOS and visionOS DeviceSupport folders and of DerivedData — never a file or symlink beside them — and, for a DerivedData folder holding Swift package checkouts that is not itself a Git repository, its directories but SourcePackages; apply reasserts that exact category shape before removal. DerivedData rebuilds on the next build. While Xcode, xcodebuild or its build services run, a folder changed within the activity window (active_days) or holding a file an Xcode process has open is kept, and every other folder is still offered; apply judges each again. A folder holding a project's resolved Swift packages is cleaned around them: each checkout in its SourcePackages is a Git clone, which devtrim never deletes, so the folder's other directories — Build, Index.noindex and the like — are offered one by one and SourcePackages stays. DeviceSupport symbols are copied again only from a connected device running that exact OS build, so a superseded build matters only for symbolicating its crash logs. A folder that cannot be read or measured offers nothing and is named in one error, so the run exits nonzero, while the folders beside it are still offered. Archives exempt by design — they're release artifacts.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "fae91dd1d",
+  "text": "toolchainsold swift.org toolchainsTRASH",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f49c8fac5",
+  "text": "Removes only direct .xctoolchain directories not referenced by any verified symlink in the Toolchains directory and not installed by swiftly. Every toolchain swiftly lists in ~/.swiftly/config.json (or $SWIFTLY_HOME_DIR/config.json), and the one it has in use, is report-only and names swiftly uninstall <version>; a configuration that cannot be read, parsed or mapped to folders blocks the scan. A present but missing, broken, escaping, or invalid swift-latest reference blocks the scan; apply rereads both and reasserts the exact direct-child shape. Xcode's built-in chain is unaffected. Reinstallable from swift.org.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "fe94ae24b",
+  "text": "installersstale downloaded installer archivesTRASH",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "ff0ff1a87",
+  "text": "Direct children of Downloads and Desktop whose extension is on a closed list (dmg, pkg, mpkg, iso, xip) and untouched for longer than the retention window (retain_days). Age is the modification time, so a copy that preserves it counts as old at once; the preview states the age it judged. Scanning never recurses, so a bundled installer inside an extracted project tree is left alone, and formats that can carry source or user data are never matched. Apply refuses symlinks and any target outside those two directories. Not a cache — nothing re-downloads these automatically.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "fa2bb882e",
+  "text": "agentsagent caches, older Codex releases, and stale historyTRASH",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f440bf240",
+  "text": "Two tiers, plus the separate Codex release authority below, because coding-agent storage is not one kind of data. Regenerable caches — the Claude Code metadata cache, the Codex catalog cache, the Pi web-search cache, the OpenCode cache — are exact paths their owner rebuilds on demand, and are offered unconditionally at a low danger score. Session history — Claude Code shell snapshots; Codex shell snapshots, session and archived-session trees — is not regenerable, so a child is offered only once the newest regular file anywhere in its subtree is older than the retention window (retain_days). Codex nests sessions as <year>/<month>/<day>, so the day directory is the unit. Authentication material (auth.json, .credentials.json), configuration, memories, skills, agent definitions, installed plugins and .claude.json backups are on neither list. A shell snapshot is history, not cache: Claude Code writes one per session and sources that exact file on every later shell call, and nothing rewrites it if it disappears. ~/.claude/projects is not a root at all: it holds Claude Code auto memory in a memory/ directory keyed by repository root, and since v2.1.248 Claude Code retains a transcript originating in Claude Desktop or Cowork at any age, with nothing in the filename to distinguish one — so file age is not evidence that anything there is finished with. Apply reasserts tier, exact depth, symlink refusal and the age gate, so a session resumed after preview falls out of the plan. Every Codex entry also applies to each additional Codex home listed in codex_homes, labelled with that home.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f36f51088",
+  "text": "Older Codex standalone releases are offered separately when the installer lock is available, current resolves to a verified package, and each candidate has an older major/minor/patch version, required executable files, an audited voice manifest, and matching SHA-256 digests for the main executable and voice files. Packages without that manifest stay. Current, same-version, newer, staged, and unknown packages stay. An unverifiable lock or current package produces a read-only refusal and nonzero CLI status while caches and stale history remain available. An invalid older candidate is omitted without an error and left in place. Apply checks again. A release reported in use by the system-wide lsof snapshot is skipped, and apply probes again for each release. The probe cannot see every other user's process, and a process can start after it runs. Trash is the default and must be emptied separately to reclaim physical space. Package checks cannot prove that a modified voice manifest describes only vendor files or that a nonempty executable reports the manifest's version; inspect releases before using --shred.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f455a9549",
+  "text": "Permanent",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-nuclear"
+ },
+ {
+  "id": "f0a03a941",
+  "text": "--shred also turns a Trash-first plan into permanent deletion, and its preview says so.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-nuclear"
+ },
+ {
+  "id": "f4b51aefc",
+  "text": "optimizethree macOS maintenance tasksPERMANENT",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-nuclear"
+ },
+ {
+  "id": "f35f60794",
+  "text": "Three typed commands with fixed arguments: QuickLook thumbnail cache, user font caches, and the Launch Services database. --apply requires an explicit --task quicklook|fonts|launch-services, because one confirmation must not authorize unrelated work — plan_danger takes the maximum, so a cheap task would otherwise ride in on an expensive one's prompt. A task that cannot do what its name says is not offered: those needing root or hours of CPU, and DNS, because dscacheutil -flushcache does not clear the mDNSResponder resolver cache it would advertise. Preview by default; every run is journaled.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-nuclear"
+ },
+ {
+  "id": "ffbcb8bb4",
+  "text": "dockerunused images + build cachePERMANENT",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-nuclear"
+ },
+ {
+  "id": "f28380f45",
+  "text": "image prune -a + builder prune on the exact previewed local Unix-socket endpoint. Remote Docker contexts are refused. Volumes are never touched — a volume can hold your live database. The scan also reports the host-side VM disk image as a non-actionable finding measured in allocated blocks: docker system df measures inside the guest, while that sparse image is what the host actually pays for, and pruning does not shrink it. Restart the VM to trigger compaction. The disclosure appears even when the daemon is stopped, which is the one state where the cost is invisible to docker and still present.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-nuclear"
+ },
+ {
+  "id": "fd287e5a7",
+  "text": "simulatorsdelete exact previewed unavailable devicesPERMANENT",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-nuclear"
+ },
+ {
+  "id": "fc0debfae",
+  "text": "Creates one finding per device whose runtime is gone, binds the exact UDID, and rechecks that device before deletion. --yolo may bypass confirmation, but it never adds erase all or any operation absent from preview. Simulators that still work are listed once, report-only, with their total data size and the three largest devices; deleting one destroys its apps and data, so that stays a manual xcrun simctl delete <UDID>. A Mac with the Command Line Tools but no Xcode has no simctl, and one with no developer tools has no developer directory; xcrun's own error for either means there is nothing to manage, so the category says why and the run still succeeds. Any other xcrun or simctl failure is an error.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-nuclear"
+ },
+ {
+  "id": "f1b0dbc4a",
+  "text": "trash-emptypurge ~/.Trash permanentlyPERMANENT",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-nuclear"
+ },
+ {
+  "id": "f05ab693e",
+  "text": "Preview with --confirm=<gb>; every eligible current top-level Trash item is shown as an exact target. Permanent purge additionally requires --apply, the size of that exact set must match within ±2 GB, and the purge still needs the same confirmation every mutation does — typed on a terminal, or --yolo unattended — after the set is shown again. Items moved to Trash after that confirmation are not added. --only-devtrim narrows the set to what devtrim itself moved to the Trash, recognized by the device, inode and birth time its journal recorded for each move, so other programs' and sessions' items stay. Ownership reads the current journal and three retained rotations independently of the 1,000-entry display limit. Malformed or unreadable input, records over 64 KiB, or a snapshot above 42,205,188 bytes (about 40.25 MiB) refuse the whole narrowed purge. Rotated-out records supply no ownership evidence. A direct item named as an ASCII-case variant of .git is warned about and left in Trash instead of blocking the other exact items, and an item refused at apply — a trashed project still holding its repository — is reported while the purge continues with the rest. A uv cache clean caches moved there is purged under the same marker checks that category applies. Moving something to Trash frees no space by itself; apply summaries say how much went to Trash and point here.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-nuclear"
+ },
+ {
+  "id": "f07a23e09",
+  "text": "Data-loss warning. devtrim is provided AS IS, without warranties. Cleanup can delete files; applying a plan means you accept the risk for the exact targets shown. Keep backups, review every preview, and grant Files & Folders, App Management, Automation, or Full Disk Access manually only when you understand the macOS request. See the Apache-2.0 license and Apple's Privacy & Security guide.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fcbec3d85",
+  "text": "Independent layers stand between a typo and a tragedy:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fac9ffcb2",
+  "text": "Layer",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f62845f31",
+  "text": "Rule",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fbf26c2ac",
+  "text": "Bypass",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fc7fd851d",
+  "text": "Preview default",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "ffab6a89c",
+  "text": "without --apply, nothing mutates — ever",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f7511d4d4",
+  "text": "none needed (default)",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f57a71730",
+  "text": "filesystem deletes go to ~/.Trash",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f1d6c3808",
+  "text": "--shred",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f215bff9e",
+  "text": "Typed target",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fa7db9189",
+  "text": "only an exact validated path can reach removal; display text has no authority",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f1785cfc3",
+  "text": "nothing",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f0fdf16fc",
+  "text": "Category authority",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "ff9b114c3",
+  "text": "Xcode and toolchain apply reassert direct-child targets, and a DerivedData folder holding Swift package checkouts only its directories but SourcePackages; node_modules apply reasserts its scanner's leaf and ancestor rules",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "ffa8fbc1e",
+  "text": "Single sink",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fcfe6ddb9",
+  "text": "all filesystem removal passes one structurally enforced boundary",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fb207ae38",
+  "text": "Identity verification",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f4a7f2673",
+  "text": "preview-time device/inode is re-verified through an open parent-directory handle; drift refuses",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f76789885",
+  "text": "Directory preflight",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fcba99458",
+  "text": "foreign devices and nested Git repository/worktree markers are refused before Trash or permanent mutation; only uv's own empty marker is tolerated, where uv's lock or the Trash grants it",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f5bde0f56",
+  "text": "Command authority",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fe7689ee2",
+  "text": "typed capability must match the operation and validated Docker endpoint or simulator UDID",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f6ac50946",
+  "text": "Risk notice",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f668f9ed3",
+  "text": "every human apply warns that cleanup can cause data loss",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f96e1c9e2",
+  "text": "--json prints no notice and keeps stdout one document; on a terminal an apply without -y or --yolo still asks on stderr",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f3064d085",
+  "text": "Danger gate",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "faad0ac60",
+  "text": "every interactive mutation confirms; critical plans require typed input (see Danger scoring)",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f37e2d620",
+  "text": "-y skips y/N only; --yolo skips interactive prompts, never operation-specific acknowledgments",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f67fbc51b",
+  "text": "TUI approval",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f9d94d582",
+  "text": "a typed approval must match the current preview, its selection, and the danger requirement of the selected findings; selection only narrows",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fbad8308c",
+  "text": "nothing; CLI bypass flags are rejected",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fcf658c40",
+  "text": "Protected paths",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "ffd0e13a6",
+  "text": "hard denylist below",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "faae33fe0",
+  "text": "Protect config",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fb62641dc",
+  "text": "user-listed protect paths are refused at the sink and filtered from previews",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f07110081",
+  "text": "Liveness guard",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f560caeac",
+  "text": "a repo containing the working directory of a running build process, including a coding agent (Codex, Claude Code) by its own working directory, is refused; while Xcode, xcodebuild, or its build services run, a DerivedData folder changed within the activity window or holding a file Xcode has open is refused; a probe that fails or does not answer in time blocks",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f821c88b3",
+  "text": "Apply journal",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f2348108d",
+  "text": "write-ahead attempt/result records surround every deletion and typed command; an unwritable journal blocks apply",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fc1a55c00",
+  "text": "Non-TTY guard",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f7b283996",
+  "text": "piped runs refuse mutation without explicit consent",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fbd9053a1",
+  "text": "explicit flag",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f7e5b9ab6",
+  "text": "System roots (/System, /usr, /etc, /Applications, …) and user-critical dirs (~/.ssh, ~/.gnupg) are refused unconditionally. Under ~/Library, only these managed subpaths are eligible, plus the exact Caches entries listed under caches above:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fc5c48f40",
+  "text": "Developer/Toolchains · Developer/Xcode/iOS DeviceSupport",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f5d47f36d",
+  "text": "Developer/Xcode/watchOS DeviceSupport · Developer/Xcode/tvOS DeviceSupport",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f98026930",
+  "text": "Developer/Xcode/visionOS DeviceSupport · Developer/Xcode/DerivedData · Caches/Homebrew",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fd6528281",
+  "text": "npm, Homebrew and Go may report configurable cache paths; devtrim accepts only their exact cache namespaces and revalidates them when applying. The denylist cannot be disabled by any flag. If you find yourself wanting to, the correct tool is a different tool.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f79c8b6f6",
+  "text": "Size escalation",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f51cdf6b2",
+  "text": "Total size",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f04c7d2a1",
+  "text": "Minimum danger",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f2252d5cf",
+  "text": "Effect",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f5814e99b",
+  "text": "> 1 GB",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f890373c0",
+  "text": "≥ 5",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "ff5461a2c",
+  "text": "rebuildable-state warning",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f3a005321",
+  "text": "> 10 GB",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "ff2ebc992",
+  "text": "≥ 7",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f1ef7cafb",
+  "text": "elevated large-plan warning",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "ff416d5f1",
+  "text": "> 50 GB",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "fc258b2db",
+  "text": "≥ 8",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f50a84131",
+  "text": "highest reversible warning",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-safety"
+ },
+ {
+  "id": "f63640264",
+  "text": "12345678910",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f38e5a46c",
+  "text": "Score",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f1f5d64b9",
+  "text": "Meaning",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "ffa77a525",
+  "text": "Gate",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "fe68ee04d",
+  "text": "Examples",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "fd1552596",
+  "text": "1–2",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f42031036",
+  "text": "read-only / trivially reversible",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "fd9bdacab",
+  "text": "actionable CLI plans prompt unless -y; TUI requires y",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "fcfff6c2c",
+  "text": "scan, brew cache",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "fd3d3c85b",
+  "text": "3–5",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f7488a365",
+  "text": "regenerable caches and rebuildable state",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f0643c0f1",
+  "text": "prompt unless -y; non-TTY needs -y",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "ff3914a90",
+  "text": "caches, DeviceSupport, unavailable simulators, node-modules",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "fad1c47ee",
+  "text": "6–8",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f0f52d763",
+  "text": "larger or user-visible state loss",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "fe4455313",
+  "text": "prompt unless -y",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f51383358",
+  "text": "Docker, large sweeps",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "faf1d71f4",
+  "text": "9–10",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "fd5490dd6",
+  "text": "irreversible bulk deletion",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "fe98cf463",
+  "text": "typed numeric confirm",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f24f11cd5",
+  "text": "trash-empty",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f5aecafb2",
+  "text": "$ devtrim trash-empty",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f368b4e67",
+  "text": "dry-run no changes made. Re-run with --apply and --confirm=14 to act.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "ffb4c15fe",
+  "text": "$ devtrim trash-empty --apply --confirm=14",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "f9b208480",
+  "text": "The purge acts only on the exact Trash items the preview listed. An item that cannot be measured (a folder left unreadable inside it) is named as an error and stays; the others are still purged, and the run exits nonzero.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-danger"
+ },
+ {
+  "id": "fcd6445ad",
+  "text": "Optional file at ~/.config/devtrim.toml:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
+ },
+ {
+  "id": "fd4ff5d07",
+  "text": "roots = [\"~/dev\", \"~/sandbox\"]   # scan roots (default: the project folders below that exist)",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
+ },
+ {
+  "id": "ffb241223",
+  "text": "active_days = 30                 # project build output: Git activity recency defining \"active\" repos (0 means 1)",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
+ },
+ {
+  "id": "fb9962748",
+  "text": "retain_days = 30                 # agent history and installers: days untouched before they are offered",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
+ },
+ {
+  "id": "f580cad45",
+  "text": "protect = [\"~/dev/keep\"]         # never delete these paths or their children",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
+ },
+ {
+  "id": "f9c1c1019",
+  "text": "codex_homes = [\"~/.codex-berlin\"] # more Codex homes, judged by agents like ~/.codex",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
+ },
+ {
+  "id": "f84e47aa9",
+  "text": "Without roots, the project commands (purge, clean node-modules, clean artifacts, clean leftovers, largest, and the project half of scan) look in the conventional project folders that exist: ~/dev, ~/Developer, ~/Development, ~/Projects, ~/Code, ~/GitHub, ~/Repos, ~/Workspace, ~/www, and ~/.codex/worktrees (Codex’s worktrees; Claude Code keeps its worktrees inside the repository). They never walk the whole disk or home folder; Desktop, Documents, Downloads, cloud storage, and ~/Library stay out unless you name them. A root only says where to look: every finding still needs its category’s corroborated name, Git owner, and staleness. Each human preview opens with an info scan roots: line naming the roots and where they came from.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
+ },
+ {
+  "id": "fd87db5d9",
+  "text": "active_days decides when a repository’s regenerable output is offered; a shorter window frees more sooner but reinstalls or rebuilds a project you return to, and cannot see uncommitted edits. retain_days decides when files nothing can regenerate — agent session history and installer archives — are offered; unset, it is active_days or 30, whichever is longer, so lowering active_days never shortens how long those are kept. The skip notes name the window that held a project back.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
+ },
+ {
+  "id": "fb8ca0e0f",
+  "text": "CLI --root flags override config roots entirely, and an explicit root that does not exist is warned about rather than silently scanning nothing. A bare ~ names the home folder; an explicit root that is the home folder or contains it is scanned with a warning, since the default roots refuse it. Unknown keys are rejected so a misspelled safety setting cannot appear active. protect entries expand ~, must be absolute, and are enforced deny-only at the deletion sink; a relative or malformed entry is an error.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
+ },
+ {
+  "id": "f928ad4b7",
+  "text": "codex_homes names additional Codex homes (folders Codex uses as its CODEX_HOME). clean agents applies every Codex entry to each one exactly as to ~/.codex, at scan and again at apply, and labels each finding with its home; a home not listed is never touched. Each entry must expand to an absolute path naming a real directory inside the home folder, reached through no link, that is neither ~/.codex (by spelling or as the same folder) nor inside or around it or another entry; anything else, or a value that is not a list of strings, is a configuration error and the command refuses to run.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
+ },
+ {
+  "id": "f7eaad685",
+  "text": "Every non-interactive command accepts --json, emitting exactly one document — for cleanup and report commands this response envelope:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f021fb596",
+  "text": "{",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f464f1d34",
+  "text": "  \"operation\": \"xcode\",",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "fce660901",
+  "text": "  \"applied\": false,",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f4db66e2b",
+  "text": "  \"findings\": [",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f0d3d2f5a",
+  "text": "    {",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f8f2c456f",
+  "text": "      \"label\": \"DerivedData: Project-hash\",",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f346b8253",
+  "text": "      \"path\": \"/Users/you/Library/Developer/Xcode/DerivedData/Project-hash\",",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f61d049ab",
+  "text": "      \"size_bytes\": 40265318400,",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f7ada8e2c",
+  "text": "      \"note\": \"build output; rebuilt on next build\",",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f8dc62ac8",
+  "text": "      \"danger\": 7,",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "fba51bca0",
+  "text": "      \"action\": { \"type\": \"trash\" }",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f28d86778",
+  "text": "    }",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "fef545bc4",
+  "text": "  ],",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f2e26f0ae",
+  "text": "  \"errors\": []",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "fd10b36aa",
+  "text": "}",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "fc298ac7f",
+  "text": "applied is true once the apply phase has started, even when every target is then refused, and false for a preview or an apply refused before it starts: a declined confirmation, a missing consent flag, or a journal that cannot be opened for writing",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "ffaa1c64c",
+  "text": "agents must pass -y explicitly to mutate non-interactively, or --yolo for a danger-9 plan such as trash-empty or --shred — silent approval is refused",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "fc214a80c",
+  "text": "actions are typed as trash, shred, command, info, or none; command argv is never parsed from display text",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f102db660",
+  "text": "\"info\" / \"none\" items must never trigger mutation logic",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f4af3176d",
+  "text": "findings from node-modules, artifacts, and purge carry \"project\", the repository that owns the target — for grouping only, never deletion authority",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f654d6f03",
+  "text": "an applied document adds \"summary\"; its bytes_trashed_estimate is the part of bytes_freed_estimate moved to Trash and still on disk until the Trash is emptied. If a target fails, errors names each failure and the process exits nonzero; caches, agents, trash-empty, xcode, artifacts, and node-modules continue past a refused item — artifacts and node-modules after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and purge runs its node-modules and artifacts halves independently",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f3adfbcfe",
+  "text": "devtrim history --json emits its own single document — {\"operation\":\"history\",\"entries\":[…],\"errors\":[…]} — where each entry carries numeric ts, phase, op, action, and either target or the exact argv. Agents can audit exactly what a previous apply attempted and what completed; an attempt without a result means the process was interrupted mid-apply.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f51095d0f",
+  "text": "devtrim status --json is a vitals report rather than an envelope: uptime_seconds, load_average, cpu_count, memory, disk, battery, thermal, network, top_processes, health, and unavailable. An unread metric is null with its reason in unavailable, and the process exits nonzero whenever that list is not empty. status --watch is interactive and rejects --json.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "f5f9cfd22",
+  "text": "devtrim dashboard --json --no-open emits snapshot metadata with schema_version, root, output_file, inventory, coverage, volume, recommendations and errors. A category's preview_command may be null, with preview_unavailable explaining why a faithful command cannot be offered. Copied project previews retain explicit --root overrides; control-character quoting requires zsh, Bash or a POSIX.1-2024 shell. Add --no-open for automation: --json alone still opens the report.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
+ },
+ {
+  "id": "fe79d0ce8",
+  "text": "Pair with an AGENTS.md rule: “run devtrim scan --json before proposing disk changes; propose devtrim clean … rather than raw rm; audit with devtrim history --json.”",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f48133a94",
+  "text": "The quarterly deep-clean",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f53ced08c",
+  "text": "devtrim scan — eyeball the landscape. No flags, no risk.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "fe00350bc",
+  "text": "devtrim clean caches --apply -y — regenerable caches go to Trash.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f5fd72686",
+  "text": "devtrim purge — stale node_modules and corroborated build artifacts, grouped by project; review, then rerun with --apply (or pick items in the TUI with p).",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "fcfa889e6",
+  "text": "devtrim clean xcode --apply -y — DeviceSupport + DerivedData.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f873a4860",
+  "text": "devtrim trash-empty --confirm=<gb> — the Trash still holds everything above; free the space only once you are sure, with --apply.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f7804fa98",
+  "text": "df -h /System/Volumes/Data — verify.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "ff3e2b30e",
+  "text": "Inspecting large iCloud Drive files",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "fb5d89f81",
+  "text": "devtrim icloud",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f13768c94",
+  "text": "Use this inventory to find large logical files and estimate their current local allocation. Manage downloads and eviction in Finder, which owns the user-visible iCloud state.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f381b7a17",
+  "text": "Pre-flight before a big clone or model download",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f11e5878f",
+  "text": "devtrim scan --json | jq '[.findings[].size_bytes] | add // 0'",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f990c5a47",
+  "text": "Keeping worktrees small",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f483c4bce",
+  "text": "devtrim worktrees shows where linked worktrees take space; these habits keep each one from holding a full copy of what the main checkout already has:",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f1949e212",
+  "text": "Leave large tracked folders out. git worktree add --no-checkout <path> -b <branch>, then git -C <path> sparse-checkout set --no-cone '/*' '!/<dir>/' and git -C <path> checkout <branch>.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f59ee1741",
+  "text": "Install dependencies per worktree. Run the package manager there (pnpm, bun, uv, Cargo reuse their own store or cache); never copy or link node_modules, .venv or target between worktrees.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "ff673cc38",
+  "text": "Clone data a task changes. cp -cR <source> <new-path> makes an APFS clone that shares blocks until a file changes; it works only on the same volume, and it copies links as links.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f6fc96d4a",
+  "text": "Share read-only data once. Keep one copy and reach it through an absolute symlink.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
+ },
+ {
+  "id": "f14c04ff3",
+  "text": "devtrim reports estimated logical bytes. APFS clones share their blocks, so cloned trees look larger in every devtrim report than the space they hold. Trash is your audit log. Everything cleaned today is restorable from Finder until you empty it.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f5e53149e",
+  "text": "df says less space than expected after a clean",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "fb55020c6",
+  "text": "Purgeable space accounting — macOS counts evictable content inconsistently between calls; trust trends over single readings.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f94daef34",
+  "text": "Docker sparse disk — space freed inside the VM reaches macOS only when the runtime returns the blocks; OrbStack and Docker Desktop document that as automatic but it is not guaranteed, so scan again to measure the image.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f8fd2997f",
+  "text": "Files went to Trash — Trash-first means space returns when Trash empties. That's the net working.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f7d30f823",
+  "text": "non-interactive run: re-run with -y…",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "fa006d419",
+  "text": "You piped stdin without an explicit consent flag. Intentional. Add -y for routine ops; reserve --yolo for unattended maintenance windows.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "ff35384fc",
+  "text": "the TUI requires an interactive terminal",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f9aba9fc4",
+  "text": "Both stdin and stdout must be terminals. Use an explicit command such as devtrim scan --json in scripts, pipes, CI, or agent workflows.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "ff36651f7",
+  "text": "skipping … because a build process is active",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "fd78094cd",
+  "text": "A running build or package process (node, cargo, python3, go, and the like) has its working directory inside that repo, or Xcode, xcodebuild, or an Xcode build service is running. The note names the first repositories held; a dev server or watcher left running there counts. Finish the build (or quit Xcode) and re-run. If the probe itself fails, devtrim blocks instead of guessing — that is the guard working.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f45f19fd3",
+  "text": "refusing protected path",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f302e746e",
+  "text": "A root or computed target intersects the denylist. Check config roots; remember --root ~ makes nearly everything protected-by-design.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f85ee0a38",
+  "text": "simulator storage differs from the preview",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f8135d6a2",
+  "text": "Each preview row measures and authorizes one unavailable device. devtrim rechecks that exact UDID before deletion; CoreSimulator may still compact bundles asynchronously afterwards.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "fd27fde20",
+  "text": "an owner command failed",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "ff9e5d5c6",
+  "text": "devtrim returns nonzero and includes the error in JSON. Failed actions are never counted as touched or reclaimed; fix the owner tool and preview again.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f8da39246",
+  "text": "devtrim v0.12.3 Apache-2.0 single self-contained HTML file rust · edition 2024",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f3fba50bc",
+  "text": "mneves75.github.io/devtrim",
+  "link": "https://mneves75.github.io/devtrim/"
+ }
+]

@@ -1,0 +1,18 @@
+{
+  "colours": {
+    "bg": "#0a0a0a",
+    "ink": "#efefec",
+    "muted": "#b4b4ae",
+    "lime": "#c8ff38",
+    "amber": "#ffc53d",
+    "red": "#ff6b57"
+  },
+  "text": {
+    "body": ["ink", "bg"],
+    "secondary": ["muted", "bg"],
+    "accent": ["lime", "bg"],
+    "caution": ["amber", "bg"],
+    "danger": ["red", "bg"],
+    "on-accent": ["bg", "lime"]
+  }
+}
