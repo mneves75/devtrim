@@ -26,6 +26,7 @@ GHSA = re.compile(r"GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}")
 ADVISORY_URL = re.compile(r"https://github\.com/advisories/(" + GHSA.pattern + r")")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 WAIVER_KEYS = {"id", "expires", "reason"}
+SEVERITIES = ("info", "low", "moderate", "high", "critical")
 
 
 class Refused(Exception):
@@ -62,21 +63,47 @@ def advisories(report: object) -> set[str]:
     if report.get("auditReportVersion") != 2 or not isinstance(report.get("vulnerabilities"), dict):
         raise Refused("the audit report lacks auditReportVersion 2 and its vulnerabilities")
     vulnerabilities = report["vulnerabilities"]
-    found = set()
+    # npm counts every entry by severity; a report missing entries it counted is partial.
+    tally = {severity: 0 for severity in SEVERITIES}
     for name, vulnerability in vulnerabilities.items():
-        via = vulnerability.get("via") if isinstance(vulnerability, dict) else None
+        severity = vulnerability.get("severity") if isinstance(vulnerability, dict) else None
+        if severity not in tally:
+            raise Refused(f"{name}: the report gives no known severity")
+        tally[severity] += 1
+    counted = report.get("metadata", {}).get("vulnerabilities") if isinstance(report.get("metadata"), dict) else None
+    if counted != {**tally, "total": len(vulnerabilities)}:
+        raise Refused(f"the report's metadata counts {counted}, not the {len(vulnerabilities)} entries it lists")
+    found = set()
+    resolved = set()
+    paths = {}
+    for name, vulnerability in vulnerabilities.items():
+        via = vulnerability.get("via")
         if not isinstance(via, list) or not via:
             raise Refused(f"{name}: the report gives no advisory or dependency path")
+        paths[name] = []
         for entry in via:
             if isinstance(entry, str):
-                # A dependency path: the package it names carries the advisory.
+                # A dependency path: the package it names must carry an advisory.
                 if entry not in vulnerabilities:
                     raise Refused(f"{name}: depends on {entry}, which is not in the report")
+                paths[name].append(entry)
                 continue
             match = ADVISORY_URL.fullmatch(entry.get("url", "")) if isinstance(entry, dict) else None
             if match is None:
                 raise Refused(f"{name}: an advisory without a GitHub advisory URL cannot be waived by ID")
             found.add(match.group(1))
+            resolved.add(name)
+    # Every entry must reach a concrete advisory; a cycle of paths reaches none.
+    changed = True
+    while changed:
+        changed = False
+        for name, targets in paths.items():
+            if name not in resolved and any(target in resolved for target in targets):
+                resolved.add(name)
+                changed = True
+    unresolved = sorted(set(vulnerabilities) - resolved)
+    if unresolved:
+        raise Refused(f"{', '.join(unresolved)}: reaches no advisory through its dependency paths")
     return found
 
 

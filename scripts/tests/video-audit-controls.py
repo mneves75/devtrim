@@ -27,13 +27,24 @@ def advisory(name: str, ghsa: str | None) -> dict:
     return entry
 
 
-def report(vulnerabilities: dict) -> dict:
-    return {"auditReportVersion": 2, "vulnerabilities": vulnerabilities, "metadata": {}}
+SEVERITIES = ("info", "low", "moderate", "high", "critical")
+
+
+def counts(vulnerabilities: dict) -> dict:
+    tally = {severity: 0 for severity in SEVERITIES}
+    for vulnerability in vulnerabilities.values():
+        tally[vulnerability["severity"]] += 1
+    return {**tally, "total": len(vulnerabilities)}
+
+
+def report(vulnerabilities: dict, metadata: dict | None = None) -> dict:
+    metadata = {"vulnerabilities": counts(vulnerabilities)} if metadata is None else metadata
+    return {"auditReportVersion": 2, "vulnerabilities": vulnerabilities, "metadata": metadata}
 
 
 MINIMATCH = {
-    "minimatch": {"name": "minimatch", "via": [advisory("minimatch", GHSA)]},
-    "eslint": {"name": "eslint", "via": ["minimatch"]},
+    "minimatch": {"name": "minimatch", "severity": "moderate", "via": [advisory("minimatch", GHSA)]},
+    "eslint": {"name": "eslint", "severity": "moderate", "via": ["minimatch"]},
 }
 WAIVER = {"id": GHSA, "expires": "2026-11-30", "reason": "lint-only; no fix in eslint's range"}
 
@@ -45,7 +56,7 @@ CASES = [
     ("unwaived", report(MINIMATCH), [], "2026-10-31", 1, "not waived"),
     (
         "second-advisory",
-        report({**MINIMATCH, "zod": {"name": "zod", "via": [advisory("zod", OTHER)]}}),
+        report({**MINIMATCH, "zod": {"name": "zod", "severity": "low", "via": [advisory("zod", OTHER)]}}),
         [WAIVER],
         "2026-10-31",
         1,
@@ -53,10 +64,10 @@ CASES = [
     ),
     ("expired", report(MINIMATCH), [WAIVER], "2026-12-01", 1, "expired"),
     ("stale", report({}), [WAIVER], "2026-10-31", 1, "no longer reported"),
-    ("no-ghsa-url", report({"x": {"name": "x", "via": [advisory("x", None)]}}), [], "2026-10-31", 1, "GitHub advisory"),
+    ("no-ghsa-url", report({"x": {"name": "x", "severity": "low", "via": [advisory("x", None)]}}), [], "2026-10-31", 1, "GitHub advisory"),
     (
         "dangling-via",
-        report({"eslint": {"name": "eslint", "via": ["minimatch"]}}),
+        report({"eslint": {"name": "eslint", "severity": "moderate", "via": ["minimatch"]}}),
         [],
         "2026-10-31",
         1,
@@ -67,6 +78,39 @@ CASES = [
     ("blank-reason", report(MINIMATCH), [{**WAIVER, "reason": " "}], "2026-10-31", 1, "reason"),
     ("duplicate-waiver", report(MINIMATCH), [WAIVER, WAIVER], "2026-10-31", 1, "twice"),
     ("duplicate-key", report(MINIMATCH), '[{"id": "%s", "id": "%s", "expires": "2026-11-30", "reason": "r"}]' % (GHSA, GHSA), "2026-10-31", 1, "repeats"),
+    (
+        "unresolved-cycle",
+        report({**MINIMATCH, "x": {"name": "x", "severity": "high", "via": ["y"]}, "y": {"name": "y", "severity": "high", "via": ["x"]}}),
+        [WAIVER],
+        "2026-10-31",
+        1,
+        "reaches no advisory",
+    ),
+    (
+        "self-reference",
+        report({**MINIMATCH, "x": {"name": "x", "severity": "high", "via": ["x"]}}),
+        [WAIVER],
+        "2026-10-31",
+        1,
+        "reaches no advisory",
+    ),
+    (
+        "partial-report",
+        report(MINIMATCH, {"vulnerabilities": {**counts(MINIMATCH), "high": 1, "total": 3}}),
+        [WAIVER],
+        "2026-10-31",
+        1,
+        "metadata",
+    ),
+    (
+        "severity-miscount",
+        report(MINIMATCH, {"vulnerabilities": {**counts(MINIMATCH), "moderate": 1, "high": 1}}),
+        [WAIVER],
+        "2026-10-31",
+        1,
+        "metadata",
+    ),
+    ("no-metadata", report(MINIMATCH, {}), [WAIVER], "2026-10-31", 1, "metadata"),
     ("old-format", {"vulnerabilities": {}}, [], "2026-10-31", 1, "auditReportVersion"),
     ("npm-error", {"error": {"code": "ENOLOCK", "summary": "no lockfile"}}, [], "2026-10-31", 1, "ENOLOCK"),
     ("not-json", report({}), "[", "2026-10-31", 1, "JSON"),

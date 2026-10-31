@@ -55,7 +55,7 @@ checked 2026-09-04. User instructions take precedence over skill procedures.
 - MSRV: `rustup run 1.88.0 cargo test --locked --all-targets --all-features`
 - Audit: `cargo audit`
 - Fuzz (local release gate, nightly): with the nightly toolchain's bin dir first on PATH (`PATH="$(dirname "$(rustup which cargo --toolchain nightly)"):$HOME/.cargo/bin:$PATH"`), run `cargo fuzz run <target> -- -max_total_time=60` for each target in `fuzz/fuzz_targets/`. A standalone stable cargo earlier on PATH breaks cargo-fuzz's inner build.
-- Video: `cd video && npm ci && python3 -B ../scripts/video-audit.py && npm run lint && npm run format:check && npm run build`. `video-audit.py` fails on any `npm audit` advisory, at any severity, that `video/audit-waivers.json` does not waive in date, and on an expired, malformed or stale waiver; `scripts/tests/video-audit-controls.py` proves each refusal. A waiver names a GHSA ID, a UTC expiry and a reason, and is the owner's decision.
+- Video: `cd video && npm ci && python3 -B ../scripts/video-audit.py && npm run lint && npm run format:check && npm run build`. `video-audit.py` fails on any `npm audit` advisory, at any severity, that `video/audit-waivers.json` does not waive in date, on a report whose metadata counts entries it does not list or whose dependency paths reach no advisory, and on an expired, malformed or stale waiver; `scripts/tests/video-audit-controls.py` proves each refusal. A waiver names a GHSA ID, a UTC expiry and a reason, and is the owner's decision.
 - Build: `rustup run 1.98.1 cargo build --release --locked --target aarch64-apple-darwin`
 - Site/manual: `python3 -m http.server 4173`, then open `/index.html` or `/MANUAL.html`
 
