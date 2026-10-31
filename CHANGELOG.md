@@ -8,6 +8,15 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - The landing page links the stable 0.12.3 release.
 - A new 24 s demo film replaces the 12 s one on the landing page: the purge preview of two stale demo projects, the evidence behind one finding, `j`, `j` and `Space` leaving one finding out, `a` and `y` approving the exact plan, the approved findings moving to the Trash, and the Homebrew command. It runs at 60 fps with synthesized music and a click per key press, and every line on screen is quoted from the site, which a check enforces. The pipeline (`video/film/`) builds and checks it in one command: facts, contrast, loudness at -14 LUFS, codecs and audio sync within one frame. The landing page's transcript and captions describe it, and the page gains the real TUI screen after `j`, `j` and `Space` (rendered by `scripts/site/frames.py`), stacked above the confirmation it leads to.
 
+### Fixed
+- The film's checks catch five slips they let through:
+  - **Sync:** a beat expected over silence passed, because the quietest stretch still has a strongest moment. Below a fixed onset of 0.1 it now fails as "no attack". The real film still passes: 45 events, worst 7.0 ms.
+  - **Contact sheets:** the tile stamped 0 s showed frame 5.
+  - **Facts trace:** it missed `line('id')` and any line shown only from a `.ts` module.
+  - **Page text:** text from the pages reached the terminal raw in `facts.py --check` diagnostics. DEL and C1 controls were also left raw in the extracted JSON.
+  - **Lint:** `build.py` rendered without linting. It now runs `npm run lint` (ESLint's `react/jsx-no-literals` and the type check) before the music.
+- `scripts/tests/film-controls.py` plants one violation per check and requires each to fail. Each of the cases above failed before these fixes. It runs in `verify.sh offline`.
+
 ## [0.12.3] - 2026-10-30
 
 ### Fixed

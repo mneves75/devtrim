@@ -49,7 +49,7 @@ def main() -> int:
         subprocess.run(
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}", "-i", options.video,
-                "-vf", f"fps=1/{options.every},setpts=PTS+{start}/TB,{stamp},scale={options.width}:-2,tile={columns}x{rows}",
+                "-vf", f"fps=1/{options.every}:round=up,setpts=PTS+{start}/TB,{stamp},scale={options.width}:-2,tile={columns}x{rows}",
                 "-frames:v", "1", "-update", "1", out,
             ],
             check=True, timeout=300,
