@@ -4,8 +4,8 @@
 usage: check_media.py <video.mp4> --width 1920 --height 1080 --fps 60 --seconds 24 [--audio]
 
 Requires H.264 yuv420p video, the exact size and frame rate (r_frame_rate is
-only a timestamp base, so the average rate and the counted frames must also
-equal --fps and --fps x --seconds), a duration within
+only a timestamp base, so every presentation timestamp must also sit exactly
+1/--fps after the one before it, --fps x --seconds frames in all), a duration within
 one frame of --seconds, the moov atom before mdat (+faststart) and, with
 --audio, exactly one AAC 48 kHz stream; without it, no audio stream at all.
 Prints one PASS/FAIL line per check and exits 1 on any failure.
@@ -22,10 +22,22 @@ from fractions import Fraction
 
 def probe(path: str) -> dict:
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-count_packets", "-show_streams", "-show_format", "-of", "json", path],
+        ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", path],
         capture_output=True, text=True, timeout=60, check=True,
     )
     return json.loads(out.stdout)
+
+
+def frame_times(path: str) -> tuple[Fraction, list[int]]:
+    """The video stream's time base and every frame's presentation timestamp, in display order."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=time_base:packet=pts",
+         "-of", "json", path],
+        capture_output=True, text=True, timeout=120, check=True,
+    )
+    info = json.loads(out.stdout)
+    base = Fraction(info["streams"][0]["time_base"])
+    return base, sorted(int(p["pts"]) for p in info.get("packets", []) if p.get("pts") is not None)
 
 
 def faststart(path: str) -> bool:
@@ -73,11 +85,13 @@ def main() -> int:
         checks.append(("size", (v["width"], v["height"]) == (options.width, options.height), f"{v['width']}x{v['height']}"))
         rate = Fraction(v["r_frame_rate"])
         checks.append(("frame rate", rate == options.fps, str(rate)))
-        average = Fraction(v.get("avg_frame_rate", "0/1")) if v.get("avg_frame_rate", "0/0") != "0/0" else Fraction(0)
-        checks.append(("average frame rate", average == options.fps, str(average)))
-        frames = int(v.get("nb_read_packets", 0))
+        base, stamps = frame_times(options.video)
         expected = round(options.fps * options.seconds)
-        checks.append(("frame count", frames == expected, f"{frames} (expected {expected})"))
+        checks.append(("frame count", len(stamps) == expected, f"{len(stamps)} (expected {expected})"))
+        steps = {(b - a) * base for a, b in zip(stamps, stamps[1:])}
+        even = steps == {Fraction(1, options.fps)}
+        seen = ", ".join(f"{step * 1000:.2f} ms" for step in sorted(steps)[:4]) or "none"
+        checks.append(("constant frame interval", even, f"{len(steps)} distinct step(s): {seen}"))
     total = float(info["format"]["duration"])
     checks.append(("duration", abs(total - options.seconds) <= 1 / options.fps + 1e-3, f"{total:.3f} s"))
     checks.append(("faststart", faststart(options.video), "moov before mdat"))

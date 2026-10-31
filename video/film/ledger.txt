@@ -143,3 +143,16 @@ control that fails for its reason while the real film passes:
   1440 counted frames (control: a variable-rate copy reporting 60/1 with
   1080 frames).
 - The rebuilt film.mp4 is byte-identical to media/demo.mp4.
+
+Fix review — autoreview (GPT-6.1 Sol) of 8c17f19: two P2.
+- check_media's average rate and packet count can still pass uneven
+  presentation timestamps. Fixed: every presentation timestamp must sit
+  exactly 1/60 s after the one before (real film: 1 distinct step, 16.67 ms;
+  a copy with odd frames moved 5 ms: 6 steps, refused; the dropped-frame
+  copy: 2 steps, refused).
+- "Stems are not tied to the delivered audio": declined, with evidence.
+  music.py adds every cue to the mix and to its kind's stem from the same
+  `placed` tuple, two adjacent lines of one loop, and build.py muxes that mix
+  unchanged after loudness; a click can leave the mix while staying in its
+  stem only if that loop diverges. Named follow-up: correlate the decoded
+  delivery with mix-norm.wav if the mix stage ever stops being one function.
