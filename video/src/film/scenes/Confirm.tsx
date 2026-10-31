@@ -12,31 +12,44 @@ import {
   sceneLength,
 } from "../theme";
 import { Keycap, Stage } from "../ui";
+import { PreviewPanel } from "./PreviewPanel";
 
 const keys = keyCues("confirm");
 const at = (key: string) => keys.filter((k) => k.key === key)[0].at;
 
-const FONT = 44;
-const LINE_HEIGHT = 70;
+const FONT = 58;
+const LINE_HEIGHT = 88;
 
-/** Close-up: a raises the confirmation for the exact plan; y approves it. */
+/** Close-up: the narrowed plan holds a beat, a raises its confirmation, y approves it. */
 export const Confirm: React.FC = () => {
   const frame = useCurrentFrame();
   const length = sceneLength("confirm");
   const a = at("a");
   const y = at("y");
   const raise = enter(frame, a, 14);
-  const collapse = leave(frame, y + 24, 12);
+  const collapse = leave(frame, y + 48, 12);
   const lineIn = (n: number) => enter(frame, a + 6 + n * 8, 14);
   const caretOn = Math.floor(frame / (BEAT / 2)) % 2 === 0;
   return (
     <Stage scale={1.06 + (0.03 * frame) / length} origin="50% 45%">
+      {/* The plan Select ended on, until a replaces it with its confirmation. */}
       <div
         style={{
           position: "absolute",
-          left: 250,
-          top: 190,
-          width: 1420,
+          left: 120,
+          top: 150,
+          opacity: 1 - raise,
+          transform: `translateY(${-40 * raise}px)`,
+        }}
+      >
+        <PreviewPanel frame={frame} cursor={2} thirdSelected={0} narrowed={1} />
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left: 160,
+          top: 150,
+          width: 1500,
           padding: "28px 48px 32px",
           border: `3px solid ${RULE}`,
           backgroundColor: C.bg,
@@ -73,11 +86,6 @@ export const Confirm: React.FC = () => {
               opacity: caretOn ? 1 : 0,
             }}
           />
-        </div>
-        <div
-          style={{ color: C.muted, fontSize: FONT * 0.84, opacity: lineIn(5) }}
-        >
-          {line("confirm.footer")}
         </div>
       </div>
       <div

@@ -16,7 +16,7 @@ import { PreviewPanel } from "./PreviewPanel";
 const keys = keyCues("select");
 const at = (key: string, nth = 0) => keys.filter((k) => k.key === key)[nth].at;
 
-/** Wide: j, j, Space — the cursor moves twice and the third finding is left out. */
+/** Close-up: j, j, Space — the cursor moves twice and the third finding is left out. */
 export const Select: React.FC = () => {
   const frame = useCurrentFrame();
   const length = sceneLength("select");
@@ -29,8 +29,12 @@ export const Select: React.FC = () => {
     key === "j" ? line("key.j") : line("key.space");
   return (
     <Stage scale={drift(frame, length, 0.02)} origin="50% 30%">
-      <div style={{ position: "absolute", left: PANEL.left, top: 110 }}>
+      <div style={{ position: "absolute", left: PANEL.left, top: 70 }}>
         <PreviewPanel
+          short
+          font={76}
+          lineHeight={104}
+          titleFont={52}
           frame={frame}
           cursor={cursor}
           thirdSelected={left}
@@ -41,9 +45,9 @@ export const Select: React.FC = () => {
         style={{
           position: "absolute",
           left: PANEL.left,
-          top: 560,
+          top: 726,
           fontFamily: SANS,
-          fontSize: 52,
+          fontSize: 72,
           fontWeight: 600,
           color: C.muted,
         }}
@@ -55,7 +59,7 @@ export const Select: React.FC = () => {
           position: "absolute",
           left: 0,
           right: 0,
-          top: 740,
+          top: 840,
           display: "flex",
           justifyContent: "center",
           gap: 40,

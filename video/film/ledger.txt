@@ -48,3 +48,25 @@ facts.json): another pass
   reading harsher than "recoverable", no launch command after install.
 - Rebuild: facts 34/34 (footer keys line dropped), contrast unchanged,
   mix -18.5/-3.0 -> -13.9 LUFS / -1.4 dBTP, sync worst 7.0 ms.
+
+Round 2 — new independent reviewer: another pass (round 1 a, c, d fixed)
+- Major: terminal text still about 7 px on a 390 px phone. Fix: Select is a
+  close-up whose rows end at their size (`[x]   1. danger-5   5.9 GB`, still
+  the start of each TUI line) at 76 px; its caption 52 -> 72 px; Details
+  40 -> 54 px with the evidence on two lines, each a substring of the same
+  fact; the confirmation 44 -> 58 px without its 37 px footer.
+- Minor: seven colours, the logo's warm white #f4f1e9 beside ink. Fix: the
+  logo stroke is ink.
+- Minor: a departing row crossed the panel border. Fix: panel content clips.
+- Minor: 0.52 s blank at 15.0 s. Fix: the confirmation opens on the plan
+  Select ended with, which a replaces. freezedetect n=0.001 d=0.5: none.
+- Minor: y keycap 0.5 s before the cut. Fix: y moves to beat 35 (frame 1050,
+  on the kick), 1.07 s before the cut. Half a beat earlier, on the open hat,
+  check_sync failed (-38.0 ms): the hat's noise masks the click, so the key
+  sits on a kick where its attack can be measured.
+- Minor: the 13.0 s cut had no accent (pad-only section). Fix: a hit cue on
+  the cut, under the full-screen "Preview first. Approve once.".
+- Muted test 2: every planned beat retold; confusions: "danger-5"
+  unexplained, small details, rows clipped while leaving, no total freed.
+- Rebuild: facts 38/38, contrast unchanged, mix -18.5/-3.0 -> -13.9 LUFS /
+  -1.4 dBTP, sync 45 events worst 7.0 ms.

@@ -35,16 +35,32 @@
   "text": "1. danger-5   5.9 GB  TRASH    stale target artifacts",
   "fact": "f1f036753"
  },
+ "row.1.short": {
+  "text": "1. danger-5   5.9 GB",
+  "fact": "f1f036753"
+ },
  "row.2": {
   "text": "2. danger-5   1.1 GB  TRASH    stale node_modules",
+  "fact": "f02770cad"
+ },
+ "row.2.short": {
+  "text": "2. danger-5   1.1 GB",
   "fact": "f02770cad"
  },
  "row.3": {
   "text": "3. danger-5   614 MB  TRASH    stale .next artifacts",
   "fact": "fd3861e8e"
  },
+ "row.3.short": {
+  "text": "3. danger-5   614 MB",
+  "fact": "fd3861e8e"
+ },
  "row.4": {
   "text": "4. danger-5   205 MB  TRASH    stale .turbo artifacts",
+  "fact": "f4b798dd9"
+ },
+ "row.4.short": {
+  "text": "4. danger-5   205 MB",
   "fact": "f4b798dd9"
  },
  "see": {
@@ -67,8 +83,12 @@
   "text": "/private/tmp/devtrim-demo/dev/payments-api/target",
   "fact": "fbafea5ab"
  },
- "details.evidence": {
-  "text": "repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml",
+ "details.evidence.when": {
+  "text": "repo last active 2020-01-01 UTC",
+  "fact": "fda6b1f04"
+ },
+ "details.evidence.why": {
+  "text": "corroboration: sibling Cargo.toml",
   "fact": "fda6b1f04"
  },
  "footer.status": {
@@ -114,10 +134,6 @@
  "confirm.caret": {
   "text": ">",
   "fact": "f9d263011"
- },
- "confirm.footer": {
-  "text": "Esc cancel · type the exact requested acknowledgment",
-  "fact": "f16ff7fb1"
  },
  "trash.head": {
   "text": "Move to the Trash first",

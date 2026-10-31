@@ -3,6 +3,13 @@ import { BEAT, C, PANEL, enter, line } from "../theme";
 import { Checkbox, Panel, PreviewTitle, RowText } from "../ui";
 
 const ROWS = ["row.1", "row.2", "row.3", "row.4"] as const;
+/** The close-up keeps each row up to its size: still the start of the TUI line, at twice the type. */
+const SHORT_ROWS = [
+  "row.1.short",
+  "row.2.short",
+  "row.3.short",
+  "row.4.short",
+] as const;
 
 /**
  * The TUI's preview block, shared by every wide shot so the cuts hand off on
@@ -22,6 +29,11 @@ export const PreviewPanel: React.FC<{
   narrowed?: number;
   /** Horizontal offset per row (px), for rows leaving the frame. */
   offsets?: number[];
+  /** Close-up: rows end at their size, at `font` px; the title stays at `titleFont` px. */
+  short?: boolean;
+  font?: number;
+  lineHeight?: number;
+  titleFont?: number;
 }> = ({
   frame,
   draw = 1,
@@ -30,9 +42,20 @@ export const PreviewPanel: React.FC<{
   thirdSelected = 1,
   narrowed = 0,
   offsets,
+  short = false,
+  font = PANEL.font,
+  lineHeight = PANEL.lineHeight,
+  titleFont = font,
 }) => {
+  const ids = short ? SHORT_ROWS : ROWS;
   const title = (
-    <span style={{ position: "relative", display: "inline-block" }}>
+    <span
+      style={{
+        position: "relative",
+        display: "inline-block",
+        fontSize: titleFont,
+      }}
+    >
       <span style={{ opacity: 1 - narrowed }}>
         <PreviewTitle text={line("preview.title")} />
       </span>
@@ -47,8 +70,8 @@ export const PreviewPanel: React.FC<{
     <Panel
       title={title}
       width={PANEL.width}
-      font={PANEL.font}
-      lineHeight={PANEL.lineHeight}
+      font={font}
+      lineHeight={lineHeight}
       rows={5}
       draw={draw}
     >
@@ -57,7 +80,7 @@ export const PreviewPanel: React.FC<{
           style={{
             position: "absolute",
             left: 0,
-            top: cursor * PANEL.lineHeight,
+            top: cursor * lineHeight,
             color: C.lime,
             fontWeight: 700,
             opacity: 0.7 + 0.3 * Math.cos((frame / BEAT) * Math.PI),
@@ -65,15 +88,15 @@ export const PreviewPanel: React.FC<{
         >
           {line("row.cursor")}
         </div>
-        {ROWS.map((id, i) => {
+        {ids.map((id, i) => {
           const t = arrivals ? enter(frame, arrivals[i], 16) : 1;
           const left = i === 2 ? thirdSelected : 1;
           return (
             <div
               key={id}
               style={{
-                height: PANEL.lineHeight,
-                paddingLeft: PANEL.font * 1.4,
+                height: lineHeight,
+                paddingLeft: font * 1.4,
                 opacity: t,
                 transform: `translate(${offsets?.[i] ?? 0}px, ${(1 - t) * 28}px)`,
               }}

@@ -17,7 +17,7 @@ export const Stage: React.FC<{
   </AbsoluteFill>
 );
 
-/** The site's favicon.svg, path for path; only the lime bar's scale moves. */
+/** The site's favicon.svg, path for path, its near-white stroke drawn in ink; only the lime bar's scale moves. */
 export const Logo: React.FC<{ size: number; bar?: number }> = ({
   size,
   bar = 1,
@@ -33,7 +33,7 @@ export const Logo: React.FC<{ size: number; bar?: number }> = ({
     <path
       d="M17 14v36h12c12 0 18-7 18-18s-6-18-18-18H17Z"
       fill="none"
-      stroke="#f4f1e9"
+      stroke={C.ink}
       strokeWidth="7"
       strokeLinejoin="round"
     />
@@ -98,6 +98,9 @@ export const Panel: React.FC<{
         left: font * 0.75,
         top: lineHeight * 1.15,
         right: font * 0.75,
+        bottom: 2,
+        // A row leaving the plan disappears at the border instead of crossing it.
+        overflow: "hidden",
       }}
     >
       {children}

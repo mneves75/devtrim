@@ -90,6 +90,10 @@
   },
   {
    "frame": 780,
+   "kind": "hit"
+  },
+  {
+   "frame": 780,
    "kind": "swish",
    "scene": "approve"
   },
@@ -104,7 +108,7 @@
    "key": "a"
   },
   {
-   "frame": 1080,
+   "frame": 1050,
    "kind": "click",
    "key": "y"
   },
