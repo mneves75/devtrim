@@ -37,8 +37,11 @@ export const Trash: React.FC = () => {
   const sub = enter(frame, BEAT + 10, 20);
   return (
     <Stage scale={drift(frame, length, 0.02)} origin="30% 50%">
-      <div style={{ position: "absolute", left: PANEL.left, top: 150 }}>
+      <div style={{ position: "absolute", left: PANEL.left, top: 60 }}>
         <PreviewPanel
+          part="end"
+          font={64}
+          lineHeight={92}
           frame={frame}
           cursor={2}
           thirdSelected={0}
@@ -47,7 +50,7 @@ export const Trash: React.FC = () => {
         />
       </div>
       <div
-        style={{ position: "absolute", left: 160, top: 640, fontFamily: SANS }}
+        style={{ position: "absolute", left: 160, top: 680, fontFamily: SANS }}
       >
         <div
           style={{

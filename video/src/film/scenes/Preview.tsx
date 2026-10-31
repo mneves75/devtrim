@@ -10,8 +10,11 @@ export const Preview: React.FC = () => {
   const length = sceneLength("preview");
   return (
     <Stage scale={drift(frame, length, 0.025)} origin="50% 40%">
-      <div style={{ position: "absolute", left: PANEL.left, top: 380 }}>
+      <div style={{ position: "absolute", left: PANEL.left, top: 250 }}>
         <PreviewPanel
+          part="end"
+          font={64}
+          lineHeight={92}
           frame={frame}
           draw={enter(frame, 0, BEAT)}
           arrivals={[BEAT, 2 * BEAT, 3 * BEAT, 4 * BEAT]}

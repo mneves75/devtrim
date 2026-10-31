@@ -31,7 +31,7 @@ export const Select: React.FC = () => {
     <Stage scale={drift(frame, length, 0.02)} origin="50% 30%">
       <div style={{ position: "absolute", left: PANEL.left, top: 70 }}>
         <PreviewPanel
-          short
+          part="start"
           font={76}
           lineHeight={104}
           titleFont={52}

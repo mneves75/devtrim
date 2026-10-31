@@ -17,8 +17,8 @@ import { PreviewPanel } from "./PreviewPanel";
 const keys = keyCues("confirm");
 const at = (key: string) => keys.filter((k) => k.key === key)[0].at;
 
-const FONT = 58;
-const LINE_HEIGHT = 88;
+const FONT = 54;
+const LINE_HEIGHT = 84;
 
 /** Close-up: the narrowed plan holds a beat, a raises its confirmation, y approves it. */
 export const Confirm: React.FC = () => {
@@ -37,19 +37,27 @@ export const Confirm: React.FC = () => {
         style={{
           position: "absolute",
           left: 120,
-          top: 150,
+          top: 70,
           opacity: 1 - raise,
           transform: `translateY(${-40 * raise}px)`,
         }}
       >
-        <PreviewPanel frame={frame} cursor={2} thirdSelected={0} narrowed={1} />
+        <PreviewPanel
+          part="start"
+          font={76}
+          lineHeight={104}
+          frame={frame}
+          cursor={2}
+          thirdSelected={0}
+          narrowed={1}
+        />
       </div>
       <div
         style={{
           position: "absolute",
-          left: 160,
+          left: 180,
           top: 150,
-          width: 1500,
+          width: "fit-content",
           padding: "28px 48px 32px",
           border: `3px solid ${RULE}`,
           backgroundColor: C.bg,

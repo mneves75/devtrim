@@ -31,32 +31,32 @@
   "text": "]",
   "fact": "f1f036753"
  },
- "row.1": {
-  "text": "1. danger-5   5.9 GB  TRASH    stale target artifacts",
+ "row.1.end": {
+  "text": "5.9 GB  TRASH    stale target artifacts",
   "fact": "f1f036753"
  },
  "row.1.short": {
   "text": "1. danger-5   5.9 GB",
   "fact": "f1f036753"
  },
- "row.2": {
-  "text": "2. danger-5   1.1 GB  TRASH    stale node_modules",
+ "row.2.end": {
+  "text": "1.1 GB  TRASH    stale node_modules",
   "fact": "f02770cad"
  },
  "row.2.short": {
   "text": "2. danger-5   1.1 GB",
   "fact": "f02770cad"
  },
- "row.3": {
-  "text": "3. danger-5   614 MB  TRASH    stale .next artifacts",
+ "row.3.end": {
+  "text": "614 MB  TRASH    stale .next artifacts",
   "fact": "fd3861e8e"
  },
  "row.3.short": {
   "text": "3. danger-5   614 MB",
   "fact": "fd3861e8e"
  },
- "row.4": {
-  "text": "4. danger-5   205 MB  TRASH    stale .turbo artifacts",
+ "row.4.end": {
+  "text": "205 MB  TRASH    stale .turbo artifacts",
   "fact": "f4b798dd9"
  },
  "row.4.short": {
@@ -78,10 +78,6 @@
  "details.size": {
   "text": "5.9 GB · danger-5 · move to Trash",
   "fact": "f38fb2aaa"
- },
- "details.path": {
-  "text": "/private/tmp/devtrim-demo/dev/payments-api/target",
-  "fact": "fbafea5ab"
  },
  "details.evidence.when": {
   "text": "repo last active 2020-01-01 UTC",

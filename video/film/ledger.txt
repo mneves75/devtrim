@@ -70,3 +70,20 @@ Round 2 — new independent reviewer: another pass (round 1 a, c, d fixed)
   unexplained, small details, rows clipped while leaving, no total freed.
 - Rebuild: facts 38/38, contrast unchanged, mix -18.5/-3.0 -> -13.9 LUFS /
   -1.4 dBTP, sync 45 events worst 7.0 ms.
+
+Round 3 — new independent reviewer: another pass (round 2 b-f fixed)
+- Major: the wide views (inventory, details, confirmation intro, Trash)
+  still about 6.7-8.9 px on a phone. Fix: no view shows a whole TUI line any
+  more. Preview and Trash show each line's end (`5.9 GB  TRASH    stale
+  target artifacts`) at 64 px; Select and the confirmation intro show its
+  start at 76 px; Details drops the path and is 72 px.
+- Major: the approval line crossed the dialog's right border by about 14 px
+  (SF Mono is wider than the 0.6 em estimate). Fix: the dialog's width is
+  its content's (fit-content) at 54 px.
+- Minor: the inventory before the confirmation held 0.52 s. Fix: a moves
+  to beat 32 (frame 960, on the kick), a 1.0 s hold of the Select close-up.
+- Minor: words entered 0.10 s apart. Fix: 0.20 s (12 frames).
+- Muted test 3: every planned beat retold; the close-ups "make the
+  selection and confirmation clearer"; "danger-5" still unexplained.
+- Rebuild: facts 37/37, contrast unchanged, mix -18.5/-3.0 -> -13.9 LUFS /
+  -1.4 dBTP, sync 45 events worst 7.0 ms, freezedetect none.

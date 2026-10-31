@@ -2,14 +2,18 @@ import React from "react";
 import { BEAT, C, PANEL, enter, line } from "../theme";
 import { Checkbox, Panel, PreviewTitle, RowText } from "../ui";
 
-const ROWS = ["row.1", "row.2", "row.3", "row.4"] as const;
-/** The close-up keeps each row up to its size: still the start of the TUI line, at twice the type. */
-const SHORT_ROWS = [
+/**
+ * Phone players shrink the frame about five times, so the panel never shows a
+ * whole TUI line: either its start (checkbox, number, danger, size) or its end
+ * (size, action, name). Each is still a substring of the line on the site.
+ */
+const START_ROWS = [
   "row.1.short",
   "row.2.short",
   "row.3.short",
   "row.4.short",
 ] as const;
+const END_ROWS = ["row.1.end", "row.2.end", "row.3.end", "row.4.end"] as const;
 
 /**
  * The TUI's preview block, shared by every wide shot so the cuts hand off on
@@ -29,10 +33,10 @@ export const PreviewPanel: React.FC<{
   narrowed?: number;
   /** Horizontal offset per row (px), for rows leaving the frame. */
   offsets?: number[];
-  /** Close-up: rows end at their size, at `font` px; the title stays at `titleFont` px. */
-  short?: boolean;
-  font?: number;
-  lineHeight?: number;
+  /** Which part of each line: "start" keeps the checkbox and cursor, "end" the name. */
+  part: "start" | "end";
+  font: number;
+  lineHeight: number;
   titleFont?: number;
 }> = ({
   frame,
@@ -42,12 +46,12 @@ export const PreviewPanel: React.FC<{
   thirdSelected = 1,
   narrowed = 0,
   offsets,
-  short = false,
-  font = PANEL.font,
-  lineHeight = PANEL.lineHeight,
-  titleFont = font,
+  part,
+  font,
+  lineHeight,
+  titleFont = 52,
 }) => {
-  const ids = short ? SHORT_ROWS : ROWS;
+  const ids = part === "start" ? START_ROWS : END_ROWS;
   const title = (
     <span
       style={{
@@ -76,18 +80,20 @@ export const PreviewPanel: React.FC<{
       draw={draw}
     >
       <div style={{ position: "relative" }}>
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            top: cursor * lineHeight,
-            color: C.lime,
-            fontWeight: 700,
-            opacity: 0.7 + 0.3 * Math.cos((frame / BEAT) * Math.PI),
-          }}
-        >
-          {line("row.cursor")}
-        </div>
+        {part === "start" ? (
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              top: cursor * lineHeight,
+              color: C.lime,
+              fontWeight: 700,
+              opacity: 0.7 + 0.3 * Math.cos((frame / BEAT) * Math.PI),
+            }}
+          >
+            {line("row.cursor")}
+          </div>
+        ) : null}
         {ids.map((id, i) => {
           const t = arrivals ? enter(frame, arrivals[i], 16) : 1;
           const left = i === 2 ? thirdSelected : 1;
@@ -96,14 +102,18 @@ export const PreviewPanel: React.FC<{
               key={id}
               style={{
                 height: lineHeight,
-                paddingLeft: font * 1.4,
+                paddingLeft: part === "start" ? font * 1.4 : 0,
                 opacity: t,
                 transform: `translate(${offsets?.[i] ?? 0}px, ${(1 - t) * 28}px)`,
               }}
             >
-              <Checkbox mark={left} />
-              {/* The TUI puts three cells between the checkbox and the row number. */}
-              <span style={{ display: "inline-block", width: "3ch" }} />
+              {part === "start" ? (
+                <>
+                  <Checkbox mark={left} />
+                  {/* The TUI puts three cells between the checkbox and the row number. */}
+                  <span style={{ display: "inline-block", width: "3ch" }} />
+                </>
+              ) : null}
               <RowText text={line(id)} quiet={left < 0.5} />
             </div>
           );
