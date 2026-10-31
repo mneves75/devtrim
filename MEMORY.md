@@ -1,6 +1,30 @@
 # Project Memory
 
-## Current production state (0.12.2)
+## Current production state (0.12.3)
+
+0.12.3 fixes `optimize --task launch-services` for macOS 27 (`lsregister -gc -r
+-f -apps local,user`, danger 3) with a contract test against the installed
+tool's `-h`, links stable 0.12.2 from the landing page, and replaces the raw
+video `npm audit` with `scripts/video-audit.py` and dated GHSA waivers. Story:
+`memory/2026-10-30.md`. Main `543ee4c17dfd3479897c5d46f6cd3ca997cab93f` (tree
+`4ae941a`), content gated at `e8f4141` (verdict WAIVED: GHSA-g3hv-75wg-m249,
+owner waiver until 2026-11-30, reused by tree). `v0.12.3-beta1` (main
+`343f393`) stopped in the hosted video gate and published nothing. Immutable
+`v0.12.3-beta2` and stable `v0.12.3` (tag object `26bd3b2`, published
+2026-10-31T12:39:57Z) carry the same ZIP (SHA-256
+`38df5156b33c5518bab864477927f3c86099fcce22088ccd1236b6b5e48796b8`). The local
+release.sh died with the session after pushing the tag; the hosted run
+(41199350646) passed, then `verify-live.sh 0.12.3` and `update-homebrew.sh
+0.12.3` ran by hand. Homebrew (tap `a3c2cb2`) upgraded to 0.12.3;
+`/opt/homebrew/bin/devtrim` is the sole visible binary (SHA-256
+`ad58f46fdc95f13727daceb864903f5e9b7b3841964876034c980f557b45285e`). Proof: all
+gates at `e8f4141` (`.scratch/verify-0.12.3/gates-e-summary.log`), autoreview
+scoped-clean, mneves-verify (Sol) round 3 PASS after round 2 FAIL
+(`.scratch/verify-0.12.3/sol-verify3/`). The waiver fails the video gate on
+2026-12-01 unless removed first. Not run for real: the Launch Services apply
+(it would change this Mac's database).
+
+## Previous production state (0.12.2)
 
 0.12.2 closes the 0.12.1 follow-ups the owner asked for on 2026-10-30 ("do it
 all"): bare `~` roots, the home-root warning, `applied: false` when the journal
