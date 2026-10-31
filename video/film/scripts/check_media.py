@@ -90,7 +90,7 @@ def main() -> int:
         checks.append(("frame count", len(stamps) == expected, f"{len(stamps)} (expected {expected})"))
         steps = {(b - a) * base for a, b in zip(stamps, stamps[1:])}
         even = steps == {Fraction(1, options.fps)}
-        seen = ", ".join(f"{step * 1000:.2f} ms" for step in sorted(steps)[:4]) or "none"
+        seen = ", ".join(f"{float(step) * 1000:.2f} ms" for step in sorted(steps)[:4]) or "none"
         checks.append(("constant frame interval", even, f"{len(steps)} distinct step(s): {seen}"))
     total = float(info["format"]["duration"])
     checks.append(("duration", abs(total - options.seconds) <= 1 / options.fps + 1e-3, f"{total:.3f} s"))
