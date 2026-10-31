@@ -163,9 +163,7 @@ export const PreviewTitle: React.FC<{ text: string }> = ({ text }) => (
       <span
         key={i}
         style={
-          part === "danger-5"
-            ? { color: C.amber, fontWeight: 700 }
-            : undefined
+          part === "danger-5" ? { color: C.amber, fontWeight: 700 } : undefined
         }
       >
         {part}

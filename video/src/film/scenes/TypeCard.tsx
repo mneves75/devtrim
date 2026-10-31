@@ -90,7 +90,7 @@ export const Approve: React.FC = () => {
         <Words
           text={second}
           frame={frame}
-          start={BEAT + 24}
+          start={BEAT + 12}
           stagger={18}
           style={{ ...style, color: C.lime }}
         />

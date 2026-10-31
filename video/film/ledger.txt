@@ -106,3 +106,25 @@ Round 4 — new independent reviewer: another pass (round 3 b, c fixed)
 - Rebuild: facts 38/38, contrast unchanged, mix -18.5/-3.0 -> -13.9 LUFS /
   -1.4 dBTP, music alone -> -13.9 / -1.5, sync 45 events worst 7.0 ms,
   freezedetect none.
+
+Round 5 — new independent reviewer (the last allowed round): ship
+- Rechecks: round 4 (a) phone text FIXED (warning about 11 px capitals,
+  plan line 14.2 px, headers 14.4-14.6 px, caption 14.8 px, painted glyph
+  heights on a 390 px reduction); (b) the returned inventory holds about
+  0.85 s before its first row leaves, FIXED; (c) words 0.30 s apart with a
+  0.60 s pause between phrases, FIXED. All 37 transcribed strings are exact
+  substrings of facts; freezedetect none; -13.9 LUFS / -1.2 dBTP; cuts at
+  2.5, 5.5, 7.5, 10, 13, 15, 16, 18.5 and 21 s on audio accents.
+- Minor: "Approve once." fully formed about 0.52-0.59 s before its exit.
+  Fix after the verdict: the second phrase starts 0.2 s earlier (pause
+  between phrases 0.4 s, still longer than the 0.3 s between words).
+  Measured on the muted render (lime pixels of the phrase at 95% or more of
+  their maximum): 0.62 s on the reviewed film, 0.85 s after the fix.
+- Muted test 4: every planned beat retold (name and promise, four findings
+  with sizes, the evidence, j j Space leaving one out with 7.8 -> 7.2 GB,
+  the exact plan, the Trash and its recovery, the brew command and URL).
+  Open, minor: "danger-5" is never explained; no full paths in the close-
+  ups; no total freed is shown after the move.
+- Final build: facts 38/38, contrast min 7.06:1, mix -18.5/-3.0 -> -13.9
+  LUFS / -1.4 dBTP, music alone -> -13.9 / -1.5, sync 45 events worst
+  7.0 ms, freezedetect none.
