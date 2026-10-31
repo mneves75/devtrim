@@ -90,8 +90,10 @@ export const Approve: React.FC = () => {
         <Words
           text={second}
           frame={frame}
-          start={BEAT + 12}
+          // The last phrase of the scene eases in faster, so it reads whole for 0.7 s before it leaves.
+          start={BEAT + 9}
           stagger={18}
+          ease={12}
           style={{ ...style, color: C.lime }}
         />
       </div>

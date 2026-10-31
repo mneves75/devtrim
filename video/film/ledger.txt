@@ -156,3 +156,13 @@ Fix review — autoreview (GPT-6.1 Sol) of 8c17f19: two P2.
   unchanged after loudness; a click can leave the mix while staying in its
   stem only if that loop diverges. Named follow-up: correlate the decoded
   delivery with mix-norm.wav if the mix stage ever stops being one function.
+
+Acceptance verifier (GPT-6.1 Sol, frozen criteria) on 9e61912: FAIL on one
+criterion. "Approve once." reached 99% full-bright coverage at 14.267 s and
+began to fade at 14.883 s: 0.617 s, under 0.7 s (my 95% coverage measure had
+read 0.85 s; the easing tail and the word's settling motion account for the
+gap). Fix: that phrase eases in over 12 frames instead of 20 and starts 3
+frames earlier (pause between phrases 0.35 s, still longer than the 0.30 s
+between words). From the easing curves, 99% opacity now holds 0.84 s
+(0.71 s before). Build: facts fresh 38/38, -13.9 LUFS / -1.4 dBTP, sync 45 +
+14 cues, one 16.67 ms frame interval. Poster unchanged in content (frame 0).

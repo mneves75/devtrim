@@ -227,11 +227,13 @@ export const Words: React.FC<{
   frame: number;
   start: number;
   stagger?: number;
+  /** Frames each word takes to ease in. */
+  ease?: number;
   style?: React.CSSProperties;
-}> = ({ text, frame, start, stagger = 5, style }) => (
+}> = ({ text, frame, start, stagger = 5, ease = 20, style }) => (
   <div style={{ fontFamily: SANS, ...style }}>
     {text.split(" ").map((word, i) => {
-      const t = enter(frame, start + i * stagger, 20);
+      const t = enter(frame, start + i * stagger, ease);
       return (
         <span
           key={i}
