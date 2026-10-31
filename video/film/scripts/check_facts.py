@@ -7,9 +7,10 @@ copy.json maps each on-screen line id to {"text", "fact"}; the text must be a
 substring of that fact's text, exactly as written. The source directories are
 then scanned: every `line("id")` call must name an id in copy.json, and every
 id in copy.json must appear in the source as a quoted string (a `line()` call
-or a literal list the source maps through `line()`). ESLint's react/jsx-no-literals (video/eslint.config.mjs)
-refuses any string written straight into the film's JSX, so nothing bypasses
-copy.json. Exits 1 on any failure.
+or a literal list the source maps through `line()`). ESLint's
+react/jsx-no-literals (video/eslint.config.mjs) refuses any string written
+straight into the film's JSX, so nothing bypasses copy.json. Exits 1 on any
+failure.
 """
 
 from __future__ import annotations

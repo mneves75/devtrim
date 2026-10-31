@@ -234,6 +234,14 @@ def main():
             (b"p", ("Review every finding", "payments-api")),
         ])
         frames["tui:results"] = block("purge preview", columns, to_html(results, 3, rows))
+        select = capture(binary, home, rows, 84, [
+            (None, ("Scan everything",)),
+            (b"p", ("Review every finding", "payments-api")),
+            (b"jj ", ("Left out of this plan",)),
+        ])
+        # Only the preview block (title row to its bottom border), as wide as the confirmation
+        # it stacks above, which carries the rest of the story.
+        frames["tui:select"] = block("one finding left out", 84, to_html(select, 3, 12))
         confirm = capture(binary, home, rows, 84, [
             (None, ("Scan everything",)),
             (b"p", ("Review every finding", "payments-api")),

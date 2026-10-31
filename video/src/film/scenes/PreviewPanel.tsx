@@ -49,7 +49,7 @@ export const PreviewPanel: React.FC<{
       width={PANEL.width}
       font={PANEL.font}
       lineHeight={PANEL.lineHeight}
-      rows={6}
+      rows={5}
       draw={draw}
     >
       <div style={{ position: "relative" }}>
@@ -74,14 +74,14 @@ export const PreviewPanel: React.FC<{
               style={{
                 height: PANEL.lineHeight,
                 paddingLeft: PANEL.font * 1.4,
-                opacity: t * (0.45 + 0.55 * left),
+                opacity: t,
                 transform: `translate(${offsets?.[i] ?? 0}px, ${(1 - t) * 28}px)`,
               }}
             >
               <Checkbox mark={left} />
               {/* The TUI puts three cells between the checkbox and the row number. */}
               <span style={{ display: "inline-block", width: "3ch" }} />
-              <RowText text={line(id)} />
+              <RowText text={line(id)} quiet={left < 0.5} />
             </div>
           );
         })}

@@ -170,6 +170,41 @@
   "link": "https://mneves75.github.io/devtrim/#why-h"
  },
  {
+  "id": "f7eaed02a",
+  "text": "│  [x]   1. danger-5   5.9 GB  TRASH    stale target artifacts  …ayments-api/target│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f3696e411",
+  "text": "│  [x]   2. danger-5   1.1 GB  TRASH    stale node_modules  …torefront/node_modules│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f00bd58da",
+  "text": "│› [ ]   3. danger-5   614 MB  TRASH    stale .next artifacts  …ev/storefront/.next│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "fb308d16f",
+  "text": "│  [x]   4. danger-5   205 MB  TRASH    stale .turbo artifacts  …/storefront/.turbo│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f4ca6e479",
+  "text": "│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config│",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "fa8f87204",
+  "text": "│                                                                                  │",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
+  "id": "f0c9d1baf",
+  "text": "└──────────────────────────────────────────────────────────────────────────────────┘",
+  "link": "https://mneves75.github.io/devtrim/#why-h"
+ },
+ {
   "id": "f3bd3e9e5",
   "text": "│ ┌ Confirm exact plan ──────────────────────────────────────────────────────────┐t│",
   "link": "https://mneves75.github.io/devtrim/#why-h"
@@ -260,18 +295,8 @@
   "link": "https://mneves75.github.io/devtrim/#why-h"
  },
  {
-  "id": "fa8f87204",
-  "text": "│                                                                                  │",
-  "link": "https://mneves75.github.io/devtrim/#why-h"
- },
- {
-  "id": "f0c9d1baf",
-  "text": "└──────────────────────────────────────────────────────────────────────────────────┘",
-  "link": "https://mneves75.github.io/devtrim/#why-h"
- },
- {
-  "id": "f209e9e7a",
-  "text": "The confirmation names the exact plan, how many findings it covers and how many you left out.",
+  "id": "f83d9af6f",
+  "text": "Space leaves a finding out and empties its box; the confirmation then names the exact plan, how many findings it covers and how many you left out.",
   "link": "https://mneves75.github.io/devtrim/#why-h"
  },
  {

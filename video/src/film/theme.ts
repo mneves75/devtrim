@@ -7,9 +7,8 @@ import timing from "../../film/timing.json";
 export const C = theme.colours;
 export { timing };
 
-/** A border or a dimmed surface is ink at low opacity, not a seventh colour. */
-export const RULE = "rgba(239,239,236,0.24)";
-export const SURFACE = "rgba(239,239,236,0.035)";
+/** Borders use the muted colour itself, so the palette stays at six. */
+export const RULE = theme.colours.muted;
 
 export const SANS =
   'system-ui, -apple-system, "SF Pro Display", ui-sans-serif, sans-serif';
@@ -29,8 +28,8 @@ export const PANEL = {
   left: 120,
   top: 150,
   width: 1680,
-  font: 28,
-  lineHeight: 44,
+  font: 42,
+  lineHeight: 64,
 };
 /** Nothing important below this line: the mobile player covers the bottom 8%. */
 export const SAFE_BOTTOM = Math.floor(timing.height * 0.92);

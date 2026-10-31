@@ -1,16 +1,6 @@
 import React from "react";
 import { AbsoluteFill, interpolate } from "remotion";
-import {
-  C,
-  EASE_IN,
-  MONO,
-  PANEL,
-  RULE,
-  SANS,
-  SURFACE,
-  enter,
-  line,
-} from "./theme";
+import { C, EASE_IN, MONO, PANEL, RULE, SANS, enter, line } from "./theme";
 
 /** A scene's background and its slow push. */
 export const Stage: React.FC<{
@@ -86,7 +76,6 @@ export const Panel: React.FC<{
         position: "absolute",
         inset: `${lineHeight / 2}px 0 0 0`,
         border: `2px solid ${RULE}`,
-        backgroundColor: SURFACE,
         clipPath: `inset(0 ${(1 - draw) * 100}% 0 0)`,
       }}
     />
@@ -119,44 +108,50 @@ export const Panel: React.FC<{
 const ROW_TOKENS =
   /(danger-5|TRASH|stale [^…]+?(?= {2})|…\S+|\d+(?:\.\d+)? [GM]B)/;
 
-/** One finding row, coloured the way the TUI colours it. */
-export const RowText: React.FC<{ text: string }> = ({ text }) => (
-  <>
-    {text.split(ROW_TOKENS).map((part, i) => {
-      if (part === "danger-5")
-        return (
-          <span key={i} style={{ color: C.amber }}>
-            {part}
-          </span>
-        );
-      if (part === "TRASH")
-        return (
-          <span key={i} style={{ color: C.lime }}>
-            {part}
-          </span>
-        );
-      if (part.startsWith("stale "))
-        return (
-          <span key={i} style={{ fontWeight: 700 }}>
-            {part}
-          </span>
-        );
-      if (part.startsWith("…"))
-        return (
-          <span key={i} style={{ color: C.muted }}>
-            {part}
-          </span>
-        );
-      if (/^\d/.test(part) && /[GM]B$/.test(part))
-        return (
-          <span key={i} style={{ fontWeight: 700 }}>
-            {part}
-          </span>
-        );
-      return <span key={i}>{part}</span>;
-    })}
-  </>
-);
+/** One finding row, coloured the way the TUI colours it; a row left out reads muted. */
+export const RowText: React.FC<{ text: string; quiet?: boolean }> = ({
+  text,
+  quiet = false,
+}) =>
+  quiet ? (
+    <span style={{ color: C.muted }}>{text}</span>
+  ) : (
+    <>
+      {text.split(ROW_TOKENS).map((part, i) => {
+        if (part === "danger-5")
+          return (
+            <span key={i} style={{ color: C.amber }}>
+              {part}
+            </span>
+          );
+        if (part === "TRASH")
+          return (
+            <span key={i} style={{ color: C.lime }}>
+              {part}
+            </span>
+          );
+        if (part.startsWith("stale "))
+          return (
+            <span key={i} style={{ fontWeight: 700 }}>
+              {part}
+            </span>
+          );
+        if (part.startsWith("…"))
+          return (
+            <span key={i} style={{ color: C.muted }}>
+              {part}
+            </span>
+          );
+        if (/^\d/.test(part) && /[GM]B$/.test(part))
+          return (
+            <span key={i} style={{ fontWeight: 700 }}>
+              {part}
+            </span>
+          );
+        return <span key={i}>{part}</span>;
+      })}
+    </>
+  );
 
 /** The box title of the preview, with the danger level picked out. */
 export const PreviewTitle: React.FC<{ text: string }> = ({ text }) => (

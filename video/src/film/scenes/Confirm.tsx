@@ -12,7 +12,6 @@ import {
   sceneLength,
 } from "../theme";
 import { Keycap, Stage } from "../ui";
-import { PreviewPanel } from "./PreviewPanel";
 
 const keys = keyCues("confirm");
 const at = (key: string) => keys.filter((k) => k.key === key)[0].at;
@@ -32,18 +31,6 @@ export const Confirm: React.FC = () => {
   const caretOn = Math.floor(frame / (BEAT / 2)) % 2 === 0;
   return (
     <Stage scale={1.06 + (0.03 * frame) / length} origin="50% 45%">
-      <div
-        style={{
-          position: "absolute",
-          left: 120,
-          top: 160,
-          opacity: 0.22,
-          transform: "scale(1.1)",
-          transformOrigin: "0 0",
-        }}
-      >
-        <PreviewPanel frame={frame} cursor={2} thirdSelected={0} narrowed={1} />
-      </div>
       <div
         style={{
           position: "absolute",
@@ -77,15 +64,6 @@ export const Confirm: React.FC = () => {
           <span style={{ display: "inline-block", width: "1ch" }} />
           <span
             style={{
-              color: C.lime,
-              fontWeight: 700,
-              opacity: frame >= y ? 1 : 0,
-            }}
-          >
-            {line("key.y")}
-          </span>
-          <span
-            style={{
               display: "inline-block",
               width: "0.6ch",
               height: FONT,
@@ -97,7 +75,7 @@ export const Confirm: React.FC = () => {
           />
         </div>
         <div
-          style={{ color: C.muted, fontSize: FONT * 0.72, opacity: lineIn(5) }}
+          style={{ color: C.muted, fontSize: FONT * 0.84, opacity: lineIn(5) }}
         >
           {line("confirm.footer")}
         </div>

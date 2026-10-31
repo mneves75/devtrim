@@ -1,7 +1,16 @@
 import React from "react";
 import { useCurrentFrame } from "remotion";
-import { C, PANEL, drift, keyCues, line, move, sceneLength } from "../theme";
-import { Keycap, Panel, Stage } from "../ui";
+import {
+  C,
+  PANEL,
+  SANS,
+  drift,
+  keyCues,
+  line,
+  move,
+  sceneLength,
+} from "../theme";
+import { Keycap, Stage } from "../ui";
 import { PreviewPanel } from "./PreviewPanel";
 
 const keys = keyCues("select");
@@ -28,24 +37,25 @@ export const Select: React.FC = () => {
           narrowed={1 - left}
         />
       </div>
-      <div style={{ position: "absolute", left: PANEL.left, top: 470 }}>
-        <Panel
-          title={null}
-          width={PANEL.width}
-          font={PANEL.font}
-          lineHeight={PANEL.lineHeight}
-          rows={2}
-        >
-          <div>{line("footer.keys")}</div>
-          <div style={{ color: C.muted }}>{line("footer.status")}</div>
-        </Panel>
+      <div
+        style={{
+          position: "absolute",
+          left: PANEL.left,
+          top: 560,
+          fontFamily: SANS,
+          fontSize: 52,
+          fontWeight: 600,
+          color: C.muted,
+        }}
+      >
+        {line("footer.status")}
       </div>
       <div
         style={{
           position: "absolute",
           left: 0,
           right: 0,
-          top: 720,
+          top: 740,
           display: "flex",
           justifyContent: "center",
           gap: 40,

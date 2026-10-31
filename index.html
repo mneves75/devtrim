@@ -98,6 +98,17 @@
       </article>
     </div>
     <figure class="why-fig" data-reveal>
+<!-- tui:select -->
+<div class="term-frame" data-cols="84" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: one finding left out"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
+│  [x]   1. danger-5   5.9 GB  TRASH    <span class="b">stale target artifacts</span>  …ayments-api/target│
+│  [x]   2. danger-5   1.1 GB  TRASH    <span class="b">stale node_modules</span>  …torefront/node_modules│
+│<span class="b">› </span>[ ]   3. danger-5   614 MB  TRASH    <span class="b">stale .next artifacts</span>  …ev/storefront/.next│
+│  [x]   4. danger-5   205 MB  TRASH    <span class="b">stale .turbo artifacts</span>  …/storefront/.turbo│
+│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config│
+│                                                                                  │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘</code></pre></div>
+<!-- /tui:select -->
 <!-- tui:confirm -->
 <div class="term-frame" data-cols="84" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: confirm exact plan"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
 │ ┌ Confirm exact plan ──────────────────────────────────────────────────────────┐t│
@@ -121,7 +132,7 @@
 │                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────┘</code></pre></div>
 <!-- /tui:confirm -->
-      <figcaption>The confirmation names the exact plan, how many findings it covers and how many you left out.</figcaption>
+      <figcaption>Space leaves a finding out and empties its box; the confirmation then names the exact plan, how many findings it covers and how many you left out.</figcaption>
     </figure>
   </div>
 </section>

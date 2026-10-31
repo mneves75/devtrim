@@ -32,19 +32,19 @@
   "fact": "f1f036753"
  },
  "row.1": {
-  "text": "1. danger-5   5.9 GB  TRASH    stale target artifacts  …vtrim-demo/dev/payments-api/target",
+  "text": "1. danger-5   5.9 GB  TRASH    stale target artifacts",
   "fact": "f1f036753"
  },
  "row.2": {
-  "text": "2. danger-5   1.1 GB  TRASH    stale node_modules  …vtrim-demo/dev/storefront/node_modules",
+  "text": "2. danger-5   1.1 GB  TRASH    stale node_modules",
   "fact": "f02770cad"
  },
  "row.3": {
-  "text": "3. danger-5   614 MB  TRASH    stale .next artifacts  …p/devtrim-demo/dev/storefront/.next",
+  "text": "3. danger-5   614 MB  TRASH    stale .next artifacts",
   "fact": "fd3861e8e"
  },
  "row.4": {
-  "text": "4. danger-5   205 MB  TRASH    stale .turbo artifacts  …devtrim-demo/dev/storefront/.turbo",
+  "text": "4. danger-5   205 MB  TRASH    stale .turbo artifacts",
   "fact": "f4b798dd9"
  },
  "see": {
@@ -70,10 +70,6 @@
  "details.evidence": {
   "text": "repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml",
   "fact": "fda6b1f04"
- },
- "footer.keys": {
-  "text": "Space pick · A none · a apply · s permanent · b back · ? keys",
-  "fact": "f2519fb5d"
  },
  "footer.status": {
   "text": "Space leaves one out; a applies the rest",

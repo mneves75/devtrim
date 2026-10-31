@@ -22,3 +22,29 @@ Round 0 — self-check before the first review (build of 2026-10-31)
 - Self-review of contact sheets: Details evidence line overflowed its panel
   (font 46 -> 40, panel moved to top 330); pad-only sections nearly inaudible
   (pad 0.16 -> 0.34, final pad 0.2 -> 0.5, kick 0.9 -> 0.7).
+
+Round 1 — independent reviewer (fresh context, sees only film.mp4 and
+facts.json): another pass
+- Blocker: the left-out row `[ ]   3. danger-5 ...` and the typed `> y` were
+  no verbatim fact. Fix: the landing page now carries the real TUI screen
+  after j, j, Space (scripts/site/frames.py, `tui:select`, rendered from the
+  binary), so `› [ ]   3. danger-5   614 MB  TRASH    stale .next artifacts`
+  is fact f00bd58da; the TUI approves on y with no echo (src/tui.rs,
+  ConfirmationKind::YesNo), so the echo was untrue and is gone.
+- Major: terminal rows about 6 px on a 390 px phone. Fix: rows end before the
+  path (a prefix is still a substring of the fact; Details shows the full
+  path), panel type 28 -> 42 px; the 28 px key footer is gone and its status
+  line is a 52 px caption; the confirmation footer 32 -> 37 px.
+- Major: the left-out row dimmed to about 4.0:1. Fix: no dimming; the row is
+  the muted colour at full opacity, 9.50:1.
+- Minor: `> y` held under 0.7 s. Fixed by removing the untrue echo.
+- Minor: more than six colours. Fix: borders are the muted colour, panels
+  have no fill, the dimmed preview behind the confirmation is gone.
+- Muted test 1: the viewer retold every planned beat (name and promise; four
+  findings with danger, size and path before anything moves; the evidence
+  for one; j, j, Space leaving one out with the total going 7.8 -> 7.2 GB;
+  the exact plan; the Trash, recoverable; the brew command and URL).
+  Confusions: small terminal text, "danger-5" unexplained, the red warning
+  reading harsher than "recoverable", no launch command after install.
+- Rebuild: facts 34/34 (footer keys line dropped), contrast unchanged,
+  mix -18.5/-3.0 -> -13.9 LUFS / -1.4 dBTP, sync worst 7.0 ms.
