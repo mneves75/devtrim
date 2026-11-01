@@ -361,6 +361,7 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
   conditioned_lines = gates.keys + ["rustup toolchain install 1.88.0 --profile minimal"]
   lines = ->(step) { step["run"].to_s.lines.map(&:strip).reject(&:empty?) }
   errors = []
+  policy_job = nil
   # Each gate step and the scope step keep a fixed shape, so a shell template, working
   # directory, defaults block or environment cannot change what they execute while their
   # command lines stay put. This guards honest edits, not a hostile one: this script runs
@@ -408,6 +409,7 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
     holders = doc.fetch("jobs").flat_map { |job_name, job| (job["steps"] || []).select { |s| lines.(s).include?(policy_line) }.map { |s| [job_name, s] } }
     errors << "#{label} must run release-policy.sh in exactly one step" unless holders.size == 1
     holders.each do |job_name, step|
+      policy_job = job_name if label == "release"
       errors << "#{label} step #{step["name"]} must start with: #{policy_line}" unless lines.(step).first == policy_line
       extra = step.keys - %w[name run shell]
       errors << "#{label} policy step #{step["name"]} sets #{extra.join(", ")}" if extra.any?
@@ -498,6 +500,9 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
       gate_jobs << job_name
     end
   end
+  # The job running this policy is a gate too: publish must wait for it, or the policy
+  # could move to a side job that a release never waits on.
+  gate_jobs << policy_job if policy_job
   if jobs.key?("publish")
     chain = closure.("publish")
     (gate_jobs - chain).each { |name| errors << "release publish does not depend on gate job #{name}" }
