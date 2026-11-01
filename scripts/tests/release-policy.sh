@@ -398,7 +398,21 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
         extra = given.keys - %w[fetch-depth persist-credentials]
         errors << "#{label} job #{job_name} checkout sets #{extra.join(", ")}" if extra.any?
         errors << "#{label} job #{job_name} checkout keeps credentials" unless given["persist-credentials"] == false
+        extra = s.keys - %w[name uses with]
+        errors << "#{label} job #{job_name} checkout step sets #{extra.join(", ")}" if extra.any?
       end
+    end
+    # The step running this policy keeps a fixed shape too, and runs it first, so no shell
+    # template, condition, directory or earlier line can turn the check into a no-op.
+    policy_line = "bash scripts/tests/release-policy.sh"
+    holders = doc.fetch("jobs").flat_map { |job_name, job| (job["steps"] || []).select { |s| lines.(s).include?(policy_line) }.map { |s| [job_name, s] } }
+    errors << "#{label} must run release-policy.sh in exactly one step" unless holders.size == 1
+    holders.each do |job_name, step|
+      errors << "#{label} step #{step["name"]} must start with: #{policy_line}" unless lines.(step).first == policy_line
+      extra = step.keys - %w[name run shell]
+      errors << "#{label} policy step #{step["name"]} sets #{extra.join(", ")}" if extra.any?
+      errors << "#{label} policy step #{step["name"]} must run in bash" if step.key?("shell") && step["shell"] != "bash"
+      errors << "#{label} job #{job_name} runs the policy under a condition" if doc["jobs"][job_name].key?("if")
     end
     errors << "#{label} workflow sets an environment" if doc.key?("env")
     doc.fetch("jobs").each do |job_name, job|
