@@ -415,6 +415,12 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
         errors << "#{label} gate step #{step["name"]} must run in bash" if step.key?("shell") && step["shell"] != "bash"
       end
       errors << "#{label} job #{job_name} runs a gate under a job environment" if gated && job.key?("env")
+      # A job running a gate keeps a fixed shape too: no container, services, matrix,
+      # environment or reusable workflow changes where or whether its steps run.
+      if gated
+        extra = job.keys - %w[name needs runs-on timeout-minutes permissions steps]
+        errors << "#{label} job #{job_name} runs a gate but sets #{extra.join(", ")}" if extra.any?
+      end
     end
   end
 
