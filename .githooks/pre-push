@@ -39,7 +39,10 @@ while read -r _local_ref local_sha _remote_ref _remote_sha; do
   tree=$(mktemp -d "${TMPDIR:-/tmp}/devtrim-pre-push.XXXXXX")
   git worktree add --quiet --detach "$tree" "$local_sha"
   status=0
-  (cd "$tree" && CARGO_TARGET_DIR="$repo_root/target" checks) || status=$?
+  # A hook inherits GIT_DIR and the index of the clone it runs in; clear them (githooks(5)) so
+  # Git inside the throwaway worktree reads that worktree, as shellcheck-tracked.sh needs.
+  # shellcheck disable=SC2046 # the names are Git's own fixed list, split on purpose
+  (unset $(git rev-parse --local-env-vars) && cd "$tree" && CARGO_TARGET_DIR="$repo_root/target" checks) || status=$?
   git worktree remove --force "$tree"
   [ "$status" -eq 0 ] || exit "$status"
 done
