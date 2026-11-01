@@ -136,9 +136,10 @@ jobs:
           rust=true
           if [[ "$EVENT" == pull_request ]]; then
             # Exit 0: nothing outside the list changed. 1: something did. Any other exit, an
-            # unknown base among them, leaves both gates on.
+            # unknown base among them, leaves both gates on. The head is the event's own commit,
+            # which no step can override, never whatever a checkout input selected.
             rc=0
-            git diff --quiet --no-renames "$BASE...HEAD" -- . "${skip[@]}" || rc=$?
+            git diff --quiet --no-renames "$BASE...$GITHUB_SHA" -- . "${skip[@]}" || rc=$?
             if [[ "$rc" == 0 ]]; then rust=false; fi
           fi
           echo "rust=$rust" >> "$GITHUB_OUTPUT"

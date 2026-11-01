@@ -339,9 +339,10 @@ skip=(':(exclude,glob)*.md' ':(exclude)LICENSE' ':(exclude)index.html'
 rust=true
 if [[ "$EVENT" == pull_request ]]; then
   # Exit 0: nothing outside the list changed. 1: something did. Any other exit, an
-  # unknown base among them, leaves both gates on.
+  # unknown base among them, leaves both gates on. The head is the event's own commit,
+  # which no step can override, never whatever a checkout input selected.
   rc=0
-  git diff --quiet --no-renames "$BASE...HEAD" -- . "${skip[@]}" || rc=$?
+  git diff --quiet --no-renames "$BASE...$GITHUB_SHA" -- . "${skip[@]}" || rc=$?
   if [[ "$rc" == 0 ]]; then rust=false; fi
 fi
 echo "rust=$rust" >> "$GITHUB_OUTPUT"
@@ -362,8 +363,10 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
   errors = []
   # Each gate step and the scope step keep a fixed shape, so a shell template, working
   # directory, defaults block or environment cannot change what they execute while their
-  # command lines stay put. This guards honest edits; an earlier step that rewrites the
-  # runner (GITHUB_PATH, an installed stub) is beyond a static check and left for review to catch.
+  # command lines stay put. This guards honest edits, not a hostile one: this script runs
+  # from the same tree as the workflows and can be edited with them, and an earlier step
+  # that rewrites the runner (GITHUB_PATH, an installed stub) is beyond a static check.
+  # Workflow changes stay a review obligation.
   gate_step_keys = { "CI" => %w[name if run], "release" => %w[name run shell] }
   simple_line = %r{\A(set -euo pipefail|cargo build --locked|rustup toolchain install 1\.88\.0 --profile minimal|rustup run 1\.88\.0 cargo test --locked --all-targets --all-features|python3 (-B )?scripts/[A-Za-z0-9_/.-]+\.py( [A-Za-z0-9_/.-]+)*)\z}
   { "CI" => ci, "release" => release }.each do |label, doc|
@@ -402,6 +405,13 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
     extra = scope.keys - %w[name id shell env run]
     errors << "CI scope step sets #{extra.join(", ")}" if extra.any?
     errors << "CI verify job sets an environment" if verify.key?("env")
+    # The scope diffs the event commit, and every CI job checks that commit out.
+    ci.fetch("jobs").each do |job_name, job|
+      (job["steps"] || []).select { |s| s["uses"].to_s.start_with?("actions/checkout@") }.each do |s|
+        extra = (s["with"] || {}).keys - %w[fetch-depth persist-credentials]
+        errors << "CI job #{job_name} checkout sets #{extra.join(", ")}" if extra.any?
+      end
+    end
     want_env = { "EVENT" => "${{ github.event_name }}", "BASE" => "${{ github.event.pull_request.base.sha }}" }
     errors << "CI scope step environment differs from the pinned one" unless scope["env"] == want_env
   end
