@@ -320,32 +320,117 @@ require_fixed "$release_workflow" '78d0d9db2f4dfd964fd313e70e92571c6d4204243ad8f
 require_fixed "$release_workflow" '847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2'
 require_fixed "$ci_workflow" '78931ae35ebac33d9a72b3aecea3e3d62d6e5b0b718ac8bbedfbe69d68421e41'
 require_fixed "$ci_workflow" 'ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39'
-# CI may scope planted violations and MSRV to pull requests that change what they read; the
-# release gate never scopes them, and CI scopes nothing else.
-if grep -Fq 'steps.scope' "$release_workflow"; then
-  fail "the release gate must run planted violations and MSRV unconditionally"
+# CI may scope planted violations and MSRV on pull requests; the release gate never scopes
+# them, and CI scopes nothing else. Parsed, never matched as text: a gate is found by the
+# command it runs, not by its step's name, and a condition is bound to the step or job
+# carrying it. The scope step itself is pinned, so it cannot be rewritten to skip always.
+scope_run=$(cat <<'SCOPE'
+set -euo pipefail
+# A push to main runs every gate. A pull request skips planted violations and MSRV
+# only when every path it changes is documentation, site, media or lint rules, which
+# no Cargo target reads; any other path, new ones included, runs them. Git matches
+# the pathspecs itself, so no file name is parsed, and --no-renames counts both sides
+# of a move.
+skip=(':(exclude,glob)*.md' ':(exclude)LICENSE' ':(exclude)index.html'
+  ':(exclude)MANUAL.html' ':(exclude)styles.css' ':(exclude)favicon.svg'
+  ':(exclude)docs/' ':(exclude)media/' ':(exclude)video/' ':(exclude)design/'
+  ':(exclude)assets/' ':(exclude)plans/' ':(exclude)memory/' ':(exclude)agent_planning/'
+  ':(exclude)rules/' ':(exclude)rule-tests/' ':(exclude)sgconfig.yml' ':(exclude).githooks/')
+rust=true
+if [[ "$EVENT" == pull_request ]]; then
+  # Exit 0: nothing outside the list changed. 1: something did. Any other exit, an
+  # unknown base among them, leaves both gates on.
+  rc=0
+  git diff --quiet --no-renames "$BASE...HEAD" -- . "${skip[@]}" || rc=$?
+  if [[ "$rc" == 0 ]]; then rust=false; fi
 fi
-# Parsed, not line-counted: a condition is bound to the step or job that carries it.
-scope_errors=$(ruby -ryaml -e '
-  allowed = ["Planted violations", "MSRV tests"]
+echo "rust=$rust" >> "$GITHUB_OUTPUT"
+echo "planted violations and MSRV run: $rust"
+SCOPE
+)
+scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
+  ci = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  release = YAML.safe_load(File.read(ARGV[1]), aliases: false)
   wanted = "steps.scope.outputs.rust == \x27true\x27"
-  doc = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  gates = {
+    "python3 scripts/tests/planted-violations.py" => "planted violations",
+    "rustup run 1.88.0 cargo test --locked --all-targets --all-features" => "MSRV",
+  }
+  # The only lines a conditioned CI step may hold.
+  conditioned_lines = gates.keys + ["rustup toolchain install 1.88.0 --profile minimal"]
+  lines = ->(step) { step["run"].to_s.lines.map(&:strip).reject(&:empty?) }
   errors = []
-  doc.fetch("jobs").each do |job_name, job|
-    errors << "CI job #{job_name} carries a condition" if job.key?("if")
-    (job["steps"] || []).each do |step|
-      name = step["name"].to_s
-      if allowed.include?(name)
-        errors << "CI step #{name} must run under exactly: if: #{wanted}" unless step["if"] == wanted
-      elsif step.key?("if")
-        errors << "CI step #{name} carries a condition; only #{allowed.join(" and ")} may"
+  { "CI" => ci, "release" => release }.each do |label, doc|
+    doc.fetch("jobs").each do |job_name, job|
+      errors << "#{label} job #{job_name} suppresses failure" if job.key?("continue-on-error")
+      (job["steps"] || []).each do |step|
+        errors << "#{label} step #{step["name"]} suppresses failure" if step.key?("continue-on-error")
       end
     end
   end
-  found = doc.fetch("jobs").values.flat_map { |j| (j["steps"] || []).map { |s| s["name"] } }
-  allowed.each { |n| errors << "CI lacks the #{n} step" unless found.count(n) == 1 }
+
+  verify = ci.fetch("jobs")["verify"] || {}
+  steps = verify["steps"] || []
+  scope_at = steps.index { |s| s["id"] == "scope" }
+  if scope_at.nil?
+    errors << "CI verify job lacks the scope step"
+  else
+    scope = steps[scope_at]
+    errors << "CI scope step differs from the pinned script" unless scope["run"].to_s.chomp == ENV.fetch("SCOPE_RUN").chomp
+    errors << "CI scope step must run in bash" unless scope["shell"] == "bash"
+    want_env = { "EVENT" => "${{ github.event_name }}", "BASE" => "${{ github.event.pull_request.base.sha }}" }
+    errors << "CI scope step environment differs from the pinned one" unless scope["env"] == want_env
+  end
+  counts = Hash.new(0)
+  ci.fetch("jobs").each do |job_name, job|
+    errors << "CI job #{job_name} carries a condition" if job.key?("if")
+    (job["steps"] || []).each_with_index do |step, index|
+      held = lines.(step)
+      hits = gates.keys & held
+      hits.each { |command| counts[command] += 1 }
+      if hits.any?
+        errors << "CI step #{step["name"]} runs a scoped gate outside the verify job" unless job_name == "verify"
+        errors << "CI step #{step["name"]} must run under exactly: if: #{wanted}" unless step["if"] == wanted
+        errors << "CI step #{step["name"]} runs before the scope step" if job_name == "verify" && scope_at && index < scope_at
+      end
+      if step.key?("if")
+        extra = held - conditioned_lines
+        errors << "CI step #{step["name"]} carries a condition but runs more than a scoped gate: #{extra.first}" if extra.any? || hits.empty?
+      end
+    end
+  end
+  gates.each { |command, label| errors << "CI must run #{label} in exactly one step" unless counts[command] == 1 }
+
+  jobs = release.fetch("jobs")
+  closure = lambda do |start|
+    seen = Set.new
+    stack = [start]
+    until stack.empty?
+      name = stack.pop
+      next if seen.include?(name) || !jobs.key?(name)
+      seen << name
+      stack.concat(Array(jobs[name]["needs"]))
+    end
+    seen
+  end
+  gate_jobs = Set.new
+  gates.each do |command, label|
+    holders = jobs.flat_map { |job_name, job| (job["steps"] || []).select { |s| lines.(s).include?(command) }.map { |s| [job_name, s] } }
+    errors << "release runs no #{label} step" if holders.empty?
+    holders.each do |job_name, step|
+      errors << "release step #{step["name"]} runs #{label} under a condition" if step.key?("if")
+      gate_jobs << job_name
+    end
+  end
+  if jobs.key?("publish")
+    chain = closure.("publish")
+    (gate_jobs - chain).each { |name| errors << "release publish does not depend on gate job #{name}" }
+    chain.each { |name| errors << "release job #{name} carries a condition, so publish could run without its gates" if jobs[name].key?("if") }
+  else
+    errors << "release lacks the publish job"
+  end
   puts errors
-' "$ci_workflow") || fail "cannot parse CI conditions"
+' "$ci_workflow" "$release_workflow") || fail "cannot parse workflow conditions"
 [[ -z "$scope_errors" ]] || fail "$scope_errors"
 for workflow in "$ci_workflow" "$release_workflow"; do
   require_fixed "$workflow" "grep -Fqx 'ast-grep 0.45.0'"

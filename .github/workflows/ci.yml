@@ -123,14 +123,23 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          # A push to main runs every gate. A pull request runs planted violations and MSRV
-          # only when it changes what they read; a diff that cannot be computed runs them.
+          # A push to main runs every gate. A pull request skips planted violations and MSRV
+          # only when every path it changes is documentation, site, media or lint rules, which
+          # no Cargo target reads; any other path, new ones included, runs them. Git matches
+          # the pathspecs itself, so no file name is parsed, and --no-renames counts both sides
+          # of a move.
+          skip=(':(exclude,glob)*.md' ':(exclude)LICENSE' ':(exclude)index.html'
+            ':(exclude)MANUAL.html' ':(exclude)styles.css' ':(exclude)favicon.svg'
+            ':(exclude)docs/' ':(exclude)media/' ':(exclude)video/' ':(exclude)design/'
+            ':(exclude)assets/' ':(exclude)plans/' ':(exclude)memory/' ':(exclude)agent_planning/'
+            ':(exclude)rules/' ':(exclude)rule-tests/' ':(exclude)sgconfig.yml' ':(exclude).githooks/')
           rust=true
-          if [[ "$EVENT" == pull_request ]] && changed=$(git diff --no-renames --name-only "$BASE...HEAD" --); then
-            # --no-renames lists both sides of a move, so a file moved out of a watched path counts.
-            if ! grep -Eq '^(src/|tests/|Cargo\.(toml|lock)$|\.cargo/|rust-toolchain\.toml$|scripts/tests/planted-violations\.py$|\.github/workflows/ci\.yml$)' <<<"$changed"; then
-              rust=false
-            fi
+          if [[ "$EVENT" == pull_request ]]; then
+            # Exit 0: nothing outside the list changed. 1: something did. Any other exit, an
+            # unknown base among them, leaves both gates on.
+            rc=0
+            git diff --quiet --no-renames "$BASE...HEAD" -- . "${skip[@]}" || rc=$?
+            if [[ "$rc" == 0 ]]; then rust=false; fi
           fi
           echo "rust=$rust" >> "$GITHUB_OUTPUT"
           echo "planted violations and MSRV run: $rust"
