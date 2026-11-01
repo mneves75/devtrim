@@ -274,10 +274,23 @@ fn eval_history_limit_selects_newest_results_across_rotation() {
         vec!["/fixture/new", "/fixture/middle"],
         "PV eval/history-limit"
     );
+    // A cut list says so: an apply of more items than the limit must not read
+    // as if its oldest items never ran.
+    assert_eq!(document["truncated"], true, "history-truncated");
     successful(&output);
+    let human = run(&sandbox, &["history", "--limit", "2"]);
+    successful(&human);
+    let human_text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        human_text.contains("showing the newest 2 entries; older entries exist"),
+        "history-truncated-human: {human_text}"
+    );
     let all = run(&sandbox, &["history", "--limit", "3", "--json"]);
     assert_eq!(json(&all)["entries"][2]["target"], "/fixture/old");
+    assert_eq!(json(&all)["truncated"], false, "history-complete");
     successful(&all);
+    let whole = run(&sandbox, &["history", "--limit", "3"]);
+    assert!(!String::from_utf8_lossy(&whole.stdout).contains("older entries exist"));
     unchanged(&before, &sandbox);
 }
 

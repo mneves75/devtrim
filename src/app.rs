@@ -262,6 +262,7 @@ fn run_history(limit: Option<usize>, json: bool) -> Result<ExitCode> {
             let history = journal::History {
                 entries: Vec::new(),
                 errors: vec![format!("{error:#}")],
+                truncated: false,
             };
             journal::print_json(&history)?;
             return Ok(ExitCode::from(1));

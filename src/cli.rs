@@ -101,7 +101,7 @@ pub enum Command {
     },
     /// Show recent apply results from the local write-ahead journal
     History {
-        /// Maximum entries to show (clamped to 1..=1000)
+        /// Maximum entries to show (default 20, clamped to 1..=1000)
         #[arg(long)]
         limit: Option<usize>,
     },

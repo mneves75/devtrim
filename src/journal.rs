@@ -182,6 +182,9 @@ fn error_excerpt(message: String) -> String {
 pub(crate) struct History {
     pub entries: Vec<JournalRecord>,
     pub errors: Vec<String>,
+    /// Older entries exist beyond the requested limit. Without it an apply of
+    /// more items than the limit reads as if its oldest items never ran.
+    pub truncated: bool,
 }
 
 #[must_use = "dropping a journal attempt leaves it recorded as interrupted"]
@@ -656,11 +659,14 @@ fn read_history_with_lock_observer(
     limit: usize,
     lock_acquired: impl FnMut(),
 ) -> Result<History> {
-    read_history_snapshot(
-        path,
-        HistoryScope::Tail(limit.clamp(1, 1000)),
-        lock_acquired,
-    )
+    // One entry past the limit is read only to learn whether older ones exist.
+    let limit = limit.clamp(1, 1000);
+    let mut history = read_history_snapshot(path, HistoryScope::Tail(limit + 1), lock_acquired)?;
+    if history.entries.len() > limit {
+        history.entries.truncate(limit);
+        history.truncated = true;
+    }
+    Ok(history)
 }
 
 fn read_history_snapshot(
@@ -672,6 +678,7 @@ fn read_history_snapshot(
         return Ok(History {
             entries: Vec::new(),
             errors: Vec::new(),
+            truncated: false,
         });
     };
 
@@ -823,7 +830,11 @@ fn parse_history_snapshot(files: Vec<HistoryFile>, scope: HistoryScope) -> Resul
             "skipped {malformed} malformed apply journal line(s)"
         )]
     };
-    Ok(History { entries, errors })
+    Ok(History {
+        entries,
+        errors,
+        truncated: false,
+    })
 }
 
 fn history_limit_reached(entries: &[JournalRecord], limit: Option<usize>) -> bool {
@@ -1048,6 +1059,12 @@ pub(crate) fn print_human(history: &History) -> std::io::Result<()> {
             output.push_str(&format!("    {}\n", crate::report::terminal_safe(error)));
         }
     }
+    if history.truncated {
+        output.push_str(&format!(
+            "showing the newest {} entries; older entries exist (devtrim history --limit <n>, up to 1000)\n",
+            history.entries.len()
+        ));
+    }
     crate::report::write_stdout(output.as_bytes())
 }
 
@@ -1067,6 +1084,7 @@ fn format_utc_timestamp(ts: u64) -> String {
 struct HistoryResponse<'a> {
     operation: &'static str,
     entries: &'a [JournalRecord],
+    truncated: bool,
     errors: &'a [String],
 }
 
@@ -1074,6 +1092,7 @@ pub(crate) fn print_json(history: &History) -> std::io::Result<()> {
     let response = HistoryResponse {
         operation: "history",
         entries: &history.entries,
+        truncated: history.truncated,
         errors: &history.errors,
     };
     let mut output = serde_json::to_string_pretty(&response)
