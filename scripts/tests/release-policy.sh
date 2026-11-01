@@ -389,7 +389,11 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
     # Every checkout takes the event commit, so the gates test what was pushed or
     # tagged, and keeps no credential.
     doc.fetch("jobs").each do |job_name, job|
-      (job["steps"] || []).select { |s| s["uses"].to_s.start_with?("actions/checkout@") }.each do |s|
+      # GitHub resolves an action by owner and repository in any case, and with an
+      # optional path, so every spelling naming the checkout repository counts, and only
+      # the canonical one is accepted.
+      (job["steps"] || []).select { |s| s["uses"].to_s.match?(%r{\Aactions/checkout(/|@)}i) }.each do |s|
+        errors << "#{label} job #{job_name} checkout is not spelled actions/checkout@<sha>: #{s["uses"]}" unless s["uses"].match?(/\Aactions\/checkout@[0-9a-f]{40}\z/)
         given = s["with"] || {}
         extra = given.keys - %w[fetch-depth persist-credentials]
         errors << "#{label} job #{job_name} checkout sets #{extra.join(", ")}" if extra.any?
