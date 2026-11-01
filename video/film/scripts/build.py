@@ -48,6 +48,8 @@ def main() -> int:
 
     step("facts fresh", py + [str(SCRIPTS / "facts.py"), "--check", str(FILM / "facts.json"), SITE, *map(str, PAGES)])
     step("facts trace", py + [str(SCRIPTS / "check_facts.py"), str(FILM / "facts.json"), str(FILM / "copy.json"), "src"])
+    # ESLint's react/jsx-no-literals is what keeps every on-screen string in copy.json.
+    step("lint", ["npm", "run", "lint"])
     step("text contrast", py + [str(SCRIPTS / "check_contrast.py"), str(FILM / "theme.json")])
     step("music", py + [str(SCRIPTS / "music.py"), str(FILM / "timing.json"), str(out)])
     step("loudness: mix", py + [str(SCRIPTS / "loudness.py"), str(out / "mix.wav"), str(out / "mix-norm.wav")])

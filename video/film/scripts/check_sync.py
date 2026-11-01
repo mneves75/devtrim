@@ -58,15 +58,15 @@ def flux(samples: array.array) -> list[float]:
     return [0.0] + [max(0.0, envelope[i] - envelope[i - 1]) for i in range(1, len(envelope))]
 
 
-def strongest_attack(strength: list[float], t: float, window: float = 0.05) -> float:
-    """Time of the strongest attack within ±window of t."""
+def strongest_attack(strength: list[float], t: float, window: float = 0.05) -> tuple[float, float]:
+    """Time and strength of the strongest attack within ±window of t."""
     lo = max(1, int((t - window) * RATE / HOP))
     hi = min(len(strength) - 1, int((t + window) * RATE / HOP))
     best = max(range(lo, hi + 1), key=lambda i: strength[i])
     # The envelope rises fastest in the hop whose window has just taken the attack in,
     # so the attack sits at that window's end, not its start (measured: start reads 6 ms early).
     # decode() prefixes WINDOW samples of silence, so the window's end is best * HOP in film time.
-    return best * HOP / RATE
+    return best * HOP / RATE, strength[best]
 
 
 def rms_dbfs(samples: array.array, start: float, end: float) -> float:
@@ -140,9 +140,16 @@ def main() -> int:
     if final:
         expected.append(final["beat"] * beat)
     strength = flux(decode(sys.argv[2]))
+    # Silence has a strongest hop too; below this floor there is no attack to time. Absolute, not
+    # relative to the loudest hit: the final chord dwarfs a kick (kicks measure about 0.55 here).
+    floor = 0.1
     worst = 0.0
     for t in sorted(expected):
-        delta = strongest_attack(strength, t) - t
+        at, onset = strongest_attack(strength, t)
+        if onset < floor:
+            failures.append(f"no attack near {t:.3f} s (onset {onset:.3f}, floor {floor:.3f})")
+            continue
+        delta = at - t
         worst = max(worst, abs(delta))
         if abs(delta) > frame:
             failures.append(f"strongest attack near {t:.3f} s is {delta * 1000:+.1f} ms away")
