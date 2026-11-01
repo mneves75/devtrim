@@ -375,9 +375,13 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
     "CI" => { "push" => { "branches" => ["main"] }, "pull_request" => nil },
     "release" => { "push" => { "tags" => ["v*"] } },
   }
-  { "CI" => ci, "release" => release }.each do |label, doc|
+  # The key is read as written before YAML turns on, true and yes alike into true; GitHub
+  # requires the literal `on`.
+  raw_keys = ARGV.first(2).map { |path| Psych.parse(File.read(path)).root.children.each_slice(2).map { |key, _| key.value } }
+  { "CI" => ci, "release" => release }.each_with_index do |(label, doc), index|
     triggers = doc.key?(true) ? doc[true] : doc["on"]
-    errors << "#{label} workflow triggers differ from the pinned ones" unless triggers == want_triggers[label] && (doc.keys & [true, "on"]).size == 1
+    spelled_on = raw_keys[index].count("on") == 1 && doc.keys.count { |k| k == true || k == "on" } == 1
+    errors << "#{label} workflow triggers differ from the pinned ones" unless triggers == want_triggers[label] && spelled_on
     errors << "#{label} workflow sets defaults" if doc.key?("defaults")
     errors << "#{label} workflow sets an environment" if doc.key?("env")
     doc.fetch("jobs").each do |job_name, job|
