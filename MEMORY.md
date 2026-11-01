@@ -1,14 +1,29 @@
 # Project Memory
 
-## Site since 0.12.3: the demo film (2026-10-31)
+## Current production state (0.12.4)
 
-The landing page's video is a new 24 s film built by `video/film/scripts/build.py`
-(facts freshness and trace, contrast, music, loudness, render, mux, media,
-sync, contact sheets); `media/demo.mp4` equals its `film.mp4`. Five review
-rounds, the last `ship`; story in `memory/2026-10-31.md`, numbers in
-`video/film/ledger.txt`. Not a binary release: CHANGELOG 0.12.4 Unreleased.
+0.12.4 ships no binary behaviour change: the 24 s demo film and its checks
+(#68, #69), the CI changes (#70 faster runs, #71 PR-scoped planted
+violations and MSRV, #72 the policy's own step and checkout keys pinned) and
+the version bump (#73). Story: `memory/2026-10-31.md`, `memory/2026-11-01.md`.
+Main `ef4c96e815b5f7e23094084b9bf22ed51e391f12` (tree `96d2b07`), content gated
+at `29b0eb7` (staging and production WAIVED: GHSA-g3hv-75wg-m249, owner waiver
+until 2026-11-30, reused by tree; independent acceptance Sol pass). Immutable
+`v0.12.4-beta1` (tag object `eba1f1b`) and stable `v0.12.4` (tag object
+`6ca77c2`, published 2026-11-01T19:27:46Z) carry the same ZIP (SHA-256
+`1a8d195505f568a51cc81aeac744595d5fd7c29ff882678a53bab35a9bceba28`); both pass
+`verify-live.sh`. Homebrew (tap `eff4a93`) upgraded 0.12.3 -> 0.12.4;
+`/opt/homebrew/bin/devtrim` is the sole visible binary (SHA-256
+`06fd8a5dc175bd24c7a6393dc4d76bff90c6505099bd4d8ba80af397bb13faef`). Proof: all
+local gates on `d2cfeae`/`29b0eb7` (`.scratch/verify-0.12.4/`), Sol autoreview
+scoped-clean on the branch and on `ef4c96e`, CI 41331531967 (PR) and
+41333554115 (main). The first beta attempt stopped at "commit all changes"
+before tagging (untracked `docs/handoffs/`, parked in `.scratch` for the run).
+Follow-ups: HN4 (release policy step outside `publish`'s needs closure is
+accepted), HN3 (runner rewrite stays a review obligation); the GHSA waiver
+fails the video gate on 2026-12-01 unless removed first.
 
-## Current production state (0.12.3)
+## Previous production state (0.12.3)
 
 0.12.3 fixes `optimize --task launch-services` for macOS 27 (`lsregister -gc -r
 -f -apps local,user`, danger 3) with a contract test against the installed
