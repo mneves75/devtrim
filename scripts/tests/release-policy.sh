@@ -377,12 +377,25 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
   }
   # The key is read as written before YAML turns on, true and yes alike into true; GitHub
   # requires the literal `on`.
-  raw_keys = ARGV.first(2).map { |path| Psych.parse(File.read(path)).root.children.each_slice(2).map { |key, _| key.value } }
+  # An explicit tag (`!!bool on`) is not the string GitHub looks for either.
+  raw_keys = ARGV.first(2).map do |path|
+    Psych.parse(File.read(path)).root.children.each_slice(2).map { |key, _| key.tag.nil? && key.plain ? key.value : nil }
+  end
   { "CI" => ci, "release" => release }.each_with_index do |(label, doc), index|
     triggers = doc.key?(true) ? doc[true] : doc["on"]
     spelled_on = raw_keys[index].count("on") == 1 && doc.keys.count { |k| k == true || k == "on" } == 1
     errors << "#{label} workflow triggers differ from the pinned ones" unless triggers == want_triggers[label] && spelled_on
     errors << "#{label} workflow sets defaults" if doc.key?("defaults")
+    # Every checkout takes the event commit, so the gates test what was pushed or
+    # tagged, and keeps no credential.
+    doc.fetch("jobs").each do |job_name, job|
+      (job["steps"] || []).select { |s| s["uses"].to_s.start_with?("actions/checkout@") }.each do |s|
+        given = s["with"] || {}
+        extra = given.keys - %w[fetch-depth persist-credentials]
+        errors << "#{label} job #{job_name} checkout sets #{extra.join(", ")}" if extra.any?
+        errors << "#{label} job #{job_name} checkout keeps credentials" unless given["persist-credentials"] == false
+      end
+    end
     errors << "#{label} workflow sets an environment" if doc.key?("env")
     doc.fetch("jobs").each do |job_name, job|
       errors << "#{label} job #{job_name} suppresses failure" if job.key?("continue-on-error")
@@ -417,13 +430,6 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
     extra = scope.keys - %w[name id shell env run]
     errors << "CI scope step sets #{extra.join(", ")}" if extra.any?
     errors << "CI verify job sets an environment" if verify.key?("env")
-    # The scope diffs the event commit, and every CI job checks that commit out.
-    ci.fetch("jobs").each do |job_name, job|
-      (job["steps"] || []).select { |s| s["uses"].to_s.start_with?("actions/checkout@") }.each do |s|
-        extra = (s["with"] || {}).keys - %w[fetch-depth persist-credentials]
-        errors << "CI job #{job_name} checkout sets #{extra.join(", ")}" if extra.any?
-      end
-    end
     want_env = { "EVENT" => "${{ github.event_name }}", "BASE" => "${{ github.event.pull_request.base.sha }}" }
     errors << "CI scope step environment differs from the pinned one" unless scope["env"] == want_env
   end
