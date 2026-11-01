@@ -7,17 +7,19 @@ repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 zero=0000000000000000000000000000000000000000
 
+# Chained with &&: `set -e` does not apply inside a function called where its status is
+# tested (`checks || status=$?`), so each failure must end the chain itself.
 checks() {
-  cmp -s AGENTS.md CLAUDE.md || {
+  if ! cmp -s AGENTS.md CLAUDE.md; then
     echo "pre-push: AGENTS.md and CLAUDE.md differ" >&2
     return 1
-  }
-  rustup run 1.98.1 cargo fmt --all -- --check
-  rustup run 1.98.1 cargo clippy --locked --all-targets --all-features -- -D warnings
-  ast-grep test --skip-snapshot-tests
-  ast-grep scan --config sgconfig.yml
-  scripts/tests/shellcheck-tracked.sh
-  python3 -B scripts/site/csp.py --check index.html MANUAL.html
+  fi
+  rustup run 1.98.1 cargo fmt --all -- --check &&
+    rustup run 1.98.1 cargo clippy --locked --all-targets --all-features -- -D warnings &&
+    ast-grep test --skip-snapshot-tests &&
+    ast-grep scan --config sgconfig.yml &&
+    scripts/tests/shellcheck-tracked.sh &&
+    python3 -B scripts/site/csp.py --check index.html MANUAL.html
 }
 
 head=$(git rev-parse HEAD)
