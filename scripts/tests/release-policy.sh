@@ -365,6 +365,7 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
   # command lines stay put. This guards honest edits; an earlier step that rewrites the
   # runner (GITHUB_PATH, an installed stub) is beyond a static check and left for review to catch.
   gate_step_keys = { "CI" => %w[name if run], "release" => %w[name run shell] }
+  simple_line = %r{\A(set -euo pipefail|cargo build --locked|rustup toolchain install 1\.88\.0 --profile minimal|rustup run 1\.88\.0 cargo test --locked --all-targets --all-features|python3 (-B )?scripts/[A-Za-z0-9_/.-]+\.py( [A-Za-z0-9_/.-]+)*)\z}
   { "CI" => ci, "release" => release }.each do |label, doc|
     errors << "#{label} workflow sets defaults" if doc.key?("defaults")
     errors << "#{label} workflow sets an environment" if doc.key?("env")
@@ -376,6 +377,11 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
         errors << "#{label} step #{step["name"]} suppresses failure" if step.key?("continue-on-error")
         next unless (gates.keys & lines.(step)).any?
         gated = true
+        # Every line a simple command from a closed set: no condition, early exit or list
+        # operator can make the step succeed without running its gate.
+        lines.(step).reject { |l| l.match?(simple_line) }.each do |l|
+          errors << "#{label} gate step #{step["name"]} holds a line that is not a simple command: #{l}"
+        end
         extra = step.keys - gate_step_keys[label]
         errors << "#{label} gate step #{step["name"]} sets #{extra.join(", ")}" if extra.any?
         errors << "#{label} gate step #{step["name"]} must run in bash" if step.key?("shell") && step["shell"] != "bash"
