@@ -360,12 +360,27 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
   conditioned_lines = gates.keys + ["rustup toolchain install 1.88.0 --profile minimal"]
   lines = ->(step) { step["run"].to_s.lines.map(&:strip).reject(&:empty?) }
   errors = []
+  # Each gate step and the scope step keep a fixed shape, so a shell template, working
+  # directory, defaults block or environment cannot change what they execute while their
+  # command lines stay put. This guards honest edits; an earlier step that rewrites the
+  # runner (GITHUB_PATH, an installed stub) is beyond a static check and left for review to catch.
+  gate_step_keys = { "CI" => %w[name if run], "release" => %w[name run shell] }
   { "CI" => ci, "release" => release }.each do |label, doc|
+    errors << "#{label} workflow sets defaults" if doc.key?("defaults")
+    errors << "#{label} workflow sets an environment" if doc.key?("env")
     doc.fetch("jobs").each do |job_name, job|
       errors << "#{label} job #{job_name} suppresses failure" if job.key?("continue-on-error")
+      errors << "#{label} job #{job_name} sets defaults" if job.key?("defaults")
+      gated = false
       (job["steps"] || []).each do |step|
         errors << "#{label} step #{step["name"]} suppresses failure" if step.key?("continue-on-error")
+        next unless (gates.keys & lines.(step)).any?
+        gated = true
+        extra = step.keys - gate_step_keys[label]
+        errors << "#{label} gate step #{step["name"]} sets #{extra.join(", ")}" if extra.any?
+        errors << "#{label} gate step #{step["name"]} must run in bash" if step.key?("shell") && step["shell"] != "bash"
       end
+      errors << "#{label} job #{job_name} runs a gate under a job environment" if gated && job.key?("env")
     end
   end
 
@@ -378,6 +393,9 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
     scope = steps[scope_at]
     errors << "CI scope step differs from the pinned script" unless scope["run"].to_s.chomp == ENV.fetch("SCOPE_RUN").chomp
     errors << "CI scope step must run in bash" unless scope["shell"] == "bash"
+    extra = scope.keys - %w[name id shell env run]
+    errors << "CI scope step sets #{extra.join(", ")}" if extra.any?
+    errors << "CI verify job sets an environment" if verify.key?("env")
     want_env = { "EVENT" => "${{ github.event_name }}", "BASE" => "${{ github.event.pull_request.base.sha }}" }
     errors << "CI scope step environment differs from the pinned one" unless scope["env"] == want_env
   end
