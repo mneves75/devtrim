@@ -369,7 +369,15 @@ scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
   # Workflow changes stay a review obligation.
   gate_step_keys = { "CI" => %w[name if run], "release" => %w[name run shell] }
   simple_line = %r{\A(set -euo pipefail|cargo build --locked|rustup toolchain install 1\.88\.0 --profile minimal|rustup run 1\.88\.0 cargo test --locked --all-targets --all-features|python3 (-B )?scripts/[A-Za-z0-9_/.-]+\.py( [A-Za-z0-9_/.-]+)*)\z}
+  # Triggers pinned whole: a path, branch, tag or type filter would keep a workflow, gates and
+  # all, from starting. YAML 1.1 reads the bare `on` key as true.
+  want_triggers = {
+    "CI" => { "push" => { "branches" => ["main"] }, "pull_request" => nil },
+    "release" => { "push" => { "tags" => ["v*"] } },
+  }
   { "CI" => ci, "release" => release }.each do |label, doc|
+    triggers = doc.key?(true) ? doc[true] : doc["on"]
+    errors << "#{label} workflow triggers differ from the pinned ones" unless triggers == want_triggers[label] && (doc.keys & [true, "on"]).size == 1
     errors << "#{label} workflow sets defaults" if doc.key?("defaults")
     errors << "#{label} workflow sets an environment" if doc.key?("env")
     doc.fetch("jobs").each do |job_name, job|
