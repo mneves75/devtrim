@@ -3,7 +3,17 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/handoffs/**'
+      - 'docs/specs/**'
+      - 'memory/**'
+      - 'MEMORY.md'
   pull_request:
+    paths-ignore:
+      - 'docs/handoffs/**'
+      - 'docs/specs/**'
+      - 'memory/**'
+      - 'MEMORY.md'
 
 permissions:
   contents: read
@@ -13,6 +23,98 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Checks that read the source but never run devtrim: they need no Mac, so they take
+  # no slot from the account's few macOS runners and run beside the macOS job.
+  checks:
+    name: portable checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+          rustup default 1.98.1
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: video/package-lock.json
+
+      - name: Install pinned npm
+        run: |
+          npm install --global npm@11.17.0 --ignore-scripts
+          npm --version | grep -Fqx '11.17.0'
+
+      - name: Install checksum-verified ast-grep and cargo-audit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "x86_64" ]] || {
+            echo "ERROR: the pinned Linux tool assets require the x86_64 ubuntu-24.04 runner"
+            exit 1
+          }
+          tool_root="${RUNNER_TEMP}/rust-tools"
+          tool_bin="$tool_root/bin"
+          mkdir -p "$tool_bin"
+          gh release download 0.45.0 -R ast-grep/ast-grep \
+            --pattern app-x86_64-unknown-linux-gnu.zip --dir "$tool_root"
+          gh release download cargo-audit/v0.22.2 -R rustsec/rustsec \
+            --pattern cargo-audit-x86_64-unknown-linux-gnu-v0.22.2.tgz --dir "$tool_root"
+          (
+            cd "$tool_root"
+            printf '%s  %s\n' 78931ae35ebac33d9a72b3aecea3e3d62d6e5b0b718ac8bbedfbe69d68421e41 \
+              app-x86_64-unknown-linux-gnu.zip | sha256sum -c -
+            printf '%s  %s\n' ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39 \
+              cargo-audit-x86_64-unknown-linux-gnu-v0.22.2.tgz | sha256sum -c -
+          )
+          unzip -q "$tool_root/app-x86_64-unknown-linux-gnu.zip" ast-grep -d "$tool_bin"
+          tar -xzf "$tool_root/cargo-audit-x86_64-unknown-linux-gnu-v0.22.2.tgz" -C "$tool_root"
+          cp "$tool_root/cargo-audit-x86_64-unknown-linux-gnu-v0.22.2/cargo-audit" "$tool_bin/cargo-audit"
+          chmod +x "$tool_bin/ast-grep" "$tool_bin/cargo-audit"
+          "$tool_bin/ast-grep" --version | grep -Fqx 'ast-grep 0.45.0'
+          "$tool_bin/cargo-audit" --version | grep -Fqx 'cargo-audit 0.22.2'
+          echo "$tool_bin" >> "$GITHUB_PATH"
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Structural lint
+        run: |
+          ast-grep test --skip-snapshot-tests
+          ast-grep scan --config sgconfig.yml
+
+      - name: Dependency audit
+        run: |
+          cargo audit
+          cargo audit --file fuzz/Cargo.lock
+
+      - name: Site and video-audit controls
+        run: |
+          python3 -B scripts/tests/pageload-controls-validation.py
+          python3 -B scripts/tests/verify-live-controls.py
+          python3 -B scripts/site/csp.py --check index.html MANUAL.html
+          python3 -B scripts/tests/csp-controls.py
+          python3 -B scripts/tests/video-audit-controls.py
+
+      - name: Video lint and dependency audit
+        working-directory: video
+        run: |
+          npm config get strict-allow-scripts | grep -Fqx 'true'
+          npm ci --strict-allow-scripts
+          python3 -B ../scripts/video-audit.py
+          npm run lint
+          npm run format:check
+          npm run build
+
   verify:
     runs-on: macos-15
     timeout-minutes: 30
@@ -28,18 +130,6 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
           rustup default 1.98.1
           rustup target add aarch64-apple-darwin
-
-      - name: Install pinned Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24.19.0
-          cache: npm
-          cache-dependency-path: video/package-lock.json
-
-      - name: Install pinned npm
-        run: |
-          npm install --global npm@11.17.0 --ignore-scripts
-          npm --version | grep -Fqx '11.17.0'
 
       - name: Install checksum-verified ShellCheck
         shell: bash
@@ -122,15 +212,6 @@ jobs:
           trufflehog git "file://$(pwd)" --results=verified,unknown --fail \
             --fail-on-scan-errors --no-update --no-color
 
-      - name: Format
-        run: cargo fmt --all -- --check
-
-      - name: Structural lint
-        run: |
-          cargo install ast-grep --locked --version 0.45.0
-          ast-grep test --skip-snapshot-tests
-          ast-grep scan --config sgconfig.yml
-
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
@@ -142,33 +223,12 @@ jobs:
           cargo build --locked
           python3 scripts/tests/tui.py target/debug/devtrim
           python3 scripts/tests/read-only-views.py target/debug/devtrim
-          python3 -B scripts/tests/pageload-controls-validation.py
-          python3 -B scripts/tests/verify-live-controls.py
-          python3 -B scripts/site/csp.py --check index.html MANUAL.html
-          python3 -B scripts/tests/csp-controls.py
-          python3 -B scripts/tests/video-audit-controls.py
           python3 scripts/tests/planted-violations.py
 
       - name: MSRV tests
         run: |
           rustup toolchain install 1.88.0 --profile minimal
           rustup run 1.88.0 cargo test --locked --all-targets --all-features
-
-      - name: Dependency audit
-        run: |
-          cargo install cargo-audit --locked --version 0.22.2
-          cargo audit
-          cargo audit --file fuzz/Cargo.lock
-
-      - name: Video lint and dependency audit
-        working-directory: video
-        run: |
-          npm config get strict-allow-scripts | grep -Fqx 'true'
-          npm ci --strict-allow-scripts
-          python3 -B ../scripts/video-audit.py
-          npm run lint
-          npm run format:check
-          npm run build
 
       - name: Locked arm64 release build
         run: |

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Lint every tracked *.sh plus the pre-commit hook without interpreting filenames as shell text.
+# Lint every tracked *.sh plus the Git hooks without interpreting filenames as shell text.
 set -eu
 
 if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
@@ -24,4 +24,4 @@ if ! git ls-files -z -- '*.sh' > "$shellcheck_paths"; then
   exit 1
 fi
 
-xargs -0 shellcheck -- .githooks/pre-commit < "$shellcheck_paths"
+xargs -0 shellcheck -- .githooks/pre-commit .githooks/pre-push < "$shellcheck_paths"

@@ -316,6 +316,18 @@ require_fixed "$ci_workflow" 'gitleaks git --redact --no-banner .'
 require_fixed "$ci_workflow" 'trufflehog git "file://$(pwd)" --results=verified,unknown --fail'
 require_fixed "$ci_workflow" '--fail-on-scan-errors --no-update --no-color'
 require_fixed "$release_workflow" 'shellcheck-v0.11.0.darwin.x86_64.tar.gz'
+require_fixed "$release_workflow" '78d0d9db2f4dfd964fd313e70e92571c6d4204243ad8f3d0abbb2ffc56e45fc6'
+require_fixed "$release_workflow" '847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2'
+require_fixed "$ci_workflow" '78931ae35ebac33d9a72b3aecea3e3d62d6e5b0b718ac8bbedfbe69d68421e41'
+require_fixed "$ci_workflow" 'ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39'
+for workflow in "$ci_workflow" "$release_workflow"; do
+  require_fixed "$workflow" "grep -Fqx 'ast-grep 0.45.0'"
+  require_fixed "$workflow" "grep -Fqx 'cargo-audit 0.22.2'"
+  # Compiling these from source took 6 min in CI and 12 on the Intel release runner.
+  if grep -Eq 'cargo install (ast-grep|cargo-audit)' "$workflow"; then
+    fail "$workflow must use the checksum-verified ast-grep and cargo-audit assets, not cargo install"
+  fi
+done
 require_fixed "$release_workflow" 'gh release download v1.7.12 -R rhysd/actionlint'
 for workflow in "$ci_workflow" "$release_workflow"; do
   require_fixed "$workflow" 'node-version: 24.19.0'
@@ -339,7 +351,7 @@ require_fixed "$shellcheck_script" 'shellcheck_paths=$(mktemp "${TMPDIR:-/tmp}/d
 require_fixed "$shellcheck_script" 'rm -f "$shellcheck_paths"'
 require_fixed "$shellcheck_script" 'trap cleanup_shellcheck_paths EXIT'
 require_fixed "$shellcheck_script" "if ! git ls-files -z -- '*.sh' > \"\$shellcheck_paths\"; then"
-require_fixed "$shellcheck_script" 'xargs -0 shellcheck -- .githooks/pre-commit < "$shellcheck_paths"'
+require_fixed "$shellcheck_script" 'xargs -0 shellcheck -- .githooks/pre-commit .githooks/pre-push < "$shellcheck_paths"'
 [[ -x "$gitleaks_control_script" ]] || fail "Gitleaks positive-control helper must be executable"
 require_fixed "$gitleaks_control_script" "'token = \"ghp_'"
 require_fixed "$gitleaks_control_script" "'dc831f20456cd20fa6'"
@@ -405,6 +417,7 @@ mkdir -p "$shellcheck_fixture/.githooks" "$shellcheck_fixture/scripts/tests" "$s
 cp "$shellcheck_script" "$shellcheck_fixture/scripts/tests/shellcheck-tracked.sh"
 chmod +x "$shellcheck_fixture/scripts/tests/shellcheck-tracked.sh"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$shellcheck_fixture/.githooks/pre-commit"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$shellcheck_fixture/.githooks/pre-push"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$shellcheck_fixture/space name.sh"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$shellcheck_fixture/-leading.sh"
 cat > "$shellcheck_bin/shellcheck" <<'EOF'
@@ -418,13 +431,13 @@ EOF
 chmod +x "$shellcheck_bin/shellcheck"
 git -C "$shellcheck_fixture" init -b main >/dev/null
 git -C "$shellcheck_fixture" add -- \
-  .githooks/pre-commit scripts/tests/shellcheck-tracked.sh 'space name.sh' '-leading.sh'
+  .githooks/pre-commit .githooks/pre-push scripts/tests/shellcheck-tracked.sh 'space name.sh' '-leading.sh'
 (
   cd "$shellcheck_fixture"
   DEVTRIM_SHELLCHECK_LOG="$shellcheck_log" PATH="$shellcheck_bin:$PATH" \
     scripts/tests/shellcheck-tracked.sh
 )
-for expected_argument in -- .githooks/pre-commit scripts/tests/shellcheck-tracked.sh 'space name.sh' '-leading.sh'; do
+for expected_argument in -- .githooks/pre-commit .githooks/pre-push scripts/tests/shellcheck-tracked.sh 'space name.sh' '-leading.sh'; do
   [[ "$(grep -Fxc -- "$expected_argument" "$shellcheck_log")" -eq 1 ]] ||
     fail "ShellCheck helper did not preserve argument: $expected_argument"
 done

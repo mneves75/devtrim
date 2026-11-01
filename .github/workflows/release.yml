@@ -145,11 +145,6 @@ jobs:
           npm install --global npm@11.17.0 --ignore-scripts
           npm --version | grep -Fqx '11.17.0'
 
-      - name: Install pinned Rust release tools
-        run: |
-          cargo install ast-grep --locked --version 0.45.0
-          cargo install cargo-audit --locked --version 0.22.2
-
       - name: Install checksum-verified release tools
         shell: bash
         env:
@@ -172,6 +167,10 @@ jobs:
             --pattern trufflehog_3.97.1_darwin_amd64.tar.gz --dir "$tool_root"
           gh release download v0.11.0 -R koalaman/shellcheck \
             --pattern shellcheck-v0.11.0.darwin.x86_64.tar.gz --dir "$tool_root"
+          gh release download 0.45.0 -R ast-grep/ast-grep \
+            --pattern app-x86_64-apple-darwin.zip --dir "$tool_root"
+          gh release download cargo-audit/v0.22.2 -R rustsec/rustsec \
+            --pattern cargo-audit-x86_64-apple-darwin-v0.22.2.tgz --dir "$tool_root"
 
           (
             cd "$tool_root"
@@ -183,6 +182,10 @@ jobs:
               trufflehog_3.97.1_darwin_amd64.tar.gz | shasum -a 256 -c -
             printf '%s  %s\n' c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51 \
               shellcheck-v0.11.0.darwin.x86_64.tar.gz | shasum -a 256 -c -
+            printf '%s  %s\n' 78d0d9db2f4dfd964fd313e70e92571c6d4204243ad8f3d0abbb2ffc56e45fc6 \
+              app-x86_64-apple-darwin.zip | shasum -a 256 -c -
+            printf '%s  %s\n' 847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2 \
+              cargo-audit-x86_64-apple-darwin-v0.22.2.tgz | shasum -a 256 -c -
           )
 
           tar -xzf "$tool_root/actionlint_1.7.12_darwin_amd64.tar.gz" -C "$tool_bin" actionlint
@@ -190,11 +193,17 @@ jobs:
           tar -xzf "$tool_root/trufflehog_3.97.1_darwin_amd64.tar.gz" -C "$tool_bin" trufflehog
           tar -xzf "$tool_root/shellcheck-v0.11.0.darwin.x86_64.tar.gz" -C "$tool_root"
           cp "$tool_root/shellcheck-v0.11.0/shellcheck" "$tool_bin/shellcheck"
-          chmod +x "$tool_bin/actionlint" "$tool_bin/gitleaks" "$tool_bin/trufflehog" "$tool_bin/shellcheck"
+          unzip -q "$tool_root/app-x86_64-apple-darwin.zip" ast-grep -d "$tool_bin"
+          tar -xzf "$tool_root/cargo-audit-x86_64-apple-darwin-v0.22.2.tgz" -C "$tool_root"
+          cp "$tool_root/cargo-audit-x86_64-apple-darwin-v0.22.2/cargo-audit" "$tool_bin/cargo-audit"
+          chmod +x "$tool_bin/actionlint" "$tool_bin/gitleaks" "$tool_bin/trufflehog" "$tool_bin/shellcheck" \
+            "$tool_bin/ast-grep" "$tool_bin/cargo-audit"
           "$tool_bin/actionlint" -version
           "$tool_bin/gitleaks" version
           "$tool_bin/trufflehog" --version
           "$tool_bin/shellcheck" --version
+          "$tool_bin/ast-grep" --version | grep -Fqx 'ast-grep 0.45.0'
+          "$tool_bin/cargo-audit" --version | grep -Fqx 'cargo-audit 0.22.2'
           scripts/tests/gitleaks-positive-control.sh "$tool_bin/gitleaks"
           echo "$tool_bin" >> "$GITHUB_PATH"
 

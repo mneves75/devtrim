@@ -17,6 +17,13 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   - **Lint:** `build.py` rendered without linting. It now runs `npm run lint` (ESLint's `react/jsx-no-literals` and the type check) before the music.
 - `scripts/tests/film-controls.py` plants one violation per check and requires each to fail. Each of the cases above failed before these fixes. It runs in `verify.sh offline`.
 
+### CI
+- A run gets faster at no cost:
+  - **Prebuilt tools:** CI and the release gate stop compiling ast-grep and cargo-audit from source, which took about 6 min per CI run and 12 min on the Intel release runner. They download the same releases as checksum-verified assets, and `release-policy.sh` pins each checksum and refuses `cargo install` of either.
+  - **Linux job:** fmt, ast-grep, `cargo audit`, the site controls and the video gate move to a `portable checks` job on `ubuntu-24.04` that runs beside the macOS `verify` job. That leaves the account's few macOS runners less work, and `verify` was waiting up to 42 min for one.
+  - **Notes skip CI:** changes that touch only `docs/handoffs/`, `docs/specs/`, `memory/` or `MEMORY.md` no longer start CI.
+- A `pre-push` hook runs the fast checks locally: fmt, Clippy, ast-grep, ShellCheck, CSP and the AGENTS/CLAUDE comparison. `git config core.hooksPath .githooks` enables it along with the existing `pre-commit`, which nothing enabled before.
+
 ## [0.12.3] - 2026-10-30
 
 ### Fixed
