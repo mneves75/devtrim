@@ -7,6 +7,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ### Changed
 - The landing page links the stable 0.12.4 release.
 
+### Fixed
+- `release-policy.sh` now counts the release job that runs it as a gate, so `publish` has to depend on it. Before, moving the policy step into a side job that `publish` never waits on passed the check.
+
 ## [0.12.4] - 2026-11-01
 
 ### Changed
