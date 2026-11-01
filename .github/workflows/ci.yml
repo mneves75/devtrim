@@ -115,6 +115,25 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Scope the slow Rust gates
+        id: scope
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # A push to main runs every gate. A pull request runs planted violations and MSRV
+          # only when it changes what they read; a diff that cannot be computed runs them.
+          rust=true
+          if [[ "$EVENT" == pull_request ]] && changed=$(git diff --name-only "$BASE...HEAD" --); then
+            if ! grep -Eq '^(src/|tests/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|scripts/tests/planted-violations\.py$|\.github/workflows/ci\.yml$)' <<<"$changed"; then
+              rust=false
+            fi
+          fi
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "planted violations and MSRV run: $rust"
+
       - name: Install pinned Rust
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
@@ -213,9 +232,13 @@ jobs:
           cargo build --locked
           python3 scripts/tests/tui.py target/debug/devtrim
           python3 scripts/tests/read-only-views.py target/debug/devtrim
-          python3 scripts/tests/planted-violations.py
+
+      - name: Planted violations
+        if: steps.scope.outputs.rust == 'true'
+        run: python3 scripts/tests/planted-violations.py
 
       - name: MSRV tests
+        if: steps.scope.outputs.rust == 'true'
         run: |
           rustup toolchain install 1.88.0 --profile minimal
           rustup run 1.88.0 cargo test --locked --all-targets --all-features

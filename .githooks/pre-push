@@ -22,6 +22,18 @@ checks() {
     python3 -B scripts/site/csp.py --check index.html MANUAL.html
 }
 
+# The throwaway worktree goes even when the hook is interrupted or a check fails.
+tree=
+cleanup() {
+  [ -n "$tree" ] || return 0
+  git worktree remove --force "$tree" 2>/dev/null || rmdir "$tree" 2>/dev/null || true
+  tree=
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 head=$(git rev-parse HEAD)
 checked=" "
 # Git passes one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
@@ -43,6 +55,6 @@ while read -r _local_ref local_sha _remote_ref _remote_sha; do
   # Git inside the throwaway worktree reads that worktree, as shellcheck-tracked.sh needs.
   # shellcheck disable=SC2046 # the names are Git's own fixed list, split on purpose
   (unset $(git rev-parse --local-env-vars) && cd "$tree" && CARGO_TARGET_DIR="$repo_root/target" checks) || status=$?
-  git worktree remove --force "$tree"
+  cleanup
   [ "$status" -eq 0 ] || exit "$status"
 done

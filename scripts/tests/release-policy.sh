@@ -320,6 +320,13 @@ require_fixed "$release_workflow" '78d0d9db2f4dfd964fd313e70e92571c6d4204243ad8f
 require_fixed "$release_workflow" '847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2'
 require_fixed "$ci_workflow" '78931ae35ebac33d9a72b3aecea3e3d62d6e5b0b718ac8bbedfbe69d68421e41'
 require_fixed "$ci_workflow" 'ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39'
+# CI may scope planted violations and MSRV to pull requests that change what they read; the
+# release gate never scopes them, and CI scopes nothing else.
+if grep -Fq 'steps.scope' "$release_workflow"; then
+  fail "the release gate must run planted violations and MSRV unconditionally"
+fi
+[[ "$(grep -c "if: steps.scope.outputs.rust == 'true'" "$ci_workflow")" -eq 2 && "$(grep -c '^        if:' "$ci_workflow")" -eq 2 ]] ||
+  fail "CI may scope exactly the planted-violation and MSRV steps"
 for workflow in "$ci_workflow" "$release_workflow"; do
   require_fixed "$workflow" "grep -Fqx 'ast-grep 0.45.0'"
   require_fixed "$workflow" "grep -Fqx 'cargo-audit 0.22.2'"
