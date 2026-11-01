@@ -3,17 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'docs/handoffs/**'
-      - 'docs/specs/**'
-      - 'memory/**'
-      - 'MEMORY.md'
   pull_request:
-    paths-ignore:
-      - 'docs/handoffs/**'
-      - 'docs/specs/**'
-      - 'memory/**'
-      - 'MEMORY.md'
 
 permissions:
   contents: read

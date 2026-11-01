@@ -1,18 +1,43 @@
 #!/bin/sh
-# Fast local checks before a push, so CI's 25-minute run does not discover them.
+# Fast local checks on the commits being pushed, so CI's 25-minute run does not discover them.
 # Enable once per clone: git config core.hooksPath .githooks
 set -eu
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
+zero=0000000000000000000000000000000000000000
 
-cmp -s AGENTS.md CLAUDE.md || {
-  echo "pre-push: AGENTS.md and CLAUDE.md differ" >&2
-  exit 1
+checks() {
+  cmp -s AGENTS.md CLAUDE.md || {
+    echo "pre-push: AGENTS.md and CLAUDE.md differ" >&2
+    return 1
+  }
+  rustup run 1.98.1 cargo fmt --all -- --check
+  rustup run 1.98.1 cargo clippy --locked --all-targets --all-features -- -D warnings
+  ast-grep test --skip-snapshot-tests
+  ast-grep scan --config sgconfig.yml
+  scripts/tests/shellcheck-tracked.sh
+  python3 -B scripts/site/csp.py --check index.html MANUAL.html
 }
-rustup run 1.98.1 cargo fmt --all -- --check
-rustup run 1.98.1 cargo clippy --locked --all-targets --all-features -- -D warnings
-ast-grep test --skip-snapshot-tests
-ast-grep scan --config sgconfig.yml
-scripts/tests/shellcheck-tracked.sh
-python3 -B scripts/site/csp.py --check index.html MANUAL.html
+
+head=$(git rev-parse HEAD)
+checked=" "
+# Git passes one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  # A deletion uploads no source; a commit already checked needs no second run.
+  [ "$local_sha" = "$zero" ] && continue
+  case "$checked" in *" $local_sha "*) continue ;; esac
+  checked="$checked$local_sha "
+  if [ "$local_sha" = "$head" ] && [ -z "$(git status --porcelain --untracked-files=no)" ]; then
+    checks
+    continue
+  fi
+  # The pushed commit is not the clean working tree: check that commit itself, never the
+  # unrelated edits beside it, in a throwaway worktree that shares this clone's build cache.
+  tree=$(mktemp -d "${TMPDIR:-/tmp}/devtrim-pre-push.XXXXXX")
+  git worktree add --quiet --detach "$tree" "$local_sha"
+  status=0
+  (cd "$tree" && CARGO_TARGET_DIR="$repo_root/target" checks) || status=$?
+  git worktree remove --force "$tree"
+  [ "$status" -eq 0 ] || exit "$status"
+done
