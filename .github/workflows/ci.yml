@@ -126,8 +126,9 @@ jobs:
           # A push to main runs every gate. A pull request runs planted violations and MSRV
           # only when it changes what they read; a diff that cannot be computed runs them.
           rust=true
-          if [[ "$EVENT" == pull_request ]] && changed=$(git diff --name-only "$BASE...HEAD" --); then
-            if ! grep -Eq '^(src/|tests/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|scripts/tests/planted-violations\.py$|\.github/workflows/ci\.yml$)' <<<"$changed"; then
+          if [[ "$EVENT" == pull_request ]] && changed=$(git diff --no-renames --name-only "$BASE...HEAD" --); then
+            # --no-renames lists both sides of a move, so a file moved out of a watched path counts.
+            if ! grep -Eq '^(src/|tests/|Cargo\.(toml|lock)$|\.cargo/|rust-toolchain\.toml$|scripts/tests/planted-violations\.py$|\.github/workflows/ci\.yml$)' <<<"$changed"; then
               rust=false
             fi
           fi

@@ -325,8 +325,28 @@ require_fixed "$ci_workflow" 'ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35
 if grep -Fq 'steps.scope' "$release_workflow"; then
   fail "the release gate must run planted violations and MSRV unconditionally"
 fi
-[[ "$(grep -c "if: steps.scope.outputs.rust == 'true'" "$ci_workflow")" -eq 2 && "$(grep -c '^        if:' "$ci_workflow")" -eq 2 ]] ||
-  fail "CI may scope exactly the planted-violation and MSRV steps"
+# Parsed, not line-counted: a condition is bound to the step or job that carries it.
+scope_errors=$(ruby -ryaml -e '
+  allowed = ["Planted violations", "MSRV tests"]
+  wanted = "steps.scope.outputs.rust == \x27true\x27"
+  doc = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  errors = []
+  doc.fetch("jobs").each do |job_name, job|
+    errors << "CI job #{job_name} carries a condition" if job.key?("if")
+    (job["steps"] || []).each do |step|
+      name = step["name"].to_s
+      if allowed.include?(name)
+        errors << "CI step #{name} must run under exactly: if: #{wanted}" unless step["if"] == wanted
+      elsif step.key?("if")
+        errors << "CI step #{name} carries a condition; only #{allowed.join(" and ")} may"
+      end
+    end
+  end
+  found = doc.fetch("jobs").values.flat_map { |j| (j["steps"] || []).map { |s| s["name"] } }
+  allowed.each { |n| errors << "CI lacks the #{n} step" unless found.count(n) == 1 }
+  puts errors
+' "$ci_workflow") || fail "cannot parse CI conditions"
+[[ -z "$scope_errors" ]] || fail "$scope_errors"
 for workflow in "$ci_workflow" "$release_workflow"; do
   require_fixed "$workflow" "grep -Fqx 'ast-grep 0.45.0'"
   require_fixed "$workflow" "grep -Fqx 'cargo-audit 0.22.2'"
