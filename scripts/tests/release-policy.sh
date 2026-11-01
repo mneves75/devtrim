@@ -320,6 +320,180 @@ require_fixed "$release_workflow" '78d0d9db2f4dfd964fd313e70e92571c6d4204243ad8f
 require_fixed "$release_workflow" '847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2'
 require_fixed "$ci_workflow" '78931ae35ebac33d9a72b3aecea3e3d62d6e5b0b718ac8bbedfbe69d68421e41'
 require_fixed "$ci_workflow" 'ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39'
+# CI may scope planted violations and MSRV on pull requests; the release gate never scopes
+# them, and CI scopes nothing else. Parsed, never matched as text: a gate is found by the
+# command it runs, not by its step's name, and a condition is bound to the step or job
+# carrying it. The scope step itself is pinned, so it cannot be rewritten to skip always.
+scope_run=$(cat <<'SCOPE'
+set -euo pipefail
+# A push to main runs every gate. A pull request skips planted violations and MSRV
+# only when every path it changes is documentation, site, media or lint rules, which
+# no Cargo target reads; any other path, new ones included, runs them. Git matches
+# the pathspecs itself, so no file name is parsed, and --no-renames counts both sides
+# of a move.
+skip=(':(exclude,glob)*.md' ':(exclude)LICENSE' ':(exclude)index.html'
+  ':(exclude)MANUAL.html' ':(exclude)styles.css' ':(exclude)favicon.svg'
+  ':(exclude)docs/' ':(exclude)media/' ':(exclude)video/' ':(exclude)design/'
+  ':(exclude)assets/' ':(exclude)plans/' ':(exclude)memory/' ':(exclude)agent_planning/'
+  ':(exclude)rules/' ':(exclude)rule-tests/' ':(exclude)sgconfig.yml' ':(exclude).githooks/')
+rust=true
+if [[ "$EVENT" == pull_request ]]; then
+  # Exit 0: nothing outside the list changed. 1: something did. Any other exit, an
+  # unknown base among them, leaves both gates on. The head is the event's own commit,
+  # which no step can override, never whatever a checkout input selected.
+  rc=0
+  git diff --quiet --no-renames "$BASE...$GITHUB_SHA" -- . "${skip[@]}" || rc=$?
+  if [[ "$rc" == 0 ]]; then rust=false; fi
+fi
+echo "rust=$rust" >> "$GITHUB_OUTPUT"
+echo "planted violations and MSRV run: $rust"
+SCOPE
+)
+scope_errors=$(SCOPE_RUN="$scope_run" ruby -ryaml -rset -e '
+  ci = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  release = YAML.safe_load(File.read(ARGV[1]), aliases: false)
+  wanted = "steps.scope.outputs.rust == \x27true\x27"
+  gates = {
+    "python3 scripts/tests/planted-violations.py" => "planted violations",
+    "rustup run 1.88.0 cargo test --locked --all-targets --all-features" => "MSRV",
+  }
+  # The only lines a conditioned CI step may hold.
+  conditioned_lines = gates.keys + ["rustup toolchain install 1.88.0 --profile minimal"]
+  lines = ->(step) { step["run"].to_s.lines.map(&:strip).reject(&:empty?) }
+  errors = []
+  # Each gate step and the scope step keep a fixed shape, so a shell template, working
+  # directory, defaults block or environment cannot change what they execute while their
+  # command lines stay put. This guards honest edits, not a hostile one: this script runs
+  # from the same tree as the workflows and can be edited with them, and an earlier step
+  # that rewrites the runner (GITHUB_PATH, an installed stub) is beyond a static check.
+  # Workflow changes stay a review obligation.
+  gate_step_keys = { "CI" => %w[name if run], "release" => %w[name run shell] }
+  simple_line = %r{\A(set -euo pipefail|cargo build --locked|rustup toolchain install 1\.88\.0 --profile minimal|rustup run 1\.88\.0 cargo test --locked --all-targets --all-features|python3 (-B )?scripts/[A-Za-z0-9_/.-]+\.py( [A-Za-z0-9_/.-]+)*)\z}
+  # Triggers pinned whole: a path, branch, tag or type filter would keep a workflow, gates and
+  # all, from starting. YAML 1.1 reads the bare `on` key as true.
+  want_triggers = {
+    "CI" => { "push" => { "branches" => ["main"] }, "pull_request" => nil },
+    "release" => { "push" => { "tags" => ["v*"] } },
+  }
+  # The key is read as written before YAML turns on, true and yes alike into true; GitHub
+  # requires the literal `on`.
+  # An explicit tag (`!!bool on`) is not the string GitHub looks for either.
+  raw_keys = ARGV.first(2).map do |path|
+    Psych.parse(File.read(path)).root.children.each_slice(2).map { |key, _| key.tag.nil? && key.plain ? key.value : nil }
+  end
+  { "CI" => ci, "release" => release }.each_with_index do |(label, doc), index|
+    triggers = doc.key?(true) ? doc[true] : doc["on"]
+    spelled_on = raw_keys[index].count("on") == 1 && doc.keys.count { |k| k == true || k == "on" } == 1
+    errors << "#{label} workflow triggers differ from the pinned ones" unless triggers == want_triggers[label] && spelled_on
+    errors << "#{label} workflow sets defaults" if doc.key?("defaults")
+    # Every checkout takes the event commit, so the gates test what was pushed or
+    # tagged, and keeps no credential.
+    doc.fetch("jobs").each do |job_name, job|
+      # GitHub resolves an action by owner and repository in any case, and with an
+      # optional path, so every spelling naming the checkout repository counts, and only
+      # the canonical one is accepted.
+      (job["steps"] || []).select { |s| s["uses"].to_s.match?(%r{\Aactions/checkout(/|@)}i) }.each do |s|
+        errors << "#{label} job #{job_name} checkout is not spelled actions/checkout@<sha>: #{s["uses"]}" unless s["uses"].match?(/\Aactions\/checkout@[0-9a-f]{40}\z/)
+        given = s["with"] || {}
+        extra = given.keys - %w[fetch-depth persist-credentials]
+        errors << "#{label} job #{job_name} checkout sets #{extra.join(", ")}" if extra.any?
+        errors << "#{label} job #{job_name} checkout keeps credentials" unless given["persist-credentials"] == false
+      end
+    end
+    errors << "#{label} workflow sets an environment" if doc.key?("env")
+    doc.fetch("jobs").each do |job_name, job|
+      errors << "#{label} job #{job_name} suppresses failure" if job.key?("continue-on-error")
+      errors << "#{label} job #{job_name} sets defaults" if job.key?("defaults")
+      gated = false
+      (job["steps"] || []).each do |step|
+        errors << "#{label} step #{step["name"]} suppresses failure" if step.key?("continue-on-error")
+        next unless (gates.keys & lines.(step)).any?
+        gated = true
+        # Every line a simple command from a closed set: no condition, early exit or list
+        # operator can make the step succeed without running its gate.
+        lines.(step).reject { |l| l.match?(simple_line) }.each do |l|
+          errors << "#{label} gate step #{step["name"]} holds a line that is not a simple command: #{l}"
+        end
+        extra = step.keys - gate_step_keys[label]
+        errors << "#{label} gate step #{step["name"]} sets #{extra.join(", ")}" if extra.any?
+        errors << "#{label} gate step #{step["name"]} must run in bash" if step.key?("shell") && step["shell"] != "bash"
+      end
+      errors << "#{label} job #{job_name} runs a gate under a job environment" if gated && job.key?("env")
+      # A job running a gate keeps a fixed shape too: no container, services, matrix,
+      # environment or reusable workflow changes where or whether its steps run.
+      if gated
+        extra = job.keys - %w[name needs runs-on timeout-minutes permissions steps]
+        errors << "#{label} job #{job_name} runs a gate but sets #{extra.join(", ")}" if extra.any?
+      end
+    end
+  end
+
+  verify = ci.fetch("jobs")["verify"] || {}
+  steps = verify["steps"] || []
+  scope_at = steps.index { |s| s["id"] == "scope" }
+  if scope_at.nil?
+    errors << "CI verify job lacks the scope step"
+  else
+    scope = steps[scope_at]
+    errors << "CI scope step differs from the pinned script" unless scope["run"].to_s.chomp == ENV.fetch("SCOPE_RUN").chomp
+    errors << "CI scope step must run in bash" unless scope["shell"] == "bash"
+    extra = scope.keys - %w[name id shell env run]
+    errors << "CI scope step sets #{extra.join(", ")}" if extra.any?
+    errors << "CI verify job sets an environment" if verify.key?("env")
+    want_env = { "EVENT" => "${{ github.event_name }}", "BASE" => "${{ github.event.pull_request.base.sha }}" }
+    errors << "CI scope step environment differs from the pinned one" unless scope["env"] == want_env
+  end
+  counts = Hash.new(0)
+  ci.fetch("jobs").each do |job_name, job|
+    errors << "CI job #{job_name} carries a condition" if job.key?("if")
+    (job["steps"] || []).each_with_index do |step, index|
+      held = lines.(step)
+      hits = gates.keys & held
+      hits.each { |command| counts[command] += 1 }
+      if hits.any?
+        errors << "CI step #{step["name"]} runs a scoped gate outside the verify job" unless job_name == "verify"
+        errors << "CI step #{step["name"]} must run under exactly: if: #{wanted}" unless step["if"] == wanted
+        errors << "CI step #{step["name"]} runs before the scope step" if job_name == "verify" && scope_at && index < scope_at
+      end
+      if step.key?("if")
+        extra = held - conditioned_lines
+        errors << "CI step #{step["name"]} carries a condition but runs more than a scoped gate: #{extra.first}" if extra.any? || hits.empty?
+      end
+    end
+  end
+  gates.each { |command, label| errors << "CI must run #{label} in exactly one step" unless counts[command] == 1 }
+
+  jobs = release.fetch("jobs")
+  closure = lambda do |start|
+    seen = Set.new
+    stack = [start]
+    until stack.empty?
+      name = stack.pop
+      next if seen.include?(name) || !jobs.key?(name)
+      seen << name
+      stack.concat(Array(jobs[name]["needs"]))
+    end
+    seen
+  end
+  gate_jobs = Set.new
+  gates.each do |command, label|
+    holders = jobs.flat_map { |job_name, job| (job["steps"] || []).select { |s| lines.(s).include?(command) }.map { |s| [job_name, s] } }
+    errors << "release runs no #{label} step" if holders.empty?
+    holders.each do |job_name, step|
+      errors << "release step #{step["name"]} runs #{label} under a condition" if step.key?("if")
+      gate_jobs << job_name
+    end
+  end
+  if jobs.key?("publish")
+    chain = closure.("publish")
+    (gate_jobs - chain).each { |name| errors << "release publish does not depend on gate job #{name}" }
+    chain.each { |name| errors << "release job #{name} carries a condition, so publish could run without its gates" if jobs[name].key?("if") }
+  else
+    errors << "release lacks the publish job"
+  end
+  puts errors
+' "$ci_workflow" "$release_workflow") || fail "cannot parse workflow conditions"
+[[ -z "$scope_errors" ]] || fail "$scope_errors"
 for workflow in "$ci_workflow" "$release_workflow"; do
   require_fixed "$workflow" "grep -Fqx 'ast-grep 0.45.0'"
   require_fixed "$workflow" "grep -Fqx 'cargo-audit 0.22.2'"
