@@ -13,6 +13,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - `devtrim history` says when it cut the list. It shows the newest 20 entries, so an apply of 21 items looked as if its first item never ran. The human list now ends with a line naming the limit and how to see more, and the JSON document gains `truncated`.
 - `release-policy.sh` now counts the release job that runs it as a gate, so `publish` has to depend on it. Before, moving the policy step into a side job that `publish` never waits on passed the check.
 
+### CI
+- This release's local gates ran TruffleHog 3.99.7, Gitleaks 8.30.1, actionlint 1.7.12, ShellCheck 0.11.0, Node 26.12.1 and npm 12.2.1; the hosted run on the pinned versions is the authoritative one.
+
 ## [0.12.4] - 2026-11-01
 
 ### Changed
