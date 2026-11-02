@@ -353,6 +353,44 @@ fn eval_apply_json_reports_each_items_result() {
     drop(uv_lock);
 }
 
+/// Sizes are bytes on disk: a cache whose only file is a hole frees nothing
+/// and is not offered, though its length is 1 GiB; one written byte brings it
+/// back at the size `du` gives it.
+#[test]
+fn eval_a_cache_holding_no_blocks_is_not_offered() {
+    let sandbox = Sandbox::in_target("eval-sparse-cache");
+    let hub = sandbox.path().join(".cache/huggingface/hub");
+    write(&hub.join("model.bin"), "");
+    std::fs::File::options()
+        .write(true)
+        .open(hub.join("model.bin"))
+        .unwrap()
+        .set_len(1024 * 1024 * 1024)
+        .unwrap();
+    let preview = run(&sandbox, &["clean", "caches", "--json"]);
+    assert!(preview.status.success(), "{}", json(&preview));
+    assert!(
+        !actionable_targets(&json(&preview)).contains(&hub),
+        "a cache holding only a hole was offered: {}",
+        json(&preview)
+    );
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(hub.join("model.bin"))
+        .and_then(|file| std::os::unix::fs::FileExt::write_all_at(&file, b"x", 0))
+        .unwrap();
+    let preview = json(&run(&sandbox, &["clean", "caches", "--json"]));
+    let finding = preview["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["path"].as_str() == hub.to_str())
+        .unwrap_or_else(|| panic!("positive control: the written cache is offered: {preview}"));
+    assert_eq!(finding["size_bytes"], on_disk(&[&hub.join("model.bin")]));
+    assert!(finding["size_bytes"].as_u64().unwrap() < 1024 * 1024);
+}
+
 /// Write-ahead: when the attempt cannot be journaled, nothing is removed.
 /// Counting attempt/result pairs after a successful run cannot show this;
 /// both could have been written after the deletion.
