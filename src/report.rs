@@ -416,7 +416,7 @@ pub struct ItemResult {
 }
 
 /// One result per actionable finding, in plan order, joined to this run's
-/// journal results by the same target path or argv the journal recorded.
+/// journal results by the exact target path or argv the journal recorded.
 pub(crate) fn item_results(
     findings: &[Finding],
     records: &[crate::journal::JournalRecord],
@@ -426,9 +426,7 @@ pub(crate) fn item_results(
         .enumerate()
         .filter(|(_, finding)| finding.action.is_actionable())
         .map(|(index, finding)| {
-            let target = finding
-                .target()
-                .map(|target| target.to_string_lossy().into_owned());
+            let target = finding.target();
             let argv = finding.command_authority().map(|authority| {
                 let (program, args) = authority.parts();
                 std::iter::once(program.to_owned())
@@ -437,7 +435,11 @@ pub(crate) fn item_results(
             });
             let journaled = |record: &&crate::journal::JournalRecord| match finding.action {
                 Action::Command { .. } => argv.is_some() && record.argv == argv,
-                _ => target.is_some() && record.target == target && record.argv.is_none(),
+                _ => {
+                    target.is_some()
+                        && record.exact_target.as_deref() == target
+                        && record.argv.is_none()
+                }
             };
             let mut matched = records.iter().filter(journaled).peekable();
             let (status, error) = if matched.peek().is_none() {
@@ -838,6 +840,39 @@ mod tests {
                 (3, "not_attempted", None)
             ]
         );
+    }
+
+    #[test]
+    fn item_results_join_targets_by_exact_path_not_its_text() {
+        use std::os::unix::ffi::OsStrExt;
+        // Two names that differ only in bytes that are not UTF-8 read the
+        // same once made text, so a text join would credit the removal of the
+        // first to the second, which was never attempted.
+        let removed = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/cache\xff"));
+        let untouched = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/cache\xfe"));
+        assert_eq!(removed.to_string_lossy(), untouched.to_string_lossy());
+        let findings = [
+            Finding::new(
+                "removed",
+                Some(removed.clone()),
+                1,
+                "note",
+                1,
+                Action::Trash,
+            ),
+            Finding::new("untouched", Some(untouched), 1, "note", 1, Action::Trash),
+        ];
+        let attempt =
+            crate::journal::JournalRecord::filesystem_attempt("caches", "trash", &removed, 1);
+        let records = [crate::journal::JournalRecord::result(&attempt, &Ok(()))];
+
+        let results = item_results(&findings, &records);
+
+        let summary: Vec<_> = results
+            .iter()
+            .map(|item| (item.finding, item.status))
+            .collect();
+        assert_eq!(summary, [(0, "ok"), (1, "not_attempted")]);
     }
 
     #[test]

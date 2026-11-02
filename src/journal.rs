@@ -83,6 +83,11 @@ pub(crate) struct JournalRecord {
     /// The moved item's identity, on a `trash` record only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<TrashedIdentity>,
+    /// The exact target, kept in memory only so the apply JSON can tell this
+    /// record's item from another whose name reads the same as text; `target`
+    /// is that text, which is lossy for a name that is not UTF-8.
+    #[serde(skip)]
+    pub exact_target: Option<std::path::PathBuf>,
 }
 
 impl JournalRecord {
@@ -105,6 +110,7 @@ impl JournalRecord {
             status: None,
             error: None,
             identity: None,
+            exact_target: Some(target.to_path_buf()),
         }
     }
 
@@ -136,10 +142,11 @@ impl JournalRecord {
             status: None,
             error: None,
             identity: None,
+            exact_target: None,
         }
     }
 
-    fn result<T>(attempt: &Self, result: &Result<T>) -> Self {
+    pub(crate) fn result<T>(attempt: &Self, result: &Result<T>) -> Self {
         let mut record = attempt.clone();
         record.ts = unix_secs();
         record.phase = "result".into();
