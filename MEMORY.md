@@ -1,19 +1,38 @@
 # Project Memory
 
-## Unreleased candidate (0.12.6)
+## Current production state (0.12.6)
 
-PR #80 (`feat/app-storage-diagnostics`) adds `app-storage`, a metadata-only
-report of known WhatsApp containers and saved Screen Studio projects under
-explicit roots. Scope and acceptance: `docs/specs/app-storage/spec.md`.
-All findings are informational; this adds no deletion authority. Physical file
-identity prevents double counting through hard links, firmlinks and overlapping
-application views. Production remains 0.12.5 pending verified promotion. The owner
-authorized Astra as the different-model reviewer and the existing CI/beta release
-path on 2026-11-02. Complete independent acceptance and the deploy gate before
-merging or publishing. Evidence: the current journal and
-`.scratch/app-storage-delivery/`.
+0.12.6 adds `app-storage`, a metadata-only report of four known WhatsApp
+containers and saved Screen Studio projects under explicit roots (#80).
+All findings are informational; it reads no message contents and creates no
+cleanup authority. Scope and frozen acceptance: `docs/specs/app-storage/spec.md`.
+Source: `13ccd96b21ab3e03e85e713c19a7a83d8c52bbc1`, tree
+`456fd42cdae5db6009641dd4eb707649e1739537` (#81 synchronizes the fuzz lock).
 
-## Current production state (0.12.5)
+Immutable `v0.12.6-beta2` and stable `v0.12.6` (tag object `9a6626f`, published
+2026-11-02T21:19:44Z) carry the same ZIP, SHA-256
+`013a8d434ddf75a479a9d36b7c3891e77ecdae84e11139aff7075c87a08d54d4`.
+Both pass `verify-live.sh`. Homebrew tap
+`206e03bdca9e8dfb4a57d19ed8060320f1769955` publishes 0.12.6; the sole visible
+`/opt/homebrew/bin/devtrim` matches the beta/stable binary SHA-256
+`c4fd3fc265e72f1c787107885e0073d5d39e50a0d608265ed07a15b0a59afcf7`.
+Canonical production release and Homebrew audit/upgrade/test completed successfully.
+
+Owner-authorized Astra independent code acceptance is PASS8/8, with 147 authored
+files reconciled to full reading evidence; published-artifact acceptance is
+PASS4/4, including real binary cases, tamper rejection and three actual foreign
+device boundaries. Security gates are WAIVED solely for the existing developer
+video advisory GHSA-g3hv-75wg-m249 through 2026-11-30; no acceptance waiver.
+Exact-main CI41508214505 passed on its single retry after an isolated PTY timeout;
+no code, assertion or deadline was changed. Beta1 published nothing after its
+fuzz lock drift was caught. Both lockfiles and the actual compiler now have an
+explicit pre-tag check documented in AGENTS/CLAUDE.
+
+The landing closeout targets verified stable 0.12.6; post-merge served-byte proof
+is required before delivery. Story: `memory/2026-11-02.md`. Keep the cited receipts
+in `.scratch/app-storage-delivery/` and `.scratch/security-gate/13ccd96b21ab3e03e85e713c19a7a83d8c52bbc1/`.
+
+## Previous production state (0.12.5)
 
 0.12.5 fixes the three problems the owner reported: sizes are bytes on disk
 (allocated blocks, hard links once, as `du` counts), `devtrim history` says

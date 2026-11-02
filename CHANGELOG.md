@@ -2,6 +2,12 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [Unreleased]
+
+### Changed
+- The landing page links the verified immutable 0.12.6 release after production
+  promotion, with regenerated film facts and recorded delivery evidence.
+
 ## [0.12.6] - 2026-11-02
 
 ### Added
@@ -18,6 +24,8 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   physical identity still prevents overlapping measurements from being counted twice.
 - A foreign-device entry no longer hides same-device siblings from WhatsApp
   or Screen Studio inventory; the filesystem boundary still remains excluded.
+- The fuzz lockfile records the local release crate version, so release fuzzing
+  no longer rewrites that metadata and fails the clean-checkout gate.
 
 ### Changed
 - The landing page links the stable 0.12.5 release.
