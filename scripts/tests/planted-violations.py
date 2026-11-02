@@ -528,8 +528,8 @@ CASES = (
     Case(
         name="eval/report-history-limit",
         relative_path="src/journal.rs",
-        before="        HistoryScope::Tail(limit.clamp(1, 1000)),\n",
-        after="        HistoryScope::Tail(limit.max(1000)),\n",
+        before="    let limit = limit.clamp(1, 1000);\n",
+        after="    let limit = limit.max(1000);\n",
         tests=("eval_history_limit_selects_newest_results_across_rotation",),
         marker="PV eval/history-limit", target="eval_reports",
     ),
