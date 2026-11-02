@@ -2,14 +2,14 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.12.5] - 2026-11-01
+## [0.12.5] - 2026-11-02
 
 ### Changed
 - The landing page links the stable 0.12.4 release.
 
 ### Fixed
 - Sizes are now the space files take on disk, as `du` counts it, not their length. Removal frees blocks, so the length promised too much for a sparse file and too little for many small ones: an Xcode `Index.noindex` showed 1.05 GiB and freed 0.86 GiB, and a set of caches showed 10.68 GiB and freed 11.18 GiB. Each file now counts its allocated blocks, and a hard-linked file counts once per target. This applies to every category, the danger gate's total, `trash-empty --confirm`, `largest`, `analyze`, `dashboard`, `worktrees`, `leftovers` and `uninstall`; `icloud` still reports the length beside the allocation. On this Mac the change matches `du -sk` for every cache and DerivedData folder offered. APFS clones still count in full, and a hard-linked file whose other link lies outside the target (a pnpm store) still counts though removing it frees nothing. A cache, agent cache or installer holding no allocated blocks at all (only holes, data compressed into its metadata, or an iCloud placeholder with nothing downloaded) frees nothing locally and is no longer offered; removing an evicted installer would only have deleted its cloud copy. `trash-empty` still offers every item.
-- The apply JSON says what became of each item. It said `applied: true` with a summary, and which items went was only in the journal. It now carries `results`: one entry per actionable finding, with `ok` or `error` taken from the journaled result and `not_attempted` for an item refused before the journal, such as a uv cache in use. An apply that stops with an error keeps its `results`, since it may already have removed items.
+- The apply JSON says what became of each item. It said `applied: true` with a summary, and which items went was only in the journal. It now carries `results`: one entry per actionable finding, with `ok` or `error` taken from the journaled result and `not_attempted` for an item refused before the journal, such as a uv cache in use. An apply that stops with an error keeps its `results`, since it may already have removed items. Each result is joined to its item by the exact path, so two names that differ only in bytes that are not UTF-8, and so read the same as text, never share a result.
 - `devtrim history` says when it cut the list. It shows the newest 20 entries, so an apply of 21 items looked as if its first item never ran. The human list now ends with a line naming the limit and how to see more, and the JSON document gains `truncated`.
 - `release-policy.sh` now counts the release job that runs it as a gate, so `publish` has to depend on it. Before, moving the policy step into a side job that `publish` never waits on passed the check.
 
