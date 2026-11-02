@@ -27,7 +27,8 @@ Screen Studio projects. This is a disk inventory, not a cleanup preview.
    `node_modules`, `target`, `.build`, `.next`, `.turbo`, `.venv`, `venv`, `.cache`,
    `.app`, `.framework`, `.photoslibrary` and `.xcarchive` trees, including an
    explicit root inside one. Scope and known skips remain visible.
-5. Use allocated regular-file blocks, count hard links once across the report,
+5. Use allocated regular-file blocks, count each physical file once across the report,
+   including hard links, root aliases and overlapping application views;
    disclose APFS clone limitations and live-snapshot drift. Detail is limited to
    100 bundles; omitted measured bytes remain in an aggregate. Retained errors
    are bounded and further errors counted. Partial reads return nonzero.

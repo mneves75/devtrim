@@ -349,7 +349,8 @@ roots/ancestors and skips links, other devices, Git metadata, dependency/build
 trees, virtual environments, `.cache` and packaged apps/frameworks/photo libraries/
 archives. Its scope row names these exclusions. At most 100 bundles keep individual
 detail; an aggregate retains omitted measured bytes. Errors are bounded, disclosed
-and return nonzero. Allocated bytes count hard links once across the report;
+and return nonzero. Allocated bytes count each physical file once across the report,
+including hard links and aliases of overlapping roots;
 APFS clones can still share blocks. It is a live snapshot, never deletion authority.
 
 ### HTML disk map

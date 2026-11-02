@@ -7,8 +7,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ### Added
 - `app-storage`: metadata-only WhatsApp storage reporting, plus saved Screen
   Studio project discovery under explicit `--root` paths. Allocated bytes count
-  hard links once; partial reads return nonzero and bounded detail retains
-  omitted measured bytes. Every finding is informational and mutation flags
+  each physical file once, including aliases of overlapping roots; partial reads
+  return nonzero and bounded detail retains omitted measured bytes.
+  Every finding is informational and mutation flags
   are refused; neither media nor projects gain cleanup authority.
 
 ### Changed

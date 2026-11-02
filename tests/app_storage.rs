@@ -435,3 +435,65 @@ fn excessive_errors_are_counted_without_growing_the_report_unboundedly() {
             .contains("additional errors omitted")
     );
 }
+
+#[test]
+fn filesystem_aliases_of_a_search_root_do_not_count_the_same_blocks_twice() {
+    let sandbox = Sandbox::new("app-storage-root-alias");
+    let root = sandbox.path().join("Movies");
+    let recording = root.join("edit.screenstudio/raw");
+    write(&recording, "one project's blocks");
+    let canonical = root.canonicalize().unwrap();
+    let aliases = [
+        canonical.parent().unwrap().join("mOvIeS"),
+        Path::new("/System/Volumes/Data").join(canonical.strip_prefix("/").unwrap()),
+    ];
+    for alias in aliases {
+        if !alias.exists() {
+            // These spellings are aliases only on the corresponding macOS volume.
+            continue;
+        }
+        let output = run(
+            &sandbox,
+            &[
+                "app-storage",
+                "--root",
+                canonical.to_str().unwrap(),
+                "--root",
+                alias.to_str().unwrap(),
+                "--json",
+            ],
+        );
+        let document = json(&output);
+        assert!(output.status.success(), "{document}");
+        assert_eq!(
+            reported_bytes(&document),
+            on_disk(&[&recording]),
+            "an APFS alias duplicated a project's allocation: {document}"
+        );
+    }
+}
+
+#[test]
+fn an_explicit_studio_search_does_not_recount_files_already_in_whatsapp_storage() {
+    let sandbox = Sandbox::new("app-storage-overlapping-apps");
+    let media = sandbox
+        .path()
+        .join("Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media");
+    let recording = media.join("saved.screenstudio/raw");
+    write(&recording, "one physical allocation across both views");
+    let root = media.canonicalize().unwrap();
+    let output = run(
+        &sandbox,
+        &["app-storage", "--root", root.to_str().unwrap(), "--json"],
+    );
+    let document = json(&output);
+    assert!(output.status.success(), "{document}");
+    assert_eq!(reported_bytes(&document), on_disk(&[&recording]));
+    assert!(
+        document["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["label"] == "Screen Studio saved project")
+    );
+}

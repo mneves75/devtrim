@@ -1,6 +1,6 @@
 //! Metadata-only application storage inventory; never deletion authority.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
@@ -33,6 +33,8 @@ struct Inventory {
     errors: Vec<String>,
     omitted_errors: usize,
     usage: DiskUsage,
+    measured_files: HashSet<(u64, u64)>,
+    measured_bundles: HashSet<(u64, u64)>,
     skipped_links: usize,
     skipped_devices: usize,
     skipped_directories: usize,
@@ -265,6 +267,12 @@ impl Inventory {
                 continue;
             }
             entries.skip_current_dir();
+            if !self
+                .measured_bundles
+                .insert((metadata.dev(), metadata.ino()))
+            {
+                continue;
+            }
             let bytes = self.bundle_size(entry.path(), device);
             bundles.push(Finding::new(
                 "Screen Studio saved project",
@@ -368,6 +376,10 @@ impl Inventory {
     }
 
     fn add_file(&mut self, total: &mut u64, metadata: &std::fs::Metadata, path: &Path) {
+        // A firmlink can expose a single-link file through several root spellings.
+        if !self.measured_files.insert((metadata.dev(), metadata.ino())) {
+            return;
+        }
         match self.usage.add(metadata, path) {
             Ok(bytes) => self.add_bytes(total, bytes, path),
             Err(error) => self.error(format!("{error:#}")),

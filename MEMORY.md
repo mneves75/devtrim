@@ -1,5 +1,18 @@
 # Project Memory
 
+## Unreleased candidate (0.12.6)
+
+PR #80 (`feat/app-storage-diagnostics`) adds `app-storage`, a metadata-only
+report of known WhatsApp containers and saved Screen Studio projects under
+explicit roots. Scope and acceptance: `docs/specs/app-storage/spec.md`.
+All findings are informational; this adds no deletion authority. Physical file
+identity prevents double counting through hard links, firmlinks and overlapping
+application views. Production remains 0.12.5. Cross-model acceptance is blocked
+by unavailable Opus review access; the owner's request to skip CI/beta also
+conflicts with the existing release procedure. Do not merge or publish this
+candidate without resolving those gates. Evidence: the current journal and
+`.scratch/app-storage-delivery/`.
+
 ## Current production state (0.12.5)
 
 0.12.5 fixes the three problems the owner reported: sizes are bytes on disk
