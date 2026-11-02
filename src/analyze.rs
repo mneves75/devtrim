@@ -77,6 +77,7 @@ enum Progress {
 /// Returns the total and whether anything was unreadable.
 fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
     let mut total = 0u64;
+    let mut usage = crate::safety::DiskUsage::default();
     let mut partial = false;
     // `same_file_system` stops the walk at the mount point instead of filtering
     // afterwards. Filtering after the fact still descends: a stalled network
@@ -112,7 +113,11 @@ fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
         // still presents itself as a measurement is the shape S8 forbids. It
         // cannot happen with real file sizes, so it becomes a lower bound
         // rather than an error the explorer has no way to show.
-        match total.checked_add(metadata.len()) {
+        let Ok(bytes) = usage.add(&metadata, entry.path()) else {
+            partial = true;
+            continue;
+        };
+        match total.checked_add(bytes) {
             Some(sum) => total = sum,
             None => {
                 partial = true;
@@ -192,11 +197,16 @@ pub(crate) fn measure_children(
                 partial,
             });
         } else {
+            // A file that cannot be sized is a lower bound, never a guess.
+            let (size, partial) = match crate::safety::allocated_bytes(&metadata, &path) {
+                Ok(size) => (size, false),
+                Err(_) => (0, true),
+            };
             report_entry(Entry {
                 path,
-                size: metadata.len(),
+                size,
                 is_dir: false,
-                partial: false,
+                partial,
             });
         }
     }
@@ -643,7 +653,7 @@ fn run_json(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
                 if entry.partial {
                     "report-only; lower bound, some entries below this path were unreadable"
                 } else {
-                    "report-only; estimated logical bytes"
+                    "report-only; estimated allocated bytes"
                 },
                 1,
                 Action::Info,

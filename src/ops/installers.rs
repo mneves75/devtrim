@@ -34,7 +34,7 @@ fn has_installer_extension(path: &Path) -> bool {
         })
 }
 
-/// Age in days and logical size for an eligible installer, re-read at apply time.
+/// Age in days and allocated size for an eligible installer, re-read at apply time.
 ///
 /// The scanner is never deletion authority: this predicate is the one the sink
 /// trusts, so it repeats every structural condition instead of assuming the
@@ -70,7 +70,13 @@ fn installer_details(path: &Path, home: &Path, retain_days: u32) -> Result<Optio
         return Ok(None);
     };
     let age = elapsed.as_secs() / Duration::from_secs(60 * 60 * 24).as_secs();
-    Ok((age >= u64::from(retain_days)).then_some((age, metadata.len())))
+    if age < u64::from(retain_days) {
+        return Ok(None);
+    }
+    Ok(Some((
+        age,
+        crate::safety::allocated_bytes(&metadata, path)?,
+    )))
 }
 
 fn scan_directory(directory: &Path, ctx: &Ctx, findings: &mut Vec<Finding>) -> Result<()> {
@@ -197,6 +203,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         }
     }
 

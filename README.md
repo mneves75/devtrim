@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.12.4.
+This source tree and its packaged documentation describe devtrim v0.12.5.
 
 ## Install
 
@@ -349,8 +349,8 @@ sizes; keep it private when sharing files. Output files are private and an
 explicit `--output` refuses an existing file or symlink.
 
 Available disk space comes from the selected folder's filesystem. Mapped sizes
-are estimated logical bytes, which may differ from physical blocks because of
-APFS clones, hard links and sparse files. Unreadable content is disclosed as a
+are the blocks files hold on disk, each hard-linked file counted once, as `du`
+counts them; APFS clones share blocks yet count in full. Unreadable content is disclosed as a
 partial lower bound; the command still saves the useful report and exits nonzero.
 Symlinks are measured at their own size, and other filesystems are not traversed.
 The overview retains up to six levels and 10,000 entries. Detail beyond that
@@ -616,12 +616,14 @@ Cleanup JSON mode returns one envelope, including empty and failed results:
 }
 ```
 
-`applied` is true once the apply phase has started, even when every target is then refused; it is false for a preview and for an apply refused before it starts — a declined confirmation, a missing consent flag, or a journal that cannot be opened for writing, which is checked even when the plan has nothing to apply. Applied commands additionally include `summary`. If a target fails, the summary still records the work that succeeded, `errors` names each failure, and the process exits nonzero; `caches`, `agents`, `trash-empty`, `xcode`, `artifacts`, and `node-modules` continue past a refused item — `artifacts` and `node-modules` after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and `purge` runs its `node-modules` and `artifacts` halves independently. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string. `summary.bytes_trashed_estimate` is the part of `bytes_freed_estimate` that was moved to Trash and is still on disk until the Trash is emptied. Findings from `node-modules`, `artifacts`, and `purge` carry `project`, the repository that owns the target — for grouping only, never deletion authority.
+`applied` is true once the apply phase has started, even when every target is then refused; it is false for a preview and for an apply refused before it starts — a declined confirmation, a missing consent flag, or a journal that cannot be opened for writing, which is checked even when the plan has nothing to apply. Applied commands additionally include `summary` (absent when the apply stopped with an error) and `results`: one entry per actionable finding, in plan order, `{"finding": <index into findings>, "path": …, "status": "ok" | "error" | "not_attempted", "error": …}`. `ok` and `error` repeat the result the journal recorded for that exact target or command; `not_attempted` is a finding the category refused before journaling it — uv busy with its cache, a failed recheck, a preflight that stopped the plan — or never reached, and its reason, when there is one, is in `errors`. If a target fails, the summary still records the work that succeeded, `errors` names each failure, and the process exits nonzero; `caches`, `agents`, `trash-empty`, `xcode`, `artifacts`, and `node-modules` continue past a refused item — `artifacts` and `node-modules` after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and `purge` runs its `node-modules` and `artifacts` halves independently. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string. `summary.bytes_trashed_estimate` is the part of `bytes_freed_estimate` that was moved to Trash and is still on disk until the Trash is emptied. Findings from `node-modules`, `artifacts`, and `purge` carry `project`, the repository that owns the target — for grouping only, never deletion authority.
 
 `devtrim history --json` emits its own single document —
-`{"operation":"history","entries":[…],"errors":[…]}` — where each entry is a
-journal record with numeric `ts`, `phase`, `op`, `action`, and either `target`
-or the exact `argv`. `completions` and `manpage` have no JSON form and return
+`{"operation":"history","entries":[…],"truncated":false,"errors":[…]}` — where
+each entry is a journal record with numeric `ts`, `phase`, `op`, `action`, and
+either `target` or the exact `argv`. The newest 20 entries are shown unless
+`--limit` says otherwise (up to 1,000); `truncated` is true when older entries
+exist, and the human list ends by saying so. `completions` and `manpage` have no JSON form and return
 the standard error envelope when `--json` is passed.
 
 `devtrim status --json` is also its own single document: a vitals report with
@@ -658,7 +660,7 @@ output.
 | Candidate set | apply uses exact previewed findings |
 | Category authority | Xcode and toolchain apply reassert exact direct-child targets, and a DerivedData folder holding Swift package checkouts only its directories but `SourcePackages`; `node_modules` apply reasserts its scanner's leaf and ancestor rules |
 | Trash | recoverable by default; permanent mode is explicit |
-| Danger gate | maximum finding score plus aggregate estimated logical bytes |
+| Danger gate | maximum finding score plus aggregate estimated bytes on disk |
 | TUI consent | approval capability must match the current preview, its selection, and the danger requirement of the selected findings; selection can only narrow the preview |
 | Target identity | exact internal `PathBuf` plus preview-time device/inode; display text is never parsed back into authority |
 | Anchored deletion | the sink verifies identity through an open parent-directory handle; permanent deletion continues through that handle and drift refuses |
@@ -675,10 +677,13 @@ output.
 | Terminal output | complete human-facing actions, findings, errors, and notes escape control and bidirectional-control characters before rendering |
 | Release authority | build code is read-only; a separate publisher receives packaged inputs and holds release/OIDC permissions |
 
-Sizes are estimated logical bytes. APFS clones, sparse files, and container-VM
-compaction can make immediately available disk space differ. An estimate may
-differ from physical blocks, but devtrim refuses to invent one when traversal
-or metadata is incomplete.
+Sizes are estimated bytes on disk: the blocks each file holds, as `du` counts
+them, so a sparse file counts what it occupies rather than its length and a
+small file counts a whole block. A hard-linked file counts once within a
+target, yet removal frees nothing while a link outside it remains (a pnpm
+store). APFS clones count in full though they share blocks, and snapshots, the
+Trash and container-VM compaction can keep space from coming back at once.
+devtrim refuses to invent an estimate when traversal or metadata is incomplete.
 
 ## Build and verify
 

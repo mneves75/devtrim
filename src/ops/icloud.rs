@@ -85,5 +85,5 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
 fn blocks_bytes(path: &std::path::Path) -> Result<u64> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("cannot inspect iCloud file {}", path.display()))?;
-    super::blocks_bytes(&metadata, path)
+    crate::safety::allocated_bytes(&metadata, path)
 }

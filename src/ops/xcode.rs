@@ -606,6 +606,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         }
     }
 
@@ -791,6 +792,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
 
         let outcome = Xcode.apply(&[finding], &ctx).unwrap();
@@ -1464,6 +1466,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
 
         let running = Xcode

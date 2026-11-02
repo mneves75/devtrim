@@ -11,13 +11,14 @@ folder. Presence in the inventory says nothing about whether removal is appropri
 _Avoid_: cleanup plan, safe files
 
 **Mapped bytes**:
-Estimated logical file lengths represented by the disk inventory. They are not
-exclusive physical blocks or a promise of immediately available space.
-_Avoid_: disk space reclaimed, physical usage
+The blocks the files in the disk inventory hold on disk, each hard-linked file
+counted once, as `du` counts them. Clones share blocks yet count in full, so
+they are not a promise of immediately available space.
+_Avoid_: disk space reclaimed, logical size
 
 **Available disk space**:
 The operating system's reported space available on the selected folder's
-filesystem. It is independent of the sum of mapped logical bytes.
+filesystem. It is independent of the sum of mapped bytes.
 _Avoid_: unmapped bytes
 
 **Cleanup preview**:

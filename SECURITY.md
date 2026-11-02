@@ -23,7 +23,7 @@ An explicit output refuses an existing file or symlink instead of overwriting it
 Filesystem names are untrusted input: embedded data must remain inert and labels
 must be inserted as text under the report's restrictive Content Security Policy.
 Unreadable content remains a disclosed lower bound. Physical free space is an
-independent operating-system metric, not logical inventory subtracted from capacity.
+independent operating-system metric, not the mapped inventory subtracted from capacity.
 
 ## Local data lifecycle
 
@@ -490,9 +490,10 @@ Non-negotiable boundaries:
   = "forbid"` is a load-bearing guarantee for a tool that deletes files, so the
   slower measurement is a deliberate trade, not an oversight.
 
-- Sizes are estimated logical bytes, not guaranteed immediately reclaimable
-  APFS blocks. Clones, sparse files, Trash, and container VM compaction differ.
-  The estimate is nevertheless complete for the traversed logical tree: an
+- Sizes are estimated allocated bytes (the blocks each file holds, each
+  hard-linked file counted once), not guaranteed immediately reclaimable space.
+  Clones, links outside the target, snapshots, Trash, and container VM
+  compaction differ. The estimate is nevertheless complete for the traversed tree: an
   unreadable entry or overflow is an error, not a partial result.
 - The typed target prevents unvalidated and lossy-display paths from reaching
   removal. Since 0.6.0 every finding records its target's `(device, inode)`

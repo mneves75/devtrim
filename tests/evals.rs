@@ -17,7 +17,8 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use support::{
-    Allowed, Interactive, Sandbox, Tree, actionable_targets, assert_journaled, json, run, write,
+    Allowed, Interactive, Sandbox, Tree, actionable_targets, assert_journaled, json, on_disk, run,
+    write,
 };
 
 // ---------- oracle controls ----------
@@ -270,6 +271,124 @@ fn eval_clean_caches_removes_every_listed_cache_and_nothing_else() {
         "PV eval/caches-apply",
     );
     assert_journaled(&sandbox, "caches", "shred", &targets);
+}
+
+/// The apply document says what became of every actionable finding, so an
+/// agent never has to read the journal to learn which items went: `ok` and
+/// `error` mirror the journaled result, and `not_attempted` names a finding
+/// its category refused before the sink.
+#[test]
+fn eval_apply_json_reports_each_items_result() {
+    let sandbox = Sandbox::in_target("eval-apply-results");
+    let home = sandbox.path();
+    let targets = caches_fixture(&sandbox);
+    // A Git marker inside a cache: the sink refuses it.
+    write(&home.join("Library/Caches/pip/nested/.git/HEAD"), "ref");
+    // uv busy with its cache: refused before the sink, never journaled.
+    let uv_lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home.join(".cache/uv/.lock"))
+        .unwrap();
+    rustix::fs::flock(&uv_lock, rustix::fs::FlockOperation::NonBlockingLockShared).unwrap();
+
+    let apply = run(
+        &sandbox,
+        &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+    );
+    let document = json(&apply);
+    assert!(!apply.status.success(), "{document}");
+    let findings = document["findings"].as_array().unwrap();
+    let results = document["results"].as_array().unwrap_or_else(|| {
+        panic!("PV eval/apply-results: the apply document lists no results: {document}")
+    });
+    let actionable: Vec<usize> = findings
+        .iter()
+        .enumerate()
+        .filter(|(_, finding)| {
+            matches!(finding["action"]["type"].as_str(), Some("trash" | "shred"))
+        })
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result["finding"].as_u64().unwrap() as usize)
+            .collect::<Vec<_>>(),
+        actionable,
+        "every actionable finding has exactly one result, in plan order: {document}"
+    );
+    let status_of = |relative: &str| {
+        let path = home.join(relative);
+        let result = results
+            .iter()
+            .find(|result| result["path"].as_str() == path.to_str())
+            .unwrap_or_else(|| panic!("no result for {relative}: {document}"));
+        (
+            result["status"].as_str().unwrap().to_owned(),
+            result.get("error").cloned(),
+        )
+    };
+    let (pip, pip_error) = status_of("Library/Caches/pip");
+    assert_eq!(pip, "error", "{document}");
+    assert!(pip_error.is_some_and(|error| error.is_string()));
+    let (uv, uv_error) = status_of(".cache/uv");
+    assert_eq!(uv, "not_attempted", "{document}");
+    assert!(uv_error.is_none());
+    for target in &targets {
+        let relative = target.strip_prefix(home).unwrap().to_str().unwrap();
+        if relative == "Library/Caches/pip" || relative == ".cache/uv" {
+            continue;
+        }
+        assert_eq!(status_of(relative), ("ok".to_owned(), None), "{document}");
+        assert!(!target.exists());
+    }
+    assert!(home.join("Library/Caches/pip").exists());
+    assert!(home.join(".cache/uv").exists());
+
+    // A preview carries no results.
+    let preview = run(&sandbox, &["clean", "caches", "--shred", "--json"]);
+    assert!(json(&preview).get("results").is_none());
+    drop(uv_lock);
+}
+
+/// Sizes are bytes on disk: a cache whose only file is a hole frees nothing
+/// and is not offered, though its length is 1 GiB; one written byte brings it
+/// back at the size `du` gives it.
+#[test]
+fn eval_a_cache_holding_no_blocks_is_not_offered() {
+    let sandbox = Sandbox::in_target("eval-sparse-cache");
+    let hub = sandbox.path().join(".cache/huggingface/hub");
+    write(&hub.join("model.bin"), "");
+    std::fs::File::options()
+        .write(true)
+        .open(hub.join("model.bin"))
+        .unwrap()
+        .set_len(1024 * 1024 * 1024)
+        .unwrap();
+    let preview = run(&sandbox, &["clean", "caches", "--json"]);
+    assert!(preview.status.success(), "{}", json(&preview));
+    assert!(
+        !actionable_targets(&json(&preview)).contains(&hub),
+        "a cache holding only a hole was offered: {}",
+        json(&preview)
+    );
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(hub.join("model.bin"))
+        .and_then(|file| std::os::unix::fs::FileExt::write_all_at(&file, b"x", 0))
+        .unwrap();
+    let preview = json(&run(&sandbox, &["clean", "caches", "--json"]));
+    let finding = preview["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["path"].as_str() == hub.to_str())
+        .unwrap_or_else(|| panic!("positive control: the written cache is offered: {preview}"));
+    assert_eq!(finding["size_bytes"], on_disk(&[&hub.join("model.bin")]));
+    assert!(finding["size_bytes"].as_u64().unwrap() < 1024 * 1024);
 }
 
 /// Write-ahead: when the attempt cannot be journaled, nothing is removed.
@@ -1435,8 +1554,15 @@ fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_reposit
             .unwrap()
             .to_owned()
     };
-    let gitfile = std::fs::metadata(feature.join(".git")).unwrap().len();
-    assert_eq!(size(&feature), 6 + 101 + gitfile, "{document}");
+    assert_eq!(
+        size(&feature),
+        on_disk(&[
+            &feature.join("README"),
+            &feature.join("untracked.bin"),
+            &feature.join(".git"),
+        ]),
+        "{document}"
+    );
     assert!(note(&feature).contains("branch feature"), "{document}");
     assert!(
         note(&dev.join("app-detached")).contains("detached"),
@@ -1554,7 +1680,7 @@ fn eval_leftovers_reports_ignored_scratch_folders_only() {
     );
     assert_eq!(
         finding_at(&document, &kept.join(".scratch/evidence"))["size_bytes"],
-        13
+        on_disk(&[&kept.join(".scratch/evidence/run.log")])
     );
     assert!(
         finding_at(&document, &kept.join(".scratch/wt-review"))["label"]

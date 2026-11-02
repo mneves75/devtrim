@@ -410,7 +410,9 @@ def stale_project(home, pgrep="exit 1"):
     (project / ".git").mkdir(parents=True)
     (project / "Cargo.toml").write_text('[package]\nname = "fixture"\n')
     (project / "target" / "debug").mkdir(parents=True)
-    (project / "target" / "debug" / "out").write_bytes(b"x" * 4096)
+    # Several blocks: sizes are bytes on disk, and a one-block `target` would
+    # tie the one-block `node_modules` and lose its place first in the plan.
+    (project / "target" / "debug" / "out").write_bytes(b"x" * 16384)
     (project / "package.json").write_text("{}\n")
     (project / "node_modules" / "pkg").mkdir(parents=True)
     (project / "node_modules" / "pkg" / "index.js").write_bytes(b"x")

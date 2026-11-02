@@ -1078,7 +1078,7 @@ fn is_regenerable_target(path: &Path, home: &Path, extra: &[PathBuf]) -> bool {
     })
 }
 
-/// Age in days and logical size for an eligible history child, or `None` when
+/// Age in days and allocated size for an eligible history child, or `None` when
 /// the path is not a direct child of a configured root at its configured depth,
 /// is a symlink, has the wrong file type, or is still inside the retention window.
 fn history_details(
@@ -1226,6 +1226,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         }
     }
 

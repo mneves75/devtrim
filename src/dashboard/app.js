@@ -35,7 +35,7 @@
   text("captured", new Date(snapshot.generated_unix_seconds * 1000).toLocaleString());
   byId("captured").dateTime = new Date(snapshot.generated_unix_seconds * 1000).toISOString();
   text("mapped", `${snapshot.coverage.partial ? "≥ " : ""}${size(root.bytes)}`);
-  text("coverage-label", snapshot.coverage.partial ? "Partial lower bound · some entries unavailable" : "Files and symlinks · logical lengths");
+  text("coverage-label", snapshot.coverage.partial ? "Partial lower bound · some entries unavailable" : "Files and symlinks · bytes on disk");
   text("available", size(snapshot.volume.available_bytes));
   text("capacity", snapshot.volume.capacity_bytes === null ? "Volume metrics unavailable; see diagnostics" : `of ${size(snapshot.volume.capacity_bytes)} volume capacity`);
   text("candidates", snapshot.recommendations.categories.length.toLocaleString());
@@ -59,7 +59,7 @@
   diagnostics.forEach(message => byId("diagnostics").append(make("p", message)));
   const info = node => {
     text("detail-path", node.path);
-    text("detail-info", `${node.kind} · ${node.partial ? "at least " : ""}${size(node.bytes)} logical bytes${node.partial ? " · partial measurement" : ""}${node.summarized_entries ? ` · ${node.summarized_entries.toLocaleString()} entries summarized here (${size(node.summarized_bytes)})` : ""}. Inventory only; no deletion action is attached to this item.`);
+    text("detail-info", `${node.kind} · ${node.partial ? "at least " : ""}${size(node.bytes)} on disk${node.partial ? " · partial measurement" : ""}${node.summarized_entries ? ` · ${node.summarized_entries.toLocaleString()} entries summarized here (${size(node.summarized_bytes)})` : ""}. Inventory only; no deletion action is attached to this item.`);
   };
   const navigate = node => {
     info(node);
@@ -132,7 +132,7 @@
     if (!shown.length) { map.append(make("p", current.partial ? "No readable bytes to map. See coverage diagnostics." : "No measured bytes in this folder. Empty and zero-byte entries remain in the list.", "empty")); return; }
     const mapWidth = Math.max(1, map.clientWidth);
     const mapHeight = Math.round(Math.max(256, Math.min(440, mapWidth * .6)));
-    const svg = svgNode("svg", { width: mapWidth, height: mapHeight, viewBox: `0 0 ${mapWidth} ${mapHeight}`, role: "group", "aria-label": "Logical size treemap with one nested folder level" });
+    const svg = svgNode("svg", { width: mapWidth, height: mapHeight, viewBox: `0 0 ${mapWidth} ${mapHeight}`, role: "group", "aria-label": "Size treemap with one nested folder level" });
     let nestedBudget = 180;
     partition(shown, 0, 0, mapWidth, mapHeight, (node, x, y, width, height) => {
       if (node.kind !== "directory" || width < 170 || height < 115 || !nestedBudget) { svg.append(tileButton(node, x, y, width, height)); return; }

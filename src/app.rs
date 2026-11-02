@@ -262,6 +262,7 @@ fn run_history(limit: Option<usize>, json: bool) -> Result<ExitCode> {
             let history = journal::History {
                 entries: Vec::new(),
                 errors: vec![format!("{error:#}")],
+                truncated: false,
             };
             journal::print_json(&history)?;
             return Ok(ExitCode::from(1));
@@ -645,7 +646,14 @@ fn print_outcome(
     );
     errors.extend(ctx.take_journal_errors());
     if ctx.json {
-        report::print_json(operation, true, findings, Some(&outcome.summary), &errors)?;
+        let results = report::item_results(findings, &ctx.take_apply_results());
+        report::print_apply_json(
+            operation,
+            findings,
+            Some(&outcome.summary),
+            &results,
+            &errors,
+        )?;
     } else {
         if errors.is_empty() {
             report::print_summary(&outcome.summary)?;
@@ -687,7 +695,14 @@ fn command_error(
     error: anyhow::Error,
 ) -> Result<ExitCode> {
     if ctx.json {
-        report::print_json(operation, applied, findings, None, &[format!("{error:#}")])?;
+        let errors = [format!("{error:#}")];
+        if applied {
+            // An apply that stopped partway may already have removed items.
+            let results = report::item_results(findings, &ctx.take_apply_results());
+            report::print_apply_json(operation, findings, None, &results, &errors)?;
+        } else {
+            report::print_json(operation, false, findings, None, &errors)?;
+        }
         Ok(ExitCode::from(1))
     } else {
         Err(error)

@@ -21,7 +21,7 @@
   </section>
   <div id="banner" class="banner" role="status" hidden></div>
   <section class="summary" aria-label="Storage summary">
-    <article class="card metric"><span>Mapped logical bytes</span><strong id="mapped">—</strong><small id="coverage-label"></small></article>
+    <article class="card metric"><span>Mapped bytes on disk</span><strong id="mapped">—</strong><small id="coverage-label"></small></article>
     <article class="card metric"><span>Available disk space</span><strong id="available">—</strong><small id="capacity"></small></article>
     <article class="card metric preview-count"><span>Category previews</span><strong id="candidates">—</strong><small>Fresh CLI previews; review before cleanup</small></article>
   </section>
@@ -32,7 +32,7 @@
       <div class="map-heading"><strong id="current-name"></strong><span id="current-size"></span></div>
       <div id="map" class="map" aria-label="Treemap. The folder list below provides the same navigation."></div>
       <ul class="legend" aria-label="Map legend"><li class="agents">Agent data</li><li class="build">Build output</li><li class="review">Review</li><li class="preview">Category preview</li><li class="other">Other inventory</li></ul>
-      <p class="map-note">Tile area represents logical bytes. Color describes inventory; it does not authorize removal.</p>
+      <p class="map-note">Tile area represents bytes on disk. Color describes inventory; it does not authorize removal.</p>
       <div class="list-toolbar"><label class="search">Search folders and files<input id="search" type="search" placeholder="Name or full path" autocomplete="off"></label><label>Sort by<select id="sort"><option value="size">Largest first</option><option value="name">Name A–Z</option></select></label></div>
       <p id="list-count" class="list-count" aria-live="polite"></p>
       <ul id="folders" class="folder-list" aria-label="Folders and files"></ul>
@@ -41,7 +41,7 @@
     </section>
     <aside class="sidebar" aria-label="Cleanup previews and coverage">
       <section class="card recommendations"><h2>Start with a preview</h2><p>These rows come from devtrim’s existing categories. Copied commands create a fresh category preview, which may include paths outside this map.</p><p class="important-note">Nothing is selected for deletion. Category estimates can overlap and are not summed.</p><div id="recommendations"></div><p id="copy-status" role="status" aria-live="polite"></p></section>
-      <section class="card coverage"><h2>About this snapshot</h2><p>This is a point-in-time inventory. Rerun <code>devtrim dashboard</code> with the same path to refresh it.</p><p>Logical lengths are not exclusive physical blocks. Available space is reported by the selected root’s filesystem; APFS clones, sparse files and snapshots can make these values differ.</p><p id="bounds"></p><details id="diagnostics-disclosure"><summary>Coverage &amp; category diagnostics</summary><div id="diagnostics"></div></details></section>
+      <section class="card coverage"><h2>About this snapshot</h2><p>This is a point-in-time inventory. Rerun <code>devtrim dashboard</code> with the same path to refresh it.</p><p>Sizes are allocated blocks, with each hard-linked file counted once. APFS clones share blocks yet count in full each time, and snapshots keep blocks after removal, so available space, reported by the selected root’s filesystem, can move by less.</p><p id="bounds"></p><details id="diagnostics-disclosure"><summary>Coverage &amp; category diagnostics</summary><div id="diagnostics"></div></details></section>
     </aside>
   </div>
   <footer>Measured locally by devtrim. Inventory is not permission to remove files. <span id="report-path" class="full-path"></span></footer>

@@ -66,6 +66,10 @@ pub struct Ctx {
     /// Journal failures observed after a mutation already succeeded; drained
     /// into the apply outcome so automation sees them with a nonzero status.
     pub(crate) journal_errors: Mutex<Vec<String>>,
+    /// Every journaled result of this run, in order, kept even when the
+    /// result record itself could not be written: the apply document reports
+    /// each finding's outcome from these.
+    pub(crate) apply_results: Mutex<Vec<crate::journal::JournalRecord>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +131,7 @@ impl Ctx {
             },
             diagnostics: Mutex::new(Vec::new()),
             journal_errors: Mutex::new(Vec::new()),
+            apply_results: Mutex::new(Vec::new()),
         };
         for warning in root_warnings {
             ctx.diagnostic("warn", warning);
@@ -178,6 +183,22 @@ impl Ctx {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(message);
+    }
+
+    pub(crate) fn record_apply_result(&self, record: crate::journal::JournalRecord) {
+        self.apply_results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(record);
+    }
+
+    pub(crate) fn take_apply_results(&self) -> Vec<crate::journal::JournalRecord> {
+        std::mem::take(
+            &mut *self
+                .apply_results
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     pub(crate) fn take_journal_errors(&self) -> Vec<String> {
@@ -1419,7 +1440,43 @@ pub fn trash_gate(findings: &[Finding], confirm_gb: Option<u64>) -> Result<()> {
     Ok(())
 }
 
-/// Logical bytes under a directory for a report, and how many entries could
+/// Bytes a file holds on disk: its allocated 512-byte blocks, not its length.
+/// Removing a sparse file frees only its allocated blocks, and a small file
+/// holds a whole filesystem block, so this is what removal gives back; the
+/// length overstated a sparse Xcode index and understated a cache of many
+/// small files.
+pub(crate) fn allocated_bytes(metadata: &std::fs::Metadata, path: &Path) -> Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+
+    metadata
+        .blocks()
+        .checked_mul(512)
+        .ok_or_else(|| anyhow::anyhow!("allocated size overflow for {}", path.display()))
+}
+
+/// Allocated bytes summed over one walk, counting a hard-linked file once, as
+/// `du` does: its links share one set of blocks. A clone (APFS `clonefile`)
+/// still counts in full each time, because the shared extents are not visible
+/// through `stat`.
+#[derive(Default)]
+pub(crate) struct DiskUsage {
+    linked: std::collections::HashSet<(u64, u64)>,
+}
+
+impl DiskUsage {
+    /// What `metadata`'s file adds to the walk's total: its allocated bytes,
+    /// or nothing for a further link to a file already counted.
+    pub(crate) fn add(&mut self, metadata: &std::fs::Metadata, path: &Path) -> Result<u64> {
+        use std::os::unix::fs::MetadataExt;
+
+        if metadata.nlink() > 1 && !self.linked.insert((metadata.dev(), metadata.ino())) {
+            return Ok(0);
+        }
+        allocated_bytes(metadata, path)
+    }
+}
+
+/// Allocated bytes under a directory for a report, and how many entries could
 /// not be read. It follows no link, stays on the directory's device, and does
 /// not enter `skip` (other worktrees nested inside this one), so a byte is
 /// counted once.
@@ -1433,6 +1490,7 @@ pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured
         bytes: 0,
         unread: 0,
     };
+    let mut usage = DiskUsage::default();
     let mut entries = walkdir::WalkDir::new(path)
         .follow_links(false)
         .same_file_system(true)
@@ -1447,8 +1505,12 @@ pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured
             continue;
         }
         if entry.file_type().is_file() {
-            match entry.metadata() {
-                Ok(metadata) => measured.bytes = measured.bytes.saturating_add(metadata.len()),
+            match entry
+                .metadata()
+                .map_err(anyhow::Error::from)
+                .and_then(|metadata| usage.add(&metadata, entry.path()))
+            {
+                Ok(bytes) => measured.bytes = measured.bytes.saturating_add(bytes),
                 Err(_) => measured.unread = measured.unread.saturating_add(1),
             }
         }
@@ -1460,7 +1522,8 @@ pub fn dir_size(path: &Path) -> Result<u64> {
     Ok(dir_stats(path)?.0)
 }
 
-/// Logical size and the newest regular-file modification time under `path`.
+/// Allocated size (`DiskUsage`) and the newest regular-file modification time
+/// under `path`.
 ///
 /// One traversal serves both, so a size and the staleness judged from it always
 /// describe the same tree. Only regular files contribute to either: a
@@ -1481,6 +1544,7 @@ pub fn dir_size(path: &Path) -> Result<u64> {
 /// caller skips a zero-byte target.
 pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTime>)> {
     let mut bytes = 0u64;
+    let mut usage = DiskUsage::default();
     let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
     match std::fs::symlink_metadata(path) {
         Ok(_) => {}
@@ -1508,8 +1572,8 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTim
             }
 
             bytes = bytes
-                .checked_add(metadata.len())
-                .ok_or_else(|| anyhow::anyhow!("logical size overflow under {}", path.display()))?;
+                .checked_add(usage.add(&metadata, entry.path())?)
+                .ok_or_else(|| anyhow::anyhow!("size overflow under {}", path.display()))?;
         }
     }
     Ok((bytes, newest))
@@ -2033,6 +2097,78 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, RngSeed};
+
+    /// What `du -sk` says the tree holds, in bytes: the oracle the size basis
+    /// must agree with, computed by another program.
+    fn du_bytes(path: &Path) -> u64 {
+        let output = std::process::Command::new("du")
+            .args(["-sk"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        text.split_whitespace()
+            .next()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            * 1024
+    }
+
+    /// Removal frees allocated blocks, not lengths: a sparse file (an Xcode
+    /// index) holds far less than its length, a small file a whole block, and
+    /// a hard-linked file one set of blocks however many links point at it.
+    #[test]
+    fn sizes_are_allocated_bytes_like_du() {
+        use std::io::Write as _;
+
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-allocated")
+            .tempdir()
+            .unwrap();
+        let sparse = root.path().join("sparse");
+        std::fs::create_dir(&sparse).unwrap();
+        let file = std::fs::File::create(sparse.join("index.db")).unwrap();
+        file.set_len(1024 * 1024 * 1024).unwrap();
+        file.sync_all().unwrap();
+        let sparse_size = dir_size(&sparse).unwrap();
+        assert!(
+            sparse_size < 1024 * 1024,
+            "a 1 GiB hole measured {sparse_size} bytes"
+        );
+        assert_eq!(sparse_size, du_bytes(&sparse));
+
+        let small = root.path().join("small");
+        std::fs::create_dir(&small).unwrap();
+        for index in 0..8 {
+            std::fs::write(small.join(index.to_string()), "x").unwrap();
+        }
+        let small_size = dir_size(&small).unwrap();
+        assert!(
+            small_size >= 8 * 512,
+            "eight one-byte files measured {small_size} bytes"
+        );
+        assert_eq!(small_size, du_bytes(&small));
+
+        let linked = root.path().join("linked");
+        std::fs::create_dir(&linked).unwrap();
+        let mut original = std::fs::File::create(linked.join("a")).unwrap();
+        original.write_all(&vec![7u8; 1024 * 1024]).unwrap();
+        original.sync_all().unwrap();
+        std::fs::hard_link(linked.join("a"), linked.join("b")).unwrap();
+        let linked_size = dir_size(&linked).unwrap();
+        assert!(
+            (1024 * 1024..2 * 1024 * 1024).contains(&linked_size),
+            "two links to 1 MiB measured {linked_size} bytes"
+        );
+        assert_eq!(linked_size, du_bytes(&linked));
+        assert_eq!(
+            measure_lenient(&linked, &BTreeSet::new()).bytes,
+            linked_size
+        );
+    }
+
     use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt, fs::symlink};
 
     fn temp(name: &str) -> PathBuf {
@@ -2659,6 +2795,7 @@ mod tests {
             diagnostic_output: DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
 
         let error = gate(9, &ctx, &[]).unwrap_err();

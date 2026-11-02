@@ -121,6 +121,7 @@ fn volume(root: &Path) -> Volume {
 fn inventory(root: &Path) -> Result<(Node, Coverage)> {
     let device = fs::metadata(root)?.dev();
     let mut nodes = vec![Node::new(root, "directory")];
+    let mut usage = crate::safety::DiskUsage::default();
     let mut parents = vec![0];
     let mut ancestors = vec![0usize];
     let mut coverage = Coverage {
@@ -189,7 +190,8 @@ fn inventory(root: &Path) -> Result<(Node, Coverage)> {
                 entry.path().display()
             ));
         } else if metadata.is_file() || metadata.is_symlink() {
-            match nodes[current].bytes.checked_add(metadata.len()) {
+            let measured = usage.add(&metadata, entry.path()).ok();
+            match measured.and_then(|bytes| nodes[current].bytes.checked_add(bytes)) {
                 Some(bytes) => {
                     nodes[current].bytes = bytes;
                     if !retained {
@@ -198,10 +200,7 @@ fn inventory(root: &Path) -> Result<(Node, Coverage)> {
                 }
                 None => {
                     nodes[current].partial = true;
-                    coverage.issue(format!(
-                        "logical size overflow at {}",
-                        entry.path().display()
-                    ));
+                    coverage.issue(format!("cannot size {}", entry.path().display()));
                 }
             }
         }
@@ -226,7 +225,7 @@ fn inventory(root: &Path) -> Result<(Node, Coverage)> {
                 owner.bytes = bytes;
             } else {
                 owner.partial = true;
-                coverage.issue(format!("logical size overflow at {}", owner.path));
+                coverage.issue(format!("size overflow at {}", owner.path));
             }
             owner.children.push(child);
         }

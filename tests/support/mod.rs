@@ -77,6 +77,15 @@ pub fn write(path: &Path, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
+/// The bytes these files hold on disk, as `stat` reports their blocks: the
+/// basis devtrim sizes in. A one-byte fixture holds a whole filesystem block.
+pub fn on_disk(files: &[&Path]) -> u64 {
+    files
+        .iter()
+        .map(|file| std::fs::symlink_metadata(file).unwrap().blocks() * 512)
+        .sum()
+}
+
 pub fn run(sandbox: &Sandbox, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_devtrim"))
         .args(args)

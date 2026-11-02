@@ -382,6 +382,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         }
     }
 
