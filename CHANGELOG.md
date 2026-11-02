@@ -12,6 +12,11 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   Every finding is informational and mutation flags
   are refused; neither media nor projects gain cleanup authority.
 
+### Fixed
+- `app-storage` preserves existing apply journals and their rotations. Explicit
+  child roots remain discoverable when a parent root cannot be enumerated;
+  physical identity still prevents overlapping measurements from being counted twice.
+
 ### Changed
 - The landing page links the stable 0.12.5 release.
 

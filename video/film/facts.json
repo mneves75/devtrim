@@ -1150,8 +1150,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
  },
  {
-  "id": "f6fe3c7cf",
-  "text": "Root symlinks and symlinked ancestors are refused. Traversal skips links, foreign devices, Git metadata, dependency trees, target, .build, .next, .turbo, virtual environments, .cache, and packaged apps/frameworks/photo libraries/archives. At most 100 bundles retain individual detail; an aggregate row keeps the omitted count and measured bytes. Errors are bounded, disclosed and return nonzero. Hard links count once across the report; APFS clones may share blocks. This is a live metadata snapshot, not deletion authority. All findings are informational; no mutation flag is accepted and no journal is written. Saved projects and application data stay in place.",
+  "id": "f1903acba",
+  "text": "Root symlinks and symlinked ancestors are refused. Both inventories skip links and foreign devices. Screen Studio discovery and bundle measurement also skip Git metadata, dependency trees, target, .build, .next, .turbo, virtual environments, .cache, and packaged apps/frameworks/photo libraries/archives. At most 100 bundles retain individual detail; an aggregate row keeps the omitted count and measured bytes. Errors are bounded, disclosed and return nonzero. Hard links count once across the report; APFS clones may share blocks. This is a live metadata snapshot, not deletion authority. All findings are informational; no mutation flag is accepted and no journal is written. Saved projects and application data stay in place.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
  },
  {

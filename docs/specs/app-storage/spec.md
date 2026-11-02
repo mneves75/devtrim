@@ -23,10 +23,13 @@ Screen Studio projects. This is a disk inventory, not a cleanup preview.
    project roots and the whole home folder are not searched implicitly. Saved
    `.screenstudio` directories are source projects, never actionable cache.
 4. Root symlinks/ancestors are refused before canonicalization in the report.
-   Discovery/measurement follows no links or other devices and excludes `.git`,
+   Both inventories follow no links or other devices. Screen Studio discovery
+   and bundle measurement exclude `.git`,
    `node_modules`, `target`, `.build`, `.next`, `.turbo`, `.venv`, `venv`, `.cache`,
    `.app`, `.framework`, `.photoslibrary` and `.xcarchive` trees, including an
-   explicit root inside one. Scope and known skips remain visible.
+   explicit root inside one. WhatsApp measures regular files inside its known
+   containers without interpreting media directory names as project caches.
+   Scope and known skips remain visible.
 5. Use allocated regular-file blocks, count each physical file once across the report,
    including hard links, root aliases and overlapping application views;
    disclose APFS clone limitations and live-snapshot drift. Detail is limited to

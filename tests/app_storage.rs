@@ -238,6 +238,56 @@ impl Drop for RestorePermissions<'_> {
 }
 
 #[test]
+fn an_explicit_child_root_is_measured_when_its_parent_cannot_be_listed() {
+    let sandbox = Sandbox::new("app-storage-child-root");
+    let parent = sandbox.path().join("Movies");
+    let child = parent.join("known.screenstudio");
+    let recording = child.join("raw");
+    write(
+        &recording,
+        "a reachable project under an unreadable listing",
+    );
+    let canonical_parent = parent.canonicalize().unwrap();
+    let canonical_child = child.canonicalize().unwrap();
+    let before = Tree::snapshot(sandbox.path());
+    let output = {
+        let _restore = RestorePermissions(&parent);
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let positive = run(
+            &sandbox,
+            &[
+                "app-storage",
+                "--root",
+                canonical_child.to_str().unwrap(),
+                "--json",
+            ],
+        );
+        assert!(positive.status.success(), "{positive:?}");
+        assert_eq!(reported_bytes(&json(&positive)), on_disk(&[&recording]));
+        run(
+            &sandbox,
+            &[
+                "app-storage",
+                "--root",
+                canonical_parent.to_str().unwrap(),
+                "--root",
+                canonical_child.to_str().unwrap(),
+                "--json",
+            ],
+        )
+    };
+    let document = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{document}");
+    assert!(!document["errors"].as_array().unwrap().is_empty());
+    assert_eq!(reported_bytes(&document), on_disk(&[&recording]));
+    before.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "app-storage/explicit-child",
+    );
+}
+
+#[test]
 fn unreadable_data_is_partial_and_does_not_hide_other_application_data() {
     let sandbox = Sandbox::new("app-storage-partial");
     let container = sandbox
@@ -341,6 +391,52 @@ fn hostile_bundle_names_remain_inert_in_terminal_output() {
         "a filename emitted terminal controls"
     );
     assert!(rendered.contains("not deletion authority"));
+    assert!(
+        rendered.contains(r"clip\u{1b}[31m\n.screenstudio"),
+        "the hostile bundle name must remain visible as inert text: {rendered}"
+    );
+}
+
+#[test]
+fn app_storage_preserves_an_oversized_apply_journal_and_its_rotations() {
+    let sandbox = Sandbox::new("app-storage-journal");
+    let media = sandbox
+        .path()
+        .join("Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media/photo");
+    write(&media, "ordinary media remains visible");
+    write(&sandbox.journal(), "audit evidence");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(sandbox.journal())
+        .unwrap()
+        .set_len(10 * 1024 * 1024 + 1)
+        .unwrap();
+    let journal_parent = sandbox.journal().parent().unwrap().to_path_buf();
+    for generation in 1..=5 {
+        write(
+            &journal_parent.join(format!("journal.jsonl.{generation}")),
+            &format!("retained generation {generation}"),
+        );
+    }
+    let before = Tree::snapshot(sandbox.path());
+    for args in [vec!["app-storage"], vec!["app-storage", "--json"]] {
+        let output = run(&sandbox, &args);
+        assert!(output.status.success(), "{output:?}");
+        if args.contains(&"--json") {
+            assert_eq!(reported_bytes(&json(&output)), on_disk(&[&media]));
+        } else {
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains("WhatsApp media")
+            );
+        }
+        before.assert_only(
+            &Tree::snapshot(sandbox.path()),
+            &Allowed::default(),
+            "app-storage must preserve the journal and every rotation",
+        );
+    }
 }
 
 #[test]

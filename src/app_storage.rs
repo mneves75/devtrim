@@ -63,12 +63,6 @@ pub(crate) fn report(home: &Path, roots: &[String]) -> AppStorageReport {
     let mut omitted_count = 0usize;
     let mut omitted_bytes = 0u64;
     for root in &resolved_roots {
-        if resolved_roots
-            .iter()
-            .any(|other| other != root && root.starts_with(other))
-        {
-            continue;
-        }
         inventory.screenstudio(root, &mut bundles, &mut omitted_count, &mut omitted_bytes);
     }
     inventory.findings.extend(bundles);

@@ -344,8 +344,9 @@ projects under that explicit root; default/configured project roots are not
 searched. Screen Studio allows custom project locations, so an empty report
 does not establish absence elsewhere. Saved projects are source data, not cache.
 
-The report rejects every mutation flag and writes no journal. It refuses linked
-roots/ancestors and skips links, other devices, Git metadata, dependency/build
+The report rejects every mutation flag and preserves existing journals. Both
+inventories refuse linked roots/ancestors and skip links and other devices.
+Screen Studio discovery and bundle measurement also skip Git metadata, dependency/build
 trees, virtual environments, `.cache` and packaged apps/frameworks/photo libraries/
 archives. Its scope row names these exclusions. At most 100 bundles keep individual
 detail; an aggregate retains omitted measured bytes. Errors are bounded, disclosed

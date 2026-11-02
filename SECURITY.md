@@ -34,7 +34,8 @@ contents, infer duplicate/orphan attachments, or test whether they can be remove
 Screen Studio discovery requires explicit `--root` paths; configured and default
 project roots do not start an application-data search. Saved `.screenstudio`
 bundles are source projects, not cache. Symlink roots/ancestors are refused;
-traversal skips links, foreign devices and the documented excluded directories.
+both inventories skip links and foreign devices. Screen Studio discovery and
+bundle measurement also skip the documented excluded directories.
 The path-based walk is a live snapshot, not a transaction or a guarantee against
 concurrent filesystem changes. Partial measurements return nonzero, retained
 detail/errors are bounded, and omitted measured bytes stay in the total. Reports
