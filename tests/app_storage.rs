@@ -13,6 +13,28 @@ use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::Path;
 use support::{Allowed, Sandbox, Tree, json, on_disk, run, write};
 
+#[cfg(target_os = "macos")]
+#[test]
+fn foreign_device_boundaries_keep_same_device_siblings_in_every_inventory() {
+    let result = std::process::Command::new("python3")
+        .args([
+            "-B",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/scripts/tests/app-storage-devices.py"
+            ),
+            env!("CARGO_BIN_EXE_devtrim"),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
 #[test]
 fn reports_whatsapp_media_database_and_other_data_without_writing() {
     let sandbox = Sandbox::new("app-storage-whatsapp");

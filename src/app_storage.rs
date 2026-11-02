@@ -130,9 +130,6 @@ impl Inventory {
                 }
             };
             let Some(metadata) = self.metadata(entry.path(), device) else {
-                if entry.file_type().is_dir() {
-                    entries.skip_current_dir();
-                }
                 continue;
             };
             let Ok(relative) = entry.path().strip_prefix(container) else {
@@ -240,9 +237,6 @@ impl Inventory {
                 }
             };
             let Some(metadata) = self.metadata(entry.path(), device) else {
-                if entry.file_type().is_dir() {
-                    entries.skip_current_dir();
-                }
                 continue;
             };
             if metadata.is_dir() && excluded_directory(entry.path()) {
@@ -308,9 +302,6 @@ impl Inventory {
                 }
             };
             let Some(metadata) = self.metadata(entry.path(), device) else {
-                if entry.file_type().is_dir() {
-                    entries.skip_current_dir();
-                }
                 continue;
             };
             if entry.depth() > 0 && metadata.is_dir() && excluded_directory(entry.path()) {
@@ -348,6 +339,8 @@ impl Inventory {
         }
     }
 
+    // WalkDir already prunes links and foreign devices. Pruning again at a
+    // foreign mount would pop its parent and lose the remaining native siblings.
     fn metadata(&mut self, path: &Path, device: u64) -> Option<std::fs::Metadata> {
         match std::fs::symlink_metadata(path) {
             Ok(metadata) if metadata.is_symlink() => {

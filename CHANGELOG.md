@@ -16,6 +16,8 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - `app-storage` preserves existing apply journals and their rotations. Explicit
   child roots remain discoverable when a parent root cannot be enumerated;
   physical identity still prevents overlapping measurements from being counted twice.
+- A foreign-device entry no longer hides same-device siblings from WhatsApp
+  or Screen Studio inventory; the filesystem boundary still remains excluded.
 
 ### Changed
 - The landing page links the stable 0.12.5 release.

@@ -48,6 +48,7 @@ checked 2026-09-04. User instructions take precedence over skill procedures.
 - Page load (opt-in, needs Chrome): serve the checkout with `python3 -m http.server 4173 --bind 127.0.0.1`, then `node scripts/perf/pageload.mjs "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" http://127.0.0.1:4173/ 30 50 index.html MANUAL.html`; `python3 scripts/tests/pageload-controls.py <chrome>` proves it can fail.
 - Paint-control validation (no browser): `python3 -B scripts/tests/pageload-controls-validation.py`; stale LCP candidates must fail even when their timestamps exceed the budget.
 - Read-only views: `python3 scripts/tests/read-only-views.py target/debug/devtrim` (analyze navigation/progress/help/resize; status sampling/resize/blocked-probe quit; terminal restoration).
+- Application device boundaries (also part of macOS integration tests): `python3 -B scripts/tests/app-storage-devices.py target/debug/devtrim` creates its own 16 MiB read-only images below ignored fixtures, verifies all three inventory walks, and detaches each exact test mount before cleanup; no existing volume is changed.
 - Format: `rustup run 1.98.1 cargo fmt --all -- --check`
 - Lint: `rustup run 1.98.1 cargo clippy --locked --all-targets --all-features -- -D warnings`
 - Structural lint: `ast-grep test --skip-snapshot-tests` then `ast-grep scan --config sgconfig.yml`
