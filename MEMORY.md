@@ -1,6 +1,29 @@
 # Project Memory
 
-## Current production state (0.12.4)
+## Current production state (0.12.5)
+
+0.12.5 fixes the three problems the owner reported: sizes are bytes on disk
+(allocated blocks, hard links once, as `du` counts), `devtrim history` says
+when it cut the list (`truncated`), and the apply JSON carries per-item
+`results` joined by the exact path (#77, #78). Story: `memory/2026-11-02.md`.
+Main `0c761f8c55cbb88db77d8f9383a67dd22c989bd8` (tree `798791f`), content gated
+at `43db6bd` (staging and production WAIVED: GHSA-g3hv-75wg-m249 only;
+independent acceptance pass: four Sol split readings of tree `090ab2f` plus the
+delta's verifier). The owner's `gate:independent-acceptance` waiver (to
+2026-11-08) cleared #77's merge only. Immutable `v0.12.5-beta1` (tag object
+`1efd589`) and stable `v0.12.5` (tag object `d931abc`, published
+2026-11-02T05:52:27Z) carry the same ZIP (SHA-256
+`4c090d805ec96384ec224d11bc25c87f024cd5c4e17f969586090489e9df0600`); both pass
+`verify-live.sh`. Homebrew (tap `3a80cc3`) upgraded 0.12.4 -> 0.12.5;
+`/opt/homebrew/bin/devtrim` is the sole visible binary (SHA-256
+`d7ee70a7e9cdc7637e5113446020b645db8686a878938885516b6b7d92af75ff`). Proof:
+`verify.sh offline` and the extra gates on `4759093`
+(`.scratch/verify-0.12.5/`), mneves-verify (Sol) PASS, Sol autoreview
+scoped-clean on each delta, CI 41384187082 (main). Follow-ups: H-1, N-1, N-3
+and the npm 12 empty-HOME query (journal); the GHSA waiver fails the video gate
+on 2026-12-01 unless removed first.
+
+## Previous production state (0.12.4)
 
 0.12.4 ships no binary behaviour change: the 24 s demo film and its checks
 (#68, #69), the CI changes (#70 faster runs, #71 PR-scoped planted
