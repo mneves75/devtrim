@@ -353,7 +353,7 @@ try { const s = localStorage.getItem("devtrim-theme");
 <header class="masthead">
   <h1 class="title"><span class="wordmark">devtrim</span> <span class="rest">manual</span></h1>
   <p class="chip-row">
-    <span class="chip g">v0.12.5</span>
+    <span class="chip g">v0.12.6</span>
     <span class="chip g">Ratatui TUI</span>
     <span class="chip g">Apache-2.0</span>
     <span class="chip a">Trash-first deletion</span>
@@ -498,6 +498,11 @@ devtrim clean caches</code></pre>
   <details class="card">
     <summary><span class="cmd-name">icloud</span><span class="cmd-desc">large files and locally allocated storage</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p>Recursively lists iCloud Drive files ≥ 100 MB with logical size and a local-allocation estimate. Sparse files, compression, clones, and dataless placeholders can make allocated bytes differ from logical bytes; devtrim does not claim to know upload progress.</p></div>
+  </details>
+  <details class="card">
+    <summary><span class="cmd-name">app-storage</span><span class="cmd-desc">WhatsApp data and saved Screen Studio projects</span><span class="pill g">READ-ONLY</span></summary>
+    <div class="card-body"><p>Measures regular-file blocks in four known WhatsApp Group Containers, separating <code>Message/Media</code>, <code>ChatStorage.sqlite</code> and its WAL/SHM files, and other data. It never opens their contents or decides which attachments are duplicates, unreferenced or disposable. Add <code>--root ~/Movies</code> to discover saved <code>.screenstudio</code> projects in that folder; there is no implicit home or configured-project-root search. Screen Studio lets you choose where projects are saved, so an empty result does not prove none exist elsewhere.</p><p>Root symlinks and symlinked ancestors are refused. Traversal skips links, foreign devices, Git metadata, dependency trees, <code>target</code>, <code>.build</code>, <code>.next</code>, <code>.turbo</code>, virtual environments, <code>.cache</code>, and packaged apps/frameworks/photo libraries/archives. At most 100 bundles retain individual detail; an aggregate row keeps the omitted count and measured bytes. Errors are bounded, disclosed and return nonzero. Hard links count once across the report; APFS clones may share blocks. This is a live metadata snapshot, not deletion authority. All findings are informational; no mutation flag is accepted and no journal is written. Saved projects and application data stay in place.</p><pre tabindex="0"><code>devtrim app-storage --json
+devtrim app-storage --root ~/Movies --json</code></pre></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">uninstall</span><span class="cmd-desc">paths named for an app bundle id</span><span class="pill g">READ-ONLY</span></summary>

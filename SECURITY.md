@@ -27,6 +27,20 @@ independent operating-system metric, not the mapped inventory subtracted from ca
 
 ## Local data lifecycle
 
+`app-storage` is a metadata-only report, never deletion authority. It measures
+four known WhatsApp Group Containers, separating media, the ChatStorage database
+and its WAL/SHM files, and other data. It does not open message, media or database
+contents, infer duplicate/orphan attachments, or test whether they can be removed.
+Screen Studio discovery requires explicit `--root` paths; configured and default
+project roots do not start an application-data search. Saved `.screenstudio`
+bundles are source projects, not cache. Symlink roots/ancestors are refused;
+traversal skips links, foreign devices and the documented excluded directories.
+The path-based walk is a live snapshot, not a transaction or a guarantee against
+concurrent filesystem changes. Partial measurements return nonzero, retained
+detail/errors are bounded, and omitted measured bytes stay in the total. Reports
+use only `Action::Info`, never enter the cleanup registry/TUI or write a journal,
+and reject every mutation flag. No app-data cleanup boundary is added.
+
 The owner controls report and export retention. A dashboard is saved at the
 printed path (an explicit output or a `devtrim-dashboard-<random>.html` file in
 the OS temporary directory); devtrim does not schedule its removal. Reports,

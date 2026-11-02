@@ -4,6 +4,13 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [0.12.6] - Unreleased
 
+### Added
+- `app-storage`: metadata-only WhatsApp storage reporting, plus saved Screen
+  Studio project discovery under explicit `--root` paths. Allocated bytes count
+  hard links once; partial reads return nonzero and bounded detail retains
+  omitted measured bytes. Every finding is informational and mutation flags
+  are refused; neither media nor projects gain cleanup authority.
+
 ### Changed
 - The landing page links the stable 0.12.5 release.
 

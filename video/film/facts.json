@@ -755,8 +755,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html"
  },
  {
-  "id": "f0f3ecc58",
-  "text": "v0.12.5 Ratatui TUI Apache-2.0 Trash-first deletion Protected-path denylist --json",
+  "id": "fe1ff519f",
+  "text": "v0.12.6 Ratatui TUI Apache-2.0 Trash-first deletion Protected-path denylist --json",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html"
  },
  {
@@ -1137,6 +1137,31 @@
  {
   "id": "f2799f411",
   "text": "Recursively lists iCloud Drive files ≥ 100 MB with logical size and a local-allocation estimate. Sparse files, compression, clones, and dataless placeholders can make allocated bytes differ from logical bytes; devtrim does not claim to know upload progress.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "fc2d56efa",
+  "text": "app-storageWhatsApp data and saved Screen Studio projectsREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f6a6d52dc",
+  "text": "Measures regular-file blocks in four known WhatsApp Group Containers, separating Message/Media, ChatStorage.sqlite and its WAL/SHM files, and other data. It never opens their contents or decides which attachments are duplicates, unreferenced or disposable. Add --root ~/Movies to discover saved .screenstudio projects in that folder; there is no implicit home or configured-project-root search. Screen Studio lets you choose where projects are saved, so an empty result does not prove none exist elsewhere.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f6fe3c7cf",
+  "text": "Root symlinks and symlinked ancestors are refused. Traversal skips links, foreign devices, Git metadata, dependency trees, target, .build, .next, .turbo, virtual environments, .cache, and packaged apps/frameworks/photo libraries/archives. At most 100 bundles retain individual detail; an aggregate row keeps the omitted count and measured bytes. Errors are bounded, disclosed and return nonzero. Hard links count once across the report; APFS clones may share blocks. This is a live metadata snapshot, not deletion authority. All findings are informational; no mutation flag is accepted and no journal is written. Saved projects and application data stay in place.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f060d03c8",
+  "text": "devtrim app-storage --json",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "fc1cb1bbf",
+  "text": "devtrim app-storage --root ~/Movies --json",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
  },
  {
