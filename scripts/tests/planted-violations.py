@@ -1410,7 +1410,7 @@ CASES = (
         # Complete reads now refuse before the legacy errors-list check.
         # Swallowing that refusal must not look like an empty, healthy history.
         before="crate::journal::read_complete_history(&ctx.journal_path)",
-        after="crate::journal::read_complete_history(&ctx.journal_path).or_else(|_| Ok::<_, anyhow::Error>(crate::journal::History { entries: Vec::new(), errors: Vec::new() }))",
+        after="crate::journal::read_complete_history(&ctx.journal_path).or_else(|_| Ok::<_, anyhow::Error>(crate::journal::History { entries: Vec::new(), errors: Vec::new(), truncated: false }))",
         tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
         marker="PV trash/incomplete-history",
     ),
