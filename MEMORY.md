@@ -7,10 +7,10 @@ report of known WhatsApp containers and saved Screen Studio projects under
 explicit roots. Scope and acceptance: `docs/specs/app-storage/spec.md`.
 All findings are informational; this adds no deletion authority. Physical file
 identity prevents double counting through hard links, firmlinks and overlapping
-application views. Production remains 0.12.5. Cross-model acceptance is blocked
-by unavailable Opus review access; the owner's request to skip CI/beta also
-conflicts with the existing release procedure. Do not merge or publish this
-candidate without resolving those gates. Evidence: the current journal and
+application views. Production remains 0.12.5 pending verified promotion. The owner
+authorized Astra as the different-model reviewer and the existing CI/beta release
+path on 2026-11-02. Complete independent acceptance and the deploy gate before
+merging or publishing. Evidence: the current journal and
 `.scratch/app-storage-delivery/`.
 
 ## Current production state (0.12.5)

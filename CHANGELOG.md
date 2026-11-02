@@ -2,7 +2,7 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.12.6] - Unreleased
+## [0.12.6] - 2026-11-02
 
 ### Added
 - `app-storage`: metadata-only WhatsApp storage reporting, plus saved Screen
