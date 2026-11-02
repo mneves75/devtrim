@@ -24,6 +24,16 @@ Launch delegated build tools with `CARGO_HOME`, `NPM_CONFIG_CACHE`,
 `UV_CACHE_DIR` and `UV_TOOL_DIR` scoped inside this checkout and inherited by
 child commands; do not rely on a worker remembering per-command cache flags.
 
+With an isolated `CARGO_HOME`, a `rustup run` label alone is not compiler proof.
+Set `RUSTC` and `RUSTDOC` from `rustup which` for the tested toolchain, prepend
+that toolchain's bin directory to `PATH`, and record `"$RUSTC" -Vv`. Select them
+again for the MSRV or nightly; an exported release compiler would override them.
+
+Every version bump updates the local `devtrim` entry in both `Cargo.lock` and
+`fuzz/Cargo.lock`. Before tagging, with the release compiler selected, run
+`RUSTFLAGS='--cfg fuzzing' rustup run 1.98.1 cargo check --locked --manifest-path fuzz/Cargo.toml --bins`.
+This catches stale lock metadata early; it does not replace the five nightly fuzz runs.
+
 ## Agent execution
 
 For Fable 5.1 and GPT-6 Astra, specify the outcome, preserved boundaries,

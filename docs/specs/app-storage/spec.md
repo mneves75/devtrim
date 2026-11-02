@@ -1,6 +1,7 @@
 # Read-only application storage inventory
 
-Status: implementation authorized by the owner on 2026-11-02.
+Status: shipped in immutable v0.12.6 on 2026-11-02; implementation was authorized
+by the owner that day. Release: https://github.com/mneves75/devtrim/releases/tag/v0.12.6.
 Baseline: a35f767950e592539640a578a1458fc30578f785.
 
 ## Outcome
