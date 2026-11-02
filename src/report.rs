@@ -395,7 +395,66 @@ struct Response<'a> {
     findings: &'a [Finding],
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<&'a Summary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    results: Option<&'a [ItemResult]>,
     errors: &'a [String],
+}
+
+/// What became of one actionable finding in an apply. `ok` and `error`
+/// mirror the result journaled for its exact target or command; a finding
+/// its category refused, or never reached, before journaling is
+/// `not_attempted`, and the reason, when there is one, is in `errors`.
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
+pub struct ItemResult {
+    /// Index into the document's `findings`.
+    pub finding: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One result per actionable finding, in plan order, joined to this run's
+/// journal results by the same target path or argv the journal recorded.
+pub(crate) fn item_results(
+    findings: &[Finding],
+    records: &[crate::journal::JournalRecord],
+) -> Vec<ItemResult> {
+    findings
+        .iter()
+        .enumerate()
+        .filter(|(_, finding)| finding.action.is_actionable())
+        .map(|(index, finding)| {
+            let target = finding
+                .target()
+                .map(|target| target.to_string_lossy().into_owned());
+            let argv = finding.command_authority().map(|authority| {
+                let (program, args) = authority.parts();
+                std::iter::once(program.to_owned())
+                    .chain(args)
+                    .collect::<Vec<_>>()
+            });
+            let journaled = |record: &&crate::journal::JournalRecord| match finding.action {
+                Action::Command { .. } => argv.is_some() && record.argv == argv,
+                _ => target.is_some() && record.target == target && record.argv.is_none(),
+            };
+            let mut matched = records.iter().filter(journaled).peekable();
+            let (status, error) = if matched.peek().is_none() {
+                ("not_attempted", None)
+            } else if let Some(failed) = matched.find(|record| record.error.is_some()) {
+                ("error", failed.error.clone())
+            } else {
+                ("ok", None)
+            };
+            ItemResult {
+                finding: index,
+                path: finding.path.clone(),
+                status,
+                error,
+            }
+        })
+        .collect()
 }
 
 pub fn gb(bytes: u64) -> String {
@@ -678,13 +737,36 @@ pub fn print_json(
     summary: Option<&Summary>,
     errors: &[String],
 ) -> std::io::Result<()> {
-    let response = Response {
+    write_response(&Response {
         operation,
         applied,
         findings,
         summary,
+        results: None,
         errors,
-    };
+    })
+}
+
+/// The document of an apply that started: `results` says what became of
+/// each actionable finding.
+pub fn print_apply_json(
+    operation: &str,
+    findings: &[Finding],
+    summary: Option<&Summary>,
+    results: &[ItemResult],
+    errors: &[String],
+) -> std::io::Result<()> {
+    write_response(&Response {
+        operation,
+        applied: true,
+        findings,
+        summary,
+        results: Some(results),
+        errors,
+    })
+}
+
+fn write_response(response: &Response) -> std::io::Result<()> {
     let mut output = serde_json::to_string_pretty(&response)
         .unwrap_or_else(|_| r#"{"operation":"unknown","applied":false,"findings":[],"errors":["serialization failed"]}"#.into())
         .into_bytes();
@@ -708,6 +790,55 @@ pub fn write_stdout(output: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Commands join by their exact argv: the same program against another
+    /// Docker endpoint is a different item, and a report-only row gets none.
+    #[test]
+    fn item_results_join_commands_by_exact_argv() {
+        let docker = |host: &str| {
+            Finding::command(
+                "docker images",
+                1,
+                "note",
+                5,
+                CommandAuthority::DockerImagePrune { host: host.into() },
+            )
+        };
+        let findings = [
+            Finding::new("report", None, 1, "note", 1, Action::Info),
+            docker("unix:///a.sock"),
+            docker("unix:///b.sock"),
+            docker("unix:///c.sock"),
+        ];
+        let result = |host: &str, error: Option<&str>| {
+            let (program, args) = CommandAuthority::DockerImagePrune { host: host.into() }.parts();
+            let mut record =
+                crate::journal::JournalRecord::command_attempt("docker", program, &args, 1);
+            record.phase = "result".into();
+            record.status = Some(if error.is_some() { "error" } else { "ok" }.into());
+            record.error = error.map(str::to_owned);
+            record
+        };
+        let records = [
+            result("unix:///a.sock", None),
+            result("unix:///b.sock", Some("daemon refused")),
+        ];
+
+        let results = item_results(&findings, &records);
+
+        let summary: Vec<_> = results
+            .iter()
+            .map(|item| (item.finding, item.status, item.error.as_deref()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (1, "ok", None),
+                (2, "error", Some("daemon refused")),
+                (3, "not_attempted", None)
+            ]
+        );
+    }
 
     #[test]
     fn finding_preserves_json_text_and_escapes_only_for_terminals() {

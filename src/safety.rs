@@ -66,6 +66,10 @@ pub struct Ctx {
     /// Journal failures observed after a mutation already succeeded; drained
     /// into the apply outcome so automation sees them with a nonzero status.
     pub(crate) journal_errors: Mutex<Vec<String>>,
+    /// Every journaled result of this run, in order, kept even when the
+    /// result record itself could not be written: the apply document reports
+    /// each finding's outcome from these.
+    pub(crate) apply_results: Mutex<Vec<crate::journal::JournalRecord>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +131,7 @@ impl Ctx {
             },
             diagnostics: Mutex::new(Vec::new()),
             journal_errors: Mutex::new(Vec::new()),
+            apply_results: Mutex::new(Vec::new()),
         };
         for warning in root_warnings {
             ctx.diagnostic("warn", warning);
@@ -178,6 +183,22 @@ impl Ctx {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(message);
+    }
+
+    pub(crate) fn record_apply_result(&self, record: crate::journal::JournalRecord) {
+        self.apply_results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(record);
+    }
+
+    pub(crate) fn take_apply_results(&self) -> Vec<crate::journal::JournalRecord> {
+        std::mem::take(
+            &mut *self
+                .apply_results
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     pub(crate) fn take_journal_errors(&self) -> Vec<String> {
@@ -2659,6 +2680,7 @@ mod tests {
             diagnostic_output: DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
 
         let error = gate(9, &ctx, &[]).unwrap_err();

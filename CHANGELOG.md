@@ -8,6 +8,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - The landing page links the stable 0.12.4 release.
 
 ### Fixed
+- The apply JSON says what became of each item. It said `applied: true` with a summary, and which items went was only in the journal. It now carries `results`: one entry per actionable finding, with `ok` or `error` taken from the journaled result and `not_attempted` for an item refused before the journal, such as a uv cache in use. An apply that stops with an error keeps its `results`, since it may already have removed items.
 - `devtrim history` says when it cut the list. It shows the newest 20 entries, so an apply of 21 items looked as if its first item never ran. The human list now ends with a line naming the limit and how to see more, and the JSON document gains `truncated`.
 - `release-policy.sh` now counts the release job that runs it as a gate, so `publish` has to depend on it. Before, moving the policy step into a side job that `publish` never waits on passed the check.
 

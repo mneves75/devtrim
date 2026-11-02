@@ -887,6 +887,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
 
         let outcome = Caches.apply(&[finding], &ctx).unwrap();
@@ -971,6 +972,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
         let entry = |path: PathBuf| {
             Finding::new(
@@ -1071,6 +1073,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
         let plan = || {
             let mut findings = vec![cache_finding("uv package cache", uv.clone(), 6, 3)];
@@ -1131,6 +1134,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
         let mut plan = vec![cache_finding(
             "uv package cache",
@@ -1192,6 +1196,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
 
         let outcome = Caches.apply(&[finding], &ctx).unwrap();

@@ -241,7 +241,9 @@ fn finish_record_at<T>(
     result: Result<T>,
 ) -> Result<T> {
     let record = JournalRecord::result(attempt, &result);
-    if let Err(journal_error) = append_at(location, &record) {
+    let appended = append_at(location, &record);
+    ctx.record_apply_result(record);
+    if let Err(journal_error) = appended {
         return preserve_operation_result(ctx, result, journal_error);
     }
     result
@@ -1186,6 +1188,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
         let record =
             JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
@@ -1221,6 +1224,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
 
         symlink(&target, &path).unwrap();
@@ -1346,6 +1350,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
         let record =
             JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
@@ -1431,6 +1436,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
 
@@ -1505,6 +1511,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
         let record =
             JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
@@ -1557,6 +1564,7 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Capture,
             diagnostics: Default::default(),
             journal_errors: Default::default(),
+            apply_results: Default::default(),
         };
         for sequence in 0..50 {
             let target = PathBuf::from(format!("/tmp/writer-{writer}-{sequence}"));
