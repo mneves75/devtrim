@@ -107,10 +107,8 @@ fn is_local_docker_host(host: &str) -> bool {
 /// Blocks actually allocated on the host, not the logical length.
 ///
 /// A VM disk image is sparse, so the two differ by orders of magnitude: a real
-/// OrbStack image measured 926 GB logical against 35 GB allocated. The crate's
-/// `dir_size` convention is documented as logical bytes, which is right for
-/// ordinary directories and wrong by ~26x here, so this measurement is separate
-/// and deliberate. Returns `None` when the path is absent or is not a regular
+/// OrbStack image measured 926 GB logical against 35 GB allocated, which is
+/// why every devtrim size is allocated bytes. Returns `None` when the path is absent or is not a regular
 /// file; a stat failure for a path that does exist fails closed.
 fn allocated_bytes(path: &Path) -> Result<Option<u64>> {
     let metadata = match std::fs::symlink_metadata(path) {
@@ -123,7 +121,7 @@ fn allocated_bytes(path: &Path) -> Result<Option<u64>> {
     if !metadata.file_type().is_file() {
         return Ok(None);
     }
-    super::blocks_bytes(&metadata, path).map(Some)
+    crate::safety::allocated_bytes(&metadata, path).map(Some)
 }
 
 /// Report-only disclosure of the host cost of each present runtime disk image.

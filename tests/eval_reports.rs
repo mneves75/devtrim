@@ -14,7 +14,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::process::Output;
 use std::time::{Duration, SystemTime};
-use support::{Allowed, Sandbox, Tree, json, run, write};
+use support::{Allowed, Sandbox, Tree, json, on_disk, run, write};
 
 fn sandbox(name: &str) -> Sandbox {
     Sandbox::in_target(name)
@@ -53,9 +53,12 @@ fn findings(document: &Value) -> Vec<(PathBuf, u64)> {
 fn eval_largest_ranks_fixture_totals_and_honors_top() {
     let sandbox = sandbox("report-largest");
     let root = sandbox.path().join("work");
-    write(&root.join("large/deep/blob"), &"x".repeat(73));
-    write(&root.join("large/direct"), &"x".repeat(29));
-    write(&root.join("small/blob"), &"x".repeat(11));
+    // Sizes span many blocks, so the ranking stays strict on disk.
+    write(&root.join("large/deep/blob"), &"x".repeat(73 * 1024));
+    write(&root.join("large/direct"), &"x".repeat(29 * 1024));
+    write(&root.join("small/blob"), &"x".repeat(11 * 1024));
+    let deep = on_disk(&[&root.join("large/deep/blob")]);
+    let large = deep + on_disk(&[&root.join("large/direct")]);
     symlink(root.join("large"), root.join("alias")).unwrap();
     let before = Tree::snapshot(sandbox.path());
     let output = run(
@@ -72,7 +75,7 @@ fn eval_largest_ranks_fixture_totals_and_honors_top() {
     let document = json(&output);
     assert_eq!(
         findings(&document),
-        vec![(root.join("large"), 102), (root.join("large/deep"), 73)],
+        vec![(root.join("large"), large), (root.join("large/deep"), deep)],
         "PV eval/largest-ranking"
     );
     successful(&output);
@@ -87,7 +90,7 @@ fn eval_largest_ranks_fixture_totals_and_honors_top() {
             "--json",
         ],
     );
-    assert_eq!(findings(&json(&one)), vec![(root.join("large"), 102)]);
+    assert_eq!(findings(&json(&one)), vec![(root.join("large"), large)]);
     successful(&one);
     unchanged(&before, &sandbox);
 }
@@ -157,9 +160,18 @@ fn eval_leftovers_reports_exact_hints_and_sizes() {
     let mut actual = findings(&json(&output));
     actual.sort();
     let mut expected = vec![
-        (root.join("codex-worktree.aB1234"), 31),
-        (root.join("project/.supergoal/evidence"), 17),
-        (root.join("project/.supergoal/perf"), 7),
+        (
+            root.join("codex-worktree.aB1234"),
+            on_disk(&[&root.join("codex-worktree.aB1234/blob")]),
+        ),
+        (
+            root.join("project/.supergoal/evidence"),
+            on_disk(&[&root.join("project/.supergoal/evidence/blob")]),
+        ),
+        (
+            root.join("project/.supergoal/perf"),
+            on_disk(&[&root.join("project/.supergoal/perf/blob")]),
+        ),
     ];
     expected.sort();
     assert_eq!(actual, expected, "PV eval/leftovers-hints");
@@ -225,9 +237,9 @@ fn eval_uninstall_attributes_only_exact_bundle_identifier() {
     let mut actual = findings(&json(&output));
     actual.sort();
     let mut expected = vec![
-        (app, "fixture plist read by isolated plutil".len() as u64),
-        (support, 5),
-        (prefs, 5),
+        (app.clone(), on_disk(&[&app.join("Contents/Info.plist")])),
+        (support.clone(), on_disk(&[&support.join("blob")])),
+        (prefs.clone(), on_disk(&[&prefs])),
     ];
     expected.sort();
     assert_eq!(actual, expected, "PV eval/uninstall-identifier");
@@ -298,18 +310,22 @@ fn eval_history_limit_selects_newest_results_across_rotation() {
 fn eval_analyze_measures_children_and_discloses_partial_lower_bounds() {
     let sandbox = sandbox("report-analyze");
     let root = sandbox.path().join("browse");
-    write(&root.join("folder/visible"), &"x".repeat(23));
-    write(&root.join("folder/locked/hidden"), &"x".repeat(47));
-    write(&root.join("direct"), &"x".repeat(13));
+    write(&root.join("folder/visible"), &"x".repeat(23 * 1024));
+    write(&root.join("folder/locked/hidden"), &"x".repeat(47 * 1024));
+    write(&root.join("direct"), &"x".repeat(13 * 1024));
     symlink("folder", root.join("alias")).unwrap();
+    let visible = on_disk(&[&root.join("folder/visible")]);
+    let hidden = on_disk(&[&root.join("folder/locked/hidden")]);
+    let direct = on_disk(&[&root.join("direct")]);
+    let alias = on_disk(&[&root.join("alias")]);
     let before = Tree::snapshot(sandbox.path());
     let full = run(&sandbox, &["analyze", root.to_str().unwrap(), "--json"]);
     assert_eq!(
         findings(&json(&full)),
         vec![
-            (root.join("folder"), 70),
-            (root.join("direct"), 13),
-            (root.join("alias"), 6)
+            (root.join("folder"), visible + hidden),
+            (root.join("direct"), direct),
+            (root.join("alias"), alias)
         ]
     );
     successful(&full);
@@ -327,9 +343,9 @@ fn eval_analyze_measures_children_and_discloses_partial_lower_bounds() {
     assert_eq!(
         findings(&document),
         vec![
-            (root.join("folder"), 23),
-            (root.join("direct"), 13),
-            (root.join("alias"), 6)
+            (root.join("folder"), visible),
+            (root.join("direct"), direct),
+            (root.join("alias"), alias)
         ],
         "PV eval/analyze-partial"
     );
@@ -514,7 +530,7 @@ fn eval_scan_human_summarizes_large_categories_and_all_lists_every_target() {
         let path = sandbox
             .path()
             .join(format!("Downloads/eval-installer-{index}.dmg"));
-        write(&path, &"x".repeat((index + 1) * 17));
+        write(&path, &"x".repeat((index + 1) * 17 * 1024));
         std::fs::File::options()
             .write(true)
             .open(path)

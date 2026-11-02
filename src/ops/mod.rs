@@ -117,15 +117,6 @@ pub(crate) fn removal_note(finding: &Finding, subject: impl std::fmt::Display) -
     )
 }
 
-pub(crate) fn blocks_bytes(metadata: &std::fs::Metadata, path: &Path) -> Result<u64> {
-    use std::os::unix::fs::MetadataExt;
-
-    metadata
-        .blocks()
-        .checked_mul(512)
-        .ok_or_else(|| anyhow::anyhow!("allocated size overflow for {}", path.display()))
-}
-
 pub trait Op: Sync {
     fn name(&self) -> &'static str;
     /// Whether the scan walks the configured project roots (`--root`, `roots`,

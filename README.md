@@ -349,8 +349,8 @@ sizes; keep it private when sharing files. Output files are private and an
 explicit `--output` refuses an existing file or symlink.
 
 Available disk space comes from the selected folder's filesystem. Mapped sizes
-are estimated logical bytes, which may differ from physical blocks because of
-APFS clones, hard links and sparse files. Unreadable content is disclosed as a
+are the blocks files hold on disk, each hard-linked file counted once, as `du`
+counts them; APFS clones share blocks yet count in full. Unreadable content is disclosed as a
 partial lower bound; the command still saves the useful report and exits nonzero.
 Symlinks are measured at their own size, and other filesystems are not traversed.
 The overview retains up to six levels and 10,000 entries. Detail beyond that
@@ -660,7 +660,7 @@ output.
 | Candidate set | apply uses exact previewed findings |
 | Category authority | Xcode and toolchain apply reassert exact direct-child targets, and a DerivedData folder holding Swift package checkouts only its directories but `SourcePackages`; `node_modules` apply reasserts its scanner's leaf and ancestor rules |
 | Trash | recoverable by default; permanent mode is explicit |
-| Danger gate | maximum finding score plus aggregate estimated logical bytes |
+| Danger gate | maximum finding score plus aggregate estimated bytes on disk |
 | TUI consent | approval capability must match the current preview, its selection, and the danger requirement of the selected findings; selection can only narrow the preview |
 | Target identity | exact internal `PathBuf` plus preview-time device/inode; display text is never parsed back into authority |
 | Anchored deletion | the sink verifies identity through an open parent-directory handle; permanent deletion continues through that handle and drift refuses |
@@ -677,10 +677,13 @@ output.
 | Terminal output | complete human-facing actions, findings, errors, and notes escape control and bidirectional-control characters before rendering |
 | Release authority | build code is read-only; a separate publisher receives packaged inputs and holds release/OIDC permissions |
 
-Sizes are estimated logical bytes. APFS clones, sparse files, and container-VM
-compaction can make immediately available disk space differ. An estimate may
-differ from physical blocks, but devtrim refuses to invent one when traversal
-or metadata is incomplete.
+Sizes are estimated bytes on disk: the blocks each file holds, as `du` counts
+them, so a sparse file counts what it occupies rather than its length and a
+small file counts a whole block. A hard-linked file counts once within a
+target, yet removal frees nothing while a link outside it remains (a pnpm
+store). APFS clones count in full though they share blocks, and snapshots, the
+Trash and container-VM compaction can keep space from coming back at once.
+devtrim refuses to invent an estimate when traversal or metadata is incomplete.
 
 ## Build and verify
 

@@ -17,7 +17,8 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use support::{
-    Allowed, Interactive, Sandbox, Tree, actionable_targets, assert_journaled, json, run, write,
+    Allowed, Interactive, Sandbox, Tree, actionable_targets, assert_journaled, json, on_disk, run,
+    write,
 };
 
 // ---------- oracle controls ----------
@@ -1515,8 +1516,15 @@ fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_reposit
             .unwrap()
             .to_owned()
     };
-    let gitfile = std::fs::metadata(feature.join(".git")).unwrap().len();
-    assert_eq!(size(&feature), 6 + 101 + gitfile, "{document}");
+    assert_eq!(
+        size(&feature),
+        on_disk(&[
+            &feature.join("README"),
+            &feature.join("untracked.bin"),
+            &feature.join(".git"),
+        ]),
+        "{document}"
+    );
     assert!(note(&feature).contains("branch feature"), "{document}");
     assert!(
         note(&dev.join("app-detached")).contains("detached"),
@@ -1634,7 +1642,7 @@ fn eval_leftovers_reports_ignored_scratch_folders_only() {
     );
     assert_eq!(
         finding_at(&document, &kept.join(".scratch/evidence"))["size_bytes"],
-        13
+        on_disk(&[&kept.join(".scratch/evidence/run.log")])
     );
     assert!(
         finding_at(&document, &kept.join(".scratch/wt-review"))["label"]

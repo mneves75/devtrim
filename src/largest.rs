@@ -18,6 +18,7 @@ pub(crate) fn scan(ctx: &Ctx, top: Option<usize>) -> LargestResult {
 fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
     let mut totals = BTreeMap::<PathBuf, u64>::new();
     let mut skipped = 0usize;
+    let mut usage = crate::safety::DiskUsage::default();
 
     // Overlapping roots (e.g. ~/work and ~/work/project) would count the same
     // files twice; keep only roots not contained in another configured root.
@@ -42,14 +43,18 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
             if !entry.file_type().is_file() {
                 continue;
             }
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
+            let bytes = match entry
+                .metadata()
+                .map_err(anyhow::Error::from)
+                .and_then(|metadata| usage.add(&metadata, entry.path()))
+            {
+                Ok(bytes) => bytes,
                 Err(_) => {
                     skipped = skipped.saturating_add(1);
                     continue;
                 }
             };
-            add_to_shallow_ancestors(root, entry.path(), metadata.len(), &mut totals);
+            add_to_shallow_ancestors(root, entry.path(), bytes, &mut totals);
         }
     }
 
@@ -61,9 +66,9 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
     });
     let limit = top.unwrap_or(20).clamp(1, 100);
     let note = if skipped > 0 {
-        "report-only; sizes are estimated logical bytes and lower bounds: unreadable entries were skipped"
+        "report-only; sizes are estimated allocated bytes and lower bounds: unreadable entries were skipped"
     } else {
-        "report-only; sizes are estimated logical bytes"
+        "report-only; sizes are estimated allocated bytes"
     };
     let findings = ranked
         .into_iter()

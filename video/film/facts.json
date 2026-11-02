@@ -460,8 +460,8 @@
   "link": "https://mneves75.github.io/devtrim/#feat-h"
  },
  {
-  "id": "f19204338",
-  "text": "Read-only report with estimated logical sizes, danger levels, and one-document JSON output for agents.",
+  "id": "f2aa1bc8c",
+  "text": "Read-only report with estimated sizes on disk, danger levels, and one-document JSON output for agents.",
   "link": "https://mneves75.github.io/devtrim/#feat-h"
  },
  {
@@ -825,8 +825,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
  },
  {
-  "id": "f36d73a63",
-  "text": "Measure before cutting. scan is read-only and always free to run. Sizes are estimated logical bytes; APFS clones, sparse files, Trash, and container VMs can differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.",
+  "id": "f70368bfe",
+  "text": "Measure before cutting. scan is read-only and always free to run. Sizes are estimated bytes on disk, as du counts them: a sparse file counts what it occupies, not its length. APFS clones, hard links outside the target, snapshots, Trash, and container VMs can still differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
  },
  {
@@ -1025,8 +1025,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
  },
  {
-  "id": "ff3e2deb3",
-  "text": "size — estimated logical bytes; actual immediately reclaimable space can differ.",
+  "id": "f5259944c",
+  "text": "size — estimated bytes on disk (allocated blocks, each hard-linked file counted once); actual immediately reclaimable space can differ.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
  },
  {
@@ -1105,8 +1105,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
  },
  {
-  "id": "fe0d5a807",
-  "text": "Read-only view of the write-ahead apply journal: what was attempted, what completed, what errored. An attempt without a result is flagged as interrupted. --limit N bounds output; --json emits one {\"operation\":\"history\",\"entries\":[…]} document.",
+  "id": "f599ed7c1",
+  "text": "Read-only view of the write-ahead apply journal: what was attempted, what completed, what errored. An attempt without a result is flagged as interrupted. It shows the newest 20 entries; --limit N changes that, up to 1,000, and when older entries exist the list ends by saying so. --json emits one {\"operation\":\"history\",\"entries\":[…],\"truncated\":false} document.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
  },
  {
@@ -1155,8 +1155,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
  },
  {
-  "id": "f9c184c7a",
-  "text": "devtrim dashboard [PATH] generates a private, self-contained HTML snapshot and opens it in your default browser. The default is your home folder. Use --output disk-map.html --no-open to save to a chosen new file without starting a browser; existing files and symlinks are never overwritten. Explore a responsive treemap, folder breadcrumbs and searchable details beside cleanup previews from the existing categories. Those previews keep their configured project roots: mapping the whole home does not widen cleanup authority. Copied commands start fresh terminal previews; the dashboard never deletes and rejects mutation flags. Available volume space is separate from estimated logical folder sizes. Symlinks are not followed, foreign filesystems are not entered, and unreadable content produces a useful report with disclosed partial lower bounds and a nonzero exit status. There is no server, external asset or telemetry; the HTML contains local paths and should be kept private. Rerun the command to refresh the snapshot.",
+  "id": "fd60ede0a",
+  "text": "devtrim dashboard [PATH] generates a private, self-contained HTML snapshot and opens it in your default browser. The default is your home folder. Use --output disk-map.html --no-open to save to a chosen new file without starting a browser; existing files and symlinks are never overwritten. Explore a responsive treemap, folder breadcrumbs and searchable details beside cleanup previews from the existing categories. Those previews keep their configured project roots: mapping the whole home does not widen cleanup authority. Copied commands start fresh terminal previews; the dashboard never deletes and rejects mutation flags. Available volume space is separate from the estimated folder sizes on disk. Symlinks are not followed, foreign filesystems are not entered, and unreadable content produces a useful report with disclosed partial lower bounds and a nonzero exit status. There is no server, external asset or telemetry; the HTML contains local paths and should be kept private. Rerun the command to refresh the snapshot.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
  },
  {
@@ -1915,13 +1915,13 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
  },
  {
-  "id": "f654d6f03",
-  "text": "an applied document adds \"summary\"; its bytes_trashed_estimate is the part of bytes_freed_estimate moved to Trash and still on disk until the Trash is emptied. If a target fails, errors names each failure and the process exits nonzero; caches, agents, trash-empty, xcode, artifacts, and node-modules continue past a refused item — artifacts and node-modules after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and purge runs its node-modules and artifacts halves independently",
+  "id": "fc8a68923",
+  "text": "an applied document adds \"summary\"; its bytes_trashed_estimate is the part of bytes_freed_estimate moved to Trash and still on disk until the Trash is emptied. It also adds \"results\", one entry per actionable finding in plan order — finding (its index in findings), path, status and, on failure, error — where ok and error repeat what the journal recorded for that item and not_attempted is an item its category refused before journaling, or never reached. If a target fails, errors names each failure and the process exits nonzero; caches, agents, trash-empty, xcode, artifacts, and node-modules continue past a refused item — artifacts and node-modules after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and purge runs its node-modules and artifacts halves independently",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
  },
  {
-  "id": "f3adfbcfe",
-  "text": "devtrim history --json emits its own single document — {\"operation\":\"history\",\"entries\":[…],\"errors\":[…]} — where each entry carries numeric ts, phase, op, action, and either target or the exact argv. Agents can audit exactly what a previous apply attempted and what completed; an attempt without a result means the process was interrupted mid-apply.",
+  "id": "f121cc08d",
+  "text": "devtrim history --json emits its own single document — {\"operation\":\"history\",\"entries\":[…],\"truncated\":false,\"errors\":[…]} — where each entry carries numeric ts, phase, op, action, and either target or the exact argv, and truncated is true when older entries lie beyond --limit. Agents can audit exactly what a previous apply attempted and what completed; an attempt without a result means the process was interrupted mid-apply.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
  },
  {
@@ -2030,8 +2030,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
  },
  {
-  "id": "f14c04ff3",
-  "text": "devtrim reports estimated logical bytes. APFS clones share their blocks, so cloned trees look larger in every devtrim report than the space they hold. Trash is your audit log. Everything cleaned today is restorable from Finder until you empty it.",
+  "id": "f8804552c",
+  "text": "devtrim reports estimated bytes on disk. APFS clones share their blocks, so cloned trees look larger in every devtrim report than the space they hold. Trash is your audit log. Everything cleaned today is restorable from Finder until you empty it.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {

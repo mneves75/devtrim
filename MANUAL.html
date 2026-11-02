@@ -393,7 +393,7 @@ try { const s = localStorage.getItem("devtrim-theme");
   <h2 id="h-philosophy">Philosophy</h2>
   <p class="lead">devtrim exists because cleaning a 900&nbsp;GB Mac by hand is how good data dies. Three rules govern everything it does.</p>
   <ul class="flow">
-    <li><strong>Measure before cutting.</strong> <code>scan</code> is read-only and always free to run. Sizes are estimated logical bytes; APFS clones, sparse files, Trash, and container VMs can differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.</li>
+    <li><strong>Measure before cutting.</strong> <code>scan</code> is read-only and always free to run. Sizes are estimated bytes on disk, as <code>du</code> counts them: a sparse file counts what it occupies, not its length. APFS clones, hard links outside the target, snapshots, Trash, and container VMs can still differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.</li>
     <li><strong>Classify by risk.</strong> Every finding carries a danger score from 1 to 10 that decides how hard you must confirm (see <a href="#danger">Danger scoring</a>).</li>
     <li><strong>Trim with a net.</strong> Filesystem deletions go to macOS Trash by default — recoverable from the Trash (Finder&rsquo;s &ldquo;Put Back&rdquo; may not remember where an item came from). Permanent deletion requires an explicit <code>--shred</code>.</li>
   </ul>
@@ -454,7 +454,7 @@ devtrim clean caches</code></pre>
   <pre data-copy="none" tabindex="0"><code>   3.4 GB  danger:5  DerivedData: MyApp-abcdef  /Users/you/Library/Developer/Xcode/DerivedData/MyApp-abcdef
            └─ build output; rebuilt on next build; action: move to Trash</code></pre>
   <ul class="flow">
-    <li><strong>size</strong> — estimated logical bytes; actual immediately reclaimable space can differ.</li>
+    <li><strong>size</strong> — estimated bytes on disk (allocated blocks, each hard-linked file counted once); actual immediately reclaimable space can differ.</li>
     <li><strong>danger:N</strong> — confirmation weight; colors go green → amber → red.</li>
     <li><strong>path</strong> — exactly what would be affected.</li>
     <li><strong>└─ note</strong> — why removal is safe and how it comes back.</li>
@@ -505,7 +505,7 @@ devtrim clean caches</code></pre>
   </details>
   <details class="card">
     <summary><span class="cmd-name">dashboard</span><span class="cmd-desc">local HTML disk map</span><span class="pill g">READ-ONLY</span></summary>
-    <div class="card-body"><p><code>devtrim dashboard [PATH]</code> generates a private, self-contained HTML snapshot and opens it in your default browser. The default is your home folder. Use <code>--output disk-map.html --no-open</code> to save to a chosen new file without starting a browser; existing files and symlinks are never overwritten. Explore a responsive treemap, folder breadcrumbs and searchable details beside cleanup previews from the existing categories. Those previews keep their configured project roots: mapping the whole home does not widen cleanup authority. Copied commands start fresh terminal previews; <strong>the dashboard never deletes</strong> and rejects mutation flags. Available volume space is separate from estimated logical folder sizes. Symlinks are not followed, foreign filesystems are not entered, and unreadable content produces a useful report with disclosed partial lower bounds and a nonzero exit status. There is no server, external asset or telemetry; the HTML contains local paths and should be kept private. Rerun the command to refresh the snapshot.</p></div>
+    <div class="card-body"><p><code>devtrim dashboard [PATH]</code> generates a private, self-contained HTML snapshot and opens it in your default browser. The default is your home folder. Use <code>--output disk-map.html --no-open</code> to save to a chosen new file without starting a browser; existing files and symlinks are never overwritten. Explore a responsive treemap, folder breadcrumbs and searchable details beside cleanup previews from the existing categories. Those previews keep their configured project roots: mapping the whole home does not widen cleanup authority. Copied commands start fresh terminal previews; <strong>the dashboard never deletes</strong> and rejects mutation flags. Available volume space is separate from the estimated folder sizes on disk. Symlinks are not followed, foreign filesystems are not entered, and unreadable content produces a useful report with disclosed partial lower bounds and a nonzero exit status. There is no server, external asset or telemetry; the HTML contains local paths and should be kept private. Rerun the command to refresh the snapshot.</p></div>
   </details>
   <details class="card">
     <summary><span class="cmd-name">analyze</span><span class="cmd-desc">interactive disk explorer</span><span class="pill g">READ-ONLY</span></summary>
@@ -718,7 +718,7 @@ codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by agents like ~/.c
     <li><strong>Clone data a task changes.</strong> <code>cp -cR &lt;source&gt; &lt;new-path&gt;</code> makes an APFS clone that shares blocks until a file changes; it works only on the same volume, and it copies links as links.</li>
     <li><strong>Share read-only data once.</strong> Keep one copy and reach it through an absolute symlink.</li>
   </ul>
-  <div class="note">devtrim reports estimated logical bytes. APFS clones share their blocks, so cloned trees look larger in every devtrim report than the space they hold.</div>
+  <div class="note">devtrim reports estimated bytes on disk. APFS clones share their blocks, so cloned trees look larger in every devtrim report than the space they hold.</div>
 
   <div class="note"><strong>Trash is your audit log.</strong> Everything cleaned today is restorable from Finder until you empty it.</div>
 </section>

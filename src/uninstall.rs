@@ -260,7 +260,7 @@ pub(crate) fn matches_identifier_file(name: &str, identifier: &str, extension: &
         .is_some_and(|stem| stem == identifier)
 }
 
-/// Logical bytes under `path` and how many entries could not be read. A
+/// Allocated bytes under `path` and how many entries could not be read. A
 /// protected folder inside a container lowers that one size to a disclosed
 /// lower bound instead of hiding every path the report found.
 fn measure(path: &Path) -> Result<(u64, usize)> {
@@ -270,7 +270,7 @@ fn measure(path: &Path) -> Result<(u64, usize)> {
         let measured = crate::safety::measure_lenient(path, &Default::default());
         Ok((measured.bytes, measured.unread))
     } else {
-        Ok((metadata.len(), 0))
+        Ok((crate::safety::allocated_bytes(&metadata, path)?, 0))
     }
 }
 

@@ -11,7 +11,7 @@ mod support;
 use serde_json::Value;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::process::Command;
-use support::{Allowed, Sandbox, Tree, git_activity, json, run, write};
+use support::{Allowed, Sandbox, Tree, git_activity, json, on_disk, run, write};
 
 /// Under `target`: a home in the temporary folder resolves inside the
 /// protected `/private/var`, where no cleanup preview offers anything.
@@ -238,13 +238,17 @@ fn offline_snapshot_maps_real_bytes_without_mutating_the_inventory() {
         metadata["root"],
         mapped.canonicalize().unwrap().to_str().unwrap()
     );
-    assert_eq!(metadata["inventory"]["bytes"], 8);
+    let output_bin = on_disk(&[&mapped.join("project/output.bin")]);
+    assert_eq!(
+        metadata["inventory"]["bytes"],
+        output_bin + on_disk(&[&mapped.join("notes.txt")])
+    );
     assert!(
         metadata["inventory"]["children"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|entry| entry["name"] == "project" && entry["bytes"] == 5)
+            .any(|entry| entry["name"] == "project" && entry["bytes"] == output_bin)
     );
     let document = std::fs::read_to_string(&output).unwrap();
     assert_eq!(embedded(&document)["inventory"], metadata["inventory"]);
@@ -280,7 +284,8 @@ fn recommendations_use_category_owners_and_stay_inside_the_map() {
         String::from_utf8_lossy(&result.stdout)
     );
     let metadata = json(&result);
-    assert_eq!(metadata["inventory"]["bytes"], 13);
+    let mapped_bytes = on_disk(&[&mapped.join("hub/weights.bin"), &mapped.join("token")]);
+    assert_eq!(metadata["inventory"]["bytes"], mapped_bytes);
     let categories = metadata["recommendations"]["categories"]
         .as_array()
         .unwrap();
@@ -295,7 +300,10 @@ fn recommendations_use_category_owners_and_stay_inside_the_map() {
         findings[0]["path"],
         mapped.join("hub").canonicalize().unwrap().to_str().unwrap()
     );
-    assert_eq!(findings[0]["bytes"], 7);
+    assert_eq!(
+        findings[0]["bytes"],
+        on_disk(&[&mapped.join("hub/weights.bin")])
+    );
     assert_eq!(findings[0]["kind"], "preview");
     assert!(!metadata["recommendations"].to_string().contains("--apply"));
     before
@@ -324,7 +332,7 @@ fn recommendations_use_category_owners_and_stay_inside_the_map() {
             .iter()
             .any(|error| error.as_str().unwrap().contains("simulators"))
     );
-    assert_eq!(data["inventory"]["bytes"], 13);
+    assert_eq!(data["inventory"]["bytes"], mapped_bytes);
     assert_eq!(data["coverage"]["partial"], false);
     assert_eq!(
         embedded(&std::fs::read_to_string(failed_output).unwrap())["errors"],
@@ -373,7 +381,7 @@ fn output_preservation_control(linked: bool, marker: &str) {
     assert!(control.status.success());
     assert_eq!(
         embedded(&std::fs::read_to_string(&control_path).unwrap())["inventory"]["bytes"],
-        5
+        on_disk(&[&mapped.join("keep")])
     );
     let victim = sandbox.path().join("original.html");
     write(&victim, "original bytes must survive");
@@ -440,7 +448,7 @@ fn dashboard_mutation_flags_refuse_before_any_work() {
     assert!(control.status.success());
     assert_eq!(
         embedded(&std::fs::read_to_string(&control_path).unwrap())["inventory"]["bytes"],
-        5
+        on_disk(&[&mapped.join("keep")])
     );
     let before = Tree::snapshot(sandbox.path());
     for (index, flag) in ["--apply", "--yes", "-y", "--yolo", "--shred"]
@@ -514,7 +522,12 @@ fn partial_inventory_keeps_readable_bytes_and_does_not_follow_symlinks() {
     assert!(!result.status.success());
     let data = json(&result);
     assert_eq!(data["coverage"]["partial"], true);
-    assert_eq!(data["inventory"]["bytes"], 14);
+    // The link counts as itself, never as the 8 KiB it points at.
+    let link = on_disk(&[&mapped.join("linked")]);
+    assert_eq!(
+        data["inventory"]["bytes"],
+        on_disk(&[&mapped.join("visible")]) + link
+    );
     assert!(data["coverage"]["errors"].to_string().contains("locked"));
     let children = data["inventory"]["children"].as_array().unwrap();
     assert!(
@@ -524,7 +537,7 @@ fn partial_inventory_keeps_readable_bytes_and_does_not_follow_symlinks() {
     );
     assert!(children.iter().any(|entry| entry["name"] == "linked"
         && entry["kind"] == "symlink"
-        && entry["bytes"] == 10));
+        && entry["bytes"] == link));
     assert_eq!(
         embedded(&std::fs::read_to_string(output).unwrap())["coverage"]["partial"],
         true
@@ -678,7 +691,7 @@ fn hostile_paths_remain_inert_data_and_human_errors_are_escaped() {
         leaf["path"],
         hostile.canonicalize().unwrap().to_str().unwrap()
     );
-    assert_eq!(leaf["bytes"], 7);
+    assert_eq!(leaf["bytes"], on_disk(&[&hostile]));
     let bad_output = sandbox
         .path()
         .join("missing\u{1b}\u{202e}")
@@ -719,14 +732,18 @@ fn depth_and_node_budgets_summarize_detail_without_losing_bytes() {
     );
     assert!(result.status.success());
     let data = json(&result);
-    assert_eq!(data["inventory"]["bytes"], 10);
+    let deep = on_disk(&[&mapped.join("a/b/c/d/e/f/g/h/i/deep")]);
+    assert_eq!(
+        data["inventory"]["bytes"],
+        deep + on_disk(&[&mapped.join("shallow")])
+    );
     assert_eq!(data["coverage"]["partial"], false);
     assert_eq!(data["coverage"]["summarized_entries"], 4);
     let mut directory = &data["inventory"];
     for _ in 0..6 {
         directory = &directory["children"][0];
     }
-    assert_eq!(directory["summarized_bytes"], 7);
+    assert_eq!(directory["summarized_bytes"], deep);
     assert_eq!(directory["children"].as_array().unwrap().len(), 0);
 
     let wide = sandbox.path().join("wide");
@@ -749,7 +766,8 @@ fn depth_and_node_budgets_summarize_detail_without_losing_bytes() {
     );
     assert!(result.status.success());
     let data = json(&result);
-    assert_eq!(data["inventory"]["bytes"], 131_072);
+    let last = on_disk(&[&wide.join("z-last")]);
+    assert_eq!(data["inventory"]["bytes"], last);
     assert!(data["coverage"]["retained_nodes"].as_u64().unwrap() <= 10_000);
     assert!(data["coverage"]["summarized_entries"].as_u64().unwrap() > 0);
     assert_eq!(data["coverage"]["partial"], false);
@@ -776,14 +794,14 @@ fn depth_and_node_budgets_summarize_detail_without_losing_bytes() {
     );
     assert!(result.status.success());
     let data = json(&result);
-    assert_eq!(data["inventory"]["bytes"], 131_072);
+    assert_eq!(data["inventory"]["bytes"], last);
     assert!(data["coverage"]["retained_nodes"].as_u64().unwrap() <= 10_000);
     assert!(
         data["inventory"]["children"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|node| node["name"] == "z-important" && node["bytes"] == 131_072),
+            .any(|node| node["name"] == "z-important" && node["bytes"] == last),
         "a crowded earlier folder must not consume the top-level overview"
     );
 }
@@ -819,7 +837,10 @@ fn creating_a_dashboard_never_rotates_an_existing_apply_journal() {
         "{}",
         String::from_utf8_lossy(&result.stdout)
     );
-    assert_eq!(json(&result)["inventory"]["bytes"], 1);
+    assert_eq!(
+        json(&result)["inventory"]["bytes"],
+        on_disk(&[&mapped.join("a")])
+    );
     before
         .diff(&Tree::snapshot(&journal_parent), &Allowed::default())
         .unwrap();
@@ -845,7 +866,7 @@ fn skipped_default_root_warning_is_kept_in_the_offline_report() {
     );
     assert!(result.status.success());
     let data = json(&result);
-    assert_eq!(data["inventory"]["bytes"], 5);
+    assert_eq!(data["inventory"]["bytes"], on_disk(&[&mapped.join("data")]));
     let warnings = data["recommendations"]["diagnostics"].as_array().unwrap();
     assert!(
         warnings.iter().any(|warning| warning
