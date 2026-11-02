@@ -14,6 +14,7 @@
 
 mod analyze;
 pub mod app;
+mod app_storage;
 mod cli;
 mod dashboard;
 mod journal;

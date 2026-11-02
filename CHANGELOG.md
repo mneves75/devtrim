@@ -2,7 +2,22 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [0.12.6] - Unreleased
+## [0.12.6] - 2026-11-02
+
+### Added
+- `app-storage`: metadata-only WhatsApp storage reporting, plus saved Screen
+  Studio project discovery under explicit `--root` paths. Allocated bytes count
+  each physical file once, including aliases of overlapping roots; partial reads
+  return nonzero and bounded detail retains omitted measured bytes.
+  Every finding is informational and mutation flags
+  are refused; neither media nor projects gain cleanup authority.
+
+### Fixed
+- `app-storage` preserves existing apply journals and their rotations. Explicit
+  child roots remain discoverable when a parent root cannot be enumerated;
+  physical identity still prevents overlapping measurements from being counted twice.
+- A foreign-device entry no longer hides same-device siblings from WhatsApp
+  or Screen Studio inventory; the filesystem boundary still remains excluded.
 
 ### Changed
 - The landing page links the stable 0.12.5 release.

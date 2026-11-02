@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.12.5.
+This source tree and its packaged documentation describe devtrim v0.12.6.
 
 ## Install
 
@@ -98,6 +98,8 @@ devtrim clean installers --apply -y       # stale installer archives in Download
 devtrim clean agents --apply -y           # agent caches + older Codex releases + stale session history
 devtrim clean leftovers                   # report-only hints and ignored .scratch folders
 devtrim worktrees                         # report-only: linked worktrees and their sizes
+devtrim app-storage                       # report-only: WhatsApp storage, metadata only
+devtrim app-storage --root ~/Movies       # also find saved Screen Studio projects here
 devtrim icloud                            # large iCloud Drive files and local allocation
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
 devtrim trash-empty --confirm=14 --apply  # perform the verified purge
@@ -331,6 +333,26 @@ lists each one in `errors` and exits nonzero, as quitting the explorer does.
 health score that **names every input it could not read** rather than scoring
 over the gap. Memory used is stated as `active + wired + compressed`: counting
 macOS's reclaimable inactive pages as used reports a healthy machine at 96%.
+
+### Application storage without cleanup
+
+`devtrim app-storage` measures four known WhatsApp Group Containers using
+metadata only: media, the ChatStorage database and WAL/SHM files, and other data.
+It never reads messages or decides which attachments are duplicates or disposable.
+`devtrim app-storage --root ~/Movies` also discovers saved `.screenstudio`
+projects under that explicit root; default/configured project roots are not
+searched. Screen Studio allows custom project locations, so an empty report
+does not establish absence elsewhere. Saved projects are source data, not cache.
+
+The report rejects every mutation flag and preserves existing journals. Both
+inventories refuse linked roots/ancestors and skip links and other devices.
+Screen Studio discovery and bundle measurement also skip Git metadata, dependency/build
+trees, virtual environments, `.cache` and packaged apps/frameworks/photo libraries/
+archives. Its scope row names these exclusions. At most 100 bundles keep individual
+detail; an aggregate retains omitted measured bytes. Errors are bounded, disclosed
+and return nonzero. Allocated bytes count each physical file once across the report,
+including hard links and aliases of overlapping roots;
+APFS clones can still share blocks. It is a live snapshot, never deletion authority.
 
 ### HTML disk map
 

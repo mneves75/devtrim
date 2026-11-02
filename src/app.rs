@@ -101,6 +101,7 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<(&'static str, String)> {
         Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),
         Some(cli::Command::Largest { .. }) => ("largest", false, false, false, false),
         Some(cli::Command::Worktrees) => ("worktrees", false, false, false, false),
+        Some(cli::Command::AppStorage) => ("app-storage", false, false, false, false),
         Some(cli::Command::History { .. }) => ("history", false, false, false, false),
         Some(cli::Command::Completions { .. }) => ("completions", false, false, false, false),
         Some(cli::Command::Manpage) => ("manpage", false, false, false, false),
@@ -182,6 +183,7 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
         Some("uninstall") => "uninstall",
         Some("largest") => "largest",
         Some("worktrees") => "worktrees",
+        Some("app-storage") => "app-storage",
         Some("history") => "history",
         Some("completions") => "completions",
         Some("manpage") => "manpage",
@@ -398,6 +400,22 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             }
         }
         cli::Command::Worktrees => run_worktrees(&ctx),
+        cli::Command::AppStorage => {
+            let result = crate::app_storage::report(&ctx.home, &cli.roots);
+            if ctx.json {
+                report::print_json("app-storage", false, &result.findings, None, &result.errors)?;
+            } else {
+                report::print_human(&result.findings)?;
+                for error in &result.errors {
+                    ctx.diagnostic("warn", error.clone());
+                }
+            }
+            Ok(if result.errors.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
         cli::Command::Optimize { ref tasks } => {
             let operation = ops::optimize::Optimize::new(tasks, cli.apply)?;
             run_op(&operation, &cli, &ctx)

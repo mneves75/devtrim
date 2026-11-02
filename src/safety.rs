@@ -100,7 +100,7 @@ impl Ctx {
         let journal_path = journal_path(&home);
         let journal_warnings = if matches!(
             cli.command.as_ref(),
-            Some(crate::cli::Command::Dashboard { .. })
+            Some(crate::cli::Command::Dashboard { .. } | crate::cli::Command::AppStorage)
         ) {
             Vec::new()
         } else {

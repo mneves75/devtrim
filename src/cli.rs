@@ -85,6 +85,8 @@ pub enum Command {
     },
     /// List each repository's linked worktrees with their sizes (report-only)
     Worktrees,
+    /// Measure WhatsApp data and Screen Studio projects; never deletes anything
+    AppStorage,
     /// Run macOS maintenance tasks: caches the system rebuilds on demand
     Optimize {
         /// Task to run; repeatable. Default: every task
