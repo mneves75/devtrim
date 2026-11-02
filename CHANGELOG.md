@@ -2,6 +2,11 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [0.12.6] - Unreleased
+
+### Changed
+- The landing page links the stable 0.12.5 release.
+
 ## [0.12.5] - 2026-11-02
 
 ### Changed
