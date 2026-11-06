@@ -1,7 +1,7 @@
 //! CLI application flow.
 
 use crate::{
-    analyze, cli, dashboard, journal, largest, ops, process, report, safety, status, tui,
+    analyze, cli, dashboard, journal, largest, ops, process, report, safety, secrets, status, tui,
     uninstall, worktrees,
 };
 use anyhow::{Context, Result};
@@ -102,6 +102,8 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<(&'static str, String)> {
         Some(cli::Command::Largest { .. }) => ("largest", false, false, false, false),
         Some(cli::Command::Worktrees) => ("worktrees", false, false, false, false),
         Some(cli::Command::AppStorage) => ("app-storage", false, false, false, false),
+        Some(cli::Command::Duplicates { .. }) => ("duplicates", true, true, true, false),
+        Some(cli::Command::Secrets) => ("secrets", false, false, false, false),
         Some(cli::Command::History { .. }) => ("history", false, false, false, false),
         Some(cli::Command::Completions { .. }) => ("completions", false, false, false, false),
         Some(cli::Command::Manpage) => ("manpage", false, false, false, false),
@@ -184,6 +186,8 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
         Some("largest") => "largest",
         Some("worktrees") => "worktrees",
         Some("app-storage") => "app-storage",
+        Some("duplicates") => "duplicates",
+        Some("secrets") => "secrets",
         Some("history") => "history",
         Some("completions") => "completions",
         Some("manpage") => "manpage",
@@ -400,6 +404,10 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             }
         }
         cli::Command::Worktrees => run_worktrees(&ctx),
+        cli::Command::Duplicates { min_bytes } => {
+            run_op(&ops::duplicates::Duplicates::new(min_bytes), &cli, &ctx)
+        }
+        cli::Command::Secrets => secrets::run(&ctx),
         cli::Command::AppStorage => {
             let result = crate::app_storage::report(&ctx.home, &cli.roots);
             if ctx.json {

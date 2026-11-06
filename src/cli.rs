@@ -87,6 +87,14 @@ pub enum Command {
     Worktrees,
     /// Measure WhatsApp data and Screen Studio projects; never deletes anything
     AppStorage,
+    /// Find identical files under the scan roots and preview extra copies for Trash
+    Duplicates {
+        /// Ignore files smaller than this many bytes. Values below 1 are treated as 1.
+        #[arg(long, default_value_t = crate::ops::duplicates::DEFAULT_MIN_BYTES)]
+        min_bytes: u64,
+    },
+    /// Look for credential patterns in coding-agent transcripts; never changes them
+    Secrets,
     /// Run macOS maintenance tasks: caches the system rebuilds on demand
     Optimize {
         /// Task to run; repeatable. Default: every task

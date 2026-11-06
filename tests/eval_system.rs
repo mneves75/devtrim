@@ -2311,7 +2311,7 @@ fn eval_commands_reject_flags_they_cannot_honor_and_change_nothing() {
     }
     let pristine = Tree::snapshot(sandbox.path());
 
-    let cases: [(&[&str], &str, &str); 17] = [
+    let cases: [(&[&str], &str, &str); 19] = [
         (
             &[
                 "trash-empty",
@@ -2379,6 +2379,12 @@ fn eval_commands_reject_flags_they_cannot_honor_and_change_nothing() {
         (&["tui", "--yolo", "--json"], "tui", "--yolo"),
         (&["tui", "--shred", "--json"], "tui", "--shred"),
         (&["tui", "--json"], "tui", "--json"),
+        (
+            &["duplicates", "--shred", "--apply", "--yolo", "--json"],
+            "duplicates",
+            "--shred",
+        ),
+        (&["secrets", "--apply", "--json"], "secrets", "--apply"),
     ];
     for (args, operation, flag) in cases {
         let output = run(&sandbox, args);

@@ -138,6 +138,13 @@ Non-negotiable boundaries:
 - Localized scan errors are non-actionable and preserve a cumulative nonzero TUI exit status even after a later successful scan.
 - `status` reads the Data-volume metric when layout inspection finds its directory. Root fallback requires typed absence; inspection failure, a non-directory layout or a failed/malformed present Data metric stays unavailable with its reason and nonzero status.
 - Every mutation requires `--apply`.
+- `duplicates` keeps one identical copy and offers only the others, and only
+  for Trash. Apply re-reads both files without following links and requires
+  the preview hash before the shared sink. `--shred` is rejected. A path the
+  sink would refuse as protected is dropped at preview. Clone IDs are not
+  read, so the size is not a promise of freed blocks when copies share extents.
+- `secrets` is read-only. Findings carry a mask, never the credential.
+  Transcript symlinks are not followed, and the command accepts no mutation flag.
 - Apply uses only exact previewed findings and preserves their exact non-lossy path identity.
 - Xcode and Swift toolchain apply reassert that every target still has the exact direct-child category shape its scanner authorized before the shared deletion sink can consume it. The one deeper Xcode shape is a directory of a DerivedData folder that still holds Swift package checkouts and is not itself a Git repository, never its `SourcePackages`.
 - `node_modules` apply reasserts that each target is a real `node_modules` directory leaf inside its owning repository and rejects symlinks, ASCII-case-insensitive `.git` and outer `node_modules` ancestors, and non-normal paths before the shared deletion sink can consume it.

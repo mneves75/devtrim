@@ -4,6 +4,8 @@ pub mod agents;
 pub mod artifacts;
 pub mod caches;
 pub mod docker;
+/// Identical-file search. Outside [`all`] so a scan never hashes project trees.
+pub mod duplicates;
 pub mod icloud;
 pub mod installers;
 pub mod leftovers;
