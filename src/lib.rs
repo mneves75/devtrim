@@ -23,6 +23,7 @@ mod ops;
 mod process;
 mod report;
 mod safety;
+mod secrets;
 mod status;
 mod theme;
 mod tui;

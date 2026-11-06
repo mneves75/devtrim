@@ -411,6 +411,7 @@ fn derived_data_in_use(
 /// The source the volume holding `path` was mounted from — `/dev/disk3s5`
 /// for the data volume, `server:/export` for a network share — as `statfs`
 /// reports it.
+#[cfg(target_os = "macos")]
 fn volume_mount_source(path: &Path) -> Result<std::ffi::OsString> {
     use std::os::unix::ffi::OsStringExt;
 
@@ -424,6 +425,72 @@ fn volume_mount_source(path: &Path) -> Result<std::ffi::OsString> {
         .map(|byte| *byte as u8)
         .collect::<Vec<_>>();
     Ok(std::ffi::OsString::from_vec(source))
+}
+
+/// Linux `StatFs` has no `f_mntfromname`. The mount source is the field after
+/// the filesystem type in `/proc/self/mountinfo`, which is what `statfs`
+/// reports on macOS. The longest matching mount point wins.
+#[cfg(not(target_os = "macos"))]
+fn volume_mount_source(path: &Path) -> Result<std::ffi::OsString> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("cannot read the volume of {}", path.display()))?;
+    let text = std::fs::read_to_string("/proc/self/mountinfo")
+        .with_context(|| format!("cannot read the volume of {}", path.display()))?;
+    let mut best: Option<(usize, std::ffi::OsString)> = None;
+    for line in text.lines() {
+        let Some((before, after)) = line.split_once(" - ") else {
+            continue;
+        };
+        let Some(mount) = before.split(' ').nth(4) else {
+            continue;
+        };
+        let Some(source) = after.split(' ').nth(1) else {
+            continue;
+        };
+        let mount = unescape_mount_field(mount);
+        if canonical.starts_with(&mount) {
+            let length = mount.as_os_str().len();
+            if best.as_ref().is_none_or(|(best_len, _)| length > *best_len) {
+                best = Some((length, std::ffi::OsString::from(source)));
+            }
+        }
+    }
+    best.map(|(_, source)| source)
+        .with_context(|| format!("cannot read the volume of {}", path.display()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn unescape_mount_field(field: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' && index + 3 < bytes.len() {
+            let octal = &bytes[index + 1..index + 4];
+            if let Some(value) = octal_byte(octal) {
+                out.push(value);
+                index += 4;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(out))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn octal_byte(octal: &[u8]) -> Option<u8> {
+    if octal.len() != 3 || octal.iter().any(|byte| !byte.is_ascii_digit()) {
+        return None;
+    }
+    let value = u16::from(octal[0] - b'0') * 64
+        + u16::from(octal[1] - b'0') * 8
+        + u16::from(octal[2] - b'0');
+    u8::try_from(value).ok()
 }
 
 /// Whether an open file lies in `folder` under another spelling: the kernel

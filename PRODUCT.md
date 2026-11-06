@@ -23,6 +23,13 @@ Precision instrument. Terminal-native. The design language of a calibrated
 tool: machined detail, honest labels, visible guardrails. Confidence without
 marketing voice. Never cute, never corporate-slop ("unleash", "elevate").
 
+## Also in the CLI
+`duplicates` is an explicit Trash plan for extra identical files. It keeps one
+copy, stays out of `scan`, and does not delete permanently. `secrets` reports
+masked credential shapes in coding-agent transcripts and never changes them.
+Neither phones home. An assistant that sends transcript text to a model is out
+of scope.
+
 ## Non-negotiables
 - Safety information outranks aesthetics at every decision point.
 - Danger semantics: green = safe, amber = think, red = irreversible.

@@ -4,9 +4,27 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-06
+
+### Added
+- `devtrim duplicates` finds identical files under the scan roots, keeps one
+  copy, and previews the others for Trash. It is not part of `scan` or the TUI.
+  Hard links are one file. Apply re-reads both copies without following links
+  and refuses a copy whose bytes or the kept copy changed. `--shred` is
+  rejected. Allocated size still counts an APFS clone in full: clone IDs need
+  `getattrlist`, and this crate forbids unsafe code. Files under 1 MiB are
+  ignored unless `--min-bytes` says otherwise.
+- `devtrim secrets` reads Claude Code, Codex and Gemini CLI transcripts for
+  documented credential shapes and prints a mask (prefix and last four
+  characters). It never prints the secret, never modifies a transcript, and
+  rejects every mutation flag. A symlink transcript is not followed.
+
 ### Changed
-- The landing page links the verified immutable 0.12.6 release after production
-  promotion, with regenerated film facts and recorded delivery evidence.
+- The production landing page stays on verified 0.12.6 until this version is
+  promoted. The manual and README in this tree describe 0.13.0.
+- On Linux, the Xcode volume-source check reads `/proc/self/mountinfo`. macOS
+  still reads `statfs` `f_mntfromname`. rustix 1.1's Linux `StatFs` does not
+  carry that field, so the crate did not build there.
 
 ## [0.12.6] - 2026-11-02
 

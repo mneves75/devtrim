@@ -755,8 +755,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html"
  },
  {
-  "id": "fe1ff519f",
-  "text": "v0.12.6 Ratatui TUI Apache-2.0 Trash-first deletion Protected-path denylist --json",
+  "id": "fbbe15d3b",
+  "text": "v0.13.0 Ratatui TUI Apache-2.0 Trash-first deletion Protected-path denylist --json",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html"
  },
  {
@@ -1070,8 +1070,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-local-data"
  },
  {
-  "id": "f7e2491cf",
-  "text": "Grouped by what happens to your files. Global flags are capability-scoped: read-only/report-only commands reject mutation flags they cannot honor instead of silently ignoring them. scan --shred intentionally changes the previewed action; Docker and simulator cleanup reject --shred because they execute exact typed commands rather than filesystem deletion actions; trash-empty rejects it because its preview is already permanent. The TUI owns its confirmation and rejects CLI mutation flags plus --json.",
+  "id": "fc63fd861",
+  "text": "Grouped by what happens to your files. Global flags are capability-scoped: read-only/report-only commands reject mutation flags they cannot honor instead of silently ignoring them. scan --shred intentionally changes the previewed action; Docker and simulator cleanup reject --shred because they execute exact typed commands rather than filesystem deletion actions; duplicates rejects it because an extra copy is not regenerable cache; trash-empty rejects it because its preview is already permanent. The TUI owns its confirmation and rejects CLI mutation flags plus --json.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-commands"
  },
  {
@@ -1205,6 +1205,26 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
  },
  {
+  "id": "f03be5302",
+  "text": "secretscredential shapes in agent transcriptsREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f3a61d278",
+  "text": "Reads Claude Code (~/.claude/projects, history.jsonl), Codex (~/.codex/sessions, archived_sessions, history.jsonl, and each configured codex_homes entry) and Gemini CLI (~/.gemini/tmp) for documented key shapes. The finding shows a mask: the prefix and the last four characters, and the line of the first hit. The secret is not printed. A placeholder made of one repeated character is ignored. Symlinks are not followed. A line longer than 1 MiB is scanned only for its first 1 MiB. Nothing is modified, and every mutation flag is rejected.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f201a3e53",
+  "text": "devtrim secrets",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
+  "id": "f69ddc73b",
+  "text": "devtrim secrets --json",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
+ },
+ {
   "id": "f674236ec",
   "text": "leftoversreport-only review hintsREAD-ONLY",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
@@ -1217,6 +1237,26 @@
  {
   "id": "f9cf86ca0",
   "text": "Trash-first",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "fb291bf9f",
+  "text": "duplicatesextra copies of identical filesTRASH",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f490709f8",
+  "text": "Hashes regular files under the scan roots, default 1 MiB and larger (--min-bytes; a value below 1 is treated as 1). One copy stays: outside Downloads when another copy exists, otherwise the oldest, then the shortest path. The others are a Trash plan. It is not part of scan or the TUI. Hidden directories, dependency trees, app and document bundles, ~/Library, ~/Applications and ~/go/pkg are not entered. Hard links are one file. A symlinked root is refused. --shred is rejected. Apply opens both copies without following links, requires the same bytes and the preview hash, then uses the shared deletion sink. A copy that changed, or a kept copy that is gone, stays where it is and the run reports the refusal. Protected paths are dropped before the plan is shown. APFS clone IDs are not read, so the allocated size can overstate what Trash frees; the note says so.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "f1da853f5",
+  "text": "devtrim duplicates",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
+  "id": "fabc36515",
+  "text": "devtrim duplicates --root ~/dev --min-bytes 1048576",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
  },
  {
@@ -1815,8 +1855,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
  },
  {
-  "id": "f84e47aa9",
-  "text": "Without roots, the project commands (purge, clean node-modules, clean artifacts, clean leftovers, largest, and the project half of scan) look in the conventional project folders that exist: ~/dev, ~/Developer, ~/Development, ~/Projects, ~/Code, ~/GitHub, ~/Repos, ~/Workspace, ~/www, and ~/.codex/worktrees (Codex’s worktrees; Claude Code keeps its worktrees inside the repository). They never walk the whole disk or home folder; Desktop, Documents, Downloads, cloud storage, and ~/Library stay out unless you name them. A root only says where to look: every finding still needs its category’s corroborated name, Git owner, and staleness. Each human preview opens with an info scan roots: line naming the roots and where they came from.",
+  "id": "fa9dcfbf9",
+  "text": "Without roots, the project commands (purge, duplicates, clean node-modules, clean artifacts, clean leftovers, largest, and the project half of scan) look in the conventional project folders that exist: ~/dev, ~/Developer, ~/Development, ~/Projects, ~/Code, ~/GitHub, ~/Repos, ~/Workspace, ~/www, and ~/.codex/worktrees (Codex’s worktrees; Claude Code keeps its worktrees inside the repository). They never walk the whole disk or home folder; Desktop, Documents, Downloads, cloud storage, and ~/Library stay out unless you name them. A root only says where to look: every finding still needs its category’s corroborated name, Git owner, and staleness. Each human preview opens with an info scan roots: line naming the roots and where they came from.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
  },
  {
@@ -2140,8 +2180,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {
-  "id": "f034f9039",
-  "text": "devtrim v0.12.6 Apache-2.0 single self-contained HTML file rust · edition 2024",
+  "id": "f2d2e1596",
+  "text": "devtrim v0.13.0 Apache-2.0 single self-contained HTML file rust · edition 2024",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {

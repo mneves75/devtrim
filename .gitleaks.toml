@@ -1,0 +1,8 @@
+title = "devtrim"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "One unit-test PEM whose body is the fixed string AAAABODYsecret. The banner is no longer in the tree; this allowlist covers that commit."
+regexes = ['''AAAABODYsecret''']

@@ -649,6 +649,11 @@ impl FileIdentity {
 
     pub(crate) fn from_rustix_stat(metadata: &rustix::fs::Stat) -> Self {
         Self {
+            // `dev_t` is `u64` on Linux and a narrower integer on other Unix targets.
+            #[allow(
+                clippy::unnecessary_cast,
+                reason = "dev_t is u64 on Linux and a narrower integer elsewhere"
+            )]
             dev: metadata.st_dev as u64,
             ino: metadata.st_ino,
             #[cfg(target_os = "macos")]

@@ -199,6 +199,18 @@ pub(crate) enum TargetAuthority {
     BrewCacheEntry,
 }
 
+/// Proof that an extra copy matched a file that stays, captured at preview.
+///
+/// Apply reads this value from the finding. Display text is not parsed back
+/// into a path or a hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DuplicateProof {
+    pub keeper: PathBuf,
+    /// SHA-256 of the whole file at preview.
+    pub sha256: [u8; 32],
+    pub logical_len: u64,
+}
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct Finding {
     pub label: String,
@@ -225,6 +237,10 @@ pub struct Finding {
     command_authority: Option<CommandAuthority>,
     #[serde(skip)]
     scan_error: Option<String>,
+    /// Set only on an extra copy `duplicates` offers. Absent for every other
+    /// finding, including the copy that stays.
+    #[serde(skip)]
+    duplicate: Option<DuplicateProof>,
 }
 
 impl Finding {
@@ -255,7 +271,17 @@ impl Finding {
             authority: TargetAuthority::Standard,
             command_authority: None,
             scan_error: None,
+            duplicate: None,
         }
+    }
+
+    pub(crate) fn with_duplicate_proof(mut self, proof: DuplicateProof) -> Self {
+        self.duplicate = Some(proof);
+        self
+    }
+
+    pub(crate) fn duplicate_proof(&self) -> Option<&DuplicateProof> {
+        self.duplicate.as_ref()
     }
 
     pub(crate) fn with_scan_error(mut self, error: String) -> Self {

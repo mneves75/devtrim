@@ -31,6 +31,17 @@ A local, read-only disk inventory and cleanup-preview report captured at a
 particular time. It becomes historical as the filesystem changes.
 _Avoid_: live disk state
 
+**Duplicate copy**:
+An extra regular file whose bytes match another file that stays. The kept
+path is chosen when the plan is built and is not parsed back out of display
+text. Hard links are one file. An APFS clone can still share blocks.
+_Avoid_: safe to delete, identical name
+
+**Masked credential**:
+A prefix and the last four characters of a credential shape found in a
+coding-agent transcript. The secret itself is not part of the report.
+_Avoid_: the key, redacted secret that still contains the secret
+
 **Partial measurement**:
 A lower bound whose traversal or metadata could not be read completely. Missing
 information remains unknown rather than being counted as zero.

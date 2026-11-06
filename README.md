@@ -8,7 +8,9 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.12.6.
+This source tree and its packaged documentation describe devtrim v0.13.0.
+The production site stays on the verified 0.12.6 release until this version
+is promoted.
 
 ## Install
 
@@ -97,6 +99,9 @@ devtrim clean toolchains --apply -y       # only swift.org toolchains no symlink
 devtrim clean installers --apply -y       # stale installer archives in Downloads/Desktop
 devtrim clean agents --apply -y           # agent caches + older Codex releases + stale session history
 devtrim clean leftovers                   # report-only hints and ignored .scratch folders
+devtrim duplicates                        # extra copies of identical files; keeps one, Trash the rest
+devtrim duplicates --min-bytes 1048576    # ignore smaller files (1 MiB is the default)
+devtrim secrets                           # masked credential shapes in agent transcripts; changes nothing
 devtrim worktrees                         # report-only: linked worktrees and their sizes
 devtrim app-storage                       # report-only: WhatsApp storage, metadata only
 devtrim app-storage --root ~/Movies       # also find saved Screen Studio projects here
@@ -147,7 +152,7 @@ recent Git activity. A project with no repository of its own is never judged
 by an enclosing repository at or above your home folder, such as dotfiles
 kept as a repository at `~`.
 
-`purge`, `clean node-modules`, `clean artifacts`, `clean leftovers`, `largest`,
+`purge`, `duplicates`, `clean node-modules`, `clean artifacts`, `clean leftovers`, `largest`,
 `worktrees`, and the project half of `scan` look only under the scan roots, never the whole
 disk or the whole home folder. Without configured roots those are the
 conventional project folders that exist: `~/dev`, `~/Developer`,
@@ -353,6 +358,38 @@ detail; an aggregate retains omitted measured bytes. Errors are bounded, disclos
 and return nonzero. Allocated bytes count each physical file once across the report,
 including hard links and aliases of overlapping roots;
 APFS clones can still share blocks. It is a live snapshot, never deletion authority.
+
+### Identical files
+
+`devtrim duplicates` hashes regular files under the scan roots (default 1 MiB
+and larger; `--min-bytes` lowers that, and a value below 1 is treated as 1).
+Files are grouped by size, then by a SHA-256 of the first 64 KiB, then by the
+whole file. One copy stays: not the one under `Downloads` when another exists,
+otherwise the oldest, then the shortest path. The others are a Trash plan.
+Hidden directories, dependency trees, app and document bundles, `~/Library`,
+`~/Applications` and `~/go/pkg` are not entered. Hard links are one inode, so
+a second name is not an extra copy.
+
+The command is outside `scan` and the TUI, so a routine preview does not hash
+project trees. `--shred` is rejected: an extra copy is not regenerable cache.
+Apply opens both files with `O_NOFOLLOW`, requires the same bytes and the
+preview hash, then uses the shared deletion sink. A drifted copy or a missing
+kept copy refuses only that finding. A protected path is dropped from the
+preview. APFS clone IDs are not read (`stat` does not expose them, and
+`getattrlist` needs unsafe code, which this crate forbids), so allocated size
+can overstate what Trash frees. The note says so.
+
+### Credentials in agent transcripts
+
+`devtrim secrets` reads Claude Code (`~/.claude/projects`, `history.jsonl`),
+Codex (`~/.codex/sessions`, `archived_sessions`, `history.jsonl`, plus each
+configured `codex_homes` entry) and Gemini CLI (`~/.gemini/tmp`) for
+documented key shapes: `sk-ant-`, `sk-`, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/
+`github_pat_`, AWS `AKIA`, and a private-key banner, among others. The output
+is a mask, the prefix and the last four characters, plus the line of the first
+hit. The secret is not printed. Placeholders made of one repeated character
+are ignored. Symlinks are not followed. Nothing is modified, and every
+mutation flag is rejected.
 
 ### HTML disk map
 
