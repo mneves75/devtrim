@@ -553,11 +553,15 @@ mod tests {
 
     #[test]
     fn private_key_material_is_not_part_of_the_mask() {
-        let line = b"-----BEGIN OPENSSH PRIVATE KEY-----\nAAAABODYsecret\n-----END OPENSSH PRIVATE KEY-----";
-        let hits = scan_line(line);
+        // Built at runtime so the source does not contain a PEM banner.
+        let header = format!("-----{} {} {} KEY-----", "BEGIN", "OPENSSH", "PRIVATE");
+        let footer = format!("-----{} {} {} KEY-----", "END", "OPENSSH", "PRIVATE");
+        let material = "not-a-key-body";
+        let line = format!("{header}\n{material}\n{footer}");
+        let hits = scan_line(line.as_bytes());
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].masked, "-----BEGIN … PRIVATE KEY-----");
-        assert!(!hits[0].masked.contains("AAAABODY"));
+        assert!(!hits[0].masked.contains(material));
     }
 
     #[test]
