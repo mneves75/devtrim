@@ -177,7 +177,7 @@ checked 2026-09-04. User instructions take precedence over skill procedures.
 devtrim itself contains no Swift — it is a Rust CLI, and nothing in this
 repository triggers the rule below. It is recorded here because the workspace
 owner asked every repository to carry it; the workspace copy in
-`/Users/mneves/dev/AGENTS.md` remains authoritative if the two ever disagree.
+`/Users/mneves/.claude/reference/apple-platforms.md` remains authoritative if the two ever disagree.
 
 For Swift, SwiftUI, iOS, iPadOS, or macOS work, read the documentation bundled
 with the Xcode that is actually selected rather than older training data. Resolve
@@ -189,14 +189,14 @@ xcodebuild -version   # confirm which SDK that Xcode ships
 ```
 
 `/Applications/Xcode.app` is not a synonym for the previous major version and
-`/Applications/Xcode-beta.app` frequently does not exist — on this machine the
-released `Xcode.app` is already 27.0 and there is no beta bundle, so a hardcoded
-`Xcode-beta.app` path for the newest SDK would point at nothing. Select by what
+`/Applications/Xcode-beta.app` exists only while a beta is installed, and both bundles
+change version with every Xcode release (check, never assume), so a hardcoded
+path for the newest SDK can point at the wrong SDK or at nothing. Select by what
 `xcode-select -p` reports and what `xcodebuild -version` confirms, then read the
 `AdditionalDocumentation` note matching the API you are touching (Liquid Glass,
 App Intents, Swift Concurrency, SwiftData, FoundationModels, and so on).
 
-Load the matching skill in `/Users/mneves/dev/Skills/XCODE_AGENT_SKILLS` before
+Load the matching skill in `/Users/mneves/dev/Skills` (one folder per skill) before
 changing Swift code — SwiftUI, Swift Concurrency, and Xcode Build Optimization
 in particular — and review the changed Swift surface against those sources and
 the project's own deployment target.

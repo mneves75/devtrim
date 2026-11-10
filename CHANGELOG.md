@@ -7,6 +7,10 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ### Changed
 - The landing page links the verified immutable 0.12.6 release after production
   promotion, with regenerated film facts and recorded delivery evidence.
+- Agent instructions (`AGENTS.md`, `CLAUDE.md`): the Apple-platforms section
+  names the owner's current rule file, the Xcode bundle paths without stale
+  versions, and the current skills folder. A new `.claude/settings.json` asks
+  before any `--apply` run and adds a Stop gate on `scripts/verify.sh offline`.
 
 ## [0.12.6] - 2026-11-02
 
