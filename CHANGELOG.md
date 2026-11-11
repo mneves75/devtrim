@@ -4,7 +4,31 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+### Fixed
+- `trash-empty` with nothing to purge says so and exits 0; it no longer asks
+  for `--confirm=0` and then for `-y` to remove nothing. The Trash root and
+  journal checks still run first.
+- `installers`, `toolchains` and `simulators` apply continue past a refused
+  finding and still exit nonzero. `installers` names an age-gate refusal as a
+  file that changed since the preview, not as one outside its folders.
+- `simulators` apply no longer walks every device folder before and after the
+  plan, so one unreadable working simulator no longer refuses the whole apply.
+- `worktrees`, `clean leftovers` and `uninstall` keep a row whose folder was
+  only partly readable, mark its size as a lower bound, and exit 1.
+- `icloud` names a file it cannot measure instead of failing the whole report;
+  `largest` stays on one device.
+- Read errors for the Trash, Xcode support folders and Codex releases name the
+  path; `dashboard` errors name the command once.
+- The Xcode liveness probe asks only for the current user's processes, as the
+  build-process probe does; Codex release apply runs the system-wide `lsof`
+  probe once per release instead of twice.
+- `--apply`, `--yes` and `purge` help text match what they do.
+
 ### Changed
+- Landing page and manual: the terminal frames show the TUI's real colours, the
+  Homebrew install line is on the first screen, a three-step walkthrough shows
+  preview, leave one out and confirm, and every command sits in one table
+  grouped read-only, Trash and permanent, linking to its manual section.
 - The landing page links the verified immutable 0.12.6 release after production
   promotion, with regenerated film facts and recorded delivery evidence.
 - Agent instructions (`AGENTS.md`, `CLAUDE.md`): the Apple-platforms section
