@@ -84,7 +84,7 @@ def screen_text(lines):
 class Session:
     """One devtrim TUI process attached to its own PTY and disposable home."""
 
-    def __init__(self, binary, home, rows=40, columns=120):
+    def __init__(self, binary, home, rows=40, columns=120, arguments=()):
         for name in ("bin", "config", "state", "cache"):
             (home / name).mkdir(exist_ok=True)
         self.environment = {
@@ -97,6 +97,7 @@ class Session:
             "LANG": "en_US.UTF-8",
         }
         self.binary = binary
+        self.arguments = [str(argument) for argument in arguments]
         self.home = home
         self.rows = rows
         self.columns = columns
@@ -116,7 +117,7 @@ class Session:
             fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
 
         self.process = subprocess.Popen(
-            [str(self.binary)], stdin=self.slave, stdout=self.slave, stderr=self.slave,
+            [str(self.binary), *self.arguments], stdin=self.slave, stdout=self.slave, stderr=self.slave,
             cwd=self.home, env=self.environment, start_new_session=True,
             preexec_fn=attach_terminal,
         )
@@ -259,7 +260,7 @@ def verify_menu(binary):
             # the overlay covered are redrawn, so this reads the screen rather
             # than waiting for new output.
             session.wait_for_screen_without("open or close this reference")
-            session.wait_for_screen("Enter opens")
+            session.wait_for_screen("Scan everything", "Enter open")
             session.quit()
             if termios.tcgetattr(session.master) != session.original:
                 raise AssertionError("TUI did not restore terminal attributes")
@@ -395,8 +396,10 @@ def write_script(path, body):
 
 
 def stale_project(home, pgrep="exit 1"):
-    """A stale repository offering a `target` and a `node_modules`, under a
-    directory name long enough that its paths wrap in the detail pane."""
+    """A stale repository offering a `target` and a `node_modules`, two
+    directory names deep, so its paths wrap in the detail pane and, at 64×18,
+    the detail view must scroll to reach the project line wherever the
+    checkout lives."""
     (home / "bin").mkdir()
     # By default no build process is running; the repository's history is
     # old, and it tracks nothing under either directory.
@@ -406,7 +409,8 @@ def stale_project(home, pgrep="exit 1"):
         "case \"$*\" in\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n"
         "  *) printf '2020-01-01\\n' ;;\nesac",
     )
-    project = home / "dev" / "-".join(["a-project-whose-directory-name-wraps"] * 4)
+    name = "-".join(["a-project-whose-directory-name-wraps"] * 4)
+    project = home / "dev" / name / name
     (project / ".git").mkdir(parents=True)
     (project / "Cargo.toml").write_text('[package]\nname = "fixture"\n')
     (project / "target" / "debug").mkdir(parents=True)
@@ -463,7 +467,7 @@ def verify_minimum_size(binary):
             session.wait_for_screen("Left out of this plan", "more line(s); Enter shows all")
             session.send(b"\r")
             session.wait_for_screen(
-                "Esc back to the results", "Details · lines 1-", str(project / "node_modules")
+                "Esc back", "Details · lines 1-", str(project / "node_modules")
             )
             visible = screen_text(render_screen(session.output, session.rows, session.columns))
             if f"project: {project}" in visible:
@@ -521,7 +525,7 @@ def verify_slow_scan_stops(binary):
                     session.deadline = time.monotonic() + 90
                     session.wait_for("Scan everything")
                     session.send(b"3")
-                    session.wait_for_screen("Scanning node-modules")
+                    session.wait_for_screen("Scanning node_modules")
                     while not marker.exists() or not marker.read_text().endswith("\n"):
                         session.read_output()
                     probe = int(marker.read_text())
@@ -596,7 +600,7 @@ def verify_blocked_apply_refuses_quit(binary):
                 session.send(b"3")
                 session.wait_for_screen("Review every finding")
                 session.send(b"a")
-                session.wait_for_screen("Press y to apply this exact plan")
+                session.wait_for_screen("y apply · n/Esc cancel")
                 session.send(b"y")
                 session.wait_for_screen("Applying only the exact previewed findings")
                 while not marker.exists() or not marker.read_text().endswith("\n"):

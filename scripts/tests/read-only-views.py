@@ -18,6 +18,8 @@ import tempfile
 import termios
 import time
 
+from tui import render_screen
+
 
 class View:
     def __init__(self, binary, home, arguments):
@@ -66,6 +68,18 @@ class View:
                 return
             assert self.process.poll() is None, f"exited before displaying {text!r}"
         raise AssertionError(f"timed out displaying {text!r}")
+
+    def wait_screen(self, rows, columns, text, gone, timeout=20):
+        """Waits until `text` is visible and `gone` is not, on the screen
+        rebuilt from everything drawn so far."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.read()
+            visible = "\n".join(render_screen(self.output, rows, columns))
+            if text in visible and gone not in visible:
+                return
+            assert self.process.poll() is None, f"exited before displaying {text!r}"
+        raise AssertionError(f"timed out displaying {text!r} without {gone!r}")
 
     def send(self, keys):
         start = len(self.output)
@@ -155,8 +169,10 @@ def exercise(binary, home):
         view.wait("selected-child", start)
         start = view.send(b"?")
         view.wait("open or close this reference", start)
-        start = view.send(b"\x1b")
-        view.wait("selected-child", start)
+        view.send(b"\x1b")
+        # Ratatui redraws only the cells the overlay covered, so the listing
+        # is read from the rebuilt screen rather than from new output.
+        view.wait_screen(24, 90, "selected-child", gone="open or close this reference")
         latency = view.quit()
     finally:
         view.close()
