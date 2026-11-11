@@ -1749,12 +1749,13 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App, shown: &Shown) {
         return;
     }
     // The detail pane is the only place a long path appears whole, so it grows
-    // past its usual share to hold the highlighted row, leaving the list one
-    // row, and says how many lines a terminal too short for it still hides and
-    // that Enter shows them.
+    // past its usual share to hold the highlighted row, leaving the list three
+    // rows (all of them when there are fewer), and says how many lines a
+    // terminal too short for it still hides and that Enter shows them.
     let mut details = detail_lines(app, usize::from(area.width.saturating_sub(2)));
+    let list_floor = u16::try_from(rows.min(3)).unwrap_or(3) + 2;
     let pane_floor = (area.height / 3).clamp(5, 10);
-    let pane_ceiling = area.height.saturating_sub(3).max(pane_floor);
+    let pane_ceiling = area.height.saturating_sub(list_floor).max(pane_floor);
     let pane_needed = u16::try_from(details.len()).map_or(u16::MAX, |rows| rows.saturating_add(2));
     let detail_height = pane_needed.clamp(pane_floor, pane_ceiling);
     let detail_rows = usize::from(detail_height.saturating_sub(2));
@@ -3838,6 +3839,43 @@ mod tests {
                 "the popup ends in a blank row at {width}x{height}: {rows:#?}"
             );
         }
+    }
+
+    #[test]
+    fn a_long_path_leaves_the_list_at_least_three_rows() {
+        let long = |leaf: &str| {
+            std::path::PathBuf::from(format!(
+                "/tmp/{}/{leaf}",
+                "a-folder-whose-name-wraps-".repeat(20)
+            ))
+        };
+        let finding = |label: &str, leaf: &str| {
+            Finding::new(label, Some(long(leaf)), 4096, "test", 5, Action::Trash)
+        };
+        let two = cleanup(vec![
+            finding("stale target artifacts", "target"),
+            finding("stale node_modules", "node_modules"),
+        ]);
+        let rows = screen_rows(&two, MIN_WIDTH, MIN_HEIGHT);
+        let screen = rows.join("\n");
+        for label in ["stale target artifacts", "stale node_modules"] {
+            assert!(screen.contains(label), "{label} is not listed: {rows:#?}");
+        }
+        assert!(
+            screen.contains("more line(s); Enter shows all"),
+            "{rows:#?}"
+        );
+
+        let five = cleanup(
+            (0..5)
+                .map(|index| finding(&format!("finding-{index}"), "target"))
+                .collect(),
+        );
+        let screen = screen_rows(&five, MIN_WIDTH, MIN_HEIGHT).join("\n");
+        let listed = (0..5)
+            .filter(|index| screen.contains(&format!("finding-{index} ")))
+            .count();
+        assert!(listed >= 3, "{listed} rows listed: {screen}");
     }
 
     #[test]
