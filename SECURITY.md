@@ -297,7 +297,7 @@ Non-negotiable boundaries:
   its three-minute limit, blocks instead of passing. The build-process names are
   matched by `pgrep -x` as an anchored extended regex over the exact process
   name, which includes the coding agents: `codex` (native, under a `node`
-  wrapper), `claude`, and Claude Code's own process name, its version number
+  wrapper), `claude`, `rust-analyzer`, and Claude Code's own process name, its version number
   (`2.1.294`), matched only as a whole dotted triple of digits with an
   optional SemVer pre-release suffix (`2.2.0-beta.1`). Protection follows the
   process's own working directory, matched by spelling or by device and inode
