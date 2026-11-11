@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-JuuikvHpSYFXOz3+2LWIi2tLBY9DcIQpIZt2sKpfYTs='; script-src 'sha256-zvGG5ifHmmR1CNzSGHAaKUAhSpOsKLpUKORivqqSNkk=' 'sha256-wg5kYlXPfC+ndgopfE/efp1ZBIwgimICu2cb2xoC5As='; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-ijL6AoXQmAPEgADU+K4A+13Q3KYrNjWuhf9eLPE5LxQ='; script-src 'sha256-zvGG5ifHmmR1CNzSGHAaKUAhSpOsKLpUKORivqqSNkk=' 'sha256-raW12eF+201QhYBide0DcynKxZzCAKmYZzKqJy9BYdo='; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="description" content="devtrim manual — measure, classify, trim. Safe disk hygiene for macOS developer machines.">
 <title>devtrim — Manual</title>
@@ -15,307 +15,326 @@ try { const s = localStorage.getItem("devtrim-theme");
   if (s === "light" || s === "dark") document.documentElement.dataset.theme = s; } catch {}
 </script>
 <style>
-  @layer reset, base, components, utilities;
+/* Shared with styles.css: tokens, base, type scale, code, top bar and footer,
+   copied verbatim from its top so both pages are one world. Keep the two in step.
+   (The page's CSP and scripts/tests/csp-controls.py expect one inline style.) */
+:root {
+  color-scheme: dark;
+  --bg: light-dark(#ffffff, #0a0a0a);
+  --surface: light-dark(#f3f3f3, #121212);
+  --surface-raised: light-dark(#e9e9e9, #1a1a1a);
+  --surface-high: light-dark(#dedede, #262626);
+  --text: light-dark(#141414, #efefec);
+  --muted: light-dark(#4d4d4d, #b4b4ae);
+  --rule: light-dark(#d4d4d4, #2c2c2c);
+  --field: light-dark(#858585, #6e6e69);
+  --accent: light-dark(#3a6300, #c8ff38);
+  --accent-hover: light-dark(#2c4b00, #d8ff70);
+  --accent-ink: light-dark(#ffffff, #101400);
+  --amber: light-dark(#7a4d00, #ffc53d);
+  --orange: light-dark(#974306, #ff9447);
+  --red: light-dark(#ad2a19, #ff6b57);
+  /* A terminal is dark in both themes. */
+  --term-bg: #050505;
+  --term-ink: #d9d9d4;
+  --term-dim: #8a8a84;
 
-  @layer reset {
-    *, *::before, *::after { box-sizing: border-box; }
-    * { margin: 0; }
-    html { -webkit-text-size-adjust: 100%; }
-    img, svg { display: block; max-inline-size: 100%; }
-    input, button { font: inherit; color: inherit; }
-    p, h1, h2, h3, h4 { overflow-wrap: break-word; }
-    summary { cursor: pointer; }
+  --page: min(100% - 2rem, 76rem);
+  --radius: 0.25rem;
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --step-0: 1.0625rem;
+  --step-small: 0.9375rem;
+  --step-h3: 1.25rem;
+  --step-h2: clamp(1.75rem, 1.35rem + 1.6vw, 2.625rem);
+  --step-h1: clamp(2.25rem, 1.15rem + 4.4vw, 4.75rem);
+  --space-section: clamp(4rem, 2.5rem + 5vw, 7.5rem);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+
+  scroll-padding-block-start: 1rem;
+  accent-color: var(--accent);
+  scrollbar-color: var(--surface-high) transparent;
+}
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--step-0);
+  line-height: 1.6;
+  overflow-wrap: break-word;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+h1, h2, h3 { text-wrap: balance; margin: 0; }
+h1 { font-size: var(--step-h1); font-weight: 800; letter-spacing: -0.04em; line-height: 1.02; }
+h2 { font-size: var(--step-h2); font-weight: 750; letter-spacing: -0.03em; line-height: 1.1; }
+h3 { font-size: var(--step-h3); font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; }
+p { margin: 0; text-wrap: pretty; }
+img, video { display: block; max-inline-size: 100%; block-size: auto; }
+figure { margin: 0; }
+
+a { color: inherit; text-underline-offset: 0.2em; text-decoration-thickness: from-font; }
+a.text-link { color: var(--accent); text-decoration: underline; }
+
+code, kbd, pre { font-family: var(--mono); font-size: 0.875em; }
+code { background: color-mix(in oklch, var(--accent) 11%, transparent); padding: 0.1em 0.35em; border-radius: var(--radius); }
+pre { margin: 0; padding: 1rem 1.125rem; border-radius: var(--radius); background: var(--surface-raised); overflow-x: auto; line-height: 1.55; }
+pre code { background: none; padding: 0; font-size: 1em; }
+
+::selection { background: var(--accent); color: var(--accent-ink); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+[hidden] { display: none !important; }
+.wrap { inline-size: var(--page); margin-inline: auto; }
+.sr-only { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.skip-link {
+  position: fixed; z-index: 100; inset-block-start: 0.75rem; inset-inline-start: 0.75rem;
+  padding: 0.65rem 0.9rem; border-radius: var(--radius);
+  background: var(--accent); color: var(--accent-ink); font-weight: 700; text-decoration: none;
+  transform: translateY(calc(-100% - 1rem));
+}
+.skip-link:focus-visible { transform: none; outline-color: var(--text); }
+
+/* ---------- top bar (both pages) ---------- */
+.bar { padding-block: 1rem; }
+.bar-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.wordmark { font-weight: 800; font-size: 1.2rem; letter-spacing: -0.02em; text-decoration: none; }
+.bar-links { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin: 0; padding: 0; list-style: none; color: var(--muted); }
+.bar-links a { display: inline-block; padding-block: 0.6rem; text-decoration: none; }
+.bar-links a[aria-current="page"] { color: var(--text); }
+@media (width < 30rem) { .bar-links li:has(a[href^="#"]), .bar-links li:has(a[href^="index.html#"]) { display: none; } }
+
+/* footer (both pages) */
+.site-foot { padding-block: 2.5rem 3rem; color: var(--muted); font-size: var(--step-small); }
+.site-foot ul { display: flex; flex-wrap: wrap; gap: 0.25rem 1.5rem; margin: 0; padding: 0; list-style: none; align-items: baseline; }
+.site-foot a { display: inline-block; padding-block: 0.5rem; }
+.site-foot .foot-name { color: var(--text); font-weight: 800; }
+
+@media (hover: hover) and (pointer: fine) {
+  .bar-links a:hover, .site-foot a:hover { color: var(--text); }
+}
+
+  /* Manual: light mode (a stored choice, or the OS when none is stored) and layout. */
+  :root[data-theme="light"] { color-scheme: light; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { color-scheme: light; }
+  }
+  :root {
+    /* bright fills for the danger scale; its numerals stay dark in both themes */
+    --fill-ok: light-dark(#a3d930, #c8ff38);
+    --fill-warn: light-dark(#f5b82e, #ffc53d);
+    --fill-orange: light-dark(#f08a3a, #ff9447);
+    --fill-bad: light-dark(#e8553f, #ff6b57);
+  }
+  input, button { font: inherit; color: inherit; }
+  summary { cursor: pointer; }
+  a { color: var(--accent); }
+  .bar a, .site-foot a { color: inherit; }
+
+  .manual {
+    display: grid; grid-template-columns: 15rem minmax(0, 1fr);
+    column-gap: clamp(2rem, 4vw, 4rem); align-items: start;
   }
 
-  @layer base {
-    /* One palette per theme through light-dark(): the page is dark unless
-       color-scheme says light — a stored choice, or the OS when none is stored. */
-    :root {
-      color-scheme: dark;
-      --bg: light-dark(#ffffff, #0a0a0a);
-      --surface: light-dark(#f3f3f3, #121212);
-      --raised: light-dark(#e9e9e9, #1a1a1a);
-      --raised-2: light-dark(#dedede, #262626);
-      --ink: light-dark(#141414, #efefec);
-      --muted: light-dark(#4d4d4d, #b4b4ae);
-      --rule: light-dark(#d4d4d4, #2c2c2c);
-      --field: light-dark(#858585, #6e6e69);
-      --accent: light-dark(#3a6300, #c8ff38);
-      --accent-ink: light-dark(#ffffff, #101400);
-      --ok: var(--accent);
-      --warn: light-dark(#7a4d00, #ffc53d);
-      --orange: light-dark(#974306, #ff9447);
-      --bad: light-dark(#ad2a19, #ff6b57);
-      /* bright fills for the danger scale; its numerals stay dark in both themes */
-      --fill-ok: light-dark(#a3d930, #c8ff38);
-      --fill-warn: light-dark(#f5b82e, #ffc53d);
-      --fill-orange: light-dark(#f08a3a, #ff9447);
-      --fill-bad: light-dark(#e8553f, #ff6b57);
-      --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  /* ============ contents rail ============ */
+  nav.toc {
+    position: sticky; inset-block-start: 0; align-self: start;
+    max-block-size: 100dvh; overflow-y: auto;
+    padding-block: 1.25rem 2rem;
+    font-size: var(--step-small);
+  }
+  .toc-tools { display: grid; gap: 0.5rem; margin-block-end: 1.25rem; }
+  #filter {
+    inline-size: 100%; min-block-size: 2.75rem; padding: 0.5rem 0.75rem;
+    border: 1px solid var(--field); border-radius: var(--radius);
+    background: var(--bg); color: var(--text); font-size: max(16px, 1rem);
+  }
+  #filter::placeholder { color: var(--muted); opacity: 1; }
+  #filter-count { font-size: 0.875rem; color: var(--muted); }
+  #filter-count:empty { display: none; }
+  #theme-toggle {
+    justify-self: start;
+    min-block-size: 2.75rem; min-inline-size: 8.5rem; padding: 0 0.875rem;
+    border: 0; border-radius: var(--radius); cursor: pointer;
+    background: var(--surface-raised); color: var(--text);
+    font-size: 0.875rem; font-weight: 600;
+  }
+  #theme-toggle:active { transform: scale(0.97); }
+  #toc-contents > summary {
+    display: none; list-style: none;
+    font-weight: 700; min-block-size: 2.75rem; align-items: center; gap: 0.5rem;
+  }
+  #toc-contents > summary::-webkit-details-marker { display: none; }
+  #toc-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.125rem; }
+  #toc-list a {
+    display: block; padding: 0.4rem 0.625rem; border-radius: var(--radius);
+    color: var(--muted); text-decoration: none;
+  }
+  #toc-list a[aria-current="true"] { color: var(--text); background: var(--surface-raised); font-weight: 650; }
+  /* Wide screens always show the contents; the script also sets [open]. */
+  @media (width > 55rem) {
+    #toc-contents::details-content { content-visibility: visible; display: contents; }
+  }
 
-      accent-color: var(--accent);
-      scrollbar-width: thin;
-      scrollbar-color: var(--raised-2) transparent;
-      color: var(--ink);
-      background: var(--bg);
-      font-family: var(--sans);
-      font-size: 1.0625rem;
-      line-height: 1.6;
-      -webkit-font-smoothing: antialiased;
-    }
-    :root[data-theme="light"] { color-scheme: light; }
-    @media (prefers-color-scheme: light) {
-      :root:not([data-theme="dark"]) { color-scheme: light; }
-    }
+  /* ============ main flow ============ */
+  main { padding-block: 1.25rem 4rem; min-inline-size: 0; }
+  .manual-title { padding-block: clamp(1.5rem, 1rem + 2vw, 2.5rem) 0.5rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 1rem; }
+  /* The version line: scripts/release.sh checks this exact markup. */
+  .manual-title .chip { font-family: var(--mono); font-size: var(--step-small); color: var(--muted); }
+  @media (width > 55rem) {
+    .manual-title { grid-column: 2; grid-row: 1; }
+    nav.toc { grid-column: 1; grid-row: 1 / span 2; }
+    main { grid-column: 2; grid-row: 2; }
+  }
+  section { padding-block: clamp(2.25rem, 6vh, 3.5rem); scroll-margin-block-start: 1rem; }
+  main > section:first-child { padding-block-start: 1rem; }
+  section > * + *, .card-body > * + * { margin-block-start: 1rem; }
+  section > h2 + * { margin-block-start: 1.25rem; }
+  section > * + h3 { margin-block-start: 2.25rem; }
+  p { max-inline-size: 70ch; }
+  ul.flow, ol.flow { padding-inline-start: 1.25em; display: grid; gap: 0.5em; max-inline-size: 70ch; }
+  .lead { font-size: 1.125rem; max-inline-size: 60ch; }
 
-    body {
-      display: grid;
-      grid-template-columns: 15rem minmax(0, 1fr);
-      grid-template-areas: "head head" "toc content";
-      column-gap: clamp(2rem, 4vw, 4rem);
-      inline-size: min(76rem, 100%);
-      margin-inline: auto;
-      padding-inline: clamp(1rem, 3vw, 2.5rem);
-      background: var(--bg);
-    }
+  /* callouts: a tinted fill per meaning, named by their own lead words */
+  .note, .warn, .danger-box {
+    border-radius: var(--radius); padding: 0.875rem 1.125rem; max-inline-size: 70ch;
+  }
+  .note { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+  .warn { background: color-mix(in srgb, var(--amber) 11%, var(--bg)); }
+  .danger-box { background: color-mix(in srgb, var(--red) 14%, var(--bg)); }
 
-    code, kbd, pre { font-family: var(--mono); font-size: 0.875em; }
-    a { color: var(--accent); text-underline-offset: 0.2em; text-decoration-thickness: from-font; }
-    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 0.25rem; }
-    ::selection { background: var(--accent); color: var(--accent-ink); }
-
-    @media (prefers-reduced-motion: no-preference) {
-      html { scroll-behavior: smooth; }
+  /* tables → stack on narrow screens (reflow-safe) */
+  .tbl-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; inline-size: 100%; font-size: var(--step-small); }
+  th, td { text-align: start; padding: 0.625rem 0.75rem; border-block-end: 1px solid var(--rule); vertical-align: top; }
+  thead th { color: var(--muted); font-weight: 600; font-size: 0.875rem; }
+  td code { white-space: nowrap; }
+  .lvl-g { color: var(--accent); font-weight: 650; }
+  .lvl-a { color: var(--amber); font-weight: 650; }
+  .lvl-o { color: var(--orange); font-weight: 650; }
+  .lvl-r { color: var(--red); font-weight: 700; }
+  @media (width <= 42rem) {
+    .tbl-wrap table, .tbl-wrap tbody, .tbl-wrap tr, .tbl-wrap th, .tbl-wrap td { display: block; }
+    .tbl-wrap thead { display: none; }
+    .tbl-wrap tr { background: var(--surface); border-radius: var(--radius); padding: 0.5rem 0; margin-block-end: 0.5rem; }
+    .tbl-wrap td { border: 0; padding: 0.25rem 0.875rem; }
+    .tbl-wrap td::before {
+      content: attr(data-th); display: block;
+      font-size: 0.875rem; font-weight: 600; color: var(--muted);
     }
   }
 
-  @layer components {
-    /* ============ masthead ============ */
-    header.masthead { grid-area: head; padding-block: clamp(2rem, 7vh, 4.5rem) clamp(1.5rem, 4vh, 2.5rem); }
-    .title {
-      font-size: clamp(2.5rem, 1.6rem + 4vw, 4.5rem);
-      font-weight: 800; letter-spacing: -0.04em; line-height: 1;
-      text-wrap: balance;
-    }
-    .title .rest { color: var(--muted); }
-    .chip-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-block-start: 1.25rem; }
-    .chip {
-      font-size: 0.875rem; font-weight: 600; line-height: 1.4;
-      border-radius: 0.375rem; padding: 0.25rem 0.625rem;
-      color: var(--muted); background: var(--surface);
-    }
-    .chip.g { color: var(--ok); }
-    .chip.a { color: var(--warn); }
-    .chip.r { color: var(--bad); }
+  /* danger scale: ten flat cells, green → amber → orange → red */
+  .scale-strip {
+    display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 2px;
+    max-inline-size: 40rem; border-radius: var(--radius); overflow: clip;
+  }
+  .scale-strip i {
+    display: grid; place-items: center; block-size: 2.75rem;
+    font-style: normal; font-weight: 750; font-variant-numeric: tabular-nums;
+    color: #111111; background: var(--c);
+  }
+  .s-ok { --c: var(--fill-ok); }
+  .s-warn { --c: var(--fill-warn); }
+  .s-orange { --c: var(--fill-orange); }
+  .s-bad { --c: var(--fill-bad); }
 
-    /* ============ contents rail ============ */
-    nav.toc {
-      grid-area: toc;
-      position: sticky; inset-block-start: 0; align-self: start;
-      max-block-size: 100dvh; overflow-y: auto;
-      padding-block: 0.25rem 2rem;
-      font-size: 0.9375rem;
-    }
-    .toc-tools { display: grid; gap: 0.5rem; margin-block-end: 1.25rem; }
-    #filter {
-      inline-size: 100%; min-block-size: 2.5rem; padding: 0.5rem 0.75rem;
-      border: 1px solid var(--field); border-radius: 0.4rem;
-      background: var(--bg); color: var(--ink); font-size: 1rem;
-    }
-    #filter::placeholder { color: var(--muted); opacity: 1; }
-    #filter-count { font-size: 0.875rem; color: var(--muted); }
-    #filter-count:empty { display: none; }
-    #theme-toggle {
-      justify-self: start;
-      min-block-size: 2.5rem; min-inline-size: 8.5rem; padding: 0 0.875rem;
-      border: 0; border-radius: 0.4rem; cursor: pointer;
-      background: var(--raised); color: var(--ink);
-      font-size: 0.875rem; font-weight: 600;
-    }
-    #theme-toggle:hover { background: var(--raised-2); }
-    #toc-contents > summary {
-      display: none; list-style: none;
-      font-weight: 700; min-block-size: 2.75rem; align-items: center; gap: 0.5rem;
-    }
-    #toc-contents > summary::-webkit-details-marker { display: none; }
-    #toc-list { list-style: none; padding: 0; display: grid; gap: 0.125rem; }
-    #toc-list a {
-      display: block; padding: 0.375rem 0.625rem; border-radius: 0.375rem;
-      color: var(--muted); text-decoration: none;
-    }
-    #toc-list a:hover { color: var(--ink); background: var(--surface); }
-    #toc-list a[aria-current="true"] { color: var(--ink); background: var(--raised); font-weight: 650; }
-    /* Wide screens always show the contents; the script also sets [open]. */
-    @media (width > 55rem) {
-      #toc-contents::details-content { content-visibility: visible; display: contents; }
-    }
+  /* command cards, grouped by what happens to your files */
+  h3.group { font-size: 1.375rem; }
+  details.card { background: var(--surface); border-radius: var(--radius); scroll-margin-block-start: 1rem; }
+  section > details.card + details.card { margin-block-start: 0.5rem; }
+  details.card > summary {
+    list-style: none;
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "name desc pill mark";
+    align-items: center; column-gap: 0.875rem; row-gap: 0.25rem;
+    min-block-size: 3rem; padding: 0.625rem 1rem; border-radius: var(--radius);
+  }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card[open] > summary { border-end-start-radius: 0; border-end-end-radius: 0; }
+  details.card:target > summary { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+  .cmd-name { grid-area: name; font-family: var(--mono); color: var(--accent); font-weight: 650; white-space: nowrap; }
+  .cmd-desc { grid-area: desc; color: var(--muted); font-size: var(--step-small); }
+  .ts-title { grid-column: 1 / 4; font-weight: 650; }
+  details.card > summary::after {
+    content: ""; grid-area: mark;
+    inline-size: 0.5rem; block-size: 0.5rem; margin-inline: 0.25rem;
+    border-inline-end: 2px solid var(--muted); border-block-end: 2px solid var(--muted);
+    rotate: 45deg; translate: 0 -0.15rem;
+  }
+  details.card[open] > summary::after { rotate: 225deg; translate: 0 0.15rem; }
+  .card-body { padding: 0.25rem 1rem 1rem; }
+  .card-body + .card-body { padding-block-start: 0; }
 
-    /* ============ main flow ============ */
-    main { grid-area: content; padding-block: 0 4rem; min-inline-size: 0; }
-    section { padding-block: clamp(2.25rem, 6vh, 3.5rem); scroll-margin-block-start: 1rem; }
-    section > * + *, .card-body > * + * { margin-block-start: 1rem; }
-    h2 {
-      font-size: clamp(1.625rem, 1.3rem + 1.2vw, 2.125rem);
-      font-weight: 750; letter-spacing: -0.03em; line-height: 1.15; text-wrap: balance;
-    }
-    section > h2 + * { margin-block-start: 1.25rem; }
-    h3 { font-size: 1.25rem; letter-spacing: -0.015em; line-height: 1.3; }
-    section > * + h3 { margin-block-start: 2.25rem; }
-    p { text-wrap: pretty; max-inline-size: 70ch; }
-    ul.flow, ol.flow { padding-inline-start: 1.25em; display: grid; gap: 0.5em; max-inline-size: 70ch; }
-    .lead { font-size: 1.125rem; max-inline-size: 60ch; }
+  /* action label: the TUI's own words, coloured by danger */
+  .pill {
+    grid-area: pill;
+    font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; letter-spacing: 0.02em; line-height: 1.4;
+    white-space: nowrap; color: var(--c);
+  }
+  .pill.g { --c: var(--accent); }
+  .pill.a { --c: var(--amber); }
+  .pill.o { --c: var(--orange); }
+  .pill.r { --c: var(--red); }
 
-    /* callouts: a tinted fill per meaning, named by their own lead words */
-    .note, .warn, .danger-box {
-      border-radius: 0.6rem; padding: 0.875rem 1.125rem; max-inline-size: 70ch;
-    }
-    .note { background: color-mix(in srgb, var(--ok) 12%, var(--bg)); }
-    .warn { background: color-mix(in srgb, var(--warn) 11%, var(--bg)); }
-    .danger-box { background: color-mix(in srgb, var(--bad) 14%, var(--bg)); }
+  /* code blocks */
+  pre { position: relative; }
+  details.card pre { background: var(--bg); }
+  pre[data-copy="safe"]::before {
+    content: "$"; position: absolute; inset-block-start: 1rem; inset-inline-start: 0.5rem;
+    color: var(--muted); font-family: var(--mono); font-size: 1em;
+  }
+  pre[data-copy="safe"] code { padding-inline-start: 0.75em; }
+  /* The button gets its own column, so code never scrolls underneath it. */
+  .code-wrap {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start;
+    background: var(--surface-raised); border-radius: var(--radius);
+  }
+  .code-wrap > pre { background: none; padding-inline-end: 0.75rem; }
+  .copy-btn {
+    margin: 0.625rem 0.625rem 0 0;
+    min-block-size: 2.25rem; min-inline-size: 4.5rem; padding: 0 0.75rem;
+    border: 0; border-radius: var(--radius); cursor: pointer;
+    background: var(--surface-high); color: var(--text);
+    font-size: 0.875rem; font-weight: 650;
+  }
+  .copy-btn:active { transform: scale(0.97); }
+  .copy-btn.copied { color: var(--accent); }
+  .copy-btn.err { color: var(--red); }
 
-    /* tables → stack on narrow screens (reflow-safe) */
-    .tbl-wrap { overflow-x: auto; }
-    table { border-collapse: collapse; inline-size: 100%; font-size: 0.9375rem; }
-    th, td { text-align: start; padding: 0.625rem 0.75rem; border-block-end: 1px solid var(--rule); vertical-align: top; }
-    thead th { color: var(--muted); font-weight: 600; font-size: 0.875rem; }
-    td code { white-space: nowrap; }
-    .lvl-g { color: var(--ok); font-weight: 650; }
-    .lvl-a { color: var(--warn); font-weight: 650; }
-    .lvl-o { color: var(--orange); font-weight: 650; }
-    .lvl-r { color: var(--bad); font-weight: 700; }
-    @media (width <= 42rem) {
-      .tbl-wrap table, .tbl-wrap tbody, .tbl-wrap tr, .tbl-wrap th, .tbl-wrap td { display: block; }
-      .tbl-wrap thead { display: none; }
-      .tbl-wrap tr { background: var(--surface); border-radius: 0.6rem; padding: 0.5rem 0; margin-block-end: 0.5rem; }
-      .tbl-wrap td { border: 0; padding: 0.25rem 0.875rem; }
-      .tbl-wrap td::before {
-        content: attr(data-th); display: block;
-        font-size: 0.875rem; font-weight: 600; color: var(--muted);
-      }
-    }
+  /* recipe sequence: a real ordered list */
+  ol.steps { padding-inline-start: 1.75em; display: grid; gap: 0.75rem; max-inline-size: 70ch; }
+  ol.steps li::marker { color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
 
-    /* danger scale: ten flat cells, green → amber → orange → red */
-    .scale-strip {
-      display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 2px;
-      max-inline-size: 40rem; border-radius: 0.5rem; overflow: hidden;
-    }
-    .scale-strip i {
-      display: grid; place-items: center; block-size: 2.75rem;
-      font-style: normal; font-weight: 750; font-variant-numeric: tabular-nums;
-      color: #111111; background: var(--c);
-    }
-    .s-ok { --c: var(--fill-ok); }
-    .s-warn { --c: var(--fill-warn); }
-    .s-orange { --c: var(--fill-orange); }
-    .s-bad { --c: var(--fill-bad); }
+  .dim { color: var(--muted); }
+  [hidden] { display: none !important; }
 
-    /* command cards, grouped by what happens to your files */
-    h3.group { font-size: 1.375rem; }
-    details.card { background: var(--surface); border-radius: 0.6rem; }
-    section > details.card + details.card { margin-block-start: 0.5rem; }
-    details.card > summary {
-      list-style: none;
-      display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto;
-      grid-template-areas: "name desc pill mark";
-      align-items: center; column-gap: 0.875rem; row-gap: 0.25rem;
-      min-block-size: 3rem; padding: 0.625rem 1rem; border-radius: 0.6rem;
-    }
-    details.card > summary::-webkit-details-marker { display: none; }
-    details.card > summary:hover { background: var(--raised); }
-    details.card[open] > summary { border-end-start-radius: 0; border-end-end-radius: 0; }
-    .cmd-name { grid-area: name; font-family: var(--mono); color: var(--accent); font-weight: 650; white-space: nowrap; }
-    .cmd-desc { grid-area: desc; color: var(--muted); font-size: 0.9375rem; }
-    .ts-title { grid-column: 1 / 4; font-weight: 650; }
-    details.card > summary::after {
-      content: ""; grid-area: mark;
-      inline-size: 0.5rem; block-size: 0.5rem; margin-inline: 0.25rem;
-      border-inline-end: 2px solid var(--muted); border-block-end: 2px solid var(--muted);
-      rotate: 45deg; translate: 0 -0.15rem;
-    }
-    details.card[open] > summary::after { rotate: 225deg; translate: 0 0.15rem; }
-    @media (prefers-reduced-motion: no-preference) {
-      details.card > summary::after { transition: rotate 0.18s ease-out, translate 0.18s ease-out; }
-    }
-    .card-body { padding: 0.25rem 1rem 1rem; }
-    .card-body + .card-body { padding-block-start: 0; }
-
-    /* action pill: the TUI's own words, coloured by danger */
-    .pill {
-      grid-area: pill;
-      font-size: 0.8125rem; font-weight: 700; letter-spacing: 0.02em; line-height: 1.4;
-      padding: 0.125rem 0.5rem; border-radius: 0.3rem; white-space: nowrap;
-      color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent);
-    }
-    .pill.g { --c: var(--ok); }
-    .pill.a { --c: var(--warn); }
-    .pill.o { --c: var(--orange); }
-    .pill.r { --c: var(--bad); }
-
-    /* code blocks */
-    pre {
-      position: relative; padding: 1rem 1.125rem; border-radius: 0.6rem;
-      overflow-x: auto; line-height: 1.55;
-      background: var(--raised);
-    }
-    details.card pre { background: var(--bg); }
-    pre code { background: none; padding: 0; font-size: 1em; }
-    code { background: color-mix(in srgb, var(--accent) 12%, transparent); padding: 0.1em 0.35em; border-radius: 0.3em; }
-    pre[data-copy="safe"]::before {
-      content: "$"; position: absolute; inset-block-start: 1rem; inset-inline-start: 0.5rem;
-      color: var(--muted); font-family: var(--mono); font-size: 1em;
-    }
-    pre[data-copy="safe"] code { padding-inline-start: 0.75em; }
-    /* The button gets its own column, so code never scrolls underneath it. */
-    .code-wrap {
-      display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start;
-      background: var(--raised); border-radius: 0.6rem;
-    }
-    .code-wrap > pre { background: none; padding-inline-end: 0.75rem; }
-    .copy-btn {
-      margin: 0.625rem 0.625rem 0 0;
-      min-block-size: 2rem; min-inline-size: 4.25rem; padding: 0 0.75rem;
-      border: 0; border-radius: 0.375rem; cursor: pointer;
-      background: var(--raised-2); color: var(--ink);
-      font-size: 0.8125rem; font-weight: 650;
-    }
-    .copy-btn:hover { background: color-mix(in srgb, var(--accent) 22%, var(--raised-2)); }
-    .copy-btn.copied { color: var(--ok); }
-    .copy-btn.err { color: var(--bad); }
-
-    /* recipe sequence: a real ordered list */
-    ol.steps { padding-inline-start: 1.75em; display: grid; gap: 0.75rem; max-inline-size: 70ch; }
-    ol.steps li::marker { color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
-
-    footer {
-      color: var(--muted); font-size: 0.9375rem;
-      padding-block: 2rem;
-      display: flex; flex-wrap: wrap; gap: 0.5rem 1.75rem;
-    }
-    footer b { color: var(--ink); }
+  @media (hover: hover) and (pointer: fine) {
+    #theme-toggle:hover { background: var(--surface-high); }
+    #toc-list a:hover { color: var(--text); background: var(--surface); }
+    details.card > summary:hover { background: var(--surface-raised); }
+    .copy-btn:hover { background: color-mix(in srgb, var(--accent) 22%, var(--surface-high)); }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    html { scroll-behavior: smooth; }
+    details.card > summary::after { transition: rotate 0.18s ease-out, translate 0.18s ease-out; }
+    #theme-toggle, .copy-btn { transition: transform 140ms var(--ease-out); }
   }
 
-  @layer utilities {
-    .skip-link {
-      position: fixed; z-index: 10;
-      inset-block-start: 0.75rem; inset-inline-start: 0.75rem;
-      padding: 0.6rem 0.9rem; border-radius: 0.4rem;
-      background: var(--accent); color: var(--accent-ink); font-weight: 700;
-      transform: translateY(calc(-100% - 1rem));
-    }
-    .skip-link:focus-visible { transform: translateY(0); }
-    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    .dim { color: var(--muted); }
-    [hidden] { display: none !important; }
-  }
-
-  /* narrow screens: title first, then a compact contents bar */
+  /* narrow screens: a compact contents bar above the text */
   @media (width <= 55rem) {
-    body { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "toc" "content"; }
-    header.masthead { padding-block: 1.75rem 1.25rem; }
+    .manual { grid-template-columns: minmax(0, 1fr); }
     nav.toc {
       position: static; max-block-size: none; overflow: visible;
-      background: var(--surface); border-radius: 0.6rem; padding: 0.75rem;
+      background: var(--surface); border-radius: var(--radius); padding: 0.75rem; margin-block-start: 0.5rem;
     }
     .toc-tools { grid-template-columns: minmax(0, 1fr) auto; align-items: center; margin-block-end: 0.25rem; }
     #filter-count { grid-column: 1 / -1; }
@@ -339,8 +358,8 @@ try { const s = localStorage.getItem("devtrim-theme");
 
   @media print {
     :root { color-scheme: light; }
-    nav.toc, .copy-btn, .skip-link { display: none; }
-    body { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "content"; }
+    .bar, .skip-link, nav.toc, .copy-btn { display: none !important; }
+    .manual { grid-template-columns: minmax(0, 1fr); }
     details.card { break-inside: avoid; }
     details.card > *:not(summary) { display: block !important; }
     details.card::details-content { content-visibility: visible; display: contents; }
@@ -350,18 +369,25 @@ try { const s = localStorage.getItem("devtrim-theme");
 <body>
 <a class="skip-link" href="#content">Skip to content</a>
 
-<header class="masthead">
-  <h1 class="title"><span class="wordmark">devtrim</span> <span class="rest">manual</span></h1>
-  <p class="chip-row">
-    <span class="chip g">v0.12.6</span>
-    <span class="chip g">Ratatui TUI</span>
-    <span class="chip g">Apache-2.0</span>
-    <span class="chip a">Trash-first deletion</span>
-    <span class="chip r">Protected-path denylist</span>
-    <span class="chip g">--json</span>
-  </p>
+<header class="bar">
+  <div class="wrap bar-row">
+    <a class="wordmark" href="index.html">devtrim</a>
+    <nav aria-label="Site">
+      <ul class="bar-links">
+        <li><a href="index.html#commands">Commands</a></li>
+        <li><a href="index.html#safety">Safety</a></li>
+        <li><a href="MANUAL.html" aria-current="page">Manual</a></li>
+        <li><a href="https://github.com/mneves75/devtrim">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
 </header>
 
+<div class="wrap manual">
+<header class="manual-title">
+  <h1>devtrim manual</h1>
+    <span class="chip g">v0.13.0</span>
+</header>
 <nav class="toc" aria-label="Table of contents">
   <div class="toc-tools">
     <label class="sr-only" for="filter">Filter sections</label>
@@ -431,7 +457,7 @@ devtrim --version</code></pre>
   <pre data-copy="safe"><code>devtrim</code></pre>
   <p>Choose an operation, inspect its exact findings, and press <code>a</code> only when you intend to apply.</p>
   <p>A preview lists one finding per line with the highlighted one shown whole below; a terminal too short to hold it says how many lines it hides, and <code>Enter</code> shows the finding in full in a view that scrolls, where no key changes the plan and <code>Esc</code> returns to it.</p>
-  <p>Each operation's badge is explained beside the menu: <code>READ-ONLY</code> reports and never changes anything, <code>PREVIEW</code> changes nothing until you select items, press <code>a</code> and approve, and <code>PERMANENT</code> deletes for good after a typed size acknowledgment. "Scan everything" is read-only: its selection and apply keys name the category view that can act on the highlighted finding, such as "b, then 2 (caches)", and any key that cannot act on the highlighted row says why instead of doing nothing.</p>
+  <p>Each operation's badge is explained beside the menu: <code>READ-ONLY</code> reports and never changes anything, <code>TRASH</code> changes nothing until you press <code>a</code> and approve, then moves what you kept selected to the Trash, and <code>PERMANENT</code> deletes for good after a typed size acknowledgment. "Scan everything" is read-only: its selection and apply keys name the category view that can act on the highlighted finding, such as "b, then 2 (caches)", and any key that cannot act on the highlighted row says why instead of doing nothing.</p>
   <h3>Keys</h3>
   <ul class="flow">
     <li><code>?</code> lists every key, whole even at the minimum size.</li>
@@ -474,105 +500,105 @@ devtrim clean caches</code></pre>
   <h2 id="h-commands">Command reference</h2>
   <p>Grouped by what happens to your files. Global flags are capability-scoped: read-only/report-only commands reject mutation flags they cannot honor instead of silently ignoring them. <code>scan --shred</code> intentionally changes the previewed action; Docker and simulator cleanup reject <code>--shred</code> because they execute exact typed commands rather than filesystem deletion actions; <code>trash-empty</code> rejects it because its preview is already permanent. The TUI owns its confirmation and rejects CLI mutation flags plus <code>--json</code>.</p>
 
-  <details class="card">
+  <details class="card" id="cmd-tui">
     <summary><span class="cmd-name">tui</span><span class="cmd-desc">interactive keyboard interface; also the bare-command default</span></summary>
     <div class="card-body"><p>Runs only when stdin and stdout are terminals. It calls the same scanners and apply owners as the CLI, shows textual risk labels, refuses CLI bypass flags, and requires a matching confirmation for the current preview. Bare <code>devtrim</code> prints help and exits nonzero instead when piped.</p></div>
   </details>
   <h3 class="group" id="g-inspect">Report only</h3>
-  <details class="card">
+  <details class="card" id="cmd-scan">
     <summary><span class="cmd-name">scan</span><span class="cmd-desc">full reclaimable-space report</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p>Read-only report across every category. It opens with one line per category — actionable size, finding count, and the command that acts on it, largest first — then lists each category's findings: all of them up to eight, otherwise the five largest and a count of the rest. <code>--all</code> lists every finding; <code>--json</code> is always the complete document.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-history">
     <summary><span class="cmd-name">history</span><span class="cmd-desc">recent journaled applies</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p>Read-only view of the write-ahead apply journal: what was attempted, what completed, what errored. An attempt without a result is flagged as <em>interrupted</em>. It shows the newest 20 entries; <code>--limit N</code> changes that, up to 1,000, and when older entries exist the list ends by saying so. <code>--json</code> emits one <code>{"operation":"history","entries":[…],"truncated":false}</code> document.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-largest">
     <summary><span class="cmd-name">largest</span><span class="cmd-desc">biggest directories under scan roots</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p>Read-only ranking of the largest depth-≤2 directories under your scan roots (<code>--top N</code>, default 20). Unreadable entries are skipped and disclosed as a count — totals are lower bounds, never deletion authority.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-worktrees">
     <summary><span class="cmd-name">worktrees</span><span class="cmd-desc">linked worktrees and their sizes</span><span class="pill g">READ-ONLY</span></summary>
-    <div class="card-body"><p>Read-only list of every repository's linked worktrees under your scan roots, from one <code>git worktree list --porcelain -z</code> per repository through the same hardened Git invocation the scans use: branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is the repository's own claim, so it is measured only when it is a real directory inside a scan root whose <code>.git</code> file leads back to that repository; anything else is listed unsized with the reason. The main worktree is listed but not measured. Sizes follow no link, stay on one device, never count a nested worktree twice, and are lower bounds when entries cannot be read. The report never says safe, stale or removable and shows no date: uncommitted, untracked and ignored work leave none. A bare repository has no <code>.git</code> marker and is found only through one of its worktrees. <code>git worktree remove &lt;path&gt;</code> runs the repository's configured programs, so use it only in a repository you trust, after your own review.</p></div>
+    <div class="card-body"><p>Read-only list of every repository's linked worktrees under your scan roots, from one <code>git worktree list --porcelain -z</code> per repository through the same hardened Git invocation the scans use: branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is the repository's own claim, so it is measured only when it is a real directory inside a scan root whose <code>.git</code> file leads back to that repository; anything else is listed unsized with the reason. The main worktree is listed but not measured. Sizes follow no link, stay on one device, never count a nested worktree twice, and are lower bounds when entries cannot be read; such a row stays listed and the run exits 1. The report never says safe, stale or removable and shows no date: uncommitted, untracked and ignored work leave none. A bare repository has no <code>.git</code> marker and is found only through one of its worktrees. <code>git worktree remove &lt;path&gt;</code> runs the repository's configured programs, so use it only in a repository you trust, after your own review.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-icloud">
     <summary><span class="cmd-name">icloud</span><span class="cmd-desc">large files and locally allocated storage</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p>Recursively lists iCloud Drive files ≥ 100 MB with logical size and a local-allocation estimate. Sparse files, compression, clones, and dataless placeholders can make allocated bytes differ from logical bytes; devtrim does not claim to know upload progress.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-app-storage">
     <summary><span class="cmd-name">app-storage</span><span class="cmd-desc">WhatsApp data and saved Screen Studio projects</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p>Measures regular-file blocks in four known WhatsApp Group Containers, separating <code>Message/Media</code>, <code>ChatStorage.sqlite</code> and its WAL/SHM files, and other data. It never opens their contents or decides which attachments are duplicates, unreferenced or disposable. Add <code>--root ~/Movies</code> to discover saved <code>.screenstudio</code> projects in that folder; there is no implicit home or configured-project-root search. Screen Studio lets you choose where projects are saved, so an empty result does not prove none exist elsewhere.</p><p>Root symlinks and symlinked ancestors are refused. Both inventories skip links and foreign devices. Screen Studio discovery and bundle measurement also skip Git metadata, dependency trees, <code>target</code>, <code>.build</code>, <code>.next</code>, <code>.turbo</code>, virtual environments, <code>.cache</code>, and packaged apps/frameworks/photo libraries/archives. At most 100 bundles retain individual detail; an aggregate row keeps the omitted count and measured bytes. Errors are bounded, disclosed and return nonzero. Hard links count once across the report; APFS clones may share blocks. This is a live metadata snapshot, not deletion authority. All findings are informational; no mutation flag is accepted and no journal is written. Saved projects and application data stay in place.</p><pre tabindex="0"><code>devtrim app-storage --json
 devtrim app-storage --root ~/Movies --json</code></pre></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-uninstall">
     <summary><span class="cmd-name">uninstall</span><span class="cmd-desc">paths named for an app bundle id</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p>Resolves an app in <code>/Applications</code> or <code>~/Applications</code>, reads its <code>CFBundleIdentifier</code>, and lists the support directories, caches, containers, preferences, saved state, HTTP storages, WebKit stores and launch agents named for that exact identifier. Matching is exact, never by display name: Amazon Kindle is <code>com.amazon.Lassen</code>, so a name match would find none of its files and would sweep everything containing the word. <strong>A conservative report, not an inventory</strong>: an app storing data under a product name is invisible to identifier matching — Visual Studio Code keeps <code>~/Library/Application Support/Code</code> — and group containers are omitted entirely, because their names come from an arbitrary entitlement and a suffix rule would both miss real ones and misattribute others. <strong>Report-only</strong>: <code>/Applications</code> and most of <code>~/Library</code> are refused by the protected-path boundary, and widening it would weaken every command rather than only this one.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-dashboard">
     <summary><span class="cmd-name">dashboard</span><span class="cmd-desc">local HTML disk map</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p><code>devtrim dashboard [PATH]</code> generates a private, self-contained HTML snapshot and opens it in your default browser. The default is your home folder. Use <code>--output disk-map.html --no-open</code> to save to a chosen new file without starting a browser; existing files and symlinks are never overwritten. Explore a responsive treemap, folder breadcrumbs and searchable details beside cleanup previews from the existing categories. Those previews keep their configured project roots: mapping the whole home does not widen cleanup authority. Copied commands start fresh terminal previews; <strong>the dashboard never deletes</strong> and rejects mutation flags. Available volume space is separate from the estimated folder sizes on disk. Symlinks are not followed, foreign filesystems are not entered, and unreadable content produces a useful report with disclosed partial lower bounds and a nonzero exit status. There is no server, external asset or telemetry; the HTML contains local paths and should be kept private. Rerun the command to refresh the snapshot.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-analyze">
     <summary><span class="cmd-name">analyze</span><span class="cmd-desc">interactive disk explorer</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p>Drill into disk usage largest-first with <code>↑/↓</code>, <code>Enter</code> to open and <code>Esc</code> to go up; at the top level <code>Esc</code> does nothing and <code>q</code> quits. Measurement runs on a worker thread and streams in, so a directory that takes minutes to size never freezes the screen, and leaving a directory cancels its walk. Symlinks are reported at their own size rather than followed, a different device is never measured or entered, and unreadable subtrees are disclosed as <code>(partial)</code> lower bounds. A lower bound is a partial result: <code>--json</code> lists each one in <code>errors</code> and exits nonzero. <strong>Never deletes</strong> — deletion in devtrim is always bound to a corroborated category, so use <code>devtrim clean &lt;category&gt;</code> for that.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-status">
     <summary><span class="cmd-name">status</span><span class="cmd-desc">machine vitals and health score</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p>Uptime, load, memory, disk, battery, thermals, cumulative network, and the busiest processes, read through fixed-argv system tools whose parsers fail closed. A metric that cannot be read is reported as unavailable with its reason, never as a zero, and the health score <strong>names every input it was missing</strong> instead of scoring over the gap. A present Data volume with a failed or malformed disk metric stays unavailable. Root fallback requires a positively absent Data layout; an unreadable or non-directory layout is unavailable. Tools run in the C locale, because a <code>pt_BR</code> decimal comma would otherwise make load and processes unreadable. Memory used is stated as <code>active + wired + compressed</code>, because counting macOS's reclaimable inactive pages reports a healthy machine at 96%.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-leftovers">
     <summary><span class="cmd-name">leftovers</span><span class="cmd-desc">report-only review hints</span><span class="pill g">READ-ONLY</span></summary>
     <div class="card-body"><p>Lists possible agent scratch and <code>.supergoal</code> paths for manual review, and the folders inside a repository's top-level <code>.scratch</code> when Git ignores that folder (<code>git check-ignore</code>) and tracks nothing in it; a <code>.scratch</code> child that is a linked worktree is labelled as one. It never deletes any of them: worktree or mission staleness cannot be proven from a name, and ignored files are still somebody's data.</p></div>
   </details>
   <h3 class="group" id="g-reclaim">Trash-first</h3>
-  <details class="card">
+  <details class="card" id="cmd-caches">
     <summary><span class="cmd-name">caches</span><span class="cmd-desc">package, model, and tool download caches</span><span class="pill a">TRASH</span></summary>
     <div class="card-body"><p>Moves regenerable caches to Trash: Hugging Face models, uv, npm's whole cache folder (downloads and npx installs come back, its logs do not), Homebrew, bun, Corepack's downloaded package managers (<code>~/.cache/node/corepack</code>, never its parent), the cargo registry, the GitHub CLI cache, Gradle's <code>caches</code> and <code>wrapper/dists</code> under <code>GRADLE_USER_HOME</code> (never that folder, which holds <code>gradle.properties</code> and <code>init.d</code>; only when each holds what Gradle writes there, <code>caches/modules-2</code> or a <code>gradle-&lt;version&gt;-bin</code> distribution, and the Gradle home is not inside a Git repository; refused while a Gradle daemon, build or Wrapper runs), the Go module cache <code>go env GOMODCACHE</code> reports (only inside the home folder and holding Go's <code>cache/download</code>; Go keeps it read-only, so <code>--shred</code> refuses it whole, <code>devtrim trash-empty</code> purges it once it is in the Trash, and <code>go clean -modcache</code> is Go's own removal), and a closed list of exact <code>~/Library/Caches</code> subdirectories (Playwright browsers, the VS Code HTTP cache and its Squirrel update staging, SwiftPM, pip, the pnpm metadata cache, Go, TypeScript, CocoaPods' download cache). Hugging Face cleanup targets only <code>~/.cache/huggingface/hub</code>; authentication tokens and other state in its parent remain untouched. Homebrew's cache holding a Git clone Homebrew keeps for a Git-sourced formula (<code>&lt;name&gt;--git</code>) is offered as its other direct children, and the clones stay. <code>~/Library</code> stays protected wholesale — that list is the carve-out, it is the same constant the protection boundary reads, and a name is on it only when one developer tool owns the directory and rebuilds it on demand. The pnpm entry is the metadata cache, never the content-addressable store at <code>~/Library/pnpm/store</code> that installed <code>node_modules</code> trees hard-link into. Editor <strong>logs and application data are out of scope</strong>: they live under <code>~/Library/Application Support</code> and <code>~/Library/Logs</code>, mixed in with real user state. <code>~/Library/Caches/JetBrains</code> is excluded too — on macOS it is the IDE system directory, and each product subdirectory holds the non-regenerable <code>LocalHistory</code> store. Regenerated automatically on next use — mind the bandwidth for large model caches and the rebuild time for editor indexes — except Playwright's browsers and CocoaPods' downloads, which come back only through <code>npx playwright install</code> and <code>pod install</code>; those findings name the command. The uv cache is removed only while no uv process holds uv's own cache lock, the same lock <code>uv cache clean</code> waits for; the empty <code>.git</code> uv writes into its source-distribution bucket is recognized in that exact shape rather than treated as a repository.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-node-modules">
     <summary><span class="cmd-name">node-modules</span><span class="cmd-desc">exact paths in conclusively stale repos</span><span class="pill a">TRASH</span></summary>
     <div class="card-body"><p>Maps each <code>node_modules</code> to its owning Git repo, skips repos with recent activity — the newer of HEAD's commit date and its newest reflog entry, so a clone or checkout of old history counts as active — and applies only the exact paths shown. Reading that activity runs no program the repository configures. An unreadable build working directory, including a decoded <code>lsof</code> name that is not absolute, refuses liveness at preview and apply. Apply reasserts a real <code>node_modules</code> directory leaf and refuses symlinks plus <code>.git</code>, nested dependency-tree, or non-normal ancestors. A <code>node_modules</code> holding any file its repository tracks is committed content, not a stale install, and is never offered. Neither is one without a <code>package.json</code> beside it — the manifest an install recreates it from — such as the <code>assets/node_modules</code> inside an archived or unpacked iOS app bundle, whose removal would break the bundle's signature. Roots at or below <code>.git</code>, or below <code>node_modules</code>, in any ASCII case, are excluded from both project cleanup categories, including explicit and configured roots. A root exactly at a top-level <code>node_modules</code> install may offer that install, never nested installs. Unknown Git activity is refused: that repository offers nothing and is reported as an error, while the others are still judged. A repository with no commits yet is skipped and named.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-artifacts">
     <summary><span class="cmd-name">artifacts</span><span class="cmd-desc">corroborated build artifacts in stale repos</span><span class="pill a">TRASH</span></summary>
     <div class="card-body"><p>Deletes a directory only when its name is on a closed list <strong>and</strong> its ecosystem corroborates it: <code>target</code> beside <code>Cargo.toml</code>, <code>.venv</code> containing <code>pyvenv.cfg</code>, <code>Pods</code> beside <code>Podfile</code>, <code>.next</code>-family beside <code>package.json</code>, <code>.gradle</code> beside its build files, Android's native build folder <code>.cxx</code> beside <code>build.gradle</code>, <code>.terragrunt-cache</code> beside <code>terragrunt.hcl</code>, Nuxt's <code>.output</code> beside <code>nuxt.config.*</code>, <code>.build</code> beside <code>Package.swift</code>, tool caches, or a directory carrying an exact <code>CACHEDIR.TAG</code> signature — always inside a conclusively stale Git repo. Ambiguous names (<code>build</code>, <code>dist</code>, <code>vendor</code>, <code>bin</code>, <code>obj</code>) are never matched. A directory holding any file its repository tracks is never offered — CocoaPods recommends committing <code>Pods</code> — nor is a tree holding a Git repository anywhere below its root, as a SwiftPM <code>.build</code> holds its dependencies' clones, or an entry named <code>*-keypair.json</code>: <code>cargo build-sbf</code>, which <code>anchor build</code> runs, writes a Solana program's keypair into <code>target/deploy</code> once, and a rebuild after removal mints a different program address. Corroboration, staleness, build-process liveness, tracked files, and keypairs are re-verified at apply.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-purge">
     <summary><span class="cmd-name">purge</span><span class="cmd-desc">node_modules + build artifacts, by project</span><span class="pill a">TRASH</span></summary>
     <div class="card-body"><p><code>devtrim purge</code> is the project view of the two categories above: stale <code>node_modules</code> and corroborated build artifacts in one plan, ordered by project with the largest first and a header per project. It adds no authority of its own — each finding keeps its category's staleness and build-liveness gates and is applied by that category, which reasserts its exact shape. Like every category it moves to Trash unless you pass <code>--shred</code>. Like Mole's <code>mo purge</code>, it skips a directory holding files its repository tracks, and a build directory holding a Solana program keypair, Terraform state (<code>*.tfstate</code>, which Terraform's local backend writes inside <code>.terragrunt-cache</code>), or a nested Git repository. Unlike <code>mo purge</code>, it never matches ambiguous names such as <code>build</code>, <code>dist</code>, or <code>coverage</code>, and never touches a repository with recent Git activity. A project with no repository of its own is never judged by an enclosing repository at or above your home folder, such as dotfiles kept as a repository at <code>~</code>. A folder it cannot read and a repository it cannot judge each offer nothing and are reported as errors, without emptying the plan. In the TUI it is <code>p</code>, where <code>Space</code> leaves individual projects' items out.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-xcode">
     <summary><span class="cmd-name">xcode</span><span class="cmd-desc">DeviceSupport + DerivedData</span><span class="pill a">TRASH</span></summary>
     <div class="card-body"><p>Clears only direct children of the iOS, watchOS, tvOS and visionOS DeviceSupport folders and of DerivedData — never a file or symlink beside them — and, for a DerivedData folder holding Swift package checkouts that is not itself a Git repository, its directories but <code>SourcePackages</code>; apply reasserts that exact category shape before removal. DerivedData rebuilds on the next build. While Xcode, <code>xcodebuild</code> or its build services run, a folder changed within the activity window (<code>active_days</code>) or holding a file an Xcode process has open is kept, and every other folder is still offered; apply judges each again. A folder holding a project's resolved Swift packages is cleaned around them: each checkout in its <code>SourcePackages</code> is a Git clone, which devtrim never deletes, so the folder's other directories — <code>Build</code>, <code>Index.noindex</code> and the like — are offered one by one and <code>SourcePackages</code> stays. DeviceSupport symbols are copied again only from a connected device running that exact OS build, so a superseded build matters only for symbolicating its crash logs. A folder that cannot be read or measured offers nothing and is named in one error, so the run exits nonzero, while the folders beside it are still offered. <strong>Archives exempt by design</strong> — they're release artifacts.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-toolchains">
     <summary><span class="cmd-name">toolchains</span><span class="cmd-desc">old swift.org toolchains</span><span class="pill a">TRASH</span></summary>
     <div class="card-body"><p>Removes only direct <code>.xctoolchain</code> directories not referenced by any verified symlink in the Toolchains directory and not installed by swiftly. Every toolchain swiftly lists in <code>~/.swiftly/config.json</code> (or <code>$SWIFTLY_HOME_DIR/config.json</code>), and the one it has in use, is report-only and names <code>swiftly uninstall &lt;version&gt;</code>; a configuration that cannot be read, parsed or mapped to folders blocks the scan. A present but missing, broken, escaping, or invalid <code>swift-latest</code> reference blocks the scan; apply rereads both and reasserts the exact direct-child shape. Xcode's built-in chain is unaffected. Reinstallable from swift.org.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-installers">
     <summary><span class="cmd-name">installers</span><span class="cmd-desc">stale downloaded installer archives</span><span class="pill a">TRASH</span></summary>
     <div class="card-body"><p>Direct children of <code>Downloads</code> and <code>Desktop</code> whose extension is on a closed list (<code>dmg</code>, <code>pkg</code>, <code>mpkg</code>, <code>iso</code>, <code>xip</code>) and untouched for longer than the retention window (<code>retain_days</code>). Age is the modification time, so a copy that preserves it counts as old at once; the preview states the age it judged. Scanning never recurses, so a bundled installer inside an extracted project tree is left alone, and formats that can carry source or user data are never matched. Apply refuses symlinks and any target outside those two directories. <strong>Not a cache</strong> — nothing re-downloads these automatically.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-agents">
     <summary><span class="cmd-name">agents</span><span class="cmd-desc">agent caches, older Codex releases, and stale history</span><span class="pill a">TRASH</span></summary>
     <div class="card-body"><p>Two tiers, plus the separate Codex release authority below, because coding-agent storage is not one kind of data. <strong>Regenerable caches</strong> — the Claude Code metadata cache, the Codex catalog cache, the Pi web-search cache, the OpenCode cache — are exact paths their owner rebuilds on demand, and are offered unconditionally at a low danger score. <strong>Session history</strong> — Claude Code shell snapshots; Codex shell snapshots, session and archived-session trees — <strong>is not regenerable</strong>, so a child is offered only once the newest regular file anywhere in its subtree is older than the retention window (<code>retain_days</code>). Codex nests sessions as <code>&lt;year&gt;/&lt;month&gt;/&lt;day&gt;</code>, so the day directory is the unit. Authentication material (<code>auth.json</code>, <code>.credentials.json</code>), configuration, memories, skills, agent definitions, installed plugins and <code>.claude.json</code> backups are on neither list. A shell snapshot is history, not cache: Claude Code writes one per session and sources that exact file on every later shell call, and nothing rewrites it if it disappears. <code>~/.claude/projects</code> is <strong>not a root at all</strong>: it holds Claude Code auto memory in a <code>memory/</code> directory keyed by repository root, and since v2.1.248 Claude Code retains a transcript originating in Claude Desktop or Cowork at any age, with nothing in the filename to distinguish one — so file age is not evidence that anything there is finished with. Apply reasserts tier, exact depth, symlink refusal and the age gate, so a session resumed after preview falls out of the plan. Every Codex entry also applies to each additional Codex home listed in <code>codex_homes</code>, labelled with that home.</p></div>
     <div class="card-body"><p>Older Codex standalone releases are offered separately when the installer lock is available, <code>current</code> resolves to a verified package, and each candidate has an older major/minor/patch version, required executable files, an audited voice manifest, and matching SHA-256 digests for the main executable and voice files. Packages without that manifest stay. Current, same-version, newer, staged, and unknown packages stay. An unverifiable lock or current package produces a read-only refusal and nonzero CLI status while caches and stale history remain available. An invalid older candidate is omitted without an error and left in place. Apply checks again. A release reported in use by the system-wide <code>lsof</code> snapshot is skipped, and apply probes again for each release. The probe cannot see every other user's process, and a process can start after it runs. Trash is the default and must be emptied separately to reclaim physical space. Package checks cannot prove that a modified voice manifest describes only vendor files or that a nonempty executable reports the manifest's version; inspect releases before using <code>--shred</code>.</p></div>
   </details>
   <h3 class="group" id="g-nuclear">Permanent</h3>
   <p><code>--shred</code> also turns a Trash-first plan into permanent deletion, and its preview says so.</p>
-  <details class="card">
-    <summary><span class="cmd-name">optimize</span><span class="cmd-desc">three macOS maintenance tasks</span><span class="pill a">PERMANENT</span></summary>
+  <details class="card" id="cmd-optimize">
+    <summary><span class="cmd-name">optimize</span><span class="cmd-desc">three macOS maintenance tasks</span><span class="pill r">PERMANENT</span></summary>
     <div class="card-body"><p>Three typed commands with fixed arguments: QuickLook thumbnail cache, user font caches, and the Launch Services database. <code>--apply</code> <strong>requires</strong> an explicit <code>--task quicklook|fonts|launch-services</code>, because one confirmation must not authorize unrelated work — <code>plan_danger</code> takes the maximum, so a cheap task would otherwise ride in on an expensive one's prompt. A task that cannot do what its name says is not offered: those needing root or hours of CPU, and DNS, because <code>dscacheutil -flushcache</code> does not clear the <code>mDNSResponder</code> resolver cache it would advertise. Preview by default; every run is journaled.</p></div>
   </details>
-  <details class="card">
-    <summary><span class="cmd-name">docker</span><span class="cmd-desc">unused images + build cache</span><span class="pill o">PERMANENT</span></summary>
+  <details class="card" id="cmd-docker">
+    <summary><span class="cmd-name">docker</span><span class="cmd-desc">unused images + build cache</span><span class="pill r">PERMANENT</span></summary>
     <div class="card-body"><p><code>image prune -a</code> + <code>builder prune</code> on the exact previewed local Unix-socket endpoint. Remote Docker contexts are refused. <strong>Volumes are never touched</strong> — a volume can hold your live database. The scan also reports the host-side VM disk image as a non-actionable finding measured in allocated blocks: <code>docker system df</code> measures inside the guest, while that sparse image is what the host actually pays for, and pruning does not shrink it. Restart the VM to trigger compaction. The disclosure appears even when the daemon is stopped, which is the one state where the cost is invisible to <code>docker</code> and still present.</p></div>
   </details>
-  <details class="card">
-    <summary><span class="cmd-name">simulators</span><span class="cmd-desc">delete exact previewed unavailable devices</span><span class="pill a">PERMANENT</span></summary>
+  <details class="card" id="cmd-simulators">
+    <summary><span class="cmd-name">simulators</span><span class="cmd-desc">delete exact previewed unavailable devices</span><span class="pill r">PERMANENT</span></summary>
     <div class="card-body"><p>Creates one finding per device whose runtime is gone, binds the exact UDID, and rechecks that device before deletion. <code>--yolo</code> may bypass confirmation, but it never adds <code>erase all</code> or any operation absent from preview. Simulators that still work are listed once, report-only, with their total data size and the three largest devices; deleting one destroys its apps and data, so that stays a manual <code>xcrun simctl delete &lt;UDID&gt;</code>. A Mac with the Command Line Tools but no Xcode has no <code>simctl</code>, and one with no developer tools has no developer directory; <code>xcrun</code>'s own error for either means there is nothing to manage, so the category says why and the run still succeeds. Any other <code>xcrun</code> or <code>simctl</code> failure is an error.</p></div>
   </details>
-  <details class="card">
+  <details class="card" id="cmd-trash-empty">
     <summary><span class="cmd-name">trash-empty</span><span class="cmd-desc">purge ~/.Trash permanently</span><span class="pill r">PERMANENT</span></summary>
     <div class="card-body"><p>Preview with <code>--confirm=&lt;gb&gt;</code>; every eligible current top-level Trash item is shown as an exact target. Permanent purge additionally requires <code>--apply</code>, the size of that exact set must match within ±2 GB, and the purge still needs the same confirmation every mutation does — typed on a terminal, or <code>--yolo</code> unattended — after the set is shown again. Items moved to Trash after that confirmation are not added. <code>--only-devtrim</code> narrows the set to what devtrim itself moved to the Trash, recognized by the device, inode and birth time its journal recorded for each move, so other programs' and sessions' items stay. Ownership reads the current journal and three retained rotations independently of the 1,000-entry display limit. Malformed or unreadable input, records over 64 KiB, or a snapshot above 42,205,188 bytes (about 40.25 MiB) refuse the whole narrowed purge. Rotated-out records supply no ownership evidence. A direct item named as an ASCII-case variant of <code>.git</code> is warned about and left in Trash instead of blocking the other exact items, and an item refused at apply — a trashed project still holding its repository — is reported while the purge continues with the rest. A uv cache <code>clean caches</code> moved there is purged under the same marker checks that category applies. Moving something to Trash frees no space by itself; apply summaries say how much went to Trash and point here.</p></div>
   </details>
@@ -685,7 +711,7 @@ codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by agents like ~/.c
     <li>actions are typed as <code>trash</code>, <code>shred</code>, <code>command</code>, <code>info</code>, or <code>none</code>; command argv is never parsed from display text</li>
     <li><code>"info"</code> / <code>"none"</code> items must never trigger mutation logic</li>
     <li>findings from <code>node-modules</code>, <code>artifacts</code>, and <code>purge</code> carry <code>"project"</code>, the repository that owns the target — for grouping only, never deletion authority</li>
-    <li>an applied document adds <code>"summary"</code>; its <code>bytes_trashed_estimate</code> is the part of <code>bytes_freed_estimate</code> moved to Trash and still on disk until the Trash is emptied. It also adds <code>"results"</code>, one entry per actionable finding in plan order — <code>finding</code> (its index in <code>findings</code>), <code>path</code>, <code>status</code> and, on failure, <code>error</code> — where <code>ok</code> and <code>error</code> repeat what the journal recorded for that item and <code>not_attempted</code> is an item its category refused before journaling, or never reached. If a target fails, <code>errors</code> names each failure and the process exits nonzero; <code>caches</code>, <code>agents</code>, <code>trash-empty</code>, <code>xcode</code>, <code>artifacts</code>, and <code>node-modules</code> continue past a refused item — <code>artifacts</code> and <code>node-modules</code> after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and <code>purge</code> runs its <code>node-modules</code> and <code>artifacts</code> halves independently</li>
+    <li>an applied document adds <code>"summary"</code>; its <code>bytes_trashed_estimate</code> is the part of <code>bytes_freed_estimate</code> moved to Trash and still on disk until the Trash is emptied. It also adds <code>"results"</code>, one entry per actionable finding in plan order — <code>finding</code> (its index in <code>findings</code>), <code>path</code>, <code>status</code> and, on failure, <code>error</code> — where <code>ok</code> and <code>error</code> repeat what the journal recorded for that item and <code>not_attempted</code> is an item its category refused before journaling, or never reached. If a target fails, <code>errors</code> names each failure and the process exits nonzero; <code>caches</code>, <code>agents</code>, <code>trash-empty</code>, <code>xcode</code>, <code>installers</code>, <code>toolchains</code>, <code>simulators</code>, <code>artifacts</code>, and <code>node-modules</code> continue past a refused item — <code>artifacts</code> and <code>node-modules</code> after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and <code>purge</code> runs its <code>node-modules</code> and <code>artifacts</code> halves independently</li>
   </ul>
   <p><code>devtrim history --json</code> emits its own single document — <code>{"operation":"history","entries":[…],"truncated":false,"errors":[…]}</code> — where each entry carries numeric <code>ts</code>, <code>phase</code>, <code>op</code>, <code>action</code>, and either <code>target</code> or the exact <code>argv</code>, and <code>truncated</code> is true when older entries lie beyond <code>--limit</code>. Agents can audit exactly what a previous apply attempted and what completed; an attempt without a result means the process was interrupted mid-apply.</p>
   <p><code>devtrim status --json</code> is a vitals report rather than an envelope: <code>uptime_seconds</code>, <code>load_average</code>, <code>cpu_count</code>, <code>memory</code>, <code>disk</code>, <code>battery</code>, <code>thermal</code>, <code>network</code>, <code>top_processes</code>, <code>health</code>, and <code>unavailable</code>. An unread metric is <code>null</code> with its reason in <code>unavailable</code>, and the process exits nonzero whenever that list is not empty. <code>status --watch</code> is interactive and rejects <code>--json</code>.</p>
@@ -765,13 +791,23 @@ codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by agents like ~/.c
   </details>
 </section>
 
-<footer>
-  <span>devtrim <b>v0.12.6</b></span>
-  <span>Apache-2.0</span>
-  <span>single self-contained HTML file</span>
-  <span>rust · edition 2024</span>
-</footer>
 </main>
+</div>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <ul>
+      <li class="foot-name">
+  <span>devtrim <b>v0.13.0</b></span>
+      </li>
+      <li><a href="index.html">Home</a></li>
+      <li><a href="https://github.com/mneves75/devtrim">GitHub</a></li>
+      <li><a href="https://github.com/mneves75/devtrim/releases/tag/v0.13.0">Releases</a></li>
+      <li><a href="https://github.com/mneves75/devtrim/blob/main/SECURITY.md">Security</a></li>
+      <li>Apache-2.0</li>
+    </ul>
+  </div>
+</footer>
 
 <script type="module">
 {
@@ -813,6 +849,15 @@ codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by agents like ~/.c
   $("#toc-list").addEventListener("click", e => {
     if (!wide.matches && e.target.closest("a")) contents.open = false;
   });
+
+  /* ---- a link to a command card opens it ---- */
+  const openTarget = () => {
+    const id = decodeURIComponent(location.hash.slice(1));
+    const target = id && document.getElementById(id);
+    if (target instanceof HTMLDetailsElement) target.open = true;
+  };
+  openTarget();
+  addEventListener("hashchange", openTarget);
 
   /* ---- section filter with count + empty state ---- */
   const filter = $("#filter");

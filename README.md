@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.12.6.
+This source tree and its packaged documentation describe devtrim v0.13.0.
 
 ## Install
 
@@ -127,7 +127,8 @@ permanent actions. Docker and simulator cleanup reject `--shred` because they
 execute exact typed commands rather than filesystem deletion actions.
 `trash-empty` accepts apply/confirmation flags but rejects `--shred`: its
 preview is already permanent and its exact `--confirm=<gb>` acknowledgment
-remains mandatory.
+remains mandatory. A Trash with nothing to purge says so and exits 0 without
+asking for either.
 
 Moving to Trash frees nothing yet: the bytes stay on the same volume until the
 Trash is emptied. Apply summaries say so — "~17.8 GB moved to Trash; it is freed
@@ -251,7 +252,7 @@ prune reason. A listed path is the repository's claim, so it is measured only
 when it is a real directory inside a scan root whose `.git` file leads back to
 that repository; the main worktree is listed unsized. Sizes follow no link,
 stay on one device, never count a nested worktree twice, and are lower bounds
-when entries cannot be read. The report never says safe, stale or removable
+when entries cannot be read; such a row stays listed and the run exits 1. The report never says safe, stale or removable
 and adds no deletion authority; `git worktree remove` runs the repository's
 configured programs, so use it only where you trust the repository. The manual's
 [Keeping worktrees small](MANUAL.html#recipes) recipe covers sparse checkouts,
@@ -523,8 +524,8 @@ hides, and `Enter` shows the finding in full in a view that scrolls, where no
 key changes the plan and `Esc` returns to it. `?` lists every key, whole even at
 the minimum size.
 Each operation in the menu carries a badge that the pane beside it explains:
-`READ-ONLY` reports and never changes anything, `PREVIEW` changes nothing until
-you select items, press `a` and approve, and `PERMANENT` deletes for good after
+`READ-ONLY` reports and never changes anything, `TRASH` changes nothing until
+you press `a` and approve, then moves what you kept selected to the Trash, and `PERMANENT` deletes for good after
 a typed size acknowledgment. "Scan everything" is read-only, so its selection
 and apply keys do not act there; they name the category view that can act on
 the highlighted finding, such as "b, then 2 (caches)". Inside a category view,
@@ -638,7 +639,7 @@ Cleanup JSON mode returns one envelope, including empty and failed results:
 }
 ```
 
-`applied` is true once the apply phase has started, even when every target is then refused; it is false for a preview and for an apply refused before it starts — a declined confirmation, a missing consent flag, or a journal that cannot be opened for writing, which is checked even when the plan has nothing to apply. Applied commands additionally include `summary` (absent when the apply stopped with an error) and `results`: one entry per actionable finding, in plan order, `{"finding": <index into findings>, "path": …, "status": "ok" | "error" | "not_attempted", "error": …}`. `ok` and `error` repeat the result the journal recorded for that exact target or command; `not_attempted` is a finding the category refused before journaling it — uv busy with its cache, a failed recheck, a preflight that stopped the plan — or never reached, and its reason, when there is one, is in `errors`. If a target fails, the summary still records the work that succeeded, `errors` names each failure, and the process exits nonzero; `caches`, `agents`, `trash-empty`, `xcode`, `artifacts`, and `node-modules` continue past a refused item — `artifacts` and `node-modules` after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and `purge` runs its `node-modules` and `artifacts` halves independently. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string. `summary.bytes_trashed_estimate` is the part of `bytes_freed_estimate` that was moved to Trash and is still on disk until the Trash is emptied. Findings from `node-modules`, `artifacts`, and `purge` carry `project`, the repository that owns the target — for grouping only, never deletion authority.
+`applied` is true once the apply phase has started, even when every target is then refused; it is false for a preview and for an apply refused before it starts — a declined confirmation, a missing consent flag, or a journal that cannot be opened for writing, which is checked even when the plan has nothing to apply. Applied commands additionally include `summary` (absent when the apply stopped with an error) and `results`: one entry per actionable finding, in plan order, `{"finding": <index into findings>, "path": …, "status": "ok" | "error" | "not_attempted", "error": …}`. `ok` and `error` repeat the result the journal recorded for that exact target or command; `not_attempted` is a finding the category refused before journaling it — uv busy with its cache, a failed recheck, a preflight that stopped the plan — or never reached, and its reason, when there is one, is in `errors`. If a target fails, the summary still records the work that succeeded, `errors` names each failure, and the process exits nonzero; `caches`, `agents`, `trash-empty`, `xcode`, `installers`, `toolchains`, `simulators`, `artifacts`, and `node-modules` continue past a refused item — `artifacts` and `node-modules` after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and `purge` runs its `node-modules` and `artifacts` halves independently. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string. `summary.bytes_trashed_estimate` is the part of `bytes_freed_estimate` that was moved to Trash and is still on disk until the Trash is emptied. Findings from `node-modules`, `artifacts`, and `purge` carry `project`, the repository that owns the target — for grouping only, never deletion authority.
 
 `devtrim history --json` emits its own single document —
 `{"operation":"history","entries":[…],"truncated":false,"errors":[…]}` — where

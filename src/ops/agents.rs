@@ -50,7 +50,7 @@ use super::project::{UnreadFolder, unread_folders_finding};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
-pub struct Agents;
+pub(crate) struct Agents;
 
 /// Caches an agent rebuilds on demand. Exact paths relative to `$HOME`; nothing
 /// is matched by prefix, so a sibling directory can never inherit authority.
@@ -197,14 +197,15 @@ struct CodexReleases {
     root: PathBuf,
     current: PathBuf,
     current_version: [u64; 3],
-    /// Every file a process was executing when the lock was taken.
-    in_use: Vec<PathBuf>,
     _install_lock: File,
 }
 
 impl CodexReleases {
-    /// The releases of the Codex home `codex` (`~/.codex` or a configured one).
-    fn open(codex: &Path, mappings: &dyn Fn() -> Result<Vec<PathBuf>>) -> Result<Option<Self>> {
+    /// The releases of the Codex home `codex` (`~/.codex` or a configured one),
+    /// with the installer lock held until this value drops. Which releases a
+    /// process executes is asked separately: once per preview, and again at
+    /// each release an apply reaches.
+    fn open(codex: &Path) -> Result<Option<Self>> {
         let standalone = in_codex_home(codex, CODEX_STANDALONE);
         let root = in_codex_home(codex, CODEX_RELEASES.relative);
         match fs::symlink_metadata(&root) {
@@ -326,21 +327,16 @@ impl CodexReleases {
                 current.display()
             );
         };
-        // Read while the lock is held: the installer cannot move `current`
-        // underneath this answer, and a failed probe refuses release cleanup.
-        let in_use =
-            mappings().context("cannot tell which Codex releases running processes execute")?;
         Ok(Some(Self {
             root,
             current,
             current_version,
-            in_use,
             _install_lock: install_lock,
         }))
     }
 
     /// A verified package strictly older than `current`. Whether a process
-    /// still runs it is [`Self::running`]'s separate question.
+    /// still runs it is [`executes`]'s separate question.
     fn eligible(&self, path: &Path) -> Result<bool> {
         if path.parent() != Some(self.root.as_path())
             || !codex_package_version(path)?.is_some_and(|version| version < self.current_version)
@@ -351,12 +347,6 @@ impl CodexReleases {
             .canonicalize()
             .with_context(|| format!("cannot resolve {}", path.display()))?;
         Ok(canonical != self.current)
-    }
-
-    /// Whether any process was executing a file inside this release when the
-    /// lock was taken. Preview only: apply asks [`executes`] again per release.
-    fn running(&self, path: &Path) -> Result<bool> {
-        executes(&self.in_use, path)
     }
 }
 
@@ -369,7 +359,8 @@ fn executes(mappings: &[PathBuf], path: &Path) -> Result<bool> {
 }
 
 fn codex_package_version(path: &Path) -> Result<Option<[u64; 3]>> {
-    let metadata = fs::symlink_metadata(path)?;
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("cannot inspect {}", path.display()))?;
     if !metadata.file_type().is_dir() {
         return Ok(None);
     }
@@ -410,12 +401,16 @@ fn codex_package_version(path: &Path) -> Result<Option<[u64; 3]>> {
         || !codex_resources_known(path, version, target)?
         || !codex_entry_metadata(&path.join("codex"))?
             .is_some_and(|metadata| metadata.file_type().is_symlink())
-        || fs::read_link(path.join("codex"))? != Path::new("bin/codex")
+        || fs::read_link(path.join("codex"))
+            .with_context(|| format!("cannot read link {}", path.join("codex").display()))?
+            != Path::new("bin/codex")
     {
         return Ok(None);
     }
-    for entry in fs::read_dir(path)? {
-        let name = entry?.file_name();
+    for entry in fs::read_dir(path).with_context(|| format!("cannot read {}", path.display()))? {
+        let name = entry
+            .with_context(|| format!("cannot read {}", path.display()))?
+            .file_name();
         if ![
             "bin",
             "codex",
@@ -471,7 +466,9 @@ fn codex_json_file(path: &Path, max_bytes: u64) -> Result<Option<serde_json::Val
         return Ok(None);
     }
     let mut bytes = Vec::new();
-    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("cannot read {}", path.display()))?;
     if bytes.len() as u64 > max_bytes {
         return Ok(None);
     }
@@ -489,8 +486,10 @@ fn codex_executable(path: &Path) -> Result<bool> {
 }
 
 fn codex_dir_entries_known(path: &Path, names: &[&str]) -> Result<bool> {
-    for entry in fs::read_dir(path)? {
-        let name = entry?.file_name();
+    for entry in fs::read_dir(path).with_context(|| format!("cannot read {}", path.display()))? {
+        let name = entry
+            .with_context(|| format!("cannot read {}", path.display()))?
+            .file_name();
         if !names.iter().any(|expected| name == *expected) {
             return Ok(false);
         }
@@ -554,11 +553,17 @@ fn codex_resources_known(release: &Path, version: &str, target: &str) -> Result<
     }
     let mut directories = vec![resources];
     while let Some(directory) = directories.pop() {
-        for entry in fs::read_dir(&directory)? {
-            let entry = entry?;
+        for entry in fs::read_dir(&directory)
+            .with_context(|| format!("cannot read {}", directory.display()))?
+        {
+            let entry = entry.with_context(|| format!("cannot read {}", directory.display()))?;
             let path = entry.path();
-            let relative = path.strip_prefix(release)?;
-            let file_type = entry.file_type()?;
+            let relative = path
+                .strip_prefix(release)
+                .with_context(|| format!("{} is outside {}", path.display(), release.display()))?;
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("cannot inspect {}", path.display()))?;
             if file_type.is_dir() && expected.iter().any(|file| file.starts_with(relative)) {
                 directories.push(path);
             } else if file_type.is_file() && expected.remove(relative) {
@@ -828,9 +833,13 @@ impl Agents {
     ) -> Vec<Finding> {
         let suffix = codex_home_suffix(codex, &ctx.home);
         let release_findings = (|| -> Result<Vec<Finding>> {
-            let Some(releases) = CodexReleases::open(codex, mappings)? else {
+            let Some(releases) = CodexReleases::open(codex)? else {
                 return Ok(Vec::new());
             };
+            // Read while the lock is held: the installer cannot move `current`
+            // underneath this answer, and a failed probe refuses release cleanup.
+            let in_use =
+                mappings().context("cannot tell which Codex releases running processes execute")?;
             let mut release_findings = Vec::new();
             let entries = fs::read_dir(&releases.root)
                 .with_context(|| format!("cannot read {}", releases.root.display()))?;
@@ -842,7 +851,7 @@ impl Agents {
                     continue;
                 }
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
-                if releases.running(&path)? {
+                if executes(&in_use, &path)? {
                     ctx.diagnostic(
                         "info",
                         format!(
@@ -869,20 +878,10 @@ impl Agents {
         })();
         match release_findings {
             Ok(releases) => releases,
-            Err(error) => {
-                let message = format!("Codex release cleanup refused: {error:#}");
-                vec![
-                    Finding::new(
-                        format!("Codex standalone releases unavailable{suffix}"),
-                        None,
-                        0,
-                        &message,
-                        5,
-                        Action::Info,
-                    )
-                    .with_scan_error(message),
-                ]
-            }
+            Err(error) => vec![super::project::error_finding(
+                format!("Codex standalone releases unavailable{suffix}"),
+                format!("Codex release cleanup refused: {error:#}"),
+            )],
         }
     }
 
@@ -912,7 +911,7 @@ impl Agents {
             if findings.iter().filter_map(Finding::target).any(|target| {
                 codex_release_home(target, &ctx.home, &extra).as_ref() == Some(&codex)
             }) {
-                let opened = CodexReleases::open(&codex, mappings);
+                let opened = CodexReleases::open(&codex);
                 releases.push((codex, opened));
             }
         }
@@ -1149,13 +1148,12 @@ fn relative_display(path: &Path, base: &Path) -> String {
         .to_string()
 }
 
-/// Direct children of `base` exactly `depth` levels down.
+/// The entries exactly `depth` levels below `base`.
 ///
 /// Traversal refuses to descend through a symlink, so a link planted inside an
-/// authorized root cannot widen the candidate set to a foreign tree.
-/// The entries exactly `depth` levels below `base`. A folder that cannot be
-/// read is recorded in `unread` and its subtree is not entered, so one sealed
-/// folder never hides its siblings.
+/// authorized root cannot widen the candidate set to a foreign tree. A folder
+/// that cannot be read is recorded in `unread` and its subtree is not entered,
+/// so one sealed folder never hides its siblings.
 fn collect_at_depth(
     base: &Path,
     depth: usize,
@@ -1211,23 +1209,7 @@ mod tests {
     use std::time::Duration;
 
     fn test_ctx(home: PathBuf) -> Ctx {
-        Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home,
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        }
+        Ctx::for_test(home)
     }
 
     fn write_aged(path: &Path, contents: &str, days: u64) {
@@ -1668,10 +1650,11 @@ mod tests {
         let probe = mapping_while(&running, &old);
         // Opened while nothing runs from the release, as apply opens it before
         // working through earlier findings.
-        let releases = CodexReleases::open(&home.join(".codex"), &probe)
-            .unwrap()
-            .unwrap();
-        assert!(!releases.running(&old).unwrap(), "control: idle snapshot");
+        let releases = CodexReleases::open(&home.join(".codex")).unwrap().unwrap();
+        assert!(
+            !executes(&probe().unwrap(), &old).unwrap(),
+            "control: idle snapshot"
+        );
 
         running.set(true);
         let error = authorize(&old, &ctx, &[], Some(&releases), &probe).expect_err(
@@ -1687,6 +1670,32 @@ mod tests {
             "control: idle again"
         );
         drop(releases);
+        crate::ops::remove_test_path(home);
+    }
+
+    /// Apply runs the system-wide probe once per release, at that release;
+    /// opening the installer lock asks for nothing apply would not read.
+    #[test]
+    fn apply_probes_once_for_a_one_release_plan() {
+        let (_fixture, home, old) = codex_home("probe-count");
+        let ctx = test_ctx(home.clone());
+        let calls = Cell::new(0usize);
+        let probe = || {
+            calls.set(calls.get() + 1);
+            Ok(vec![PathBuf::from("/usr/lib/dyld")])
+        };
+        let mut plan = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &probe)
+            .unwrap();
+        plan.retain(|finding| finding.target() == Some(old.as_path()));
+        assert_eq!(plan.len(), 1, "control: the idle release is offered");
+        assert_eq!(calls.get(), 1, "the preview probes once");
+        plan[0].action = Action::Shred;
+
+        calls.set(0);
+        let outcome = Agents.apply_with_mappings(&plan, &ctx, &probe).unwrap();
+        assert_eq!(outcome.summary.items_touched, 1, "{:?}", outcome.errors);
+        assert_eq!(calls.get(), 1, "apply probed more than once per release");
         crate::ops::remove_test_path(home);
     }
 

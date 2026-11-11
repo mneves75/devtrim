@@ -14,7 +14,7 @@ use super::project::{
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, escalate};
 
-pub struct Toolchains;
+pub(crate) struct Toolchains;
 
 impl Op for Toolchains {
     fn name(&self) -> &'static str {
@@ -85,20 +85,18 @@ impl Op for Toolchains {
                 apply_filesystem_finding(self.name(), finding, ctx)?;
                 Ok(removal_note(finding, path.display()))
             })();
+            // Toolchains are independent folders: one that became referenced or
+            // that the sink refuses must not strand the rest of the plan. Every
+            // failure is recorded, so the run still reports nonzero.
             match result {
                 Ok(note) => outcome.record(finding, note),
-                Err(error) => {
-                    outcome.fail(error);
-                    break;
-                }
+                Err(error) => outcome.fail(error),
             }
         }
         Ok(outcome)
     }
 }
 
-/// Everything that says a toolchain is in use, read afresh by each scan and
-/// each apply.
 /// The finding for one toolchain folder: report-only when swiftly installed
 /// it, none when a verified symlink references it, otherwise offered.
 fn toolchain_finding(path: PathBuf, references: &References) -> Result<Option<Finding>> {
@@ -141,6 +139,8 @@ fn toolchain_finding(path: PathBuf, references: &References) -> Result<Option<Fi
     )))
 }
 
+/// Everything that says a toolchain is in use, read afresh by each scan and
+/// each apply.
 struct References {
     /// Canonical targets of the verified symlinks in the Toolchains folder.
     linked: BTreeSet<PathBuf>,
@@ -454,23 +454,7 @@ mod tests {
     }
 
     fn test_context(home: PathBuf) -> Ctx {
-        Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home,
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        }
+        Ctx::for_test(home)
     }
 
     /// A toolchain that cannot be measured offers nothing and is named in one

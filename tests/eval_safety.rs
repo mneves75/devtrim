@@ -430,6 +430,27 @@ fn eval_gradle_caches_are_kept_while_gradle_runs() {
     assert!(output.contains("while Gradle is running"), "{output}");
 }
 
+/// A Gradle probe that fails names itself in the error, withholds only
+/// Gradle's caches, and fails the run; the caches beside it are still offered.
+#[test]
+fn eval_a_failed_gradle_probe_names_itself() {
+    let sandbox = Sandbox::in_target("eval-gradle-probe-failed");
+    let gradle = cache(&sandbox, ".gradle/caches");
+    write(&gradle.join("modules-2/files-2.1/x.jar"), "module");
+    let other = cache(&sandbox, ".cache/gh");
+    sandbox.script("pgrep", "exit 2");
+    let preview = run(&sandbox, &["clean", "caches", "--json"]);
+    let document = json(&preview);
+    assert_eq!(actionable_targets(&document), std::slice::from_ref(&other));
+    assert!(
+        document
+            .to_string()
+            .contains("the Gradle process probe failed"),
+        "{document}"
+    );
+    assert!(!preview.status.success(), "{document}");
+}
+
 /// Makes one folder read-only, as Go makes its module cache, and on drop
 /// makes every folder under `root` writable again, wherever a failed removal
 /// left it, so the sandbox can still be removed.
@@ -728,6 +749,51 @@ fn eval_trash_empty_refuses_an_unwritable_journal_before_the_purge() {
     assert!(result.status.success(), "{}", json(&result));
     assert_eq!(json(&result)["applied"], true);
     assert!(!item.exists());
+}
+
+/// An empty Trash asks for no size or consent, but its apply still validates
+/// the Trash root and still refuses an unwritable journal before it starts.
+#[test]
+fn eval_trash_empty_with_nothing_to_purge_keeps_the_root_and_journal_checks() {
+    let apply = ["trash-empty", "--apply", "--json"];
+    let control = Sandbox::in_target("eval-trash-nothing-control");
+    std::fs::create_dir_all(control.path().join(".Trash")).unwrap();
+    let result = run(&control, &apply);
+    assert!(result.status.success(), "control: {}", json(&result));
+
+    let sandbox = Sandbox::in_target("eval-trash-nothing-journal");
+    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
+    std::fs::create_dir_all(sandbox.journal()).unwrap();
+    std::fs::set_permissions(
+        sandbox.journal().parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let result = run(&sandbox, &apply);
+    let document = json(&result);
+    assert!(!result.status.success(), "{document}");
+    assert_eq!(
+        document["applied"], false,
+        "eval/trash-nothing-journal: an empty purge skipped the journal check: {document}"
+    );
+
+    let linked = Sandbox::in_target("eval-trash-nothing-link");
+    std::fs::create_dir_all(linked.path().join("elsewhere")).unwrap();
+    symlink(
+        linked.path().join("elsewhere"),
+        linked.path().join(".Trash"),
+    )
+    .unwrap();
+    let result = run(&linked, &apply);
+    let document = json(&result);
+    assert!(
+        !result.status.success()
+            && document["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("refusing unverified Trash"),
+        "eval/trash-nothing-root: a linked Trash was accepted: {document}"
+    );
 }
 
 /// Hardlinks an unrelated sentinel as `leaf` in the journal folder and proves

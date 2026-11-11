@@ -5,147 +5,140 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="devtrim is a local-first disk cleaner for macOS developer machines. It measures, classifies and trims caches and build output, previews every action, scores its danger and moves files to the Trash first.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-Nhg61JhiS+NUPAGVlBYOekQ045ifU3ykr9ovN3pC1XM='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-RrHEe71mHfhz81pdvgtPcBu6R63BRSekcxKs1QqSAqo='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>devtrim — measure · classify · trim</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="home">
 <a class="skip-link" href="#content">Skip to content</a>
 
-<nav class="bar" aria-label="Site">
+<header class="bar">
   <div class="wrap bar-row">
-    <a class="wordmark" href="#top">devtrim</a>
-    <span class="bar-links">
-      <a href="MANUAL.html">Manual</a>
-      <a href="https://github.com/mneves75/devtrim">GitHub</a>
-      <a class="btn primary small" href="#install">Install</a>
-    </span>
-  </div>
-</nav>
-
-<header class="hero" id="top">
-  <div class="wrap">
-    <div class="hero-head">
-    <h1>Clean your Mac like you deploy code.</h1>
-    <div>
-    <p class="pitch">devtrim is a local-first disk cleaner for macOS developer machines.
-      It shows what every cache and build folder costs before anything moves, scores
-      each action 1–10 for danger, and moves files to the Trash, recoverable until you empty it.</p>
-    <p class="facts">Free and open source · Apache-2.0 · macOS 13+ · latest release v0.12.6</p>
-    <div class="cta-row">
-      <a class="btn primary" href="#install">Install v0.12.6</a>
-      <a class="btn ghost" href="MANUAL.html">Read the manual</a>
-    </div>
-    </div>
-    </div>
-    <figure class="hero-fig" data-reveal>
-<!-- tui:results -->
-<div class="term-frame" data-cols="100" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: purge preview"><code>┌ TRASH-FIRST · 4/4 selected · 7.8 GB · danger-5 ──────────────────────────────────────────────────┐
-│<span class="b">› </span>[x]   1. danger-5   5.9 GB  TRASH    <span class="b">stale target artifacts</span>  …vtrim-demo/dev/payments-api/target│
-│  [x]   2. danger-5   1.1 GB  TRASH    <span class="b">stale node_modules</span>  …vtrim-demo/dev/storefront/node_modules│
-│  [x]   3. danger-5   614 MB  TRASH    <span class="b">stale .next artifacts</span>  …p/devtrim-demo/dev/storefront/.next│
-│  [x]   4. danger-5   205 MB  TRASH    <span class="b">stale .turbo artifacts</span>  …devtrim-demo/dev/storefront/.turbo│
-│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config/devtrim.toml re│
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌ Details ─────────────────────────────────────────────────────────────────────────────────────────┐
-│<span class="b">stale target artifacts</span>                                                                            │
-│5.9 GB · danger-5 · move to Trash                                                                 │
-│/private/tmp/devtrim-demo/dev/payments-api/target                                                 │
-│repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml                                │
-│project: /private/tmp/devtrim-demo/dev/payments-api                                               │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│Space pick · A none · a apply · s permanent · b back · ? keys                                     │
-│Review every finding. Space leaves one out; a applies the rest                                    │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘</code></pre></div>
-<!-- /tui:results -->
-      <figcaption>A purge preview of two stale demo projects: every finding, its danger, its size and its path, before anything changes.</figcaption>
-    </figure>
+    <a class="wordmark" href="index.html">devtrim</a>
+    <nav aria-label="Site">
+      <ul class="bar-links">
+        <li><a href="#commands">Commands</a></li>
+        <li><a href="#safety">Safety</a></li>
+        <li><a href="MANUAL.html">Manual</a></li>
+        <li><a href="https://github.com/mneves75/devtrim">GitHub</a></li>
+      </ul>
+    </nav>
   </div>
 </header>
 
 <main id="content">
 
-<section class="why" aria-labelledby="why-h">
-  <div class="wrap split">
-    <div class="why-list">
-      <h2 id="why-h">One careful pass replaces a risky ritual.</h2>
-      <article data-reveal>
-        <h3>Developer Macs fill up silently.</h3>
-        <p>DerivedData, model caches, simulators, Docker layers and six-month-old
-          <code>node_modules</code> quietly eat hundreds of gigabytes.</p>
-      </article>
-      <article data-reveal>
-        <h3>Classify before you delete.</h3>
-        <p>Every target gets a danger score from 1 to 10. Rebuildable caches are amber,
-          unavailable simulators are caution, and a permanent Trash purge is red.</p>
-      </article>
-      <article data-reveal>
-        <h3>Some doors have no handle.</h3>
-        <p>Docker volumes and Xcode Archives are never pruned. One typed deletion
-          boundary and a protected-path denylist hold no matter which flags you pass.</p>
-      </article>
-      <article data-reveal>
-        <h3>Space you can trust back.</h3>
-        <p>Files cleaned today stay recoverable from the Trash until you empty it.
-          Permanent deletion needs a typed confirmation. Cleanup still carries
-          data-loss risk: review the preview, keep backups, and grant macOS permissions yourself.</p>
-      </article>
+<section class="hero" aria-labelledby="hero-h">
+  <div class="wrap">
+    <h1 id="hero-h">Clean your Mac like you deploy code.</h1>
+    <div class="hero-row">
+      <p class="pitch">devtrim is a local-first disk cleaner for macOS developer machines.
+        It shows what every cache and build folder costs before anything moves, scores
+        each action 1–10 for danger, and moves files to the Trash, recoverable until you empty it.</p>
+      <div class="get" id="get">
+        <div class="cmd">
+          <pre role="region" tabindex="0" aria-label="Install command"><code id="brew-hero">brew install mneves75/devtrim/devtrim</code></pre>
+          <button class="copy" type="button" data-copy="brew-hero" hidden>Copy</button>
+        </div>
+        <a class="text-link" href="MANUAL.html">Read the manual</a>
+      </div>
     </div>
-    <figure class="why-fig" data-reveal>
+
+    <div class="walk" data-walk>
+      <div class="walk-tabs" role="tablist" aria-label="Walk through one cleanup" hidden>
+        <button type="button" role="tab" id="tab-preview" aria-controls="step-preview" aria-selected="true">Preview</button>
+        <button type="button" role="tab" id="tab-select" aria-controls="step-select" aria-selected="false" tabindex="-1">Leave one out</button>
+        <button type="button" role="tab" id="tab-confirm" aria-controls="step-confirm" aria-selected="false" tabindex="-1">Confirm</button>
+      </div>
+      <ol class="walk-steps">
+        <li id="step-preview">
+          <figure>
+            <figcaption><strong>Preview.</strong> Two stale demo projects: every finding with its danger, size and path, before anything changes.</figcaption>
+<!-- tui:results -->
+<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: purge preview"><code>┌ TRASH-FIRST · 4/4 selected · 7.8 GB · danger-5 ──────────────────────────────────────────────────┐
+│<span class="g b">› </span>[x] <span class="y">  1. danger-5 </span><span class="c">  5.9 GB  TRASH    </span><span class="b">stale target artifacts</span><span class="k">  payments-api/target</span>                │
+│  [x] <span class="y">  2. danger-5 </span><span class="c">  1.1 GB  TRASH    </span><span class="b">stale node_modules</span><span class="k">  storefront/node_modules</span>                │
+│  [x] <span class="y">  3. danger-5 </span><span class="c">  614 MB  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>                    │
+│  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>                  │
+│  <span class="k">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config/devtrim.toml r…</span>│
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Details ─────────────────────────────────────────────────────────────────────────────────────────┐
+│<span class="g b">stale target artifacts</span>                                                                            │
+│5.9 GB · danger-5 · move to Trash                                                                 │
+│/private/tmp/devtrim-demo/dev/payments-api/target                                                 │
+│<span class="k">repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml</span>                                │
+│project: /private/tmp/devtrim-demo/dev/payments-api                                               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ <span class="c">Space</span> pick<span class="k"> · </span><span class="c">A</span> none<span class="k"> · </span><span class="c">a</span> apply<span class="k"> · </span><span class="c">Enter</span> details<span class="k"> · </span><span class="c">s</span> permanent<span class="k"> · </span><span class="c">r</span> rescan<span class="k"> · </span><span class="c">b</span> back<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
+ <span class="k">Review every finding. Space leaves one out; a applies the rest</span></code></pre></div>
+<!-- /tui:results -->
+          </figure>
+        </li>
+        <li id="step-select">
+          <figure>
+            <figcaption><strong>Leave one out.</strong> <kbd>Space</kbd> empties a finding's box and the title recounts the plan.</figcaption>
 <!-- tui:select -->
-<div class="term-frame" data-cols="84" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: one finding left out"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
-│  [x]   1. danger-5   5.9 GB  TRASH    <span class="b">stale target artifacts</span>  …ayments-api/target│
-│  [x]   2. danger-5   1.1 GB  TRASH    <span class="b">stale node_modules</span>  …torefront/node_modules│
-│<span class="b">› </span>[ ]   3. danger-5   614 MB  TRASH    <span class="b">stale .next artifacts</span>  …ev/storefront/.next│
-│  [x]   4. danger-5   205 MB  TRASH    <span class="b">stale .turbo artifacts</span>  …/storefront/.turbo│
-│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config│
+<div class="term-frame" data-cols="84" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: one finding left out"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
+│  [x] <span class="y">  1. danger-5 </span><span class="c">  5.9 GB  TRASH    </span><span class="b">stale target artifacts</span><span class="k">  payments-api/target</span>│
+│  [x] <span class="y">  2. danger-5 </span><span class="c">  1.1 GB  TRASH    </span><span class="b">stale node_modules</span><span class="k">  storefront/node_modules</span>│
+│<span class="g b">› </span>[ ] <span class="y">  3. danger-5 </span><span class="c">  614 MB  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>    │
+│  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>  │
+│  <span class="k">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.confi…</span>│
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
 │                                                                                  │
 │                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────┘</code></pre></div>
 <!-- /tui:select -->
+          </figure>
+        </li>
+        <li id="step-confirm">
+          <figure>
+            <figcaption><strong>Confirm.</strong> The confirmation names the exact plan, how many findings it covers and how many you left out.</figcaption>
 <!-- tui:confirm -->
-<div class="term-frame" data-cols="84" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: confirm exact plan"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
-│ ┌ Confirm exact plan ──────────────────────────────────────────────────────────┐t│
-│ │<span class="b">DATA-LOSS WARNING</span>                                                             │s│
-│<span class="b">›</span>│This plan: 3 of 4 selected · 1 left out                                       │t│
-│ │Applying this plan can delete data. devtrim is provided AS IS, without        │o│
-│ │warranties; you assume the risk for the exact targets shown. Keep backups and │g│
-│ │grant macOS permissions manually only when you understand the request.        │ │
-│ │                                                                              │ │
-└─│Danger-5. Press y to apply this exact plan, or n/Esc to cancel.               │─┘
-┌ │                                                                              │─┐
-│<span class="b">s</span>│&gt;                                                                             │ │
-│6│                                                                              │ │
-│L│                                                                              │ │
-│/│                                                                              │ │
-│r│                                                                              │ │
-│p│                                                                              │ │
-└─└──────────────────────────────────────────────────────────────────────────────┘─┘
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│Esc cancel · type the exact requested acknowledgment                              │
-│                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────┘</code></pre></div>
+<div class="term-frame" data-cols="84" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: confirm exact plan"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
+
+
+  ┌ Confirm exact plan · danger-5 ───────────────────────────────────────────────┐
+  │<span class="r b">DATA-LOSS WARNING</span>                                                             │
+  │<span class="b">Moves 3 items (7.2 GB) to the Trash.</span>                                          │
+  │This plan: 3 of 4 selected · 1 left out                                       │
+  │Applying this plan can delete data. devtrim is provided AS IS, without        │
+  │warranties; you assume the risk for the exact targets shown. Keep backups and │
+  │grant macOS permissions manually only when you understand the request.        │
+  └──────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+ <span class="c">y</span> apply<span class="k"> · </span><span class="c">n/Esc</span> cancel</code></pre></div>
 <!-- /tui:confirm -->
-      <figcaption>Space leaves a finding out and empties its box; the confirmation then names the exact plan, how many findings it covers and how many you left out.</figcaption>
-    </figure>
+          </figure>
+        </li>
+      </ol>
+    </div>
   </div>
 </section>
 
 <section class="demo" aria-labelledby="demo-h">
   <div class="wrap">
     <h2 id="demo-h">Preview first. Approve once.</h2>
-    <div class="video-card" data-reveal>
+    <div class="video-card">
       <video controls preload="none" src="media/demo.mp4" poster="media/demo-poster.webp" width="1920" height="1080" aria-describedby="demo-transcript">
         <track kind="captions" srclang="en" label="English" src="media/demo-captions.vtt" default>
       </video>
       <div class="video-body">
-        <p class="video-head">Read the preview, leave one out, approve the exact plan. <a href="media/demo.mp4">Download the demo</a></p>
         <ol class="transcript" id="demo-transcript">
           <li>The purge preview of two stale demo projects lists four build folders by size and name, each moving to the Trash: 4 of 4 selected, 7.8 GB, danger-5.</li>
           <li>The details pane shows the evidence for the first finding: the repository was last active on 2020-01-01, and a sibling <code>Cargo.toml</code> corroborates the Rust target.</li>
@@ -154,17 +147,56 @@
           <li>The approved findings move to the Trash, recoverable until you empty it; the one left out stays.</li>
           <li>Install with <code>brew install mneves75/devtrim/devtrim</code>.</li>
         </ol>
+        <p><a class="text-link" href="media/demo.mp4">Download the demo</a></p>
       </div>
     </div>
   </div>
 </section>
 
-<section class="features" aria-labelledby="feat-h">
+<section id="commands" aria-labelledby="commands-h">
   <div class="wrap">
-    <h2 id="feat-h">One interactive TUI. Explicit commands for automation.</h2>
-    <figure class="scan-fig" data-reveal>
+    <h2 id="commands-h">One interactive TUI. Explicit commands for automation.</h2>
+    <table class="commands" aria-labelledby="commands-h">
+      <thead><tr><th scope="col">Command</th><th scope="col">What it does</th><th scope="col">What happens</th></tr></thead>
+      <tbody>
+        <tr><th scope="rowgroup" colspan="3">See before anything moves</th></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-tui"><code>devtrim</code></a></th><td>Scan, preview and leave findings out by keyboard; nothing moves until you confirm.</td><td><span class="lbl ro">PREVIEW FIRST</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-scan"><code>devtrim scan</code></a></th><td>Every reclaimable category with sizes and risk.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-dashboard"><code>devtrim dashboard</code></a></th><td>A private, offline HTML disk map with the category previews.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-analyze"><code>devtrim analyze</code></a></th><td>Explore disk usage interactively, largest first.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-largest"><code>devtrim largest</code></a></th><td>The largest directories one and two levels below the scan roots.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-worktrees"><code>devtrim worktrees</code></a></th><td>Each repository's linked worktrees with their sizes.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-leftovers"><code>devtrim clean leftovers</code></a></th><td>Agent scratch and ignored <code>.scratch</code> folders, listed for your review.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-app-storage"><code>devtrim app-storage</code></a></th><td>WhatsApp data and saved Screen Studio projects.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-icloud"><code>devtrim icloud</code></a></th><td>Large iCloud Drive files and their locally allocated storage.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-uninstall"><code>devtrim uninstall</code></a></th><td>Files named for an app's exact bundle identifier.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-status"><code>devtrim status</code></a></th><td>Load, memory, disk, battery, thermals and processes.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-history"><code>devtrim history</code></a></th><td>Recent applies from the local write-ahead journal.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+      </tbody>
+      <tbody>
+        <tr><th scope="rowgroup" colspan="3">Move to the Trash first</th></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-caches"><code>devtrim clean caches</code></a></th><td>Package, model and tool download caches that regenerate.</td><td><span class="lbl trash">TRASH</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-node-modules"><code>devtrim clean node-modules</code></a></th><td><code>node_modules</code> in conclusively stale repositories.</td><td><span class="lbl trash">TRASH</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-artifacts"><code>devtrim clean artifacts</code></a></th><td>Corroborated build output in stale repositories, never <code>build</code> or <code>dist</code>.</td><td><span class="lbl trash">TRASH</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-purge"><code>devtrim purge</code></a></th><td>Both of the above across projects, largest first.</td><td><span class="lbl trash">TRASH</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-xcode"><code>devtrim clean xcode</code></a></th><td>DeviceSupport symbols and DerivedData; Archives are never touched.</td><td><span class="lbl trash">TRASH</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-toolchains"><code>devtrim clean toolchains</code></a></th><td>Unreferenced swift.org toolchains, never one swiftly installed.</td><td><span class="lbl trash">TRASH</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-installers"><code>devtrim clean installers</code></a></th><td>Old <code>.dmg</code>, <code>.pkg</code>, <code>.iso</code> and <code>.xip</code> files in Downloads and Desktop.</td><td><span class="lbl trash">TRASH</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-agents"><code>devtrim clean agents</code></a></th><td>Coding-agent caches, older Codex releases and stale session history.</td><td><span class="lbl trash">TRASH</span></td></tr>
+      </tbody>
+      <tbody>
+        <tr><th scope="rowgroup" colspan="3">Remove for good</th></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-docker"><code>devtrim clean docker</code></a></th><td>Unused images and build cache; volumes are never pruned.</td><td><span class="lbl perm">PERMANENT</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-simulators"><code>devtrim clean simulators</code></a></th><td>Simulator devices whose runtime is gone.</td><td><span class="lbl perm">PERMANENT</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-optimize"><code>devtrim optimize</code></a></th><td>QuickLook, font and Launch Services caches macOS rebuilds.</td><td><span class="lbl perm">PERMANENT</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-trash-empty"><code>devtrim trash-empty</code></a></th><td>Empties the Trash after you type its size.</td><td><span class="lbl perm">PERMANENT</span></td></tr>
+      </tbody>
+    </table>
+    <p class="shred-note"><code>--shred</code> turns a <span class="lbl trash">TRASH</span> plan <span class="lbl perm">PERMANENT</span>, and its preview says so.</p>
+
+    <figure class="scan-fig">
 <!-- cli:scan -->
-<div class="term-frame" data-cols="105" data-ui><pre class="term" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
+<div class="term-frame" data-cols="105" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
 Categories
   artifacts        6.7 GB      3 finding(s)   devtrim clean artifacts --apply
   node-modules     1.1 GB      1 finding(s)   devtrim clean node-modules --apply
@@ -192,55 +224,28 @@ Pick items one by one in the interactive view: devtrim. Project build output tog
 <!-- /cli:scan -->
       <figcaption>The same two demo projects through <code>devtrim scan</code>: one line per category, largest first, with the command that acts on it.</figcaption>
     </figure>
-    <div class="command-groups">
-      <div class="command-group" data-reveal>
-        <h3>See before anything moves</h3>
-        <dl class="commands">
-          <div><dt><code>devtrim</code> / <code>tui</code></dt><dd>Keyboard-first scan, preview, and confirmation with written risk labels. It reuses the same cleanup owners and rejects CLI bypass flags.</dd></div>
-          <div><dt><code>scan</code></dt><dd>Read-only report with estimated sizes on disk, danger levels, and one-document JSON output for agents.</dd></div>
-          <div><dt><code>dashboard</code></dt><dd>A private, self-contained HTML snapshot of disk use: responsive treemap, folder navigation and search, volume free-space metrics and the existing category cleanup previews. <code>--output</code> saves it, <code>--no-open</code> skips the browser, and no inventory path ever becomes deletion authority.</dd></div>
-          <div><dt><code>history</code></dt><dd>Every apply is journaled write-ahead. Review what was attempted and what completed; an interrupted apply shows up as interrupted.</dd></div>
-          <div><dt><code>icloud</code></dt><dd>Large iCloud Drive files with logical and locally allocated sizes: a truthful storage inventory, not an upload-progress guess.</dd></div>
-        </dl>
-      </div>
-      <div class="command-group" data-reveal>
-        <h3>Move to the Trash first</h3>
-        <dl class="commands">
-          <div><dt><code>caches</code></dt><dd>Hugging Face models, npm, Homebrew, uv, bun, cargo, Corepack, Gradle, Go modules, CocoaPods, the GitHub CLI and a closed list of editor and toolchain caches. All regenerate on demand; devtrim tells you the bandwidth cost instead of deciding for you.</dd></div>
-          <div><dt><code>node-modules</code></dt><dd>Applies exact previewed paths only when Git activity is conclusively older than 30 days. Unknown state is refused.</dd></div>
-          <div><dt><code>artifacts</code></dt><dd>Rust targets, virtualenvs, Pods, Gradle, Next.js, Turbo and Parcel caches, only with ecosystem corroboration, only in conclusively stale repos, never ambiguous names like <code>build</code> or <code>dist</code>.</dd></div>
-          <div><dt><code>xcode</code></dt><dd>iOS, watchOS, tvOS and visionOS DeviceSupport symbols and DerivedData. Archives are always listed but never touched.</dd></div>
-          <div><dt><code>toolchains</code> + <code>leftovers</code></dt><dd>Only provably unreferenced Swift toolchains are actionable, never one swiftly installed. Agent leftovers, ignored <code>.scratch</code> folders and <code>devtrim worktrees</code> are report-only.</dd></div>
-        </dl>
-      </div>
-      <div class="command-group" data-reveal>
-        <h3>Remove by typed command</h3>
-        <dl class="commands">
-          <div><dt><code>docker</code></dt><dd>Unused images and build cache. Volumes are never pruned: a volume may hold your live database.</dd></div>
-          <div><dt><code>simulators</code></dt><dd>Deletes devices whose runtime is gone. Confirmation flags never add an unpreviewed erase-all.</dd></div>
-        </dl>
-      </div>
-    </div>
   </div>
 </section>
 
-<section class="trust" aria-labelledby="trust-h">
-  <div class="wrap split">
-    <div>
-      <h2 id="trust-h">Local scans. Guardrails by default.</h2>
-      <ul class="negations">
-        <li>No telemetry. The binary makes zero network calls of its own.</li>
-        <li>Nothing leaves your machine to be "analyzed".</li>
-        <li>Deletion means Trash first; <code>--shred</code> is opt-in per run.</li>
-        <li>Only exact validated targets reach the single filesystem deletion sink; incomplete measurements and display strings never become authority.</li>
-        <li><code>/System</code>, <code>/Applications</code>, <code>~/.ssh</code> and friends are refused unconditionally, and no flag overrides that.</li>
-        <li>Piped runs refuse to mutate unless consent is explicit.</li>
-        <li>macOS permission prompts require your manual decision; devtrim never bypasses Privacy &amp; Security controls.</li>
-      </ul>
-    </div>
-    <figure class="trust-fig" data-reveal>
+<section id="safety" aria-labelledby="safety-h">
+  <div class="wrap">
+    <h2 id="safety-h">Local scans. Guardrails by default.</h2>
+    <div class="split">
+      <div>
+        <h3>Never touched</h3>
+        <ul class="never">
+          <li>Docker volumes: a volume may hold your live database.</li>
+          <li>Xcode Archives: they are release artifacts.</li>
+          <li><code>/System</code>, <code>/Applications</code>, <code>~/.ssh</code> and friends are refused unconditionally, and no flag overrides that.</li>
+          <li>A repository with recent Git activity, and any folder holding a file its repository tracks.</li>
+          <li>Every path you list under <code>protect</code> in <code>~/.config/devtrim.toml</code>.</li>
+          <li>No telemetry. The binary makes zero network calls of its own.</li>
+          <li>macOS permission prompts require your manual decision; devtrim never bypasses Privacy &amp; Security controls.</li>
+        </ul>
+      </div>
+      <figure>
 <!-- cli:refusals -->
-<pre class="term" tabindex="0" aria-label="devtrim refusals"><code><span class="k">$</span> devtrim purge --apply &lt; /dev/null
+<pre class="term" role="region" tabindex="0" aria-label="devtrim refusals"><code><span class="k">$</span> devtrim purge --apply &lt; /dev/null
 <span class="r">error: non-interactive run: re-run with -y to confirm danger-5 operations</span>
 <span class="k">exit 1</span>
 
@@ -248,8 +253,19 @@ Pick items one by one in the interactive view: devtrim. Project build output tog
 <span class="r">error: largest does not accept flag(s): --apply</span>
 <span class="k">exit 2</span></code></pre>
 <!-- /cli:refusals -->
-      <figcaption>Real refusals from the current binary: a piped apply without consent, and a mutation flag on a report.</figcaption>
-    </figure>
+        <figcaption>Real refusals from the current binary: a piped apply without consent, and a mutation flag on a report.</figcaption>
+      </figure>
+    </div>
+    <div class="verify">
+      <h3>Verify a release before you run it</h3>
+      <p>SHA-256 sums are in the <a class="text-link" href="https://github.com/mneves75/devtrim/releases/tag/v0.12.6">release assets</a>, and every release carries signed build provenance.</p>
+      <pre role="region" tabindex="0" aria-label="Release verification commands"><code>shasum -a 256 -c SHA256SUMS.txt
+gh attestation verify devtrim-*-macos-arm64.zip \
+  --repo mneves75/devtrim \
+  --signer-workflow mneves75/devtrim/.github/workflows/release.yml \
+  --deny-self-hosted-runners</code></pre>
+      <p>The threat model and how to report a vulnerability are in <a class="text-link" href="https://github.com/mneves75/devtrim/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+    </div>
   </div>
 </section>
 
@@ -257,66 +273,89 @@ Pick items one by one in the interactive view: devtrim. Project build output tog
   <div class="wrap">
     <h2 id="install-h">Install v0.12.6.</h2>
     <div class="install-grid">
-      <div data-reveal>
+      <div>
         <h3>Homebrew</h3>
-        <pre tabindex="0"><code>brew install mneves75/devtrim/devtrim</code></pre>
+        <div class="cmd">
+          <pre role="region" tabindex="0" aria-label="Homebrew install command"><code id="brew-install">brew install mneves75/devtrim/devtrim</code></pre>
+          <button class="copy" type="button" data-copy="brew-install" hidden>Copy</button>
+        </div>
         <p>Installs the attested release binary plus shell completions and the man page.</p>
-        <a class="btn primary big" href="https://github.com/mneves75/devtrim/releases/download/v0.12.6/devtrim-0.12.6-macos-arm64.zip">Download for Apple silicon</a>
-        <p>SHA-256 sums are in the <a class="inline" href="https://github.com/mneves75/devtrim/releases/tag/v0.12.6">release assets</a>. Verify before running:</p>
-        <pre tabindex="0"><code>shasum -a 256 -c SHA256SUMS.txt
-gh attestation verify devtrim-*-macos-arm64.zip \
-  --repo mneves75/devtrim \
-  --signer-workflow mneves75/devtrim/.github/workflows/release.yml \
-  --deny-self-hosted-runners</code></pre>
+        <a class="btn primary" href="https://github.com/mneves75/devtrim/releases/download/v0.12.6/devtrim-0.12.6-macos-arm64.zip">Download for Apple silicon</a>
       </div>
-      <div data-reveal>
+      <div>
         <h3>Build from source</h3>
-        <pre tabindex="0"><code>git clone https://github.com/mneves75/devtrim
+        <pre role="region" tabindex="0" aria-label="Build from source commands"><code>git clone https://github.com/mneves75/devtrim
 cd devtrim
 cargo build --release --locked
 cp target/release/devtrim /usr/local/bin/</code></pre>
         <p>Rust 1.88 or newer. No runtime dependencies beyond macOS 13+.</p>
       </div>
     </div>
-  </div>
-</section>
-
-<section class="final" aria-labelledby="final-h">
-  <div class="wrap">
-    <h2 id="final-h">Run the scan you've been putting off.</h2>
-    <p class="pitch">It reads nothing it shouldn't, changes nothing without <code>--apply</code>,
-      and keeps the safety net until you empty it. Provided AS IS; you accept the risk for applied targets.</p>
-    <div class="cta-row center">
-      <a class="btn primary" href="#install">Install devtrim</a>
-      <a class="btn ghost" href="MANUAL.html">Full manual</a>
-    </div>
+    <p class="as-is">It changes nothing without <code>--apply</code> and keeps the safety net until you empty the Trash. Provided AS IS; you accept the risk for applied targets.</p>
   </div>
 </section>
 </main>
 
-<footer>
-  <div class="wrap foot">
-    <span class="foot-name">devtrim v0.12.6</span>
-    <span><a href="https://github.com/mneves75/devtrim">GitHub</a></span>
-    <span><a href="MANUAL.html">Manual</a></span>
-    <span><a href="https://github.com/mneves75/devtrim/releases/tag/v0.12.6">Releases</a></span>
-    <span>Apache-2.0</span>
+<footer class="site-foot">
+  <div class="wrap">
+    <ul>
+      <li class="foot-name">devtrim v0.12.6</li>
+      <li><a href="MANUAL.html">Manual</a></li>
+      <li><a href="https://github.com/mneves75/devtrim">GitHub</a></li>
+      <li><a href="https://github.com/mneves75/devtrim/releases/tag/v0.12.6">Releases</a></li>
+      <li><a href="https://github.com/mneves75/devtrim/blob/main/SECURITY.md">Security</a></li>
+      <li>Apache-2.0</li>
+    </ul>
   </div>
 </footer>
 
+<output class="sr-only" id="copy-status"></output>
 <script>
 {
-  const reveal = document.querySelectorAll("[data-reveal]");
-  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (reduced || !("IntersectionObserver" in window)) {
-    reveal.forEach(el => el.classList.add("is-visible"));
-  } else {
-    const io = new IntersectionObserver(entries => {
-      entries.forEach(e => {
-        if (e.isIntersecting) { e.target.classList.add("is-visible"); io.unobserve(e.target); }
-      });
-    }, { threshold: 0.12 });
-    reveal.forEach(el => io.observe(el));
+  const walk = document.querySelector("[data-walk]");
+  const tablist = walk.querySelector("[role=tablist]");
+  const tabs = [...tablist.querySelectorAll("[role=tab]")];
+  const panels = tabs.map(tab => document.getElementById(tab.getAttribute("aria-controls")));
+  walk.querySelector(".walk-steps").setAttribute("role", "none");
+  panels.forEach((panel, i) => {
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-labelledby", tabs[i].id);
+  });
+  const show = (index, focus) => {
+    tabs.forEach((tab, i) => {
+      const on = i === index;
+      tab.setAttribute("aria-selected", String(on));
+      tab.tabIndex = on ? 0 : -1;
+      panels[i].hidden = !on;
+    });
+    if (focus) tabs[index].focus();
+  };
+  tabs.forEach((tab, i) => tab.addEventListener("click", () => show(i, false)));
+  tablist.addEventListener("keydown", event => {
+    const at = tabs.indexOf(document.activeElement);
+    const last = tabs.length - 1;
+    const next = { ArrowRight: at + 1, ArrowDown: at + 1, ArrowLeft: at - 1, ArrowUp: at - 1, Home: 0, End: last }[event.key];
+    if (next === undefined || at < 0) return;
+    event.preventDefault();
+    show(next < 0 ? last : next > last ? 0 : next, true);
+  });
+  tablist.hidden = false;
+  walk.classList.add("is-tabs");
+  show(0, false);
+
+  const status = document.getElementById("copy-status");
+  for (const button of document.querySelectorAll("button[data-copy]")) {
+    const source = document.getElementById(button.dataset.copy);
+    button.setAttribute("aria-label", "Copy the install command");
+    button.hidden = false;
+    button.addEventListener("click", async () => {
+      let done = true;
+      try { await navigator.clipboard.writeText(source.textContent); } catch { done = false; }
+      button.dataset.state = done ? "done" : "failed";
+      button.textContent = done ? "Copied" : "Select it";
+      status.textContent = done ? "Install command copied" : "Copy is blocked; select the command instead";
+      setTimeout(() => { button.textContent = "Copy"; delete button.dataset.state; status.textContent = ""; }, 1800);
+    });
   }
 }
 </script>

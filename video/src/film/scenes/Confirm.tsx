@@ -1,105 +1,131 @@
 import React from "react";
 import { useCurrentFrame } from "remotion";
 import {
-  BEAT,
   C,
   MONO,
-  RULE,
+  PANEL,
   enter,
   keyCues,
   leave,
   line,
   sceneLength,
 } from "../theme";
-import { Keycap, Stage } from "../ui";
+import { Keycap, Panel, PreviewTitle, Stage } from "../ui";
 import { PreviewPanel } from "./PreviewPanel";
 
 const keys = keyCues("confirm");
 const at = (key: string) => keys.filter((k) => k.key === key)[0].at;
 
-const FONT = 70;
-const LINE_HEIGHT = 100;
+const TOP = 70;
+const PREVIEW_FONT = 76;
+const PREVIEW_LINE = 104;
+const FONT = 64;
+const LINE_HEIGHT = 96;
+/** The box sits just inside the cleared panel: its widest line is 39 cells. */
+const INSET = 20;
 
-/** Close-up: the narrowed plan holds a beat, a raises its confirmation, y approves it. */
+/** The TUI's key line: each key lime, its word in ink, the separator muted. */
+const KeyLine: React.FC<{ text: string }> = ({ text }) => (
+  <>
+    {text.split(/( · )/).map((part, i) => {
+      if (i % 2 === 1)
+        return (
+          <span key={i} style={{ color: C.muted }}>
+            {part}
+          </span>
+        );
+      const [key, ...rest] = part.split(/(?= )/);
+      return (
+        <span key={i}>
+          <span style={{ color: C.lime, fontWeight: 700 }}>{key}</span>
+          {rest.join("")}
+        </span>
+      );
+    })}
+  </>
+);
+
+/**
+ * Close-up: the narrowed plan holds a beat; a clears the body behind its title,
+ * as the TUI does, and raises the confirmation; y approves it.
+ */
 export const Confirm: React.FC = () => {
   const frame = useCurrentFrame();
   const length = sceneLength("confirm");
   const a = at("a");
   const y = at("y");
-  const raise = enter(frame, a, 14);
+  // The body clears first, so no row shows through the box as it rises.
+  const clear = enter(frame, a, 8);
+  const raise = enter(frame, a + 4, 14);
   const collapse = leave(frame, y + 48, 12);
-  const lineIn = (n: number) => enter(frame, a + 6 + n * 8, 14);
-  const caretOn = Math.floor(frame / (BEAT / 2)) % 2 === 0;
+  const lineIn = (n: number) => enter(frame, a + 10 + n * 8, 14);
   return (
     <Stage scale={1 + (0.02 * frame) / length} origin="50% 45%">
-      {/* The plan Select ended on, until a replaces it with its confirmation. */}
-      <div
-        style={{
-          position: "absolute",
-          left: 120,
-          top: 70,
-          opacity: 1 - raise,
-          transform: `translateY(${-40 * raise}px)`,
-        }}
-      >
+      {/* The plan Select ended on; only its title row stays once a is pressed. */}
+      <div style={{ position: "absolute", left: PANEL.left, top: TOP }}>
         <PreviewPanel
           part="start"
-          font={76}
-          lineHeight={104}
+          font={PREVIEW_FONT}
+          lineHeight={PREVIEW_LINE}
           frame={frame}
           cursor={2}
           thirdSelected={0}
           narrowed={1}
         />
+        <div
+          style={{
+            position: "absolute",
+            left: -8,
+            right: -8,
+            top: PREVIEW_LINE,
+            bottom: -8,
+            backgroundColor: C.bg,
+            opacity: clear,
+          }}
+        />
       </div>
       <div
         style={{
           position: "absolute",
-          left: 0,
-          right: 0,
-          top: 90,
-          marginInline: "auto",
-          width: "fit-content",
-          padding: "28px 48px 32px",
-          border: `3px solid ${RULE}`,
-          backgroundColor: C.bg,
-          fontFamily: MONO,
-          fontSize: FONT,
-          lineHeight: `${LINE_HEIGHT}px`,
-          color: C.ink,
-          whiteSpace: "pre",
+          left: PANEL.left + INSET,
+          top: TOP + PREVIEW_LINE * 1.4,
           opacity: raise * collapse,
           transform: `translateY(${(1 - raise) * 48 + (1 - collapse) * 24}px)`,
         }}
       >
-        <div style={{ color: C.muted, opacity: lineIn(0) }}>
-          {line("confirm.title")}
-        </div>
-        <div style={{ color: C.red, fontWeight: 700, opacity: lineIn(1) }}>
-          {line("confirm.warning")}
-        </div>
-        <div style={{ opacity: lineIn(2) }}>{line("confirm.plan")}</div>
-        <div style={{ color: C.amber, fontWeight: 700, opacity: lineIn(3) }}>
-          {line("confirm.prompt")}
-        </div>
-        <div style={{ color: C.amber, fontWeight: 700, opacity: lineIn(4) }}>
-          {line("confirm.prompt.rest")}
-        </div>
-        <div style={{ opacity: lineIn(5) }}>
-          <span style={{ color: C.lime }}>{line("confirm.caret")}</span>
-          <span style={{ display: "inline-block", width: "1ch" }} />
-          <span
-            style={{
-              display: "inline-block",
-              width: "0.6ch",
-              height: FONT,
-              marginLeft: 4,
-              verticalAlign: "-0.15em",
-              backgroundColor: C.lime,
-              opacity: caretOn ? 1 : 0,
-            }}
-          />
-        </div>
+        <Panel
+          title={
+            <span style={{ opacity: lineIn(0) }}>
+              <PreviewTitle text={line("confirm.title")} />
+            </span>
+          }
+          width={PANEL.width - 2 * INSET}
+          font={FONT}
+          lineHeight={LINE_HEIGHT}
+          rows={4}
+        >
+          <div style={{ color: C.red, fontWeight: 700, opacity: lineIn(1) }}>
+            {line("confirm.warning")}
+          </div>
+          <div style={{ fontWeight: 700, opacity: lineIn(2) }}>
+            {line("confirm.effect")}
+          </div>
+          <div style={{ opacity: lineIn(3) }}>{line("confirm.plan")}</div>
+        </Panel>
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left: PANEL.left,
+          top: 760,
+          fontFamily: MONO,
+          fontSize: FONT,
+          color: C.ink,
+          whiteSpace: "pre",
+          opacity: lineIn(4) * collapse,
+        }}
+      >
+        <KeyLine text={line("confirm.footer")} />
       </div>
       <div
         style={{

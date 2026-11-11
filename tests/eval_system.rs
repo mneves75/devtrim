@@ -754,9 +754,40 @@ fn eval_installers_apply_refuses_an_archive_modified_after_preview() {
         !status.success(),
         "the refusal must fail the run:\n{output}"
     );
+    // A touched archive is the ordinary drift case, not a forged target.
     assert!(
-        output.contains("outside its authorized namespace"),
+        output.contains("changed since the preview") && !output.contains("namespace"),
         "{output}"
+    );
+}
+
+/// A refused installer does not strand the unrelated ones after it: the
+/// archive in Downloads (scanned first) is touched after the preview, and the
+/// one on the Desktop is still removed while the run reports the refusal.
+#[test]
+fn eval_installers_apply_continues_past_a_refused_archive() {
+    let sandbox = Sandbox::in_target("eval-installers-continue");
+    let refreshed = sandbox.path().join("Downloads/Refreshed.dmg");
+    let stale = sandbox.path().join("Desktop/Stale.dmg");
+    write_aged(&refreshed, &"x".repeat(2048), 400);
+    write_aged(&stale, &"x".repeat(2048), 400);
+
+    let (status, output) = drift_session(
+        &sandbox,
+        &["clean", "installers", "--apply", "--shred"],
+        || age(&refreshed, 0),
+    );
+    assert!(
+        !stale.exists(),
+        "eval/installers-continue: the archive after the refused one was not removed:\n{output}"
+    );
+    assert!(
+        refreshed.exists() && output.contains("Refreshed.dmg"),
+        "the touched archive must be kept and named:\n{output}"
+    );
+    assert!(
+        !status.success(),
+        "the refusal must fail the run:\n{output}"
     );
 }
 
@@ -1949,6 +1980,88 @@ fn eval_trash_empty_purges_exactly_the_previewed_direct_children() {
     assert_journaled(&sandbox, "trash-empty", "shred", &targets);
 }
 
+/// An empty Trash is nothing to purge: no re-run hint, no size acknowledgment,
+/// no consent, exit 0 — what every other category does with an empty plan.
+/// The non-empty Trash beside it is the control that the gates still apply.
+#[test]
+fn eval_trash_empty_with_nothing_to_purge_asks_for_nothing() {
+    let sandbox = Sandbox::in_target("eval-trash-nothing");
+    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let preview = run(&sandbox, &["trash-empty"]);
+    let stdout = String::from_utf8_lossy(&preview.stdout);
+    assert!(preview.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("nothing to purge") && !stdout.contains("Re-run"),
+        "eval/trash-empty-nothing: an empty Trash still asked to act: {stdout}"
+    );
+    let apply = run(&sandbox, &["trash-empty", "--apply"]);
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&apply.stdout),
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    assert!(
+        apply.status.success() && output.contains("nothing to purge"),
+        "eval/trash-empty-nothing: an empty purge was refused: {output}"
+    );
+    let apply = run(&sandbox, &["trash-empty", "--apply", "--json"]);
+    let document = json(&apply);
+    assert!(apply.status.success(), "{document}");
+    assert_eq!(document["applied"], true, "{document}");
+    assert_eq!(document["summary"]["items_touched"], 0, "{document}");
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            scratch: vec![sandbox.path().join(".local/state/devtrim")],
+            ..Allowed::default()
+        },
+        "eval/trash-empty-nothing",
+    );
+
+    // Nothing measurable is still nothing to purge, but the unread item keeps
+    // the run nonzero.
+    let locked = sandbox.path().join(".Trash/locked");
+    write(&locked.join("inner/secret"), "secret");
+    let sealed = Unreadable::new(locked.join("inner"));
+    let unread = run(&sandbox, &["trash-empty", "--apply", "--json"]);
+    drop(sealed);
+    let document = json(&unread);
+    assert!(!unread.status.success(), "{document}");
+    assert!(
+        error_text(&document).contains("locked") && !error_text(&document).contains("--confirm"),
+        "eval/trash-empty-nothing: {document}"
+    );
+    std::fs::remove_dir_all(&locked).unwrap();
+
+    write(&sandbox.path().join(".Trash/notes.txt"), "notes");
+    let refused = run(&sandbox, &["trash-empty", "--apply", "--json"]);
+    assert!(
+        !refused.status.success(),
+        "control: a non-empty Trash still needs --confirm and consent: {}",
+        json(&refused)
+    );
+    assert!(sandbox.path().join(".Trash/notes.txt").exists());
+}
+
+/// A Trash folder that cannot be listed names itself in the error.
+#[test]
+fn eval_trash_empty_names_an_unreadable_trash() {
+    let sandbox = Sandbox::in_target("eval-trash-unlisted");
+    let trash = sandbox.path().join(".Trash");
+    write(&trash.join("notes.txt"), "notes");
+    let locked = Unreadable::new(trash.clone());
+    let output = run(&sandbox, &["trash-empty", "--json"]);
+    drop(locked);
+    let document = json(&output);
+    assert!(!output.status.success(), "{document}");
+    assert!(
+        error_text(&document).contains(trash.to_str().unwrap()),
+        "eval/trash-unlisted: the error must name the Trash: {document}"
+    );
+}
+
 /// A Trash item the sink refuses (a trashed project still holding its
 /// repository) is left whole, reported, and does not stop the items after it.
 #[test]
@@ -2460,6 +2573,36 @@ fn eval_simulators_list_every_device_past_an_unreadable_one() {
         "eval/simulators-unreadable: the unreadable device must be named: {document}"
     );
     assert!(!preview.status.success(), "{document}");
+}
+
+/// Apply does not walk every simulator's data: an unreadable folder inside a
+/// working device is no reason to refuse deleting an unavailable one.
+#[test]
+fn eval_simulators_apply_ignores_an_unreadable_working_device() {
+    let sandbox = Sandbox::in_target("eval-simulators-working-unreadable");
+    let devices = simulator_devices(&sandbox);
+    let listing = simctl_list(&[(WORKING, true), (GONE_ONE, false)]);
+    simulator_stub(&sandbox, &listing, &listing);
+    let _locked = Unreadable::new(devices.join(WORKING).join("data"));
+
+    let apply = run(
+        &sandbox,
+        &["clean", "simulators", "--apply", "--yolo", "--json"],
+    );
+    let document = json(&apply);
+    assert!(
+        !devices.join(GONE_ONE).exists(),
+        "eval/simulators-working-unreadable: the unavailable device was kept: {document}"
+    );
+    assert!(apply.status.success(), "{document}");
+    assert_eq!(document["summary"]["items_touched"], 1, "{document}");
+    assert!(
+        document["summary"]["bytes_freed_estimate"]
+            .as_u64()
+            .unwrap()
+            > 0,
+        "{document}"
+    );
 }
 
 /// An Archives folder that cannot be measured is one error; DeviceSupport

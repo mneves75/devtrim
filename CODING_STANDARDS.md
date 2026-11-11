@@ -22,7 +22,7 @@ violates one cannot merge, so reporting it wastes the review.
 | `rustup run 1.88.0 cargo test` | MSRV |
 | `python3 scripts/tests/tui.py target/debug/devtrim` | real PTY menu/help/cancel/quit with isolated HOME/PATH, explicit dimensions, visible-content assertions, and restored terminal state; release-policy tests reject a non-rendering executable |
 | `cargo audit` (root and `fuzz/`) | advisories |
-| `scripts/tests/shellcheck-tracked.sh` | every tracked `*.sh` plus the pre-commit hook; the helper uses a temporary NUL-delimited Git-index manifest, preserves whitespace, protects leading dashes, and fails before linting if ShellCheck is unavailable or worktree discovery/enumeration fails |
+| `scripts/tests/shellcheck-tracked.sh` | every tracked `*.sh` plus both Git hooks; the helper uses a temporary NUL-delimited Git-index manifest, preserves whitespace, protects leading dashes, and fails before linting if ShellCheck is unavailable or worktree discovery/enumeration fails |
 | `bash -n` separately for each Bash script, `sh -n` separately for the hook and POSIX helpers, then `scripts/tests/release-policy.sh` | shell syntax (additional filename arguments to `-n` are not parsed), positive controls for difficult filenames, missing ShellCheck, and worktree failure, and that the hook, `ci.yml`, and `release.yml` still carry each pinned safety clause |
 | `npm run lint` in `video/` (ESLint followed by the explicit native TypeScript7.0.2 CLI) | Remotion lint rules and TypeScript types; classic5.9.3 remains for tooling APIs |
 | `npm run format:check` in `video/` (prettier) | all `video/src` formatting |
@@ -227,7 +227,7 @@ exactly four:
   three callers, trusted only inside that owner's cache namespace.
 - `hardened_git` in `src/ops/project.rs` — `"git"`, from `repo_last_activity`
   through `hardened_git_log`, and as a literal from `TrackedIndex::list`,
-  `unborn_branch`, `worktree_listing`, `git_common_dir` and `ignores_path`, its
+  `unborn_branch`, `worktree_listing`, `git_common_dir`, `ignores_path` and `records_submodule`, its
   only production callers.
 
 The only other variable programs in the tree are inside `#[cfg(test)] mod

@@ -418,6 +418,28 @@ fn output_preservation_control(linked: bool, marker: &str) {
         .unwrap();
 }
 
+/// A dashboard error names the command once, not once per wrapping layer.
+#[test]
+fn an_error_names_the_command_once() {
+    // No "dashboard" in the sandbox or file name, so only devtrim's own words count.
+    let sandbox = fixture("snapshot-error-once");
+    let existing = sandbox.path().join("existing.html");
+    write(&existing, "keep");
+    let output = run(
+        &sandbox,
+        &[
+            "dashboard",
+            "--no-open",
+            "--output",
+            existing.to_str().unwrap(),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("existing.html"), "{stderr}");
+    assert_eq!(stderr.matches("dashboard").count(), 1, "{stderr}");
+}
+
 #[test]
 fn existing_output_is_preserved_without_scanning() {
     output_preservation_control(false, "PV dashboard/existing-output");

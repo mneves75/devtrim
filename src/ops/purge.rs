@@ -18,7 +18,7 @@ use super::project::ScanObservations;
 use super::{ApplyOutcome, Finding, Op, is_node_modules_name};
 use crate::safety::Ctx;
 
-pub struct Purge;
+pub(crate) struct Purge;
 
 impl Op for Purge {
     fn name(&self) -> &'static str {
@@ -130,21 +130,8 @@ mod tests {
         let root = root.canonicalize().unwrap();
         let decoy = root.join("dev/project/src");
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
             roots: vec![root.join("dev")],
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: root.join("journal.jsonl"),
-            home: root.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(root.clone())
         };
         let mut plan = vec![finding(
             decoy.to_str().unwrap(),

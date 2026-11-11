@@ -1,9 +1,11 @@
-//! Bounded external-command execution: every scan and apply-preflight
-//! subprocess runs under a wall-clock limit. It must never return partial
-//! output as if the command had finished, and a timeout is never an absent
-//! program (`NotFound`), so a hung probe cannot read as "nothing running".
-//! It also owns the one registry of live command groups, so an interrupted
-//! devtrim kills every command it started before it exits.
+//! Bounded external-command execution: every scan and apply subprocess —
+//! queries, liveness probes and the typed commands an apply runs — runs under
+//! a wall-clock limit (`status` and `uninstall` run their own report-only
+//! commands). It must never return partial output as if the command had
+//! finished, and a timeout is never an absent program (`NotFound`), so a hung
+//! probe cannot read as "nothing running". It also owns the one registry of
+//! live command groups, so an interrupted devtrim kills every command it
+//! started before it exits.
 
 use std::collections::BTreeSet;
 use std::io::{self, Read};
@@ -15,7 +17,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Read-only queries: Git, `simctl`, `docker`, `npm`, `brew`.
+/// Read-only queries: Git, `simctl`, `docker`, `npm`, `brew`, `go`.
 ///
 /// A margin, not a measurement. On the development machine at load average 300
 /// to 950 with about 1,700 processes (2026-10-08) only a system-wide `lsof` was

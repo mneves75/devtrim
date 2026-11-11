@@ -625,6 +625,74 @@ fn eval_uninstall_reports_every_path_past_an_unreadable_folder() {
         document["findings"].as_array().unwrap().len() >= 2,
         "{document}"
     );
+    // A partial read is a partial operation (SECURITY.md layer 9).
+    assert!(
+        !output.status.success(),
+        "eval/uninstall-partial: a partial read exited 0: {document}"
+    );
+    assert!(
+        document["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error
+                .as_str()
+                .unwrap()
+                .contains(container.to_str().unwrap())),
+        "eval/uninstall-partial: the error must name the folder: {document}"
+    );
+}
+
+/// One iCloud Drive file whose metadata cannot be read is named as an error;
+/// the large file beside it is still listed. A folder with read but no search
+/// permission lists its names while every lookup inside it fails.
+#[test]
+fn eval_icloud_lists_what_it_can_read_past_an_unreadable_file() {
+    let sandbox = sandbox("report-icloud-unstat");
+    let root = sandbox
+        .path()
+        .join("Library/Mobile Documents/com~apple~CloudDocs");
+    let large = root.join("large.dat");
+    write(&large, "x");
+    std::fs::File::options()
+        .write(true)
+        .open(&large)
+        .unwrap()
+        .set_len(100 * 1024 * 1024)
+        .unwrap();
+    let hidden = root.join("nosearch/hidden.dat");
+    write(&hidden, "hidden");
+    let lock = |mode| {
+        std::fs::set_permissions(root.join("nosearch"), std::fs::Permissions::from_mode(mode))
+            .unwrap()
+    };
+    lock(0o600);
+    let names_listed = std::fs::read_dir(root.join("nosearch")).is_ok();
+    let stat_refused = std::fs::symlink_metadata(&hidden).is_err();
+    let output = run(&sandbox, &["icloud", "--json"]);
+    lock(0o755);
+    assert!(
+        names_listed && stat_refused,
+        "this eval needs a folder whose names list but whose entries cannot be inspected"
+    );
+    let document = json(&output);
+    assert!(
+        document["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["path"].as_str() == Some(large.to_str().unwrap())),
+        "eval/icloud-unstat: one unreadable file hid the rest: {document}"
+    );
+    assert!(!output.status.success(), "{document}");
+    assert!(
+        document["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error.as_str().unwrap().contains("hidden.dat")),
+        "{document}"
+    );
 }
 
 /// One unreadable folder in iCloud Drive is named as an error while the

@@ -6,11 +6,11 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use super::project::{self, is_directory_if_present};
-use super::{Action, ApplyOutcome, Finding, Op, dir_size};
+use super::{Action, ApplyOutcome, Finding, Op};
 use crate::safety::Ctx;
 use crate::safety::measure_lenient;
 
-pub struct Leftovers;
+pub(crate) struct Leftovers;
 
 fn is_agent_scratch(name: &str) -> bool {
     let Some((prefix, suffix)) = name.rsplit_once('.') else {
@@ -64,24 +64,15 @@ impl Op for Leftovers {
                     format!("cannot inspect leftover candidate {}", path.display())
                 })?;
                 if file_type.is_dir() && is_agent_scratch(&entry.file_name().to_string_lossy()) {
-                    let size = match dir_size(&path) {
-                        Ok(size) => size,
-                        Err(error) => {
-                            unread_once(&mut unread, &path, &error);
-                            continue;
-                        }
-                    };
-                    findings.push(Finding::new(
+                    push_measured(
+                        &mut findings,
                         format!(
                             "possible agent scratch `{}`",
                             entry.file_name().to_string_lossy()
                         ),
-                        Some(path),
-                        size,
+                        &path,
                         "review manually; worktree staleness cannot be proven",
-                        1,
-                        Action::Info,
-                    ));
+                    );
                 }
             }
             for entry in walkdir::WalkDir::new(root)
@@ -105,21 +96,12 @@ impl Op for Leftovers {
                 for child in ["evidence", "perf"] {
                     let path = entry.path().join(child);
                     if is_directory_if_present(&path)? {
-                        let size = match dir_size(&path) {
-                            Ok(size) => size,
-                            Err(error) => {
-                                unread_once(&mut unread, &path, &error);
-                                continue;
-                            }
-                        };
-                        findings.push(Finding::new(
+                        push_measured(
+                            &mut findings,
                             format!("supergoal {child} artifacts"),
-                            Some(path),
-                            size,
+                            &path,
                             "review manually; completion cannot be inferred from a path",
-                            1,
-                            Action::Info,
-                        ));
+                        );
                     }
                 }
             }
@@ -181,24 +163,40 @@ fn scratch_findings(repository: &Path, findings: &mut Vec<Finding>) -> Result<()
         } else {
             format!("repository scratch `{name}`")
         };
-        let measured = measure_lenient(&child, &Default::default());
-        let mut note = "review manually; ignored files are still your data".to_owned();
-        if measured.unread > 0 {
-            note.push_str(&format!(
-                "; lower bound: {} entries could not be read",
-                measured.unread
-            ));
-        }
-        findings.push(Finding::new(
+        push_measured(
+            findings,
             label,
-            Some(child.clone()),
-            measured.bytes,
-            &note,
-            1,
-            Action::Info,
-        ));
+            &child,
+            "review manually; ignored files are still your data",
+        );
     }
     Ok(())
+}
+
+/// One report-only row for `path`, measured leniently: a folder read only in
+/// part keeps its row as a disclosed lower bound and adds one error, so the
+/// run exits nonzero.
+fn push_measured(findings: &mut Vec<Finding>, label: String, path: &Path, note: &str) {
+    let measured = measure_lenient(path, &Default::default());
+    let mut note = note.to_owned();
+    if let Some(lower_bound) = measured.lower_bound_note() {
+        note.push_str(&format!("; {lower_bound}"));
+    }
+    let error = measured.partial_read_error(path);
+    findings.push(Finding::new(
+        label.clone(),
+        Some(path.to_path_buf()),
+        measured.bytes,
+        &note,
+        1,
+        Action::Info,
+    ));
+    if let Some(error) = error {
+        findings.push(project::error_finding(
+            format!("{label}: partial size"),
+            error,
+        ));
+    }
 }
 
 /// Records a folder this scan could not read, once however many walks reach it.
@@ -225,21 +223,9 @@ mod tests {
         std::fs::write(evidence.join("run.log"), "log").unwrap();
         let sealed = crate::ops::Unreadable::new(&root.join("sealed"), 0o000);
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
             roots: vec![root.clone()],
             roots_origin: crate::safety::RootsOrigin::Flag,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home.clone())
         };
 
         let findings = Leftovers.scan(&ctx, &Default::default()).unwrap();

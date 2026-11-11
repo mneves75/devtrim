@@ -248,7 +248,7 @@ pub(crate) fn commit_old_git_fixture(repo: &Path, tracked: &[&str]) -> Result<()
 /// HEAD is read on its own rather than through the reflog walk: the commit a
 /// newest reflog entry names need not be HEAD once an entry is deleted or HEAD
 /// moves without logging, and the walk would then answer for an older commit.
-pub(crate) fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> {
+fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> {
     if !has_git_marker(root)? {
         anyhow::bail!("not a Git repository: {}", root.display());
     }
@@ -611,22 +611,13 @@ pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
     if !metadata.file_type().is_file() {
         return Ok(false);
     }
-    // Parsed as Git parses it (git v2.51.0 `setup.c`, `read_gitfile_gently`):
-    // the exact prefix `gitdir: `, then every byte but trailing CR and LF, so a
-    // path holding a newline or ending in a space is read whole. Anything Git
-    // would reject is not an orphan: it goes to Git, which refuses it.
+    // Anything Git would reject is not an orphan: it goes to Git, which
+    // refuses it.
     let bytes = std::fs::read(&marker)
         .with_context(|| format!("cannot read Git marker {}", marker.display()))?;
-    let Some(mut target) = bytes.strip_prefix(b"gitdir: ") else {
+    let Some(target) = gitfile_target(&bytes) else {
         return Ok(false);
     };
-    while let [rest @ .., b'\n' | b'\r'] = target {
-        target = rest;
-    }
-    if target.is_empty() {
-        return Ok(false);
-    }
-    let target = std::ffi::OsStr::from_bytes(target);
     match std::fs::symlink_metadata(repo.join(target)) {
         Ok(_) => Ok(false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
@@ -635,8 +626,21 @@ pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
     }
 }
 
+/// The path a `.git` file names, read as Git reads it (git v2.51.0
+/// `setup.c` `read_gitfile_gently`): the exact prefix `gitdir: `, then every
+/// byte but trailing CR and LF, so a path holding a newline or ending in a
+/// space is read whole. `None` when the prefix is missing or nothing follows.
+/// A relative path is relative to the folder holding the `.git` file.
+pub(crate) fn gitfile_target(bytes: &[u8]) -> Option<&std::ffi::OsStr> {
+    let mut target = bytes.strip_prefix(b"gitdir: ")?;
+    while let [rest @ .., b'\n' | b'\r'] = target {
+        target = rest;
+    }
+    (!target.is_empty()).then(|| std::ffi::OsStr::from_bytes(target))
+}
+
 /// Whether `repo` is a new repository: on an unborn branch (Git glossary:
-/// HEAD names a branch that has no commit yet), with no reference of any kind
+/// HEAD names a branch that has no commit yet) and holding no commit object
 /// — `git init` before the first commit. The activity query fails there, so
 /// the scanners leave such a repository out and name it instead of failing
 /// the category; they ask only after that query has failed, so no repository
@@ -648,10 +652,9 @@ pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
 /// before the first commit are only blobs. The listing must also finish
 /// without a complaint: Git skips an object folder or pack it cannot read,
 /// says so on stderr, and still exits 0, so a silent omission would read as
-/// no history. A branch turned into a dangling
-/// symbolic reference, a file holding an object ID where the loose-ref folder
-/// was, and an orphan checkout beside other branches all keep their commits
-/// and their error. Three more answers keep a damaged repository an error
+/// no history. A branch turned into a dangling symbolic reference, a file
+/// holding an object ID where the loose-ref folder was, and an orphan
+/// checkout beside other branches all keep their commits and their error. Three more answers keep a damaged repository an error
 /// rather than a new one. HEAD is symbolic (`symbolic-ref -q HEAD`), so a
 /// detached HEAD naming a missing commit is not new. Git finds the reference
 /// storage sound (`refs verify`, Git 2.47 and later): a loose-ref folder that
@@ -755,7 +758,7 @@ pub(crate) fn unjudged_finding(subject: &str, path: &Path, error: &anyhow::Error
 
 /// A finding that offers nothing and carries no target; its `scan_error`
 /// makes the run report failure.
-fn error_finding(label: String, message: String) -> Finding {
+pub(crate) fn error_finding(label: String, message: String) -> Finding {
     Finding::new(label, None, 0, &message, 5, Action::Info).with_scan_error(message)
 }
 
@@ -874,11 +877,6 @@ mod tests {
         path
     }
 
-    /// An unborn branch (Git glossary: HEAD names a branch that has no commit
-    /// yet — `git init` before the first commit, or `checkout --orphan`) is a
-    /// state Git defines, and the activity query fails there. Only that state
-    /// is recognized: a HEAD naming a commit whose object is gone and a
-    /// detached HEAD both stay what they are, so their failures still refuse.
     /// Removes every loose object, as a damaged or emptied store would be.
     fn empty_object_store(repo: &Path) {
         for entry in std::fs::read_dir(repo.join(".git/objects")).unwrap() {
@@ -889,6 +887,12 @@ mod tests {
         }
     }
 
+    /// A new repository (Git glossary: HEAD names a branch that has no commit
+    /// yet — `git init` before the first commit) is a state Git defines, and
+    /// the activity query fails there. Only that state is recognized: an
+    /// orphan checkout beside other branches, a HEAD naming a commit whose
+    /// object is gone and a detached HEAD all stay what they are, so their
+    /// failures still refuse.
     #[test]
     fn an_unborn_branch_is_recognized_and_a_dangling_head_is_not() {
         let base = temp("unborn");

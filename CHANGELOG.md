@@ -2,9 +2,55 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.13.0] - 2026-11-11
+
+### Fixed
+- `trash-empty` with nothing to purge says so and exits 0; it no longer asks
+  for `--confirm=0` and then for `-y` to remove nothing. The Trash root and
+  journal checks still run first.
+- `installers`, `toolchains` and `simulators` apply continue past a refused
+  finding and still exit nonzero. `installers` names an age-gate refusal as a
+  file that changed since the preview, not as one outside its folders.
+- `simulators` apply no longer walks every device folder before and after the
+  plan, so one unreadable working simulator no longer refuses the whole apply.
+- `worktrees`, `clean leftovers` and `uninstall` keep a row whose folder was
+  only partly readable, mark its size as a lower bound, and exit 1.
+- `icloud` names a file it cannot measure instead of failing the whole report;
+  `largest` stays on one device.
+- Read errors for the Trash, Xcode support folders and Codex releases name the
+  path; `dashboard` errors name the command once.
+- The Xcode liveness probe asks only for the current user's processes, as the
+  build-process probe does; Codex release apply runs the system-wide `lsof`
+  probe once per release instead of twice.
+- `--apply`, `--yes`, `--yolo` and `purge` help text match what they do;
+  `uninstall` no longer claims `~/Applications` bundles are protected.
+- A Trash holding only items that cannot be measured says nothing was offered
+  instead of "nothing to purge".
 
 ### Changed
+- TUI: the results title leads with the mode it will apply (READ-ONLY,
+  TRASH-FIRST or PERMANENT); the confirmation states its effect ("Moves 3 items
+  (7.2 GB) to the Trash."), clears the screen behind it and shows only its keys
+  (`y apply · n/Esc cancel`); the menu badge PREVIEW is now TRASH; the header is
+  one row and taglines are gone; status lines carry neutral, refusal or failure
+  colours; cut rows end in "…"; the path column names the project; startup
+  diagnostics survive the first scan; a footer too wide for the terminal drops
+  `Enter details`, `r rescan` and `s` first and never `q`, `b` or `?`.
+- `analyze`: going up reselects the folder you came from; PgUp/PgDn, g/G and
+  Home/End page; folders end in "/"; the status counts errors.
+- `status --watch`: unavailable reasons come before processes, the health line
+  takes its band's colour, and the footer says how old the sample is. The disk
+  row's percentage is labelled as a share of used plus available space.
+- Internals: one report tail and exit rule, one error-finding constructor, one
+  `.git`-file parser, one category-name table tied to `ops::all()` by a test,
+  narrower visibility and a test context constructor; 393 fewer lines with no
+  behaviour change.
+- The demo film shows the new confirmation.
+- This release's local gates ran TruffleHog 3.99.8, Gitleaks 8.30.1, actionlint 1.7.12, ShellCheck 0.11.0, Node 26.13.0 and npm 12.2.2; the hosted run on the pinned versions is the authoritative one.
+- Landing page and manual: the terminal frames show the TUI's real colours, the
+  Homebrew install line is on the first screen, a three-step walkthrough shows
+  preview, leave one out and confirm, and every command sits in one table
+  grouped read-only, Trash and permanent, linking to its manual section.
 - The landing page links the verified immutable 0.12.6 release after production
   promotion, with regenerated film facts and recorded delivery evidence.
 - Agent instructions (`AGENTS.md`, `CLAUDE.md`): the Apple-platforms section

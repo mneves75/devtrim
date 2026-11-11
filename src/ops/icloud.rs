@@ -6,7 +6,7 @@ use walkdir::WalkDir;
 use crate::report::{Action, Finding};
 use crate::safety::Ctx;
 
-pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
+pub(crate) fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
     let cloud_docs = ctx
         .home
         .join("Library/Mobile Documents/com~apple~CloudDocs");
@@ -51,14 +51,29 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
             continue;
         }
         let path = entry.path();
-        let logical = entry
+        // A file that cannot be inspected hides only itself, like a folder
+        // the walk cannot read: it is named, and the inventory goes on.
+        let metadata = match entry
             .metadata()
-            .with_context(|| format!("cannot inspect iCloud file {}", path.display()))?
-            .len();
+            .with_context(|| format!("cannot inspect iCloud file {}", path.display()))
+        {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                unread.push(super::project::UnreadFolder::new(path, &error));
+                continue;
+            }
+        };
+        let logical = metadata.len();
         if logical < 100 * 1024 * 1024 {
             continue;
         }
-        let allocated = blocks_bytes(path)?;
+        let allocated = match crate::safety::allocated_bytes(&metadata, path) {
+            Ok(allocated) => allocated,
+            Err(error) => {
+                unread.push(super::project::UnreadFolder::new(path, &error));
+                continue;
+            }
+        };
         let relative = path.strip_prefix(&cloud_docs).unwrap_or(path);
         findings.push(Finding::new(
             format!("large iCloud Drive file: {}", relative.display()),
@@ -79,11 +94,4 @@ pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
         ));
     }
     Ok(findings)
-}
-
-/// Real bytes on disk via st_blocks (detects sparse/dataless files).
-fn blocks_bytes(path: &std::path::Path) -> Result<u64> {
-    let metadata = std::fs::metadata(path)
-        .with_context(|| format!("cannot inspect iCloud file {}", path.display()))?;
-    crate::safety::allocated_bytes(&metadata, path)
 }

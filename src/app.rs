@@ -5,7 +5,7 @@ use crate::{
     uninstall, worktrees,
 };
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser, error::ErrorKind};
+use clap::{CommandFactory, Parser, ValueEnum as _, error::ErrorKind};
 use colored::Colorize;
 use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
@@ -195,19 +195,14 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
 }
 
 fn clean_operation_from_args(args: &[OsString]) -> &'static str {
-    match first_positional(args).and_then(|(argument, _)| argument.to_str()) {
-        Some("caches") => "caches",
-        Some("node-modules") => "node-modules",
-        Some("artifacts") => "artifacts",
-        Some("installers") => "installers",
-        Some("simulators") => "simulators",
-        Some("xcode") => "xcode",
-        Some("docker") => "docker",
-        Some("toolchains") => "toolchains",
-        Some("agents") => "agents",
-        Some("leftovers") => "leftovers",
-        _ => "clean",
-    }
+    first_positional(args)
+        .and_then(|(argument, _)| argument.to_str())
+        .and_then(|argument| {
+            cli::Target::value_variants()
+                .iter()
+                .find(|target| target.as_str() == argument)
+        })
+        .map_or("clean", cli::Target::as_str)
 }
 
 fn clap_error(error: clap::Error, json: bool, operation: &str) -> ExitCode {
@@ -256,9 +251,8 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 fn run_history(limit: Option<usize>, json: bool) -> Result<ExitCode> {
-    let limit = limit.unwrap_or(20).clamp(1, 1000);
     let journal_path = safety::default_journal_path()?;
-    let history = match journal::read_history(&journal_path, limit) {
+    let history = match journal::read_history(&journal_path, limit.unwrap_or(20)) {
         Ok(history) => history,
         Err(error) if json => {
             let history = journal::History {
@@ -280,11 +274,7 @@ fn run_history(limit: Option<usize>, json: bool) -> Result<ExitCode> {
         }
     }
     // An incomplete audit is a partial operation: visible in errors AND status.
-    if history.errors.is_empty() {
-        Ok(ExitCode::SUCCESS)
-    } else {
-        Ok(ExitCode::from(1))
-    }
+    Ok(exit_status(&history.errors))
 }
 
 fn generated_doc_json_error(operation: &str) -> Result<ExitCode> {
@@ -363,11 +353,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                     eprintln!("{} {}", "warn".yellow(), report::terminal_safe(error));
                 }
             }
-            if scan.errors.is_empty() {
-                Ok(ExitCode::SUCCESS)
-            } else {
-                Ok(ExitCode::from(1))
-            }
+            Ok(exit_status(&scan.errors))
         }
         cli::Command::Status { watch } => status::run(&ctx, watch),
         cli::Command::Uninstall { ref app } => uninstall::run(&ctx, app),
@@ -376,45 +362,18 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             ref path,
             ref output,
             no_open,
-        } => dashboard::run(&ctx, path.as_deref(), output.as_deref(), no_open)
-            .context("dashboard failed"),
+        } => dashboard::run(&ctx, path.as_deref(), output.as_deref(), no_open),
         cli::Command::Largest { top } => {
             if !ctx.json {
                 ctx.diagnostic("info", ctx.roots_note());
             }
             let result = largest::scan(&ctx, top);
-            if ctx.json {
-                report::print_json("largest", false, &result.findings, None, &result.errors)?;
-            } else {
-                report::print_human(&result.findings)?;
-                for error in &result.errors {
-                    ctx.diagnostic("warn", error.clone());
-                }
-            }
-            // Partial visibility follows the same contract as scan: disclosed
-            // in errors AND in the exit status.
-            if result.errors.is_empty() {
-                Ok(ExitCode::SUCCESS)
-            } else {
-                Ok(ExitCode::from(1))
-            }
+            report_tail("largest", &result.findings, &result.errors, &ctx)
         }
         cli::Command::Worktrees => run_worktrees(&ctx),
         cli::Command::AppStorage => {
             let result = crate::app_storage::report(&ctx.home, &cli.roots);
-            if ctx.json {
-                report::print_json("app-storage", false, &result.findings, None, &result.errors)?;
-            } else {
-                report::print_human(&result.findings)?;
-                for error in &result.errors {
-                    ctx.diagnostic("warn", error.clone());
-                }
-            }
-            Ok(if result.errors.is_empty() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(1)
-            })
+            report_tail("app-storage", &result.findings, &result.errors, &ctx)
         }
         cli::Command::Optimize { ref tasks } => {
             let operation = ops::optimize::Optimize::new(tasks, cli.apply)?;
@@ -450,9 +409,26 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                 .filter_map(report::Finding::scan_error)
                 .map(str::to_owned)
                 .collect();
+            let actionable = findings
+                .iter()
+                .any(|finding| finding.action.is_actionable());
+            // A failure never reads as an empty Trash.
+            let nothing_to_purge = if scan_errors.is_empty() {
+                format!("{} nothing to purge in the Trash", "✓".green())
+            } else {
+                format!(
+                    "{} nothing offered: the Trash items above could not be measured",
+                    "✗".red()
+                )
+            };
             if !cli.apply {
                 if ctx.json {
                     report::print_json("trash-empty", false, &findings, None, &scan_errors)?;
+                } else if !actionable {
+                    if !findings.is_empty() {
+                        report::print_human(&findings)?;
+                    }
+                    report::print_line(&nothing_to_purge)?;
                 } else {
                     report::print_human(&findings)?;
                     let narrowed = if only_devtrim { " --only-devtrim" } else { "" };
@@ -463,11 +439,35 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                         format!("--confirm={}", size / (1024 * 1024 * 1024)).cyan()
                     ))?;
                 }
-                return Ok(if scan_errors.is_empty() {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::from(1)
-                });
+                return Ok(exit_status(&scan_errors));
+            }
+            // As in `run_op`: a plan with nothing to purge has no size to
+            // acknowledge and no consent to give, but it still starts an
+            // apply, so an unwritable journal refuses it.
+            if !actionable {
+                return match journal::check_writable(&ctx) {
+                    Err(error) => command_error("trash-empty", false, &findings, &ctx, error),
+                    Ok(()) if ctx.json => print_outcome(
+                        "trash-empty",
+                        &findings,
+                        &ops::ApplyOutcome::new("trash-empty"),
+                        &ctx,
+                    ),
+                    Ok(()) if findings.is_empty() => {
+                        report::print_line(&nothing_to_purge)?;
+                        Ok(ExitCode::SUCCESS)
+                    }
+                    Ok(()) => {
+                        report::print_human(&findings)?;
+                        report::print_line(&nothing_to_purge)?;
+                        print_outcome(
+                            "trash-empty",
+                            &findings,
+                            &ops::ApplyOutcome::new("trash-empty"),
+                            &ctx,
+                        )
+                    }
+                };
             }
             if !ctx.json {
                 report::print_human(&findings)?;
@@ -487,6 +487,34 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                 Err(error) => command_error("trash-empty", true, &findings, &ctx, error),
             }
         }
+    }
+}
+
+/// A report's findings, then its errors as warnings: partial visibility is
+/// disclosed in the errors and in the exit status alike.
+fn report_tail(
+    operation: &str,
+    findings: &[report::Finding],
+    errors: &[String],
+    ctx: &safety::Ctx,
+) -> Result<ExitCode> {
+    if ctx.json {
+        report::print_json(operation, false, findings, None, errors)?;
+    } else {
+        report::print_human(findings)?;
+        for error in errors {
+            ctx.diagnostic("warn", error.clone());
+        }
+    }
+    Ok(exit_status(errors))
+}
+
+/// Nonzero whenever anything failed, however much else succeeded.
+fn exit_status(errors: &[String]) -> ExitCode {
+    if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 
@@ -519,11 +547,7 @@ fn run_worktrees(ctx: &safety::Ctx) -> Result<ExitCode> {
             ctx.diagnostic("warn", error.clone());
         }
     }
-    if report.errors.is_empty() {
-        Ok(ExitCode::SUCCESS)
-    } else {
-        Ok(ExitCode::from(1))
-    }
+    Ok(exit_status(&report.errors))
 }
 
 fn run_icloud(ctx: &safety::Ctx) -> Result<ExitCode> {
@@ -541,11 +565,7 @@ fn run_icloud(ctx: &safety::Ctx) -> Result<ExitCode> {
     } else {
         report::print_human(&findings)?;
     }
-    Ok(if errors.is_empty() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(1)
-    })
+    Ok(exit_status(&errors))
 }
 
 fn clean(target: cli::Target, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<ExitCode> {
@@ -595,11 +615,7 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
                 ))?;
             }
         }
-        return Ok(if scan_errors.is_empty() {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::from(1)
-        });
+        return Ok(exit_status(&scan_errors));
     }
 
     // A plan with nothing to confirm still starts an apply, so it is refused
@@ -682,11 +698,7 @@ fn print_outcome(
             eprintln!("{} {}", "error:".red().bold(), report::terminal_safe(error));
         }
     }
-    if errors.is_empty() {
-        Ok(ExitCode::SUCCESS)
-    } else {
-        Ok(ExitCode::from(1))
-    }
+    Ok(exit_status(&errors))
 }
 
 fn print_non_success_summary(summary: &report::Summary) -> std::io::Result<()> {

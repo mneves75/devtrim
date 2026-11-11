@@ -10,7 +10,7 @@ use super::project::{
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, OpenFile, XcodeActivity, escalate, xcode_activity};
 
-pub struct Xcode;
+pub(crate) struct Xcode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum XcodeTargetKind {
@@ -118,7 +118,14 @@ impl Xcode {
             let entries = match std::fs::read_dir(&directory) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "cannot read Xcode support directory {}",
+                            directory.display()
+                        )
+                    });
+                }
             };
             for entry in entries {
                 let entry = match entry.with_context(|| {
@@ -591,23 +598,7 @@ mod tests {
     use super::*;
 
     fn test_context(home: std::path::PathBuf) -> Ctx {
-        Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home,
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        }
+        Ctx::for_test(home)
     }
 
     #[test]
@@ -778,21 +769,8 @@ mod tests {
             Action::Shred,
         );
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home.clone())
         };
 
         let outcome = Xcode.apply(&[finding], &ctx).unwrap();
@@ -1452,21 +1430,8 @@ mod tests {
             Action::Shred,
         );
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home.clone())
         };
 
         let running = Xcode

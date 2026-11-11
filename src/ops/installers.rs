@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, removal_note};
 use crate::safety::{Ctx, escalate};
 
-pub struct Installers;
+pub(crate) struct Installers;
 
 /// Directories whose direct children may be considered. Scanning is deliberately
 /// non-recursive: `Downloads` routinely contains extracted project trees, and an
@@ -34,30 +34,44 @@ fn has_installer_extension(path: &Path) -> bool {
         })
 }
 
-/// Age in days and allocated size for an eligible installer, re-read at apply time.
+/// What [`judge`] makes of one path.
+enum Judgement {
+    /// Age in days and allocated size.
+    Eligible(u64, u64),
+    /// Not a direct child of an installer folder with an installer extension.
+    OutsideNamespace,
+    /// A symlink, directory or special file at an installer's name.
+    NotAFile,
+    /// Modified within the retention window.
+    Recent,
+    /// Modified in the future, so its age is unknown.
+    FutureModification,
+}
+
+/// Judge `path` as an installer, re-read at apply time.
 ///
 /// The scanner is never deletion authority: this predicate is the one the sink
 /// trusts, so it repeats every structural condition instead of assuming the
 /// finding was built correctly.
-fn installer_details(path: &Path, home: &Path, retain_days: u32) -> Result<Option<(u64, u64)>> {
+fn judge(path: &Path, home: &Path, retain_days: u32) -> Result<Judgement> {
     let Some(parent) = path.parent() else {
-        return Ok(None);
+        return Ok(Judgement::OutsideNamespace);
     };
     if !INSTALLER_DIRECTORIES
         .iter()
         .any(|directory| parent == home.join(directory))
     {
-        return Ok(None);
+        return Ok(Judgement::OutsideNamespace);
     }
     if !has_installer_extension(path) {
-        return Ok(None);
+        return Ok(Judgement::OutsideNamespace);
     }
     let metadata = std::fs::symlink_metadata(path)
         .with_context(|| format!("cannot inspect {}", path.display()))?;
     // A symlink is refused outright: following one would delete a file outside
     // the authorized directory while every path check above still passed.
     if !metadata.file_type().is_file() {
-        return Ok(None);
+        return Ok(Judgement::NotAFile);
     }
     // Age is part of the shape the scanner promised, so apply has to reassert
     // it too. An archive modified in place after preview keeps its inode and
@@ -67,16 +81,45 @@ fn installer_details(path: &Path, home: &Path, retain_days: u32) -> Result<Optio
         .modified()
         .with_context(|| format!("cannot read modification time of {}", path.display()))?;
     let Ok(elapsed) = SystemTime::now().duration_since(modified) else {
-        return Ok(None);
+        return Ok(Judgement::FutureModification);
     };
     let age = elapsed.as_secs() / Duration::from_secs(60 * 60 * 24).as_secs();
     if age < u64::from(retain_days) {
-        return Ok(None);
+        return Ok(Judgement::Recent);
     }
-    Ok(Some((
+    Ok(Judgement::Eligible(
         age,
         crate::safety::allocated_bytes(&metadata, path)?,
-    )))
+    ))
+}
+
+/// Age in days and allocated size for an eligible installer.
+fn installer_details(path: &Path, home: &Path, retain_days: u32) -> Result<Option<(u64, u64)>> {
+    Ok(match judge(path, home, retain_days)? {
+        Judgement::Eligible(age, size) => Some((age, size)),
+        _ => None,
+    })
+}
+
+/// Why apply refuses `path`. A forged or stale target is outside the
+/// namespace; an archive touched since the preview is the ordinary drift case,
+/// and saying "outside its authorized namespace" would misdescribe it.
+fn refusal(path: &Path, home: &Path, retain_days: u32) -> Result<String> {
+    let shown = path.display();
+    Ok(match judge(path, home, retain_days)? {
+        Judgement::OutsideNamespace | Judgement::Eligible(..) => {
+            format!("installer target is outside its authorized namespace: {shown}")
+        }
+        Judgement::NotAFile => {
+            format!("installer is no longer a regular file since the preview; refusing {shown}")
+        }
+        Judgement::Recent => format!(
+            "installer changed since the preview — it was modified within the {retain_days}-day retention window; refusing {shown}"
+        ),
+        Judgement::FutureModification => {
+            format!("installer modification time is in the future; refusing {shown}")
+        }
+    })
 }
 
 fn scan_directory(directory: &Path, ctx: &Ctx, findings: &mut Vec<Finding>) -> Result<()> {
@@ -163,17 +206,17 @@ impl Op for Installers {
                     .target()
                     .ok_or_else(|| anyhow::anyhow!("installer finding missing internal target"))?;
                 if installer_details(target, &ctx.home, ctx.retain_days)?.is_none() {
-                    anyhow::bail!(
-                        "installer target is outside its authorized namespace: {}",
-                        target.display()
-                    );
+                    anyhow::bail!(refusal(target, &ctx.home, ctx.retain_days)?);
                 }
                 apply_filesystem_finding(self.name(), finding, ctx)
             })()
             .with_context(|| format!("failed to remove {}", finding.label));
+            // Archives are unrelated files: one touched since the preview must
+            // not strand the others. Every failure is recorded, so the run
+            // still reports nonzero.
             if let Err(error) = result {
                 outcome.fail(error);
-                break;
+                continue;
             }
             outcome.record(finding, removal_note(finding, &finding.label));
         }
@@ -189,21 +232,8 @@ mod tests {
 
     fn test_ctx(home: PathBuf) -> Ctx {
         Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home,
-            interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home)
         }
     }
 

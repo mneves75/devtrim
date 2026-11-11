@@ -25,7 +25,7 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::report::{self, Action, Finding};
@@ -44,13 +44,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(80);
 const BLOCKS: [char; 8] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Entry {
-    pub(crate) path: PathBuf,
-    pub(crate) size: u64,
-    pub(crate) is_dir: bool,
+struct Entry {
+    path: PathBuf,
+    size: u64,
+    is_dir: bool,
     /// True when traversal could not read everything below this entry, so the
     /// size is a lower bound rather than a measurement.
-    pub(crate) partial: bool,
+    partial: bool,
 }
 
 impl Entry {
@@ -141,7 +141,7 @@ fn child_paths(directory: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Measures every immediate child of `directory`, reporting each as it finishes.
-pub(crate) fn measure_children(
+fn measure_children(
     directory: &Path,
     cancel: &AtomicBool,
     mut report_entry: impl FnMut(Entry),
@@ -220,10 +220,10 @@ enum Intent {
     Quit,
 }
 
-pub(crate) struct Explorer {
+struct Explorer {
     /// Drill-down stack; the last element is the directory on screen.
     stack: Vec<PathBuf>,
-    pub(crate) entries: Vec<Entry>,
+    entries: Vec<Entry>,
     selected: usize,
     scanning: bool,
     errors: Vec<String>,
@@ -231,10 +231,13 @@ pub(crate) struct Explorer {
     theme: Theme,
     cancel: Arc<AtomicBool>,
     progress: Option<Receiver<Progress>>,
+    /// The folder just left by going up, selected again once its new
+    /// measurement arrives, unless the cursor moves first.
+    reselect: Option<PathBuf>,
 }
 
 impl Explorer {
-    pub(crate) fn new(root: PathBuf, theme: Theme) -> Self {
+    fn new(root: PathBuf, theme: Theme) -> Self {
         Self {
             stack: vec![root],
             entries: Vec::new(),
@@ -245,6 +248,7 @@ impl Explorer {
             theme,
             cancel: Arc::new(AtomicBool::new(false)),
             progress: None,
+            reselect: None,
         }
     }
 
@@ -265,6 +269,7 @@ impl Explorer {
         self.entries.clear();
         self.errors.clear();
         self.selected = 0;
+        self.reselect = None;
         self.scanning = true;
 
         let (sender, receiver) = channel();
@@ -326,10 +331,19 @@ impl Explorer {
     /// late arrival reordering the list cannot move the selection off the row
     /// the operator was reading.
     fn sort_entries(&mut self) {
-        let anchor = self
-            .entries
-            .get(self.selected)
-            .map(|entry| entry.path.clone());
+        let arrived = self
+            .reselect
+            .as_ref()
+            .filter(|path| self.entries.iter().any(|entry| &entry.path == *path))
+            .cloned();
+        if arrived.is_some() {
+            self.reselect = None;
+        }
+        let anchor = arrived.or_else(|| {
+            self.entries
+                .get(self.selected)
+                .map(|entry| entry.path.clone())
+        });
         self.entries.sort_by(|left, right| {
             right
                 .size
@@ -393,15 +407,41 @@ impl Explorer {
         if self.stack.len() <= 1 {
             return;
         }
-        self.stack.pop();
+        let left = self.stack.pop();
         self.begin_scan();
+        self.reselect = left;
+    }
+
+    /// Below the supported size nothing is drawn but the resize screen, so
+    /// only a quit reaches the explorer; Esc, which goes up a level here,
+    /// must not act on a listing nobody can see.
+    fn handle_visible_key(&mut self, key: KeyEvent, area: Rect) -> Intent {
+        if !crate::tui::terminal_too_small(area) {
+            return self.handle_key(key);
+        }
+        if key.kind == KeyEventKind::Press
+            && (key.code == KeyCode::Char('q') || crate::tui::is_interrupt(key))
+        {
+            Intent::Quit
+        } else {
+            Intent::None
+        }
+    }
+
+    /// Moves the cursor to `index`, clamped to the listing; the operator has
+    /// chosen a row, so a pending reselection no longer applies.
+    fn select(&mut self, index: usize) {
+        self.selected = index.min(self.entries.len().saturating_sub(1));
+        self.reselect = None;
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Intent {
+        /// Rows PgUp and PgDn move, as in the TUI.
+        const PAGE_ROWS: usize = 8;
         if key.kind != KeyEventKind::Press {
             return Intent::None;
         }
-        if key.modifiers.contains(event::KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        if crate::tui::is_interrupt(key) {
             return Intent::Quit;
         }
         if self.help {
@@ -417,13 +457,12 @@ impl Explorer {
         match key.code {
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('q') => return Intent::Quit,
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.selected = self.selected.saturating_sub(1);
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                let last = self.entries.len().saturating_sub(1);
-                self.selected = self.selected.saturating_add(1).min(last);
-            }
+            KeyCode::Up | KeyCode::Char('k') => self.select(self.selected.saturating_sub(1)),
+            KeyCode::Down | KeyCode::Char('j') => self.select(self.selected.saturating_add(1)),
+            KeyCode::PageUp => self.select(self.selected.saturating_sub(PAGE_ROWS)),
+            KeyCode::PageDown => self.select(self.selected.saturating_add(PAGE_ROWS)),
+            KeyCode::Home | KeyCode::Char('g') => self.select(0),
+            KeyCode::End | KeyCode::Char('G') => self.select(usize::MAX),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.descend(),
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('b') => self.ascend(),
             KeyCode::Char('r') => self.begin_scan(),
@@ -456,28 +495,29 @@ fn bar(size: u64, largest: u64, width: usize) -> String {
 
 fn render(frame: &mut Frame, explorer: &Explorer) {
     let area = frame.area();
+    if crate::tui::terminal_too_small(area) {
+        crate::tui::render_too_small(frame, area, explorer.theme);
+        return;
+    }
     let [header, body, footer] = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Min(3),
-        Constraint::Length(3),
+        Constraint::Length(2),
     ])
     .areas(area);
 
     let total = explorer.total();
     let partial = explorer.entries.iter().any(|entry| entry.partial);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" analyze ", explorer.theme.bold(Token::Accent)),
-            Span::raw(report::terminal_safe(
-                &explorer.current().display().to_string(),
-            )),
-            Span::styled(
-                format!("  {}{}", report::gb(total), if partial { "+" } else { "" }),
-                explorer.theme.style(Token::AccentSecondary),
-            ),
-        ]))
-        .block(Block::bordered().title(" measure · classify · trim ")),
+    crate::tui::render_header(
+        frame,
         header,
+        explorer.theme,
+        &format!(
+            "analyze · {} · {}{}",
+            explorer.current().display(),
+            report::gb(total),
+            if partial { "+" } else { "" }
+        ),
     );
 
     let largest = explorer.entries.first().map_or(0, |entry| entry.size);
@@ -505,8 +545,8 @@ fn render(frame: &mut Frame, explorer: &Explorer) {
                     ),
                     explorer.theme.style(Token::Muted),
                 ),
-                Span::raw(if entry.is_dir { "/" } else { " " }),
                 Span::raw(report::terminal_safe(&entry.name())),
+                Span::raw(if entry.is_dir { "/" } else { "" }),
                 Span::styled(
                     if entry.partial { "  (partial)" } else { "" },
                     explorer.theme.style(Token::Warning),
@@ -528,33 +568,34 @@ fn render(frame: &mut Frame, explorer: &Explorer) {
         &mut state,
     );
 
-    let status = explorer.errors.first().map_or_else(
-        || {
-            if partial {
-                "Sizes marked (partial) are lower bounds: some entries were unreadable.".to_string()
-            } else {
-                "Read-only. This screen never deletes anything.".to_string()
-            }
-        },
-        |error| report::terminal_safe(error),
-    );
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                "↑/↓ move · Enter open · Esc up · r rescan · ? keys · q quit",
-                explorer.theme.style(Token::AccentSecondary),
-            ),
-            Line::styled(
-                status,
-                explorer.theme.style(if explorer.errors.is_empty() {
-                    Token::Muted
-                } else {
-                    Token::Critical
-                }),
-            ),
-        ])
-        .block(Block::bordered()),
+    // Raw: the footer escapes at its sink. Every error is printed when
+    // analyze exits; the count says the first is not the only one.
+    let status = match explorer.errors.as_slice() {
+        [] if partial => "(partial) sizes are lower bounds; part was unreadable.".to_string(),
+        [] => "Read-only. This screen never deletes anything.".to_string(),
+        [only] => only.clone(),
+        [first, ..] => format!("1 of {} errors: {first}", explorer.errors.len()),
+    };
+    crate::tui::render_footer_rows(
+        frame,
         footer,
+        explorer.theme,
+        &[
+            ("↑↓", "move"),
+            ("Enter", "open"),
+            ("Esc", "back"),
+            ("r", "rescan"),
+            ("q", "quit"),
+            ("?", "keys"),
+        ],
+        (
+            &status,
+            if explorer.errors.is_empty() {
+                Token::Muted
+            } else {
+                Token::Critical
+            },
+        ),
     );
 
     if explorer.help {
@@ -562,9 +603,11 @@ fn render(frame: &mut Frame, explorer: &Explorer) {
     }
 }
 
+/// The key reference, as tall as its lines once wrapped to the popup's width,
+/// so it neither leaves blank rows nor hides its last line.
 fn render_help(frame: &mut Frame, area: Rect, explorer: &Explorer) {
-    let popup = crate::tui::centered_rect(area, 72, 14);
-    frame.render_widget(Clear, popup);
+    const WIDTH: u16 = 72;
+    let inner = usize::from(area.width.saturating_sub(4).min(WIDTH).saturating_sub(2));
     let mut lines = vec![
         Line::styled("Keys", explorer.theme.bold(Token::Accent)),
         Line::raw(""),
@@ -576,13 +619,16 @@ fn render_help(frame: &mut Frame, area: Rect, explorer: &Explorer) {
         ]));
     }
     lines.push(Line::raw(""));
-    lines.push(Line::styled(
+    for row in crate::tui::wrap_words(
         "Read-only: analyze never deletes. Use `devtrim clean <category>` for that.",
-        explorer.theme.style(Token::Warning),
-    ));
+        inner,
+    ) {
+        lines.push(Line::styled(row, explorer.theme.style(Token::Warning)));
+    }
+    let popup = crate::tui::centered_rect(area, WIDTH, lines.len());
+    frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
             .block(Block::bordered().title(" Help · ? or Esc closes ")),
         popup,
     );
@@ -710,7 +756,13 @@ fn run_loop(
         }
         if event::poll(POLL_INTERVAL).context("cannot poll terminal input")? {
             match event::read().context("cannot read terminal input")? {
-                Event::Key(key) => match explorer.handle_key(key) {
+                Event::Key(key) => match explorer.handle_visible_key(
+                    key,
+                    terminal
+                        .size()
+                        .context("cannot inspect terminal size")?
+                        .into(),
+                ) {
                     Intent::Quit => {
                         let partial = explorer.entries.iter().any(|entry| entry.partial);
                         break if explorer.errors.is_empty() && !partial {
@@ -774,5 +826,139 @@ mod tests {
             link.size < 65536,
             "the symlink must not carry the target tree's size"
         );
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn finish(explorer: &mut Explorer) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while explorer.scanning {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the walk never finished"
+            );
+            explorer.drain_progress();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn screen(explorer: &Explorer, width: u16, height: u16) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, explorer)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
+    fn sized(count: usize) -> Explorer {
+        let mut explorer = Explorer::new(PathBuf::from("/fixture"), Theme::from_env());
+        explorer.entries = (0..count)
+            .map(|index| Entry {
+                path: PathBuf::from(format!("/fixture/entry-{index:02}")),
+                size: 100 - index as u64,
+                is_dir: index % 2 == 0,
+                partial: false,
+            })
+            .collect();
+        explorer
+    }
+
+    /// Going up a level lands on the folder just left, so drilling into one
+    /// subtree after another does not start from the top each time.
+    #[test]
+    fn going_up_reselects_the_folder_it_came_from() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-analyze-ascend")
+            .tempdir()
+            .unwrap();
+        for (name, bytes) in [("large", 65536), ("medium", 16384), ("small", 4096)] {
+            write(&root.path().join(name).join("data"), bytes);
+        }
+        let mut explorer = Explorer::new(root.path().to_path_buf(), Theme::from_env());
+        explorer.begin_scan();
+        finish(&mut explorer);
+        explorer.handle_key(key(KeyCode::End));
+        assert!(explorer.entries[explorer.selected].path.ends_with("small"));
+        explorer.handle_key(key(KeyCode::Enter));
+        finish(&mut explorer);
+
+        explorer.handle_key(key(KeyCode::Esc));
+        finish(&mut explorer);
+
+        assert!(
+            explorer.entries[explorer.selected].path.ends_with("small"),
+            "selected {:?}",
+            explorer.entries[explorer.selected].path
+        );
+    }
+
+    #[test]
+    fn paging_keys_move_as_they_do_in_the_tui() {
+        let mut explorer = sized(30);
+        explorer.handle_key(key(KeyCode::PageDown));
+        assert_eq!(explorer.selected, 8);
+        explorer.handle_key(key(KeyCode::Char('G')));
+        assert_eq!(explorer.selected, 29);
+        explorer.handle_key(key(KeyCode::PageUp));
+        assert_eq!(explorer.selected, 21);
+        explorer.handle_key(key(KeyCode::Char('g')));
+        assert_eq!(explorer.selected, 0);
+    }
+
+    /// A folder reads as a folder: its name ends in a slash.
+    #[test]
+    fn a_folder_ends_in_a_slash() {
+        let explorer = sized(2);
+        let output = screen(&explorer, 64, 18).concat();
+        assert!(output.contains("entry-00/"), "{output}");
+        assert!(!output.contains("/entry-00"), "{output}");
+        assert!(!output.contains("entry-01/"), "{output}");
+    }
+
+    /// More than one error says how many there are, not only the first.
+    #[test]
+    fn the_status_counts_every_error() {
+        let mut explorer = sized(1);
+        explorer.errors = vec!["first".into(), "second".into(), "third".into()];
+        let output = screen(&explorer, 64, 18).concat();
+        assert!(output.contains("1 of 3 errors: first"), "{output}");
+    }
+
+    /// Below the supported size analyze shows what the TUI shows, and takes
+    /// only q, so a key cannot act on a screen that is not drawn.
+    #[test]
+    fn a_terminal_too_small_shows_the_resize_screen_and_takes_only_q() {
+        let mut explorer = sized(3);
+        explorer.stack.push(PathBuf::from("/fixture/entry-00"));
+        let output = screen(&explorer, 50, 12).concat();
+        assert!(output.contains("terminal too small"), "{output}");
+        let small = Rect::new(0, 0, 50, 12);
+        assert_eq!(
+            explorer.handle_visible_key(key(KeyCode::Esc), small),
+            Intent::None
+        );
+        assert_eq!(explorer.stack.len(), 2, "Esc went up a level unseen");
+        assert_eq!(
+            explorer.handle_visible_key(key(KeyCode::Char('q')), small),
+            Intent::Quit
+        );
+    }
+
+    /// The header and footer match the TUI's: one row, then two.
+    #[test]
+    fn the_chrome_matches_the_tui() {
+        let rows = screen(&sized(1), 64, 18);
+        assert!(rows[0].contains("devtrim") && rows[0].contains("analyze"));
+        assert!(rows[1].starts_with('┌'), "{rows:#?}");
+        assert!(rows[15].starts_with('└'), "{rows:#?}");
+        assert!(rows[16].contains("? keys"), "{rows:#?}");
+        assert!(rows[16].contains("q quit"), "{rows:#?}");
     }
 }

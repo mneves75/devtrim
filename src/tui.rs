@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
@@ -28,8 +28,14 @@ const PAGE_ROWS: u16 = 8;
 /// gigabytes), so a held key or a stuck repeat cannot grow the answer
 /// without bound.
 const MAX_CONFIRMATION_INPUT: usize = 32;
-/// The Error screen's status: nothing was authorized, and `r` scans again.
-const FAILED_CLOSED: &str = "Failed closed; no new action was authorized. r rescans.";
+/// The Error screen's status after a scan or a refused approval, neither of
+/// which changes anything.
+const NOTHING_CHANGED: &str = "Nothing was changed. r rescan · b back";
+/// The Error screen's status after an apply that stopped with an error: some
+/// targets may already be gone, and the journal is the record of which.
+const APPLY_STOPPED: &str = "The apply did not finish; devtrim history shows what changed.";
+/// The menu's status, before anything has been scanned.
+const MENU_STATUS: &str = "Preview first. Nothing changes until you explicitly approve.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
@@ -56,6 +62,35 @@ impl Operation {
             self,
             Self::ScanAll | Self::Icloud | Self::Clean(Target::Leftovers)
         )
+    }
+
+    /// What a scan of this operation looks at, as the working screen says it.
+    fn subject(self) -> &'static str {
+        match self {
+            Self::ScanAll => "everything",
+            Self::Purge => "projects to purge",
+            Self::Icloud => "iCloud files",
+            Self::TrashEmpty => "the Trash",
+            Self::Clean(target) => match target {
+                Target::Caches => "caches",
+                Target::NodeModules => "node_modules",
+                Target::Artifacts => "build artifacts",
+                Target::Simulators => "simulators",
+                Target::Xcode => "Xcode data",
+                Target::Docker => "Docker",
+                Target::Toolchains => "Swift toolchains",
+                Target::Installers => "installers",
+                Target::Agents => "agent caches and history",
+                Target::Leftovers => "agent leftovers",
+            },
+        }
+    }
+
+    /// The operation's menu label, which the header names as the current view.
+    fn label(self) -> &'static str {
+        MENU.iter()
+            .find(|item| item.operation == self)
+            .map_or_else(|| self.name(), |item| item.label)
     }
 }
 
@@ -226,6 +261,8 @@ struct App {
     confirmation: Option<ConfirmationKind>,
     input: String,
     status: String,
+    /// How much the status matters, set with it by [`App::say`].
+    status_token: Token,
     failed: bool,
     /// Resolved once at construction so every frame renders from the same
     /// decision rather than re-reading the environment per widget.
@@ -238,6 +275,9 @@ struct App {
     /// The scan or apply running on the worker thread, and when it started,
     /// for the working screen's clock.
     working: Option<(Work, Instant)>,
+    /// The home folder, shown as `~` in the path column; `None` shows paths
+    /// as they are.
+    home: Option<std::path::PathBuf>,
 }
 
 impl Default for App {
@@ -258,37 +298,38 @@ impl Default for App {
             scroll: 0,
             confirmation: None,
             input: String::new(),
-            status: "Preview first. Nothing changes until you explicitly approve.".into(),
+            status: MENU_STATUS.into(),
+            status_token: Token::Muted,
             failed: false,
             theme: Theme::from_env(),
             help: false,
             scroll_limit: std::cell::Cell::new(0),
             working: None,
+            home: None,
         }
     }
 }
 
 impl App {
-    /// The previewed findings still in the plan, in display order.
-    fn selected_findings(&self) -> Vec<Finding> {
-        self.findings
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| !self.excluded.contains(index))
-            .map(|(_, finding)| finding.clone())
-            .collect()
-    }
-
+    /// The findings still in the plan, in display order, with the actions the
+    /// current mode gives them.
     fn effective_findings(&self) -> Vec<Finding> {
-        let mut findings = self.selected_findings();
+        let mut findings: Vec<Finding> = self.in_plan().cloned().collect();
         report::effective_actions(&mut findings, self.shred);
         findings
     }
 
-    fn has_actionable_findings(&self) -> bool {
-        self.selected_findings()
+    /// The previewed findings still in the plan, borrowed.
+    fn in_plan(&self) -> impl Iterator<Item = &Finding> {
+        self.findings
             .iter()
-            .any(|finding| finding.action.is_actionable())
+            .enumerate()
+            .filter(|(index, _)| !self.excluded.contains(index))
+            .map(|(_, finding)| finding)
+    }
+
+    fn has_actionable_findings(&self) -> bool {
+        self.in_plan().any(|finding| finding.action.is_actionable())
     }
 
     /// Whether `s` acts. Turning permanent mode on needs a selected item that
@@ -298,9 +339,16 @@ impl App {
         self.shred
             || matches!(self.operation, Some(Operation::Clean(_) | Operation::Purge))
                 && self
-                    .selected_findings()
-                    .iter()
+                    .in_plan()
                     .any(|finding| finding.action == Action::Trash)
+    }
+
+    /// Sets the status line and how much it matters: `Muted` for neutral
+    /// information, `Warning` for a refused key or something to read first,
+    /// `Critical` for a failure.
+    fn say(&mut self, token: Token, text: impl Into<String>) {
+        self.status = text.into();
+        self.status_token = token;
     }
 
     /// Whether the finding at `index` is a choice the operator can make: only
@@ -337,11 +385,12 @@ impl App {
             self.excluded.insert(self.cursor);
         }
         // Replaces whatever an earlier `A` said, which this press made false.
-        self.status = format!(
+        let status = format!(
             "{} of {} items selected.",
             self.choice_count() - self.excluded.len(),
             self.choice_count()
         );
+        self.say(Token::Muted, status);
     }
 
     /// Everything back in when anything is out; otherwise every choice out.
@@ -350,10 +399,16 @@ impl App {
             self.excluded = (0..self.findings.len())
                 .filter(|index| self.is_selectable(*index))
                 .collect();
-            self.status = "Every item is left out; A selects them all again.".into();
+            self.say(
+                Token::Muted,
+                "Every item is left out; A selects them all again.",
+            );
         } else {
             self.excluded.clear();
-            self.status = "Every item is selected; A leaves them all out.".into();
+            self.say(
+                Token::Muted,
+                "Every item is selected; A leaves them all out.",
+            );
         }
     }
 
@@ -375,13 +430,13 @@ impl App {
         self.scroll = 0;
         self.confirmation = None;
         self.input.clear();
-        self.status = format!("Scanning {}…", operation.name());
+        self.say(Token::Muted, format!("Scanning {}…", operation.subject()));
         self.working = Some((Work::Scan, Instant::now()));
     }
 
     fn begin_apply(&mut self) {
         self.screen = Screen::Loading;
-        self.status = "Applying only the exact previewed findings…".into();
+        self.say(Token::Muted, "Applying only the exact previewed findings…");
         self.working = Some((Work::Apply, Instant::now()));
     }
 
@@ -409,15 +464,18 @@ impl App {
                 if !outcome.errors.is_empty() {
                     self.failed = true;
                 }
-                self.status =
-                    outcome_status(!outcome.errors.is_empty(), outcome.summary.items_touched)
-                        .into();
+                let (token, status) =
+                    outcome_status(!outcome.errors.is_empty(), outcome.summary.items_touched);
+                self.say(token, status);
                 self.summary = Some(outcome.summary);
                 self.errors = outcome.errors;
                 self.scroll = 0;
                 self.screen = Screen::Outcome;
             }
-            Err(error) => self.fail(error),
+            Err(error) => {
+                self.fail(error);
+                self.say(Token::Critical, APPLY_STOPPED);
+            }
         }
     }
 
@@ -466,15 +524,23 @@ impl App {
         }
         self.summary = None;
         self.screen = Screen::Results;
-        self.status = if let Some(failure) = self.failure_status() {
-            failure
+        if let Some(failure) = self.failure_status() {
+            self.say(Token::Critical, failure);
         } else if self.findings.is_empty() {
-            "No findings. Nothing can be applied.".into()
+            // The list says nothing was found; saying it here too would only
+            // repeat it.
+            self.say(Token::Muted, "");
         } else if operation.read_only() {
-            "Read-only result. No apply action is available.".into()
+            self.say(
+                Token::Muted,
+                "Read-only result. No apply action is available.",
+            );
         } else {
-            "Review every finding. Space leaves one out; a applies the rest".into()
-        };
+            self.say(
+                Token::Muted,
+                "Review every finding. Space leaves one out; a applies the rest",
+            );
+        }
     }
 
     /// How many findings stand for something the scan could not judge.
@@ -585,13 +651,15 @@ impl App {
         }
     }
 
+    /// Shows a failure that changed nothing: a scan, or an approval that no
+    /// longer matched the preview. An apply that failed says so itself.
     fn fail(&mut self, error: anyhow::Error) {
         self.failed = true;
         self.errors = vec![format!("{error:#}")];
         self.summary = None;
         self.scroll = 0;
         self.screen = Screen::Error;
-        self.status = FAILED_CLOSED.into();
+        self.say(Token::Critical, NOTHING_CHANGED);
     }
 
     fn begin_confirmation(&mut self) {
@@ -599,11 +667,11 @@ impl App {
             return;
         };
         if operation.read_only() {
-            self.status = "This result has no actionable findings.".into();
+            self.say(Token::Warning, "This result has no actionable findings.");
             return;
         }
         if !self.has_actionable_findings() {
-            self.status = if self
+            let reason = if self
                 .findings
                 .iter()
                 .any(|finding| finding.action.is_actionable())
@@ -611,8 +679,8 @@ impl App {
                 "Nothing is selected: Space adds an item, A selects all."
             } else {
                 "This result has no actionable findings."
-            }
-            .into();
+            };
+            self.say(Token::Warning, reason);
             return;
         }
         let findings = self.effective_findings();
@@ -632,7 +700,7 @@ impl App {
             }
         });
         self.input.clear();
-        self.status.clear();
+        self.say(Token::Muted, "");
         self.screen = Screen::Confirm;
     }
 
@@ -648,14 +716,14 @@ impl App {
         self.scroll = 0;
         self.confirmation = None;
         self.input.clear();
-        self.status = "Preview first. Nothing changes until you explicitly approve.".into();
+        self.say(Token::Muted, MENU_STATUS);
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Intent {
         if key.kind != KeyEventKind::Press {
             return Intent::None;
         }
-        if key.modifiers.contains(event::KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        if is_interrupt(key) {
             return Intent::Quit;
         }
         // A modified key is not the letter it carries: Alt+y arrives as `ESC y`,
@@ -744,7 +812,7 @@ impl App {
         if matches!(key, KeyCode::Char(' ' | 'A' | 'a' | 's'))
             && let Some(reason) = self.inert_reason(key)
         {
-            self.status = reason;
+            self.say(Token::Warning, reason);
             return Intent::None;
         }
         match key {
@@ -788,11 +856,14 @@ impl App {
             KeyCode::Char('s') if self.can_toggle_shred() => {
                 self.shred = !self.shred;
                 self.scroll = 0;
-                self.status = if self.shred {
-                    "Permanent mode: every action is SHRED; danger is critical.".into()
+                if self.shred {
+                    self.say(
+                        Token::Warning,
+                        "Permanent mode: every action is SHRED; danger is critical.",
+                    );
                 } else {
-                    "Trash-first mode restored.".into()
-                };
+                    self.say(Token::Muted, "Trash-first mode restored.");
+                }
                 Intent::None
             }
             KeyCode::Char('a') => {
@@ -848,7 +919,10 @@ impl App {
         if key == KeyCode::Esc {
             self.screen = Screen::Results;
             self.input.clear();
-            self.status = "Apply canceled; the preview remains unchanged.".into();
+            self.say(
+                Token::Muted,
+                "Apply canceled; the preview remains unchanged.",
+            );
             return Intent::None;
         }
         match confirmation {
@@ -856,7 +930,10 @@ impl App {
                 KeyCode::Char('y') | KeyCode::Char('Y') => self.approve(Approval::Yes),
                 KeyCode::Char('n') | KeyCode::Char('N') => {
                     self.screen = Screen::Results;
-                    self.status = "Apply canceled; the preview remains unchanged.".into();
+                    self.say(
+                        Token::Muted,
+                        "Apply canceled; the preview remains unchanged.",
+                    );
                     Intent::None
                 }
                 _ => Intent::None,
@@ -869,7 +946,10 @@ impl App {
                 }
                 KeyCode::Enter => {
                     self.input.clear();
-                    self.status = "Confirmation mismatch. The plan was not applied.".into();
+                    self.say(
+                        Token::Warning,
+                        "Confirmation mismatch. The plan was not applied.",
+                    );
                     Intent::None
                 }
                 _ => Intent::None,
@@ -886,7 +966,10 @@ impl App {
                 }
                 KeyCode::Enter => {
                     self.input.clear();
-                    self.status = "Confirmation mismatch. Trash was not purged.".into();
+                    self.say(
+                        Token::Warning,
+                        "Confirmation mismatch. Trash was not purged.",
+                    );
                     Intent::None
                 }
                 _ => Intent::None,
@@ -898,14 +981,17 @@ impl App {
         if self.input.len() < MAX_CONFIRMATION_INPUT {
             self.input.push(value);
         } else {
-            self.status = "Longer than any acknowledgment; Backspace erases.".into();
+            self.say(
+                Token::Warning,
+                "Longer than any acknowledgment; Backspace erases.",
+            );
         }
         Intent::None
     }
 
     fn erase_answer(&mut self) -> Intent {
         self.input.pop();
-        self.status.clear();
+        self.say(Token::Muted, "");
         Intent::None
     }
 
@@ -948,12 +1034,10 @@ pub fn run(ctx: &Ctx) -> Result<ExitCode> {
     }
 }
 
-/// Restores the terminal, then ends the run as an interrupt does: every
-/// command devtrim started is killed, and it exits 128 plus `signal`. Only the
-/// thread that owns the terminal calls it.
-fn stop(terminal: &mut DefaultTerminal, signal: i32) -> ! {
-    terminal.show_cursor().ok();
-    restore_and_exit(signal)
+/// Whether `key` is Ctrl+C, which quits every full-screen view, as SIGINT
+/// does, whatever screen is showing.
+pub(crate) fn is_interrupt(key: KeyEvent) -> bool {
+    key.modifiers.contains(event::KeyModifiers::CONTROL) && key.code == KeyCode::Char('c')
 }
 
 /// What every full-screen view does with a SIGINT or SIGTERM that
@@ -976,11 +1060,14 @@ fn run_loop(
     ctx: &Ctx,
     interrupts: &Interrupts,
 ) -> Result<ExitCode> {
-    let mut app = App::default();
+    let mut app = App {
+        home: Some(ctx.home.clone()),
+        ..App::default()
+    };
     let mut redraw = true;
     loop {
         if let Some(signal) = interrupts.received() {
-            stop(terminal, signal);
+            restore_and_exit(signal);
         }
         if redraw {
             terminal.draw(|frame| render(frame, &app))?;
@@ -1016,6 +1103,9 @@ fn run_loop(
                     let result =
                         in_background(terminal, &mut app, interrupts, || run_apply(ctx, plan))?;
                     app.finish_apply(result);
+                    // What the apply reported on the way, shown with its
+                    // outcome rather than left for the next scan to carry.
+                    app.warnings = ctx.take_diagnostics();
                 } else {
                     app.fail(anyhow::anyhow!(
                         "confirmation does not authorize the current preview"
@@ -1059,7 +1149,7 @@ fn in_background<T: Send>(
         let mut shown = None;
         while !worker.is_finished() {
             if let Some(signal) = interrupts.received() {
-                stop(terminal, signal);
+                restore_and_exit(signal);
             }
             let elapsed = app.elapsed_seconds();
             if shown != Some(elapsed) {
@@ -1071,7 +1161,7 @@ fn in_background<T: Send>(
             }
             match event::read().context("cannot read terminal input")? {
                 Event::Key(key) if scanning && is_quit_key(key) => {
-                    stop(terminal, signal_hook::consts::SIGINT)
+                    restore_and_exit(signal_hook::consts::SIGINT)
                 }
                 Event::Resize(..) => shown = None,
                 _ => {}
@@ -1089,10 +1179,7 @@ fn in_background<T: Send>(
 }
 
 fn is_quit_key(key: KeyEvent) -> bool {
-    key.kind == KeyEventKind::Press
-        && (key.code == KeyCode::Char('q')
-            || key.modifiers.contains(event::KeyModifiers::CONTROL)
-                && key.code == KeyCode::Char('c'))
+    key.kind == KeyEventKind::Press && (key.code == KeyCode::Char('q') || is_interrupt(key))
 }
 
 /// Shows a finished scan or apply, then drops every key still queued. Those
@@ -1115,9 +1202,10 @@ enum Loaded {
 }
 
 /// Scans for `operation` on the worker thread, touching no screen state; the
-/// diagnostics it captured travel with the result.
+/// diagnostics it captured travel with the result, together with any still
+/// queued from before it, such as the root, protect and journal warnings
+/// `Ctx::from_cli` raises before the first scan.
 fn run_scan(ctx: &Ctx, operation: Operation) -> Loaded {
-    ctx.take_diagnostics();
     let walks_roots = match operation {
         Operation::ScanAll | Operation::Purge => true,
         Operation::Clean(target) => ops::for_target(target).scans_roots(),
@@ -1157,7 +1245,7 @@ fn handle_visible_key(app: &mut App, key: KeyEvent, area: Rect) -> Intent {
     if key.kind != KeyEventKind::Press {
         return Intent::None;
     }
-    if key.modifiers.contains(event::KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+    if is_interrupt(key) {
         return Intent::Quit;
     }
     match key.code {
@@ -1223,45 +1311,145 @@ fn apply_trash(ctx: &Ctx, findings: &[Finding], approval: Approval) -> Result<Ap
 fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
     if terminal_too_small(area) {
-        let message = Paragraph::new(Text::from(vec![
-            Line::styled(
-                "devtrim — terminal too small",
-                app.theme.bold(Token::Warning),
-            ),
-            Line::raw(format!(
-                "Need at least {MIN_WIDTH}×{MIN_HEIGHT}; current {}×{}.",
-                area.width, area.height
-            )),
-            Line::raw("Resize the terminal, or press q to quit."),
-        ]))
-        .alignment(Alignment::Center)
-        .block(Block::bordered().title(" Safe disk hygiene "));
-        frame.render_widget(message, area);
+        render_too_small(frame, area, app.theme);
         return;
     }
 
     let [header, body, footer] = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Min(8),
-        Constraint::Length(4),
+        Constraint::Length(2),
     ])
     .areas(area);
-    render_header(frame, header, app);
+    render_header(
+        frame,
+        header,
+        app.theme,
+        app.operation.map_or("Menu", Operation::label),
+    );
     match app.screen {
         Screen::Menu => render_menu(frame, body, app),
         Screen::Loading => render_loading(frame, body, app),
-        Screen::Results | Screen::Confirm => render_results(frame, body, app),
+        Screen::Results | Screen::Confirm => {
+            let shown = Shown::of(app);
+            render_results(frame, body, app, &shown);
+            if app.screen == Screen::Confirm {
+                render_confirmation(frame, body, app, &shown);
+            }
+        }
         Screen::Detail => render_scrolled(frame, body, app, "Details", detail_entries(app)),
         Screen::Outcome => render_scrolled(frame, body, app, "Apply outcome", outcome_entries(app)),
-        Screen::Error => render_scrolled(frame, body, app, "Failed closed", error_entries(app)),
+        Screen::Error => render_scrolled(frame, body, app, "Error", error_entries(app)),
     }
     render_footer(frame, footer, app);
-    if app.screen == Screen::Confirm {
-        render_confirmation(frame, area, app);
-    }
     if app.help {
         render_help(frame, area, app);
     }
+}
+
+/// What a terminal below the supported size shows instead of any screen:
+/// the size it needs and the one key it takes.
+pub(crate) fn render_too_small(frame: &mut Frame, area: Rect, theme: Theme) {
+    let message = Paragraph::new(Text::from(vec![
+        Line::styled("devtrim — terminal too small", theme.bold(Token::Warning)),
+        Line::raw(format!(
+            "Need at least {MIN_WIDTH}×{MIN_HEIGHT}; current {}×{}.",
+            area.width, area.height
+        )),
+        Line::raw("Resize the terminal, or press q to quit."),
+    ]))
+    .alignment(Alignment::Center)
+    .wrap(Wrap { trim: true });
+    frame.render_widget(message, area);
+}
+
+pub(crate) fn terminal_too_small(area: Rect) -> bool {
+    area.width < MIN_WIDTH || area.height < MIN_HEIGHT
+}
+
+/// The one header row every full-screen view shares: the product and the
+/// current view on the theme's bar, a step in tone rather than a box. A view
+/// too long for the row keeps its end, where a path's leaf is. A cell of
+/// margin on each side keeps the text off the screen's edge.
+pub(crate) fn render_header(frame: &mut Frame, area: Rect, theme: Theme, view: &str) {
+    let product = " devtrim ";
+    let version = format!("v{} · ", env!("CARGO_PKG_VERSION"));
+    let room = usize::from(area.width)
+        .saturating_sub(Span::raw(product).width() + Span::raw(version.as_str()).width() + 1);
+    let line = Line::from(vec![
+        Span::styled(product, theme.style(Token::Strong)),
+        Span::raw(version),
+        Span::raw(truncate_left(&report::terminal_safe(view), room)),
+    ]);
+    frame.render_widget(Paragraph::new(line).style(theme.style(Token::Bar)), area);
+}
+
+/// The two footer rows every full-screen view shares: the keys this screen
+/// takes, then the status in its own weight. Neither row wraps.
+pub(crate) fn render_footer_rows(
+    frame: &mut Frame,
+    area: Rect,
+    theme: Theme,
+    keys: &[(&str, &str)],
+    status: (&str, Token),
+) {
+    let width = usize::from(area.width.saturating_sub(2));
+    let (text, token) = status;
+    frame.render_widget(
+        Paragraph::new(vec![
+            key_line(theme, keys, width),
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(report::terminal_safe(text), theme.style(token)),
+            ]),
+        ]),
+        area,
+    );
+}
+
+/// The keys a narrow footer may leave to the `?` reference, first to go
+/// first. Every other key stays: how to act, go back, quit and find the rest.
+const DROPPABLE_KEYS: [&str; 4] = ["Enter", "r", "s", "↑↓"];
+
+/// Keys in the one footer form, `key verb`, separated by ` · `, within
+/// `width` columns after a cell of margin. A line too wide drops keys in the
+/// order of [`DROPPABLE_KEYS`], never any other.
+pub(crate) fn key_line(theme: Theme, keys: &[(&str, &str)], width: usize) -> Line<'static> {
+    const SEPARATOR: &str = " · ";
+    let line_width = |keys: &[(&str, &str)]| {
+        keys.iter()
+            .map(|(key, verb)| {
+                Span::raw(*key).width()
+                    + if verb.is_empty() {
+                        0
+                    } else {
+                        1 + Span::raw(*verb).width()
+                    }
+            })
+            .sum::<usize>()
+            + Span::raw(SEPARATOR).width() * keys.len().saturating_sub(1)
+    };
+    let mut kept = keys.to_vec();
+    for droppable in DROPPABLE_KEYS {
+        if line_width(&kept) <= width {
+            break;
+        }
+        kept.retain(|(key, _)| *key != droppable);
+    }
+    let mut spans = vec![Span::raw(" ")];
+    for (index, (key, verb)) in kept.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(SEPARATOR, theme.style(Token::Muted)));
+        }
+        spans.push(Span::styled(
+            key.to_string(),
+            theme.style(Token::AccentSecondary),
+        ));
+        if !verb.is_empty() {
+            spans.push(Span::raw(format!(" {verb}")));
+        }
+    }
+    Line::from(spans)
 }
 
 /// Complete keybinding reference, the second tier of progressive disclosure
@@ -1339,78 +1527,93 @@ const HELP_KEYS: &[HelpGroup] = &[
     ),
 ];
 
-fn render_header(frame: &mut Frame, area: Rect, app: &App) {
-    let operation = app.operation.map_or("choose an operation", Operation::name);
-    let line = Line::from(vec![
-        Span::styled(" devtrim ", app.theme.bold(Token::Accent)),
-        Span::styled(
-            format!("v{}  ", env!("CARGO_PKG_VERSION")),
-            app.theme.style(Token::Muted),
-        ),
-        Span::raw(operation),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line).block(Block::bordered().title(" measure · classify · trim ")),
-        area,
-    );
-}
-
-/// The status an apply leaves: whether it failed, and how many items it
-/// changed before it did.
-fn outcome_status(failed: bool, touched: usize) -> &'static str {
+/// The status an apply leaves, and how much it matters: whether it failed,
+/// and how many items it changed before it did.
+fn outcome_status(failed: bool, touched: usize) -> (Token, &'static str) {
     if !failed {
-        "Apply completed. Review the truthful summary below."
+        (
+            Token::Muted,
+            "Apply finished. The summary below lists what changed.",
+        )
     } else if touched == 0 {
-        "Apply failed before any item was changed."
+        (Token::Critical, "Apply failed before any item was changed.")
     } else {
         // Some categories continue past a refused item, so "stopped" would be
         // false; the summary is the record either way.
-        "Apply finished with errors: see what changed and what failed."
+        (
+            Token::Critical,
+            "Apply finished with errors: see what changed and what failed.",
+        )
     }
 }
 
 /// The badge beside a menu operation, its token, and what it means, which the
-/// Selected pane spells out so the badge is never left to guess.
+/// Selected pane spells out so the badge is never left to guess. The words
+/// are the site's: READ-ONLY, TRASH, PERMANENT.
 fn badge(operation: Operation) -> (&'static str, Token, &'static str) {
-    if operation.read_only() {
-        (
+    match operation {
+        _ if operation.read_only() => (
             "READ-ONLY",
             Token::Info,
             "READ-ONLY: it reports and never changes anything.",
-        )
-    } else if operation == Operation::TrashEmpty {
-        (
+        ),
+        Operation::TrashEmpty => (
             "PERMANENT",
             Token::Critical,
             "PERMANENT: it deletes for good, after a typed size acknowledgment.",
-        )
-    } else {
-        (
-            "PREVIEW",
+        ),
+        Operation::Clean(Target::Docker | Target::Simulators) => (
+            "PERMANENT",
+            Token::Critical,
+            "PERMANENT: what you approve runs a command that cannot be undone.",
+        ),
+        _ => (
+            "TRASH",
             Token::Success,
-            "PREVIEW: it scans first; nothing changes until you select items, press a and approve.",
-        )
+            "TRASH: what you approve moves to the Trash; nothing changes until you press a and confirm.",
+        ),
     }
 }
 
+/// Width of the menu column: the selection mark, the key, the widest badge
+/// and the longest label, so no badge is ever clipped.
+const MENU_WIDTH: u16 = 2 + 2 + 10 + 22;
+
 fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
-    let [menu_area, detail_area] =
-        Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]).areas(area);
+    let [menu_area, _, detail_area] = Layout::horizontal([
+        Constraint::Length(MENU_WIDTH),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    let [title_area, list_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(menu_area);
+    // Every row fits at the minimum size; a taller menu says it scrolls.
+    let title = if usize::from(list_area.height) < MENU.len() {
+        " Operations · ↑↓ scrolls"
+    } else {
+        " Operations"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::styled(title, app.theme.style(Token::Muted))),
+        title_area,
+    );
     let items = MENU.iter().map(|item| {
         let (marker, token, _) = badge(item.operation);
         ListItem::new(Line::from(vec![
-            Span::styled(format!(" {} ", item.key), app.theme.style(Token::Muted)),
+            Span::styled(format!("{} ", item.key), app.theme.style(Token::Muted)),
+            Span::styled(format!("{marker:<9} "), app.theme.style(token)),
             Span::raw(item.label),
-            Span::styled(format!("  {marker}"), app.theme.style(token)),
         ]))
     });
+    // The mark and weight show the selection; a color over the whole row
+    // would hide the badge's own.
     let list = List::new(items)
-        .block(Block::bordered().title(" Operations "))
         .highlight_symbol("▶ ")
-        .highlight_style(app.theme.bold(Token::Accent));
+        .highlight_style(app.theme.style(Token::Strong));
     let mut state = ListState::default();
     state.select(Some(app.selected));
-    frame.render_stateful_widget(list, menu_area, &mut state);
+    frame.render_stateful_widget(list, list_area, &mut state);
 
     let selected = &MENU[app.selected];
     let (_, _, meaning) = badge(selected.operation);
@@ -1420,8 +1623,6 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         Line::raw(selected.description),
         Line::raw(""),
         Line::styled(meaning, app.theme.style(Token::Warning)),
-        Line::raw(""),
-        Line::raw("↑/↓ or j/k navigate · Enter opens · menu key opens directly · ? all keys"),
     ]);
     frame.render_widget(
         Paragraph::new(detail)
@@ -1449,20 +1650,63 @@ fn render_loading(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// The plan as the current mode would apply it, computed once per frame: the
+/// title, the confirmation and the mode all read from it, so they can never
+/// describe different plans.
+struct Shown {
+    /// The selected findings, with the action and danger the mode gives them:
+    /// exactly what an approval covers.
+    plan: Vec<Finding>,
+    bytes: u64,
+    danger: u8,
+    /// What `a` would do here, as the title names it.
+    mode: &'static str,
+}
+
+impl Shown {
+    fn of(app: &App) -> Self {
+        let plan = app.effective_findings();
+        let permanent = |findings: &[Finding]| {
+            findings
+                .iter()
+                .any(|finding| matches!(finding.action, Action::Shred | Action::Command { .. }))
+        };
+        let mode = if app.operation.is_some_and(Operation::read_only) {
+            "READ-ONLY"
+        } else if plan.iter().any(|finding| finding.action.is_actionable()) {
+            if permanent(&plan) {
+                "PERMANENT"
+            } else {
+                "TRASH-FIRST"
+            }
+        } else {
+            // With nothing selected the view still names what it applies.
+            let mut displayed = app.findings.clone();
+            report::effective_actions(&mut displayed, app.shred);
+            if permanent(&displayed) {
+                "PERMANENT"
+            } else {
+                "TRASH-FIRST"
+            }
+        };
+        Self {
+            bytes: report::actionable_bytes(&plan),
+            danger: safety::plan_danger(&plan),
+            plan,
+            mode,
+        }
+    }
+}
+
 /// The results list's title, within `width` columns. The mode is a safety
 /// signal, so it leads: counts and sizes grow with the plan and would
 /// otherwise push it past the minimum width. A title too wide for the
 /// terminal drops its words before any number, so what failed and the danger
 /// stay whole.
-fn results_title(app: &App, width: usize) -> String {
-    let plan = app.effective_findings();
-    let size = report::gb(report::actionable_bytes(&plan));
-    let danger = safety::plan_danger(&plan);
-    let mode = if app.shred {
-        "PERMANENT"
-    } else {
-        "TRASH-FIRST"
-    };
+fn results_title(app: &App, shown: &Shown, width: usize) -> String {
+    let size = report::gb(shown.bytes);
+    let danger = shown.danger;
+    let mode = shown.mode;
     let failed = match app.failure_count() {
         0 => String::new(),
         failures => format!(" · {failures} failed"),
@@ -1490,21 +1734,35 @@ fn results_title(app: &App, width: usize) -> String {
     }
 }
 
-fn render_results(frame: &mut Frame, area: Rect, app: &App) {
+fn render_results(frame: &mut Frame, area: Rect, app: &App, shown: &Shown) {
+    let rows = app.row_count();
+    if rows == 0 {
+        let title = results_title(app, shown, usize::from(area.width.saturating_sub(2)));
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "Nothing found. There is nothing to apply.",
+                app.theme.style(Token::Success),
+            ))
+            .block(Block::bordered().title(title)),
+            area,
+        );
+        return;
+    }
     // The detail pane is the only place a long path appears whole, so it grows
-    // past its usual share to hold the highlighted row, leaving the list one
-    // row, and says how many lines a terminal too short for it still hides and
-    // that Enter shows them.
+    // past its usual share to hold the highlighted row, leaving the list three
+    // rows (all of them when there are fewer), and says how many lines a
+    // terminal too short for it still hides and that Enter shows them.
     let mut details = detail_lines(app, usize::from(area.width.saturating_sub(2)));
+    let list_floor = u16::try_from(rows.min(3)).unwrap_or(3) + 2;
     let pane_floor = (area.height / 3).clamp(5, 10);
-    let pane_ceiling = area.height.saturating_sub(3).max(pane_floor);
+    let pane_ceiling = area.height.saturating_sub(list_floor).max(pane_floor);
     let pane_needed = u16::try_from(details.len()).map_or(u16::MAX, |rows| rows.saturating_add(2));
     let detail_height = pane_needed.clamp(pane_floor, pane_ceiling);
     let detail_rows = usize::from(detail_height.saturating_sub(2));
     if details.len() > detail_rows {
-        let shown = detail_rows.saturating_sub(1);
-        let hidden = details.len() - shown;
-        details.truncate(shown);
+        let shown_rows = detail_rows.saturating_sub(1);
+        let hidden = details.len() - shown_rows;
+        details.truncate(shown_rows);
         details.push(Line::styled(
             format!("… {hidden} more line(s); Enter shows all"),
             app.theme.style(Token::Warning),
@@ -1512,9 +1770,8 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     }
     let [list_area, detail_area] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(detail_height)]).areas(area);
-    let title = results_title(app, usize::from(list_area.width.saturating_sub(2)));
+    let title = results_title(app, shown, usize::from(list_area.width.saturating_sub(2)));
     let visible = usize::from(list_area.height.saturating_sub(2)).max(1);
-    let rows = app.row_count();
     let mut offset = app.list_offset.get();
     if app.cursor < offset {
         offset = app.cursor;
@@ -1525,16 +1782,9 @@ fn render_results(frame: &mut Frame, area: Rect, app: &App) {
     app.list_offset.set(offset);
 
     let width = usize::from(list_area.width.saturating_sub(2));
-    let mut lines = Vec::with_capacity(visible);
-    if rows == 0 {
-        lines.push(Line::styled(
-            "No findings.",
-            app.theme.style(Token::Success),
-        ));
-    }
-    for row in offset..rows.min(offset.saturating_add(visible)) {
-        lines.push(result_row(app, row, width));
-    }
+    let lines: Vec<_> = (offset..rows.min(offset.saturating_add(visible)))
+        .map(|row| result_row(app, row, width))
+        .collect();
     frame.render_widget(
         Paragraph::new(Text::from(lines)).block(Block::bordered().title(title)),
         list_area,
@@ -1579,8 +1829,9 @@ fn render_scrolled(
 }
 
 /// One results row: a finding with its selection mark, or a scan error or
-/// warning. Rows are clipped to one line; the detail pane shows the
-/// highlighted row whole, or says how much of it a short terminal hides.
+/// warning. Rows are clipped to one line, and a row cut short ends in `…`;
+/// the detail pane shows the highlighted row whole, or says how much of it a
+/// short terminal hides. No row leaves a space in its last cell.
 fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     let marker = if row == app.cursor {
         Span::styled("› ", app.theme.bold(Token::Accent))
@@ -1596,7 +1847,10 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
             diagnostic_at(app, row).unwrap_or_else(|| (String::new(), Token::Warning));
         return Line::from(vec![
             marker,
-            Span::styled(report::terminal_safe(&text), app.theme.style(token)),
+            Span::styled(
+                truncate_right(&report::terminal_safe(&text), width.saturating_sub(2)),
+                app.theme.style(token),
+            ),
         ]);
     };
     let check = match (app.is_selectable(row), app.excluded.contains(&row)) {
@@ -1606,8 +1860,8 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     };
     // `style`, not `bold`: adding BOLD to every level collapses the monochrome
     // ladder, because moderate carries no modifier and high carries BOLD. The
-    // theme's own test cannot see this — it exercises `style()` — so the
-    // distinction has to be preserved at the call site.
+    // theme's test pins the ladder `style()` draws; BOLD added here would
+    // collapse it where that test cannot see.
     // Wide enough for the last row's number, so every column stays aligned.
     let number = app.findings.len().to_string().len().max(3);
     let danger = format!("{:>number$}. danger-{} ", row + 1, finding.danger);
@@ -1616,20 +1870,34 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
         report::gb(finding.size_bytes),
         action_label(&finding.action)
     );
+    let fixed = 2 + check.len() + danger.len() + size.len();
     let label = report::terminal_safe(&finding.label);
-    let used = 2 + check.len() + danger.len() + size.len() + Span::raw(label.as_str()).width() + 2;
-    let path = report::terminal_safe(&finding_place(&finding));
-    Line::from(vec![
+    let label_width = Span::raw(label.as_str()).width();
+    let path = report::terminal_safe(&short_place(app, &finding));
+    let mut spans = vec![
         marker,
         Span::raw(check),
         Span::styled(danger, app.theme.style(danger_token(finding.danger))),
         Span::styled(size, app.theme.style(Token::AccentSecondary)),
-        Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(
-            format!("  {}", truncate_left(&path, width.saturating_sub(used))),
+    ];
+    let room = width.saturating_sub(fixed);
+    if label_width > room {
+        spans.push(Span::styled(
+            truncate_right(&label, room),
+            app.theme.style(Token::Strong),
+        ));
+        return Line::from(spans);
+    }
+    spans.push(Span::styled(label, app.theme.style(Token::Strong)));
+    // Two columns of gap, then at least the ellipsis and one character.
+    let path_room = room - label_width;
+    if !path.is_empty() && path_room >= 4 {
+        spans.push(Span::styled(
+            format!("  {}", truncate_left(&path, path_room - 2)),
             app.theme.style(Token::Muted),
-        ),
-    ])
+        ));
+    }
+    Line::from(spans)
 }
 
 /// Where a finding acts: its path, or for a typed command that has none, that
@@ -1643,6 +1911,33 @@ fn finding_place(finding: &Finding) -> String {
     }
 }
 
+/// The place a results row names, short enough to tell rows apart at the
+/// minimum width: inside a project, the project folder's name and the path
+/// below it; inside the home folder, `~` and the path below it. Prefixes are
+/// matched by whole components. The detail pane keeps the complete path.
+fn short_place(app: &App, finding: &Finding) -> String {
+    let Some(full) = finding.path.as_deref() else {
+        return finding_place(finding);
+    };
+    let path = std::path::Path::new(full);
+    if let Some(project) = finding.project.as_deref().map(std::path::Path::new)
+        && let Some(name) = project.file_name()
+        && let Ok(below) = path.strip_prefix(project)
+    {
+        return std::path::Path::new(name).join(below).display().to_string();
+    }
+    if let Some(home) = &app.home
+        && let Ok(below) = path.strip_prefix(home)
+    {
+        return if below.as_os_str().is_empty() {
+            "~".into()
+        } else {
+            format!("~/{}", below.display())
+        };
+    }
+    full.to_string()
+}
+
 /// A finding as the current Trash/permanent mode would apply it — its action
 /// and its danger both — through the one policy the plan itself uses.
 fn effective_finding(app: &App, finding: &Finding) -> Finding {
@@ -1652,15 +1947,20 @@ fn effective_finding(app: &App, finding: &Finding) -> Finding {
     finding
 }
 
-/// The scan error or warning shown on a row past the findings.
+/// The scan error or warning shown on a row past the findings. A captured
+/// diagnostic carries its level: `info:` is muted, anything else a warning.
 fn diagnostic_at(app: &App, row: usize) -> Option<(String, Token)> {
     let index = row.checked_sub(app.findings.len())?;
     match app.errors.get(index) {
         Some(error) => Some((format!("error: {error}"), Token::Critical)),
-        None => app
-            .warnings
-            .get(index - app.errors.len())
-            .map(|warning| (warning.clone(), Token::Warning)),
+        None => app.warnings.get(index - app.errors.len()).map(|warning| {
+            let token = if warning.starts_with("info:") {
+                Token::Muted
+            } else {
+                Token::Warning
+            };
+            (warning.clone(), token)
+        }),
     }
 }
 
@@ -1713,8 +2013,6 @@ fn detail_entries(app: &App) -> Vec<(String, Style)> {
         }
     } else if let Some((text, _)) = diagnostic_at(app, app.cursor) {
         lines.push((report::terminal_safe(&text), Style::default()));
-    } else {
-        lines.push(("No findings.".to_string(), app.theme.style(Token::Success)));
     }
     lines
 }
@@ -1770,6 +2068,47 @@ fn wrap_columns(text: &str, max: usize) -> Vec<String> {
     rows
 }
 
+/// Prose wrapped at spaces into rows of at most `max` columns, so its row
+/// count is known before it is drawn; a word wider than a row is split by
+/// columns. Runs of spaces collapse, which is right for prose and wrong for a
+/// path: a path goes through `wrap_columns`.
+pub(crate) fn wrap_words(text: &str, max: usize) -> Vec<String> {
+    if max == 0 {
+        return Vec::new();
+    }
+    let columns = |text: &str| Span::raw(text).width();
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    for word in text.split(' ').filter(|word| !word.is_empty()) {
+        let needed = if row.is_empty() {
+            columns(word)
+        } else {
+            columns(&row) + 1 + columns(word)
+        };
+        if needed <= max {
+            if !row.is_empty() {
+                row.push(' ');
+            }
+            row.push_str(word);
+            continue;
+        }
+        if !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+        }
+        if columns(word) <= max {
+            row.push_str(word);
+        } else {
+            let mut pieces = wrap_columns(word, max);
+            row = pieces.pop().unwrap_or_default();
+            rows.extend(pieces);
+        }
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
 /// Keeps the end of `text`, where a path's distinguishing leaf is, within
 /// `max` terminal columns. It walks graphemes, as `wrap_columns` does, so a
 /// flag or a decomposed accent is kept whole or not at all.
@@ -1794,6 +2133,30 @@ fn truncate_left(text: &str, max: usize) -> String {
         start = grapheme.symbol.as_ptr() as usize - text.as_ptr() as usize;
     }
     format!("…{}", &text[start..])
+}
+
+/// Keeps the start of `text` within `max` terminal columns, ending in `…`
+/// when anything was cut, and never in a space, which would read as padding.
+pub(crate) fn truncate_right(text: &str, max: usize) -> String {
+    let span = Span::raw(text);
+    if span.width() <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut kept = 0;
+    let mut end = 0;
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let columns = Span::raw(grapheme.symbol).width();
+        if kept + columns + 1 > max {
+            break;
+        }
+        kept += columns;
+        // Each grapheme borrows `text`, so its address is its byte offset.
+        end = grapheme.symbol.as_ptr() as usize - text.as_ptr() as usize + grapheme.symbol.len();
+    }
+    format!("{}…", text[..end].trim_end())
 }
 
 fn outcome_entries(app: &App) -> Vec<(String, Style)> {
@@ -1835,6 +2198,16 @@ fn outcome_entries(app: &App) -> Vec<(String, Style)> {
             ));
         }
     }
+    if !app.warnings.is_empty() {
+        lines.push((String::new(), Style::default()));
+        lines.push(("Warnings".into(), app.theme.style(Token::Warning)));
+        for warning in &app.warnings {
+            lines.push((
+                format!("• {}", report::terminal_safe(warning)),
+                Style::default(),
+            ));
+        }
+    }
     lines
 }
 
@@ -1859,111 +2232,197 @@ fn error_entries(app: &App) -> Vec<(String, Style)> {
     lines
 }
 
+/// The keys the current screen takes, in priority order for the footer.
+fn footer_keys(app: &App) -> Vec<(&'static str, &'static str)> {
+    let mut keys = Vec::new();
+    match app.screen {
+        Screen::Menu => keys.extend([("↑↓", "move"), ("Enter", "open")]),
+        Screen::Results => {
+            if app.choice_count() > 0 {
+                // `A` toggles, so its verb names what the next press does.
+                let toggle = if app.excluded.is_empty() {
+                    "none"
+                } else {
+                    "all"
+                };
+                keys.extend([("Space", "pick"), ("A", toggle), ("a", "apply")]);
+            } else if app.row_count() > 1 {
+                keys.push(("↑↓", "move"));
+            }
+            if app.row_count() > 0 {
+                keys.push(("Enter", "details"));
+            }
+            if app.can_toggle_shred() {
+                keys.push(("s", if app.shred { "trash" } else { "permanent" }));
+            }
+            keys.extend([("r", "rescan"), ("b", "back")]);
+        }
+        Screen::Detail => keys.extend([("↑↓", "move"), ("Esc/b", "back")]),
+        Screen::Outcome | Screen::Error => {
+            keys.extend([("↑↓", "move"), ("r", "rescan"), ("b", "back")]);
+        }
+        // Their keys depend on the plan; `render_footer` writes them.
+        Screen::Confirm | Screen::Loading => return keys,
+    }
+    keys.extend([("q", "quit"), ("?", "keys")]);
+    keys
+}
+
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     // Progressive disclosure: the footer carries only the few keys that matter
     // on this screen, and `?` opens the complete reference. Listing everything
     // here would make the one key the operator needs harder to find.
-    let keys: String = match app.screen {
-        Screen::Menu => "↑/↓ navigate · Enter select · ? keys · q quit".into(),
-        Screen::Results if app.choice_count() == 0 => {
-            "↑/↓ move · r rescan · b back · ? keys".into()
+    let typed;
+    let keys: Vec<(&str, &str)> = match (app.screen, app.confirmation) {
+        (Screen::Confirm, Some(ConfirmationKind::YesNo { .. })) => {
+            vec![("y", "apply"), ("n/Esc", "cancel")]
         }
-        Screen::Results => {
-            // `A` toggles, so the label names what the next press does.
-            let toggle = if app.excluded.is_empty() {
-                "none"
-            } else {
-                "all"
-            };
-            let mode = if app.can_toggle_shred() {
-                "s permanent"
-            } else {
-                "r rescan"
-            };
-            format!("Space pick · A {toggle} · a apply · {mode} · b back · ? keys")
+        (Screen::Confirm, Some(ConfirmationKind::Critical { expected_gb, .. })) => {
+            typed = format!("Type {expected_gb}, then Enter");
+            vec![(typed.as_str(), ""), ("Esc", "cancel")]
         }
-        Screen::Detail => "↑/↓ or j/k scroll · Esc back to the results · ? keys".into(),
-        Screen::Confirm => "Esc cancel · type the exact requested acknowledgment".into(),
-        Screen::Outcome => "↑/↓ or j/k scroll · r rescan · b back to menu · ? keys".into(),
-        Screen::Error => "↑/↓ or j/k scroll · r rescan · b back to menu · ? keys".into(),
-        Screen::Loading if applying(app) => {
-            "Applying the approved plan · q works once it returns".into()
+        (Screen::Confirm, Some(ConfirmationKind::TrashPurge { expected_gb })) => {
+            typed = format!("Type PURGE {expected_gb}, then Enter");
+            vec![(typed.as_str(), ""), ("Esc", "cancel")]
         }
-        Screen::Loading => "q or Ctrl+C stops the scan and quits".into(),
+        (Screen::Loading, _) if applying(app) => Vec::new(),
+        (Screen::Loading, _) => vec![("q", "quit")],
+        _ => footer_keys(app),
     };
     // The results status names keys that act on the plan; none of them works
-    // in the detail view or while working, so the footer says what does.
+    // in the detail view or while working, so the footer says what does. The
+    // confirmation reports inside itself, under the answer.
     let status = match app.screen {
-        Screen::Detail => "Reading only: nothing here changes the plan.",
-        Screen::Loading if applying(app) => "Quitting is refused until this apply returns.",
-        Screen::Loading => "Other keys are ignored until the results appear.",
-        _ => app.status.as_str(),
+        Screen::Detail => ("Reading only: nothing here changes the plan.", Token::Muted),
+        Screen::Loading if applying(app) => (
+            "Quitting is refused until this apply returns.",
+            Token::Warning,
+        ),
+        Screen::Loading => (
+            "q stops the scan and quits; other keys wait for the results.",
+            Token::Muted,
+        ),
+        Screen::Confirm => ("", Token::Muted),
+        _ => (app.status.as_str(), app.status_token),
     };
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(keys, app.theme.style(Token::AccentSecondary)),
-            Line::styled(status, app.theme.style(Token::Warning)),
-        ])
-        .block(Block::bordered()),
-        area,
-    );
+    render_footer_rows(frame, area, app.theme, &keys, status);
 }
 
 fn applying(app: &App) -> bool {
     matches!(app.working, Some((Work::Apply, _)))
 }
 
-fn render_confirmation(frame: &mut Frame, area: Rect, app: &App) {
+/// What applying `plan` does, in one sentence: how many items each kind of
+/// action takes and how much space they hold.
+fn plan_effect(plan: &[Finding]) -> String {
+    // Count and bytes for each kind of action, in the order the sentence
+    // names them.
+    let mut tally = [(0usize, 0u64); 3];
+    for finding in plan {
+        let slot = match finding.action {
+            Action::Trash => 0,
+            Action::Shred => 1,
+            Action::Command { .. } => 2,
+            Action::Info | Action::None => continue,
+        };
+        tally[slot].0 += 1;
+        tally[slot].1 = tally[slot].1.saturating_add(finding.size_bytes);
+    }
+    let wording = [
+        ("moves", "item", " to the Trash"),
+        ("permanently deletes", "item", ""),
+        ("runs", "command", ""),
+    ];
+    let mut parts = Vec::new();
+    for ((count, bytes), (verb, noun, tail)) in tally.into_iter().zip(wording) {
+        if count == 0 {
+            continue;
+        }
+        let plural = if count == 1 { "" } else { "s" };
+        parts.push(format!(
+            "{verb} {count} {noun}{plural} ({}){tail}",
+            report::gb(bytes)
+        ));
+    }
+    let sentence = parts.join("; ");
+    let mut characters = sentence.chars();
+    characters.next().map_or_else(String::new, |first| {
+        format!("{}{}.", first.to_uppercase(), characters.as_str())
+    })
+}
+
+/// The confirmation, inside the body so the footer below it, which names the
+/// keys it takes, always shows. It is as tall as what it says, and the rows it
+/// covers are cleared edge to edge so nothing of the list shows beside it.
+fn render_confirmation(frame: &mut Frame, area: Rect, app: &App, shown: &Shown) {
     let Some(confirmation) = app.confirmation else {
         return;
     };
-    let popup = centered_rect(area, 100, 14);
-    frame.render_widget(Clear, popup);
-    let prompt = match confirmation {
-        ConfirmationKind::YesNo { danger } => {
-            format!("Danger-{danger}. Press y to apply this exact plan, or n/Esc to cancel.")
-        }
-        ConfirmationKind::Critical {
-            danger,
-            expected_gb,
-        } => format!(
-            "Danger-{danger} permanent action. Type {expected_gb} and press Enter. Esc cancels."
-        ),
-        ConfirmationKind::TrashPurge { expected_gb } => format!(
-            "Trash purge is permanent. Type PURGE {expected_gb} and press Enter. Esc cancels."
-        ),
-    };
+    let width = area.width.saturating_sub(4).min(100);
+    let inner = usize::from(width.saturating_sub(2));
+    let mut lines = vec![Line::styled(
+        "DATA-LOSS WARNING",
+        app.theme.bold(Token::Critical),
+    )];
+    for row in wrap_words(&plan_effect(&shown.plan), inner) {
+        lines.push(Line::styled(row, app.theme.style(Token::Strong)));
+    }
     // Consent is given here, so this screen — not only the title behind it —
     // says how much of the preview the approval covers.
     let choices = app.choice_count();
-    let coverage = if choices > 0 {
-        Line::raw(format!(
+    if choices > 0 {
+        lines.push(Line::raw(format!(
             "This plan: {} of {choices} selected · {} left out",
             choices.saturating_sub(app.excluded.len()),
             app.excluded.len()
-        ))
-    } else {
-        Line::raw("")
-    };
-    let text = Text::from(vec![
-        Line::styled("DATA-LOSS WARNING", app.theme.bold(Token::Critical)),
-        coverage,
-        Line::raw(safety::DATA_LOSS_NOTICE),
-        Line::raw(""),
-        Line::styled(prompt, app.theme.style(Token::Warning)),
-        Line::raw(""),
+        )));
+    }
+    for row in wrap_words(safety::DATA_LOSS_NOTICE, inner) {
+        lines.push(Line::raw(row));
+    }
+    // The answer and, under it, the feedback on it: a mismatch or a refused
+    // key. The popup covers the footer at 64x18, so it must say this itself.
+    // Every status set here is devtrim's own text.
+    let answer = Text::from(vec![
         Line::from(vec![
             Span::raw("> "),
-            Span::styled(app.input.as_str(), app.theme.bold(Token::Accent)),
+            Span::styled(app.input.clone(), app.theme.bold(Token::Accent)),
         ]),
-        // The popup covers the footer at the minimum size, so a mismatch or a
-        // refused key is reported here, under the answer it concerns.
         Line::styled(app.status.as_str(), app.theme.style(Token::Warning)),
     ]);
+    match confirmation {
+        ConfirmationKind::YesNo { .. } => lines.extend(
+            answer
+                .lines
+                .into_iter()
+                .skip(1)
+                .filter(|_| !app.status.is_empty()),
+        ),
+        ConfirmationKind::Critical { .. } | ConfirmationKind::TrashPurge { .. } => {
+            lines.push(Line::raw(""));
+            // The feedback row is kept while empty so the popup does not jump.
+            lines.extend(answer.lines);
+        }
+    }
+    let danger = match confirmation {
+        ConfirmationKind::YesNo { danger } | ConfirmationKind::Critical { danger, .. } => danger,
+        ConfirmationKind::TrashPurge { .. } => shown.danger,
+    };
+    let popup = centered_rect(area, 100, lines.len());
+    // Only the results title, which names the mode, stays behind the popup:
+    // a half-hidden list or path beside it would read as part of the plan.
     frame.render_widget(
-        Paragraph::new(text)
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Confirm exact plan ")),
+        Clear,
+        Rect::new(
+            area.x,
+            area.y + 1,
+            area.width,
+            area.height.saturating_sub(1),
+        ),
+    );
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(Block::bordered().title(format!(" Confirm exact plan · danger-{danger} "))),
         popup,
     );
 }
@@ -1976,10 +2435,6 @@ fn action_label(action: &Action) -> &'static str {
         Action::Info => "INFO",
         Action::None => "EXCLUDED",
     }
-}
-
-fn terminal_too_small(area: Rect) -> bool {
-    area.width < MIN_WIDTH || area.height < MIN_HEIGHT
 }
 
 #[cfg(test)]
@@ -2859,10 +3314,63 @@ mod tests {
     #[test]
     fn every_outcome_status_fits_the_minimum_footer() {
         for (failed, touched) in [(false, 1), (true, 0), (true, 1)] {
-            let status = outcome_status(failed, touched);
+            let (_, status) = outcome_status(failed, touched);
             assert!(status.chars().count() <= 62, "{status}");
         }
-        assert!(FAILED_CLOSED.chars().count() <= 62, "{FAILED_CLOSED}");
+        for status in [NOTHING_CHANGED, APPLY_STOPPED] {
+            assert!(status.chars().count() <= 62, "{status}");
+        }
+    }
+
+    #[test]
+    fn every_footer_keeps_how_to_leave_at_the_minimum_size() {
+        let footer = |app: &App| screen_rows(app, MIN_WIDTH, MIN_HEIGHT)[16].clone();
+        let with_choices = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        assert_eq!(
+            footer(&with_choices).trim_end(),
+            " Space pick · A none · a apply · b back · q quit · ? keys",
+            "keys that drop at 64 columns go in their fixed order"
+        );
+        let mut detail = cleanup(vec![trash("first", 1, 2)]);
+        detail.handle_key(key(KeyCode::Enter));
+        assert_eq!(detail.screen, Screen::Detail);
+        let mut outcome = cleanup(vec![trash("first", 1, 2)]);
+        outcome.screen = Screen::Outcome;
+        let mut error = App::default();
+        error.fail(anyhow::anyhow!("synthetic"));
+        let mut read_only = App::default();
+        read_only.finish_results(
+            Operation::ScanAll,
+            vec![trash("first", 1, 2), trash("second", 1, 2)],
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut permanent = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        permanent.handle_key(key(KeyCode::Char('s')));
+        for (name, app) in [
+            ("menu", App::default()),
+            ("results", with_choices),
+            ("permanent results", permanent),
+            ("read-only results", read_only),
+            ("empty results", cleanup(Vec::new())),
+            ("detail", detail),
+            ("outcome", outcome),
+            ("error", error),
+        ] {
+            let row = footer(&app);
+            for key in ["q quit", "? keys"] {
+                assert!(row.contains(key), "{name}: {key:?} missing from {row:?}");
+            }
+            if matches!(
+                app.screen,
+                Screen::Results | Screen::Detail | Screen::Outcome | Screen::Error
+            ) {
+                assert!(
+                    row.contains("b back"),
+                    "{name}: b back missing from {row:?}"
+                );
+            }
+        }
     }
 
     /// The rendered screen, one string per terminal row.
@@ -2947,9 +3455,10 @@ mod tests {
     /// among them.
     #[test]
     fn a_terminal_too_short_for_the_details_says_how_many_lines_it_hides() {
-        // Label, action, selection state, six path rows at 62 columns, and the
-        // note: ten rows for a pane with room for six.
-        let path = format!("/{}", "x".repeat(371));
+        // Label, action, selection state, fifteen path rows at 62 columns, and
+        // the note: nineteen rows for a pane with room for ten, the last of
+        // which says how many of the others it hides.
+        let path = format!("/{}", "x".repeat(900));
         let finding = Finding::new(
             "node_modules",
             Some(std::path::PathBuf::from(&path)),
@@ -2966,7 +3475,7 @@ mod tests {
 
         assert!(pane.contains("Left out of this plan"), "{rows:#?}");
         assert!(
-            pane.contains("… 5 more line(s); Enter shows all"),
+            pane.contains("… 10 more line(s); Enter shows all"),
             "{rows:#?}"
         );
         assert!(
@@ -3085,7 +3594,11 @@ mod tests {
     fn results_title(app: &App) -> String {
         screen_rows(app, MIN_WIDTH, MIN_HEIGHT)
             .into_iter()
-            .find(|row| row.starts_with("┌ TRASH-FIRST") || row.starts_with("┌ PERMANENT"))
+            .find(|row| {
+                ["┌ TRASH-FIRST", "┌ PERMANENT", "┌ READ-ONLY"]
+                    .iter()
+                    .any(|mode| row.starts_with(mode))
+            })
             .expect("the results list has a title")
     }
 
@@ -3156,5 +3669,518 @@ mod tests {
 
         assert!(output.contains("1 of 2 selected"), "{output}");
         assert!(output.contains("1 left out"), "{output}");
+    }
+
+    /// The results title row, whatever its mode.
+    fn title_row(app: &App, width: u16, height: u16) -> String {
+        screen_rows(app, width, height)
+            .into_iter()
+            .find(|row| row.starts_with('┌') && row.contains("danger-"))
+            .expect("the results list has a title")
+    }
+
+    fn shredded(label: &str, size: u64) -> Finding {
+        let mut finding = trash(label, size, 9);
+        finding.action = Action::Shred;
+        finding
+    }
+
+    /// The title names what `a` would do here: Empty Trash deletes for good,
+    /// a typed command cannot be undone, and Scan everything applies nothing.
+    #[test]
+    fn the_title_names_the_mode_the_screen_applies() {
+        let mut empty_trash = App::default();
+        empty_trash.finish_results(
+            Operation::TrashEmpty,
+            vec![shredded("Trash item", 1)],
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut docker = App::default();
+        docker.finish_results(
+            Operation::Clean(Target::Docker),
+            vec![Finding::new(
+                "build cache",
+                None,
+                1,
+                "test",
+                6,
+                Action::command("docker", &["builder", "prune"]),
+            )],
+            Vec::new(),
+            Vec::new(),
+        );
+        let scan = scan_everything(vec![trash("x", 1, 2)], Vec::new());
+        let caches = cleanup(vec![trash("cache", 1, 2)]);
+
+        for (app, mode) in [
+            (&empty_trash, "┌ PERMANENT"),
+            (&docker, "┌ PERMANENT"),
+            (&scan, "┌ READ-ONLY"),
+            (&caches, "┌ TRASH-FIRST"),
+        ] {
+            let title = title_row(app, MIN_WIDTH, MIN_HEIGHT);
+            assert!(title.starts_with(mode), "expected {mode}: {title}");
+        }
+        // Leaving everything out of Empty Trash changes nothing it would do.
+        empty_trash.handle_key(key(KeyCode::Char('A')));
+        assert!(title_row(&empty_trash, MIN_WIDTH, MIN_HEIGHT).starts_with("┌ PERMANENT"));
+    }
+
+    /// The popup's rows from its top border to its bottom border, and the
+    /// columns it spans.
+    fn popup_rows(rows: &[String]) -> (usize, usize, usize, usize) {
+        let top = rows
+            .iter()
+            .position(|row| row.contains("┌ Confirm"))
+            .expect("the confirmation is drawn");
+        let left = rows[top].chars().position(|cell| cell == '┌').unwrap();
+        let right = rows[top].chars().position(|cell| cell == '┐').unwrap();
+        let bottom = top
+            + rows[top..]
+                .iter()
+                .position(|row| row.chars().nth(left) == Some('└'))
+                .expect("the confirmation is closed");
+        (top, bottom, left, right)
+    }
+
+    /// Consent is given on this screen, so it says what will happen in words
+    /// and numbers, computed from the plan the approval covers.
+    #[test]
+    fn the_confirmation_says_what_will_happen() {
+        let mut trash_plan = cleanup(vec![
+            trash("first", 1 << 30, 2),
+            trash("second", 1 << 30, 2),
+            trash("third", 1 << 30, 2),
+            trash("left-out", 1 << 30, 2),
+        ]);
+        trash_plan.handle_key(key(KeyCode::End));
+        trash_plan.handle_key(key(KeyCode::Char(' ')));
+        trash_plan.begin_confirmation();
+        let output = rendered(&trash_plan, MIN_WIDTH, MIN_HEIGHT);
+        assert!(
+            output.contains("Moves 3 items (3.0 GB) to the Trash."),
+            "{output}"
+        );
+
+        let mut permanent = cleanup(vec![trash("only", 2 << 30, 2)]);
+        permanent.handle_key(key(KeyCode::Char('s')));
+        permanent.begin_confirmation();
+        let output = rendered(&permanent, MIN_WIDTH, MIN_HEIGHT);
+        assert!(
+            output.contains("Permanently deletes 1 item (2.0 GB)."),
+            "{output}"
+        );
+    }
+
+    /// A y/N plan asks for one key: no input line, and the keys say so. A
+    /// typed plan names exactly what to type.
+    #[test]
+    fn the_confirmation_keys_match_what_the_plan_asks_for() {
+        let mut yes_no = cleanup(vec![trash("first", 1, 2)]);
+        yes_no.begin_confirmation();
+        let rows = screen_rows(&yes_no, MIN_WIDTH, MIN_HEIGHT);
+        let output = rows.concat();
+        assert!(output.contains("y apply · n/Esc cancel"), "{rows:#?}");
+        assert!(
+            !rows.iter().any(|row| row.contains("│> ")),
+            "a y/N plan draws an input line: {rows:#?}"
+        );
+
+        let mut critical = App::default();
+        critical_confirmation(&mut critical);
+        let output = rendered(&critical, MIN_WIDTH, MIN_HEIGHT);
+        assert!(
+            output.contains("Type 3, then Enter · Esc cancel"),
+            "{output}"
+        );
+        assert!(output.contains("> "), "{output}");
+
+        let mut purge = App::default();
+        purge.finish_results(
+            Operation::TrashEmpty,
+            vec![shredded("Trash item", 1)],
+            Vec::new(),
+            Vec::new(),
+        );
+        purge.begin_confirmation();
+        let output = rendered(&purge, MIN_WIDTH, MIN_HEIGHT);
+        assert!(
+            output.contains("Type PURGE 0, then Enter · Esc cancel"),
+            "{output}"
+        );
+    }
+
+    /// The popup is as tall as what it says, and the list behind it does not
+    /// show through on either side of the rows it covers.
+    #[test]
+    fn the_confirmation_is_sized_to_its_content_and_clears_its_rows() {
+        let findings = (0..40)
+            .map(|index| trash(&format!("cache-{index:02}-with-a-long-name"), 1, 2))
+            .collect();
+        let mut app = cleanup(findings);
+        app.begin_confirmation();
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (120, 40)] {
+            let rows = screen_rows(&app, width, height);
+            let (top, bottom, left, right) = popup_rows(&rows);
+            for row in &rows[top..=bottom] {
+                let cells: Vec<char> = row.chars().collect();
+                assert!(
+                    cells[..left]
+                        .iter()
+                        .chain(&cells[right + 1..])
+                        .all(|cell| *cell == ' '),
+                    "the list shows beside the popup at {width}x{height}: {rows:#?}"
+                );
+            }
+            let last = rows[bottom - 1].chars().collect::<Vec<_>>();
+            assert!(
+                cells_text(&last[left + 1..right]).trim() != "",
+                "the popup ends in a blank row at {width}x{height}: {rows:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_path_leaves_the_list_at_least_three_rows() {
+        let long = |leaf: &str| {
+            std::path::PathBuf::from(format!(
+                "/tmp/{}/{leaf}",
+                "a-folder-whose-name-wraps-".repeat(20)
+            ))
+        };
+        let finding = |label: &str, leaf: &str| {
+            Finding::new(label, Some(long(leaf)), 4096, "test", 5, Action::Trash)
+        };
+        let two = cleanup(vec![
+            finding("stale target artifacts", "target"),
+            finding("stale node_modules", "node_modules"),
+        ]);
+        let rows = screen_rows(&two, MIN_WIDTH, MIN_HEIGHT);
+        let screen = rows.join("\n");
+        for label in ["stale target artifacts", "stale node_modules"] {
+            assert!(screen.contains(label), "{label} is not listed: {rows:#?}");
+        }
+        assert!(
+            screen.contains("more line(s); Enter shows all"),
+            "{rows:#?}"
+        );
+
+        let five = cleanup(
+            (0..5)
+                .map(|index| finding(&format!("finding-{index}"), "target"))
+                .collect(),
+        );
+        let screen = screen_rows(&five, MIN_WIDTH, MIN_HEIGHT).join("\n");
+        let listed = (0..5)
+            .filter(|index| screen.contains(&format!("finding-{index} ")))
+            .count();
+        assert!(listed >= 3, "{listed} rows listed: {screen}");
+    }
+
+    #[test]
+    fn nothing_of_the_details_shows_around_the_confirmation() {
+        let long = format!("/tmp/{}/target", "a-folder-whose-name-wraps-".repeat(12));
+        let finding = Finding::new(
+            "stale target artifacts",
+            Some(std::path::PathBuf::from(&long)),
+            16 * 1024,
+            "too much bandwidth or rebuild time",
+            5,
+            Action::Trash,
+        );
+        let mut app = cleanup(vec![finding, trash("second", 4 * 1024, 5)]);
+        app.begin_confirmation();
+        assert_eq!(app.screen, Screen::Confirm);
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (100, 30)] {
+            let rows = screen_rows(&app, width, height);
+            let (top, bottom, left, right) = popup_rows(&rows);
+            // Between the results title (row 1) and the footer, only the
+            // popup is drawn.
+            for (index, row) in rows
+                .iter()
+                .enumerate()
+                .take(usize::from(height) - 2)
+                .skip(2)
+            {
+                let cells: Vec<char> = row.chars().collect();
+                let outside = if (top..=bottom).contains(&index) {
+                    cells[..left]
+                        .iter()
+                        .chain(&cells[right + 1..])
+                        .collect::<String>()
+                } else {
+                    cells.iter().collect::<String>()
+                };
+                assert!(
+                    outside.trim().is_empty(),
+                    "row {index} shows text outside the popup at {width}x{height}: {rows:#?}"
+                );
+            }
+        }
+    }
+
+    fn cells_text(cells: &[char]) -> String {
+        cells.iter().collect()
+    }
+
+    /// At 64 columns every menu row shows its whole badge, every operation is
+    /// on screen, and the badges use the site's words.
+    #[test]
+    fn every_menu_row_shows_its_whole_badge_at_the_minimum_size() {
+        let app = App::default();
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        for item in MENU {
+            let (badge, _, _) = badge(item.operation);
+            let row = rows
+                .iter()
+                .find(|row| row.contains(item.label))
+                .unwrap_or_else(|| panic!("{} is not on screen: {rows:#?}", item.label));
+            assert!(row.contains(badge), "{} lost its badge: {row}", item.label);
+        }
+        let output = rows.concat();
+        assert!(!output.contains("PREVIEW"), "{output}");
+        assert!(output.contains("TRASH"), "{output}");
+        assert!(
+            !output.contains("Enter opens"),
+            "the pane repeats the footer: {output}"
+        );
+    }
+
+    /// One row of header and two of footer, without boxes or taglines, so
+    /// the minimum size keeps its rows for content.
+    #[test]
+    fn the_header_is_one_row_and_the_footer_two() {
+        let app = cleanup(vec![trash("cache", 1, 2)]);
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let output = rows.concat();
+        assert!(rows[0].contains("devtrim"), "{rows:#?}");
+        assert!(
+            rows[1].starts_with('┌'),
+            "the body starts on row 2: {rows:#?}"
+        );
+        assert!(rows[MIN_HEIGHT as usize - 3].starts_with('└'), "{rows:#?}");
+        assert!(!output.contains("measure · classify"), "{output}");
+        assert!(!output.contains("Safe disk hygiene"), "{output}");
+    }
+
+    /// Every status says how much it matters: neutral information is muted, a
+    /// refused key is a warning, and a failure is critical.
+    #[test]
+    fn the_status_carries_its_own_weight() {
+        use crate::theme::ColorSupport;
+        let theme = Theme::new(ColorSupport::Named);
+        let status_style = |app: &App| {
+            let backend = TestBackend::new(MIN_WIDTH, MIN_HEIGHT);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| render(frame, app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let row = MIN_HEIGHT - 1;
+            let column = (0..MIN_WIDTH)
+                .find(|column| buffer[(*column, row)].symbol() != " ")
+                .expect("the status row is drawn");
+            buffer[(column, row)].fg
+        };
+        let mut neutral = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        neutral.theme = theme;
+        neutral.handle_key(key(KeyCode::Char(' ')));
+        let mut refused = scan_everything(vec![trash("x", 1, 2)], Vec::new());
+        refused.theme = theme;
+        refused.handle_key(key(KeyCode::Char('a')));
+        let mut failed = App {
+            theme,
+            ..App::default()
+        };
+        failed.fail(anyhow::anyhow!("synthetic"));
+
+        assert_eq!(
+            status_style(&neutral),
+            theme.style(Token::Muted).fg.unwrap()
+        );
+        assert_eq!(
+            status_style(&refused),
+            theme.style(Token::Warning).fg.unwrap()
+        );
+        assert_eq!(
+            status_style(&failed),
+            theme.style(Token::Critical).fg.unwrap()
+        );
+    }
+
+    /// A diagnostic cut at the edge says so, and its level sets its style.
+    #[test]
+    fn diagnostic_rows_say_where_they_are_cut_and_how_much_they_matter() {
+        use crate::theme::ColorSupport;
+        let theme = Theme::new(ColorSupport::Named);
+        let mut app = cleanup(Vec::new());
+        app.theme = theme;
+        app.warnings = vec![
+            format!("info: scanned roots {}", "r".repeat(100)),
+            "warn: a short warning".into(),
+        ];
+        let backend = TestBackend::new(MIN_WIDTH, MIN_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row_of = |text: &str| {
+            (0..MIN_HEIGHT)
+                .find(|row| {
+                    (0..MIN_WIDTH)
+                        .map(|column| buffer[(column, *row)].symbol())
+                        .collect::<String>()
+                        .contains(text)
+                })
+                .unwrap_or_else(|| panic!("{text} is not drawn"))
+        };
+        let info = row_of("info: scanned");
+        let line: String = (0..MIN_WIDTH)
+            .map(|column| buffer[(column, info)].symbol())
+            .collect();
+        assert!(line.trim_end_matches(['│', ' ']).ends_with('…'), "{line}");
+        let style_at = |row: u16, text: &str| {
+            let line: String = (0..MIN_WIDTH)
+                .map(|column| buffer[(column, row)].symbol())
+                .collect();
+            let start = line.find(text).unwrap();
+            let column = u16::try_from(line[..start].chars().count()).unwrap();
+            buffer[(column, row)].fg
+        };
+        assert_eq!(
+            style_at(info, "info:"),
+            theme.style(Token::Muted).fg.unwrap()
+        );
+        let warn = row_of("warn: a short");
+        assert_eq!(
+            style_at(warn, "warn:"),
+            theme.style(Token::Warning).fg.unwrap()
+        );
+    }
+
+    /// Rows stay distinguishable when narrow: a project's findings name the
+    /// project folder, and the home folder reads as `~`.
+    #[test]
+    fn the_path_column_names_the_project_or_the_home_folder() {
+        let project = std::path::Path::new("/Users/example/dev/payments-api");
+        let in_project = Finding::new(
+            "node_modules",
+            Some(project.join("web/node_modules")),
+            1,
+            "stale",
+            5,
+            Action::Trash,
+        )
+        .with_project(project);
+        let in_home = Finding::new(
+            "uv cache",
+            Some(std::path::PathBuf::from("/Users/example/.cache/uv")),
+            1,
+            "cache",
+            2,
+            Action::Trash,
+        );
+        let mut app = cleanup(vec![in_project, in_home]);
+        app.home = Some(std::path::PathBuf::from("/Users/example"));
+        let rows = screen_rows(&app, 120, 30);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("node_modules  payments-api/web/node_modules")),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("uv cache  ~/.cache/uv")),
+            "{rows:#?}"
+        );
+        // The detail pane keeps the complete path.
+        assert!(
+            detail_pane_text(&rows).contains("/Users/example/dev/payments-api/web/node_modules"),
+            "{rows:#?}"
+        );
+    }
+
+    /// The results footer lists Enter for the details at the minimum width,
+    /// whatever else it has to leave to the `?` reference.
+    #[test]
+    fn the_results_footer_lists_enter_details() {
+        let with_choices = cleanup(vec![trash("first", 1, 2)]);
+        let read_only = scan_everything(vec![trash("x", 1, 2)], Vec::new());
+        // At 64 columns "Enter details" is the first key to drop, so the
+        // footer is read where every key fits.
+        for app in [&with_choices, &read_only] {
+            let output = rendered(app, 100, 30);
+            assert!(output.contains("Enter details"), "{output}");
+            assert!(output.contains("? keys"), "{output}");
+        }
+        assert!(rendered(&App::default(), MIN_WIDTH, MIN_HEIGHT).contains("Enter open"));
+    }
+
+    /// Warnings queued before the first scan, such as a skipped root or a
+    /// journal rotation warning from `Ctx::from_cli`, reach its result.
+    #[test]
+    fn warnings_queued_before_a_scan_reach_its_result() {
+        let fixture = ops::TestFixture::new("tui-early-warnings");
+        let home = fixture.path().to_path_buf();
+        std::fs::create_dir_all(home.join("Downloads")).unwrap();
+        let ctx = Ctx {
+            yes: false,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            roots_origin: crate::safety::RootsOrigin::Default,
+            active_days: 30,
+            retain_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
+            home,
+            interactive: true,
+            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+            apply_results: Default::default(),
+        };
+        ctx.diagnostic("warn", "skipping a scan root: synthetic");
+
+        let operation = Operation::Clean(Target::Installers);
+        let mut app = App::default();
+        app.finish_load(operation, run_scan(&ctx, operation));
+
+        assert!(
+            app.warnings
+                .iter()
+                .any(|warning| warning == "warn: skipping a scan root: synthetic"),
+            "{:?}",
+            app.warnings
+        );
+    }
+
+    #[test]
+    fn the_working_screen_names_what_it_scans_in_words() {
+        let mut app = App::default();
+        app.begin_load(Operation::ScanAll);
+        assert_eq!(app.status, "Scanning everything…");
+        app.begin_load(Operation::Clean(Target::NodeModules));
+        assert_eq!(app.status, "Scanning node_modules…");
+    }
+
+    /// A result with nothing in it says so once.
+    #[test]
+    fn an_empty_result_says_nothing_was_found_once() {
+        let app = cleanup(Vec::new());
+        let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+        assert_eq!(output.matches("Nothing found").count(), 1, "{output}");
+        assert!(!output.contains("No findings"), "{output}");
+        assert!(
+            !output.contains("move"),
+            "the footer offers no movement over nothing: {output}"
+        );
+    }
+
+    #[test]
+    fn a_failure_is_titled_plainly() {
+        let mut app = App::default();
+        app.fail(anyhow::anyhow!("synthetic"));
+        let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
+        assert!(output.contains("┌ Error"), "{output}");
+        assert!(!output.contains("Failed closed"), "{output}");
+        assert!(output.contains("Nothing was changed."), "{output}");
     }
 }
