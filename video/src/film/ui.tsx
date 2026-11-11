@@ -156,7 +156,7 @@ export const RowText: React.FC<{ text: string; quiet?: boolean }> = ({
     </>
   );
 
-/** The box title of the preview (its selection, size and danger), the danger picked out. */
+/** A box title (the preview's, the confirmation's), its danger picked out. */
 export const PreviewTitle: React.FC<{ text: string }> = ({ text }) => (
   <span>
     {text.split(/(danger-5)/).map((part, i) => (

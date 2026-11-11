@@ -23,7 +23,7 @@ Decisions
   -apple-system (it fell back to Helvetica in the first still).
 - Facts source: the site itself, index.html and MANUAL.html at main (served
   byte for byte, verify-live.sh), extracted by scripts/facts.py into
-  facts.json (419 facts). The terminal frames on the site are real binary
+  facts.json (449 facts). The terminal frames on the site are real binary
   output (scripts/site/frames.py), so the TUI lines are facts too. The site's
   own address is added as the last fact: it appears only in links, never in
   page text. Fact ids are text digests, so editing one page line breaks only
@@ -59,3 +59,13 @@ Pauses
 - Site embed: the landing page's player has controls and no autoplay, so the
   delivered film with audio replaces media/demo.mp4; the captions file now
   describes the sound, and the transcript describes this film.
+- Confirm redesign (2026-11-11, TUI 0.13): the confirmation is no longer a
+  typed y/N prompt with a caret. The real screen keeps only the plan's title
+  row, clears the body, titles its box "Confirm exact plan · danger-5", states
+  the effect ("Moves 3 items (7.2 GB) to the Trash."), the plan line, and the
+  key line "y apply · n/Esc cancel". The scene shows exactly that; the AS IS
+  notice is left out because its three 76-cell lines cannot be read at film
+  size, as every panel shows only part of a TUI line. Keystrokes, timing and
+  music are unchanged. The results title still begins "TRASH-FIRST", as it did
+  before; the film keeps quoting from "4/4 selected", and the one-row header
+  is not shown, as before.

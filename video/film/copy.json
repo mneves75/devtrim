@@ -17,51 +17,51 @@
  },
  "row.cursor": {
   "text": "›",
-  "fact": "f1f036753"
+  "fact": "f320ec151"
  },
  "row.open": {
   "text": "[",
-  "fact": "f1f036753"
+  "fact": "f320ec151"
  },
  "row.mark": {
   "text": "x",
-  "fact": "f1f036753"
+  "fact": "f320ec151"
  },
  "row.close": {
   "text": "]",
-  "fact": "f1f036753"
+  "fact": "f320ec151"
  },
  "row.1.end": {
   "text": "5.9 GB  TRASH    stale target artifacts",
-  "fact": "f1f036753"
+  "fact": "f320ec151"
  },
  "row.1.short": {
   "text": "1. danger-5   5.9 GB",
-  "fact": "f1f036753"
+  "fact": "f320ec151"
  },
  "row.2.end": {
   "text": "1.1 GB  TRASH    stale node_modules",
-  "fact": "f02770cad"
+  "fact": "f33c55567"
  },
  "row.2.short": {
   "text": "2. danger-5   1.1 GB",
-  "fact": "f02770cad"
+  "fact": "f33c55567"
  },
  "row.3.end": {
   "text": "614 MB  TRASH    stale .next artifacts",
-  "fact": "fd3861e8e"
+  "fact": "fafd8b077"
  },
  "row.3.short": {
   "text": "3. danger-5   614 MB",
-  "fact": "fd3861e8e"
+  "fact": "fafd8b077"
  },
  "row.4.end": {
   "text": "205 MB  TRASH    stale .turbo artifacts",
-  "fact": "f4b798dd9"
+  "fact": "ff35ae38b"
  },
  "row.4.short": {
   "text": "4. danger-5   205 MB",
-  "fact": "f4b798dd9"
+  "fact": "ff35ae38b"
  },
  "see": {
   "text": "See before anything moves",
@@ -89,7 +89,7 @@
  },
  "footer.status": {
   "text": "Space leaves one out; a applies the rest",
-  "fact": "f6b0df191"
+  "fact": "fe77a13c2"
  },
  "key.j": {
   "text": "j",
@@ -97,43 +97,39 @@
  },
  "key.space": {
   "text": "Space",
-  "fact": "f2519fb5d"
+  "fact": "fc956054d"
  },
  "key.a": {
   "text": "a",
-  "fact": "f2519fb5d"
+  "fact": "fc956054d"
  },
  "key.y": {
   "text": "y",
-  "fact": "ffd745f85"
+  "fact": "f55c77f3b"
  },
  "approve": {
   "text": "Preview first. Approve once.",
   "fact": "f036cdeca"
  },
  "confirm.title": {
-  "text": "Confirm exact plan",
-  "fact": "f3bd3e9e5"
+  "text": "Confirm exact plan · danger-5",
+  "fact": "f58d40d09"
  },
  "confirm.warning": {
   "text": "DATA-LOSS WARNING",
-  "fact": "f60f4c794"
+  "fact": "f1d5f6ea8"
+ },
+ "confirm.effect": {
+  "text": "Moves 3 items (7.2 GB) to the Trash.",
+  "fact": "f37ec6626"
  },
  "confirm.plan": {
   "text": "This plan: 3 of 4 selected · 1 left out",
-  "fact": "f078ed9fe"
+  "fact": "fa65c7425"
  },
- "confirm.prompt": {
-  "text": "Danger-5. Press y",
-  "fact": "ffd745f85"
- },
- "confirm.prompt.rest": {
-  "text": "to apply this exact plan",
-  "fact": "ffd745f85"
- },
- "confirm.caret": {
-  "text": ">",
-  "fact": "f9d263011"
+ "confirm.footer": {
+  "text": "y apply · n/Esc cancel",
+  "fact": "f55c77f3b"
  },
  "trash.head": {
   "text": "Move to the Trash first",
