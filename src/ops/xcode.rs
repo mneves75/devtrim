@@ -10,7 +10,7 @@ use super::project::{
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, OpenFile, XcodeActivity, escalate, xcode_activity};
 
-pub struct Xcode;
+pub(crate) struct Xcode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum XcodeTargetKind {

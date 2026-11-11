@@ -248,7 +248,7 @@ pub(crate) fn commit_old_git_fixture(repo: &Path, tracked: &[&str]) -> Result<()
 /// HEAD is read on its own rather than through the reflog walk: the commit a
 /// newest reflog entry names need not be HEAD once an entry is deleted or HEAD
 /// moves without logging, and the walk would then answer for an older commit.
-pub(crate) fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> {
+fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> {
     if !has_git_marker(root)? {
         anyhow::bail!("not a Git repository: {}", root.display());
     }

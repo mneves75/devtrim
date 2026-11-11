@@ -12,7 +12,7 @@ use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
 use crate::report::CommandAuthority;
 use crate::safety::{Ctx, escalate};
 
-pub struct Simulators;
+pub(crate) struct Simulators;
 
 #[derive(serde::Deserialize)]
 struct DeviceList {

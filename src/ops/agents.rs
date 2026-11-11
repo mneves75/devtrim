@@ -50,7 +50,7 @@ use super::project::{UnreadFolder, unread_folders_finding};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
-pub struct Agents;
+pub(crate) struct Agents;
 
 /// Caches an agent rebuilds on demand. Exact paths relative to `$HOME`; nothing
 /// is matched by prefix, so a sibling directory can never inherit authority.

@@ -17,7 +17,7 @@ use super::{ApplyOutcome, Finding, Op};
 use crate::report::{CommandAuthority, MaintenanceTask};
 use crate::safety::Ctx;
 
-pub struct Optimize {
+pub(crate) struct Optimize {
     tasks: Vec<MaintenanceTask>,
 }
 
@@ -29,7 +29,7 @@ impl Optimize {
     /// differ by orders of magnitude in cost, and `plan_danger` takes the
     /// maximum, so an unnamed task would ride in on another's prompt. Naming
     /// several with repeated `--task` is consent to each of them.
-    pub fn new(names: &[String], apply: bool) -> Result<Self> {
+    pub(crate) fn new(names: &[String], apply: bool) -> Result<Self> {
         if names.is_empty() {
             // Previewing everything is useful; applying everything behind one
             // prompt is the thing `--task` exists to prevent, so the shortcut

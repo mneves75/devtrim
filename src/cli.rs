@@ -11,7 +11,7 @@ use clap_complete::Shell;
     about = "Developer-machine disk hygiene: measure, classify, trim — safely.",
     long_about = None
 )]
-pub struct Cli {
+pub(crate) struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
@@ -41,7 +41,7 @@ pub struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum Command {
+pub(crate) enum Command {
     /// Open the interactive terminal interface
     Tui,
     /// Read-only report of every reclaimable category with sizes and risk
@@ -132,13 +132,13 @@ pub enum Command {
 impl Target {
     /// The category's name, which is also its `clean` argument: one table,
     /// each operation's own `Op::name`.
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         crate::ops::for_target(*self).name()
     }
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Target {
+pub(crate) enum Target {
     Caches,
     NodeModules,
     Artifacts,

@@ -32,7 +32,7 @@ const EXCLUDED_NAMES: &[&str] = &[
     "DerivedData",
 ];
 
-pub struct Artifacts;
+pub(crate) struct Artifacts;
 
 #[derive(Debug)]
 struct ArtifactCandidate {

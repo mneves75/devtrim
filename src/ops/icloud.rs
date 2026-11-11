@@ -6,7 +6,7 @@ use walkdir::WalkDir;
 use crate::report::{Action, Finding};
 use crate::safety::Ctx;
 
-pub fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
+pub(crate) fn icloud_status(ctx: &Ctx) -> Result<Vec<Finding>> {
     let cloud_docs = ctx
         .home
         .join("Library/Mobile Documents/com~apple~CloudDocs");

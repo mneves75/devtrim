@@ -113,7 +113,7 @@ impl BundlePlist {
 
 /// The identifier becomes a filename this module compares against, so it is
 /// validated as one: no separators, no traversal, no surprises.
-pub(crate) fn validate_bundle_identifier(identifier: &str) -> Result<()> {
+fn validate_bundle_identifier(identifier: &str) -> Result<()> {
     if identifier.is_empty() || identifier.len() > 255 {
         bail!("implausible bundle identifier length");
     }
@@ -162,7 +162,7 @@ fn is_approved_app_bundle(app: &Path, home: &Path) -> Result<bool> {
 ///
 /// Ambiguity is refused rather than guessed: naming the wrong app here would
 /// send the operator to delete another program's files.
-pub(crate) fn resolve_app(name: &str, home: &Path) -> Result<PathBuf> {
+fn resolve_app(name: &str, home: &Path) -> Result<PathBuf> {
     if name.is_empty() {
         bail!("name an application, for example `devtrim uninstall AltTab`");
     }
@@ -234,7 +234,7 @@ fn describe_roots(home: &Path) -> String {
 /// What this does NOT guarantee: `comm` is the command value, not an
 /// authenticated executable path, so this is a courtesy check against reviewing
 /// a live app's files, not a security boundary. Nothing here deletes anything.
-pub(crate) fn parse_running_bundle(output: &str, app: &Path) -> bool {
+fn parse_running_bundle(output: &str, app: &Path) -> bool {
     let prefix = format!("{}/", app.display());
     output.lines().any(|line| line.starts_with(&prefix))
 }
@@ -252,12 +252,12 @@ fn app_is_running(app: &Path) -> Result<bool> {
 }
 
 /// True when `name` is exactly `identifier`, never a prefix of a longer one.
-pub(crate) fn matches_identifier(name: &str, identifier: &str) -> bool {
+fn matches_identifier(name: &str, identifier: &str) -> bool {
     name == identifier
 }
 
 /// True when `name` is exactly `<identifier>.<extension>`.
-pub(crate) fn matches_identifier_file(name: &str, identifier: &str, extension: &str) -> bool {
+fn matches_identifier_file(name: &str, identifier: &str, extension: &str) -> bool {
     name.strip_suffix(extension)
         .and_then(|rest| rest.strip_suffix('.'))
         .is_some_and(|stem| stem == identifier)
@@ -305,11 +305,7 @@ fn info_finding(
 
 /// Every path that belongs to `identifier`, plus the bundle itself, and an
 /// error for each one measured only in part.
-pub(crate) fn locate(
-    app: &Path,
-    identifier: &str,
-    home: &Path,
-) -> Result<(Vec<Finding>, Vec<String>)> {
+fn locate(app: &Path, identifier: &str, home: &Path) -> Result<(Vec<Finding>, Vec<String>)> {
     let mut errors = Vec::new();
     let mut findings = vec![info_finding(
         "application bundle",
@@ -373,7 +369,7 @@ pub(crate) fn locate(
     Ok((findings, errors))
 }
 
-pub fn run(ctx: &Ctx, app: &str) -> Result<ExitCode> {
+pub(crate) fn run(ctx: &Ctx, app: &str) -> Result<ExitCode> {
     let bundle = resolve_app(app, &ctx.home)?;
     let identifier = BundlePlist::for_app(&bundle, &ctx.home)?.bundle_identifier()?;
     // A running app's files are in use; reporting them as removable would be

@@ -14,7 +14,7 @@ use super::project::{
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, escalate};
 
-pub struct Toolchains;
+pub(crate) struct Toolchains;
 
 impl Op for Toolchains {
     fn name(&self) -> &'static str {

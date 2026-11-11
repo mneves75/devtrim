@@ -10,7 +10,7 @@ use super::{Action, ApplyOutcome, Finding, Op, dir_size};
 use crate::safety::Ctx;
 use crate::safety::measure_lenient;
 
-pub struct Leftovers;
+pub(crate) struct Leftovers;
 
 fn is_agent_scratch(name: &str) -> bool {
     let Some((prefix, suffix)) = name.rsplit_once('.') else {

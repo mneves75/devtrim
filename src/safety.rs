@@ -15,7 +15,7 @@ use crate::cli::Cli;
 use crate::ops::Finding;
 use crate::process::{BoundedCommand as _, PROBE_TIMEOUT};
 
-pub const DATA_LOSS_NOTICE: &str = "Applying this plan can delete data. devtrim is provided AS IS, without warranties; you assume the risk for the exact targets shown. Keep backups and grant macOS permissions manually only when you understand the request.";
+pub(crate) const DATA_LOSS_NOTICE: &str = "Applying this plan can delete data. devtrim is provided AS IS, without warranties; you assume the risk for the exact targets shown. Keep backups and grant macOS permissions manually only when you understand the request.";
 
 const PROTECTED: &[&str] = &[
     "/",
@@ -45,7 +45,7 @@ pub(crate) fn is_git_metadata_name(name: &OsStr) -> bool {
 // tagging values loaded from config as literal/resolved pairs.
 const CONFIG_PROTECT_SNAPSHOT_MARKER: &str = "devtrim:protect-snapshot:v1";
 
-pub struct Ctx {
+pub(crate) struct Ctx {
     pub yes: bool,
     pub yolo: bool,
     pub json: bool,
@@ -79,7 +79,7 @@ pub(crate) enum DiagnosticOutput {
 }
 
 impl Ctx {
-    pub fn from_cli(cli: &Cli) -> Result<Self> {
+    pub(crate) fn from_cli(cli: &Cli) -> Result<Self> {
         let home = dirs_home()?;
         let cfg = home.join(".config/devtrim.toml");
         let file_cfg = load_config(&cfg)?;
@@ -169,7 +169,7 @@ impl Ctx {
         }
     }
 
-    pub fn diagnostic(&self, level: &str, message: impl Into<String>) {
+    pub(crate) fn diagnostic(&self, level: &str, message: impl Into<String>) {
         let message = message.into();
         match self.diagnostic_output {
             DiagnosticOutput::Capture => self
@@ -189,11 +189,11 @@ impl Ctx {
 
     /// The scan roots, their origin, and how to change them, for previews of
     /// the categories that walk project folders.
-    pub fn roots_note(&self) -> String {
+    pub(crate) fn roots_note(&self) -> String {
         roots_note(&self.roots, self.roots_origin, &self.home)
     }
 
-    pub fn take_diagnostics(&self) -> Vec<String> {
+    pub(crate) fn take_diagnostics(&self) -> Vec<String> {
         std::mem::take(
             &mut *self
                 .diagnostics
@@ -244,7 +244,7 @@ pub(crate) const CONFIG_DISPLAY_PATH: &str = "~/.config/devtrim.toml";
 /// lowering the first to free build output sooner must never shorten the
 /// second: unset, retention is the project window or 30 days, whichever is
 /// longer. Zero means one.
-pub(crate) fn activity_windows(active: Option<u32>, retain: Option<u32>) -> (u32, u32) {
+fn activity_windows(active: Option<u32>, retain: Option<u32>) -> (u32, u32) {
     let active = active.unwrap_or(30).max(1);
     let retain = retain.map_or(active.max(30), |days| days.max(1));
     (active, retain)
@@ -254,7 +254,7 @@ pub(crate) fn activity_windows(active: Option<u32>, retain: Option<u32>) -> (u32
 /// their origin, so an empty result is never mistaken for a clean machine when
 /// devtrim looked in only one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RootsOrigin {
+pub(crate) enum RootsOrigin {
     /// Neither `--root` nor a configured `roots`: the conventional folders.
     #[default]
     Default,
@@ -281,7 +281,7 @@ pub enum RootsOrigin {
 /// which the walk of that repository's root already reaches. A root says only
 /// where to look: every finding still needs its category's corroborated name,
 /// Git owner, and staleness, so a wider default adds no deletion authority.
-pub(crate) const DEFAULT_PROJECT_ROOTS: [&str; 10] = [
+const DEFAULT_PROJECT_ROOTS: [&str; 10] = [
     "dev",
     "Developer",
     "Development",
@@ -294,7 +294,7 @@ pub(crate) const DEFAULT_PROJECT_ROOTS: [&str; 10] = [
     ".codex/worktrees",
 ];
 
-pub(crate) struct ResolvedRoots {
+struct ResolvedRoots {
     pub(crate) roots: Vec<PathBuf>,
     pub(crate) origin: RootsOrigin,
     pub(crate) warnings: Vec<String>,
@@ -304,11 +304,7 @@ pub(crate) struct ResolvedRoots {
 /// A named root that does not exist is warned about, because a mistyped root
 /// would otherwise scan nothing and report a clean machine; an absent default
 /// folder is simply not one of this machine's project folders.
-pub(crate) fn resolve_roots(
-    flagged: &[String],
-    configured: &[String],
-    home: &Path,
-) -> Result<ResolvedRoots> {
+fn resolve_roots(flagged: &[String], configured: &[String], home: &Path) -> Result<ResolvedRoots> {
     let (named, origin) = if !flagged.is_empty() {
         (flagged, RootsOrigin::Flag)
     } else if !configured.is_empty() {
@@ -1031,7 +1027,7 @@ fn protect_component_matches(actual: &std::ffi::OsStr, expected: &std::ffi::OsSt
     }
 }
 
-pub fn validate_trash_root(home: &Path) -> Result<PathBuf> {
+pub(crate) fn validate_trash_root(home: &Path) -> Result<PathBuf> {
     let dir = clean(&home.join(".Trash"));
     let metadata = std::fs::symlink_metadata(&dir)
         .with_context(|| format!("cannot inspect Trash: {}", dir.display()))?;
@@ -1059,7 +1055,7 @@ fn protected_system_root(path: &Path) -> Option<&'static str> {
     })
 }
 
-pub fn is_protected(path: &Path, home: &Path) -> bool {
+pub(crate) fn is_protected(path: &Path, home: &Path) -> bool {
     is_protected_abs(&abs(path), home)
 }
 
@@ -1350,7 +1346,7 @@ pub(crate) fn clean(path: &Path) -> PathBuf {
     output
 }
 
-pub fn escalate(danger: u8, total_bytes: u64) -> u8 {
+pub(crate) fn escalate(danger: u8, total_bytes: u64) -> u8 {
     const GB: u64 = 1024 * 1024 * 1024;
     let danger = if total_bytes > 50 * GB {
         danger.max(8)
@@ -1364,7 +1360,7 @@ pub fn escalate(danger: u8, total_bytes: u64) -> u8 {
     danger.min(10)
 }
 
-pub fn plan_danger(findings: &[Finding]) -> u8 {
+pub(crate) fn plan_danger(findings: &[Finding]) -> u8 {
     let base = findings
         .iter()
         .filter(|finding| finding.action.is_actionable())
@@ -1375,12 +1371,15 @@ pub fn plan_danger(findings: &[Finding]) -> u8 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfirmationRequirement {
+pub(crate) enum ConfirmationRequirement {
     YesNo { danger: u8 },
     TypedGigabytes { danger: u8, expected: u64 },
 }
 
-pub fn confirmation_requirement(danger: u8, findings: &[Finding]) -> ConfirmationRequirement {
+pub(crate) fn confirmation_requirement(
+    danger: u8,
+    findings: &[Finding],
+) -> ConfirmationRequirement {
     if danger >= 9 {
         ConfirmationRequirement::TypedGigabytes {
             danger,
@@ -1391,7 +1390,7 @@ pub fn confirmation_requirement(danger: u8, findings: &[Finding]) -> Confirmatio
     }
 }
 
-pub fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
+pub(crate) fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
     let requirement = confirmation_requirement(max_danger, findings);
     if !ctx.interactive && !ctx.yolo {
         match requirement {
@@ -1440,7 +1439,7 @@ pub fn gate(max_danger: u8, ctx: &Ctx, findings: &[Finding]) -> Result<()> {
     Ok(())
 }
 
-pub fn warn_data_loss(ctx: &Ctx) {
+fn warn_data_loss(ctx: &Ctx) {
     if !ctx.json {
         eprintln!("{} {DATA_LOSS_NOTICE}", "DATA-LOSS WARNING:".red().bold(),);
     }
@@ -1449,7 +1448,7 @@ pub fn warn_data_loss(ctx: &Ctx) {
 /// The acknowledgment is measured over the exact findings a purge would remove,
 /// the same basis the preview suggests. Measuring the whole Trash instead makes
 /// the acknowledgment unsatisfiable once a large item is excluded from the plan.
-pub fn trash_gate(findings: &[Finding], confirm_gb: Option<u64>) -> Result<()> {
+pub(crate) fn trash_gate(findings: &[Finding], confirm_gb: Option<u64>) -> Result<()> {
     let Some(want) = confirm_gb else {
         bail!("Trash purge requires --confirm=<gb> matching current Trash size");
     };
@@ -1562,7 +1561,7 @@ pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured
     measured
 }
 
-pub fn dir_size(path: &Path) -> Result<u64> {
+pub(crate) fn dir_size(path: &Path) -> Result<u64> {
     Ok(dir_stats(path)?.0)
 }
 
@@ -1940,10 +1939,7 @@ const LSOF_NON_PATH_TYPES: &[&[u8]] = &[
 /// file could lie anywhere. A name lsof built from the mount instead is judged
 /// against the folder's own volume (`xcode::derived_data_in_use`). An
 /// ambiguous escape refuses, as everywhere else.
-pub(crate) fn parse_lsof_open_files(
-    output: &[u8],
-    exit_code: Option<i32>,
-) -> Result<Vec<OpenFile>> {
+fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Result<Vec<OpenFile>> {
     match exit_code {
         Some(0) => {}
         Some(code) => bail!("lsof open-file probe exited with status {code}"),

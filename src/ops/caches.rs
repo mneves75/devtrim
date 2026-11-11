@@ -12,7 +12,7 @@ use crate::process::{BoundedCommand as _, PROBE_TIMEOUT, QUERY_TIMEOUT};
 use crate::report::TargetAuthority;
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
-pub struct Caches;
+pub(crate) struct Caches;
 
 const UV_CACHE: &str = ".cache/uv";
 

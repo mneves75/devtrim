@@ -18,7 +18,7 @@ use super::project::ScanObservations;
 use super::{ApplyOutcome, Finding, Op, is_node_modules_name};
 use crate::safety::Ctx;
 
-pub struct Purge;
+pub(crate) struct Purge;
 
 impl Op for Purge {
     fn name(&self) -> &'static str {

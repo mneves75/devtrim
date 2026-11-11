@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, removal_note};
 use crate::safety::{Ctx, escalate};
 
-pub struct Installers;
+pub(crate) struct Installers;
 
 /// Directories whose direct children may be considered. Scanning is deliberately
 /// non-recursive: `Downloads` routinely contains extracted project trees, and an

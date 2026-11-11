@@ -210,7 +210,7 @@ fn identity(path: &Path) -> Option<(u64, u64)> {
 
 /// One record of `git worktree list --porcelain -z`.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct Record {
+struct Record {
     path: PathBuf,
     branch: Option<String>,
     detached: bool,
@@ -242,7 +242,7 @@ impl Record {
 /// field ends a record. Unknown attributes are ignored; an attribute before
 /// any `worktree` line, a record left unterminated, or no record at all is an
 /// error.
-pub(crate) fn parse_porcelain(output: &[u8]) -> Result<Vec<Record>> {
+fn parse_porcelain(output: &[u8]) -> Result<Vec<Record>> {
     // Every field ends in NUL, so the piece after the last one is not a field;
     // without this, a list cut right after a field would read as complete.
     let Some(fields) = output.strip_suffix(b"\0") else {

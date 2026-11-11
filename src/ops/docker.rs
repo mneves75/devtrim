@@ -10,7 +10,7 @@ use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
 use crate::report::CommandAuthority;
 use crate::safety::{Ctx, escalate};
 
-pub struct Docker;
+pub(crate) struct Docker;
 
 /// Host-side virtual disk images for the supported local Docker runtimes,
 /// relative to the user's home directory.
