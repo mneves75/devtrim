@@ -23,7 +23,7 @@ pub struct Cli {
     #[arg(short = 'y', long, global = true)]
     pub yes: bool,
 
-    /// Accept data-loss risk and skip prompts; operation acknowledgments still apply (cleanup commands only)
+    /// Accept data-loss risk and skip all interactive prompts, typed-size confirmations included; operation acknowledgments such as --confirm still apply (cleanup commands only)
     #[arg(long, global = true)]
     pub yolo: bool,
 
