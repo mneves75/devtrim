@@ -1407,34 +1407,35 @@ pub(crate) fn render_footer_rows(
     );
 }
 
+/// The keys a narrow footer may leave to the `?` reference, first to go
+/// first. Every other key stays: how to act, go back, quit and find the rest.
+const DROPPABLE_KEYS: [&str; 4] = ["Enter", "r", "s", "↑↓"];
+
 /// Keys in the one footer form, `key verb`, separated by ` · `, within
-/// `width` columns after a cell of margin. The keys are in priority order and
-/// the last one, which opens the complete reference or leaves, is always kept:
-/// a key that does not fit is left to the `?` reference rather than cut.
+/// `width` columns after a cell of margin. A line too wide drops keys in the
+/// order of [`DROPPABLE_KEYS`], never any other.
 pub(crate) fn key_line(theme: Theme, keys: &[(&str, &str)], width: usize) -> Line<'static> {
-    let entry_width = |(key, verb): &(&str, &str)| {
-        Span::raw(*key).width()
-            + if verb.is_empty() {
-                0
-            } else {
-                1 + Span::raw(*verb).width()
-            }
-    };
-    let Some((last, rest)) = keys.split_last() else {
-        return Line::raw("");
-    };
     const SEPARATOR: &str = " · ";
-    let separator = Span::raw(SEPARATOR).width();
-    let mut used = entry_width(last);
-    let mut kept = Vec::new();
-    for entry in rest {
-        let wanted = used + separator + entry_width(entry);
-        if wanted <= width {
-            used = wanted;
-            kept.push(*entry);
+    let line_width = |keys: &[(&str, &str)]| {
+        keys.iter()
+            .map(|(key, verb)| {
+                Span::raw(*key).width()
+                    + if verb.is_empty() {
+                        0
+                    } else {
+                        1 + Span::raw(*verb).width()
+                    }
+            })
+            .sum::<usize>()
+            + Span::raw(SEPARATOR).width() * keys.len().saturating_sub(1)
+    };
+    let mut kept = keys.to_vec();
+    for droppable in DROPPABLE_KEYS {
+        if line_width(&kept) <= width {
+            break;
         }
+        kept.retain(|(key, _)| *key != droppable);
     }
-    kept.push(*last);
     let mut spans = vec![Span::raw(" ")];
     for (index, (key, verb)) in kept.iter().enumerate() {
         if index > 0 {
@@ -3310,6 +3311,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_footer_keeps_how_to_leave_at_the_minimum_size() {
+        let footer = |app: &App| screen_rows(app, MIN_WIDTH, MIN_HEIGHT)[16].clone();
+        let with_choices = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        assert_eq!(
+            footer(&with_choices).trim_end(),
+            " Space pick · A none · a apply · b back · q quit · ? keys",
+            "keys that drop at 64 columns go in their fixed order"
+        );
+        let mut detail = cleanup(vec![trash("first", 1, 2)]);
+        detail.handle_key(key(KeyCode::Enter));
+        assert_eq!(detail.screen, Screen::Detail);
+        let mut outcome = cleanup(vec![trash("first", 1, 2)]);
+        outcome.screen = Screen::Outcome;
+        let mut error = App::default();
+        error.fail(anyhow::anyhow!("synthetic"));
+        let mut read_only = App::default();
+        read_only.finish_results(
+            Operation::ScanAll,
+            vec![trash("first", 1, 2), trash("second", 1, 2)],
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut permanent = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        permanent.handle_key(key(KeyCode::Char('s')));
+        for (name, app) in [
+            ("menu", App::default()),
+            ("results", with_choices),
+            ("permanent results", permanent),
+            ("read-only results", read_only),
+            ("empty results", cleanup(Vec::new())),
+            ("detail", detail),
+            ("outcome", outcome),
+            ("error", error),
+        ] {
+            let row = footer(&app);
+            for key in ["q quit", "? keys"] {
+                assert!(row.contains(key), "{name}: {key:?} missing from {row:?}");
+            }
+            if matches!(
+                app.screen,
+                Screen::Results | Screen::Outcome | Screen::Error
+            ) {
+                assert!(
+                    row.contains("b back"),
+                    "{name}: b back missing from {row:?}"
+                );
+            }
+        }
+    }
+
     /// The rendered screen, one string per terminal row.
     fn screen_rows(app: &App, width: u16, height: u16) -> Vec<String> {
         let backend = TestBackend::new(width, height);
@@ -3961,8 +4013,10 @@ mod tests {
     fn the_results_footer_lists_enter_details() {
         let with_choices = cleanup(vec![trash("first", 1, 2)]);
         let read_only = scan_everything(vec![trash("x", 1, 2)], Vec::new());
+        // At 64 columns "Enter details" is the first key to drop, so the
+        // footer is read where every key fits.
         for app in [&with_choices, &read_only] {
-            let output = rendered(app, MIN_WIDTH, MIN_HEIGHT);
+            let output = rendered(app, 100, 30);
             assert!(output.contains("Enter details"), "{output}");
             assert!(output.contains("? keys"), "{output}");
         }

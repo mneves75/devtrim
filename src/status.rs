@@ -1617,6 +1617,13 @@ Note: No CPU power status has been recorded\n";
         ))
         .join("\n");
         assert!(screen.contains("Sampled 3 s ago."), "{screen}");
+        assert!(
+            screen
+                .lines()
+                .nth(16)
+                .is_some_and(|row| row.contains("q quit")),
+            "{screen}"
+        );
         assert!(!screen.contains("Refreshing every"), "{screen}");
         let waiting = rows(&draw(None, theme, None, 64, 18)).join("\n");
         assert!(waiting.contains("sampling…"), "{waiting}");

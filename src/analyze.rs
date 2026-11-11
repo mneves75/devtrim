@@ -959,5 +959,6 @@ mod tests {
         assert!(rows[1].starts_with('┌'), "{rows:#?}");
         assert!(rows[15].starts_with('└'), "{rows:#?}");
         assert!(rows[16].contains("? keys"), "{rows:#?}");
+        assert!(rows[16].contains("q quit"), "{rows:#?}");
     }
 }
