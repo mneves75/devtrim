@@ -60,28 +60,28 @@
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "f1f036753",
-  "text": "│› [x]   1. danger-5   5.9 GB  TRASH    stale target artifacts  …vtrim-demo/dev/payments-api/target│",
+  "id": "f320ec151",
+  "text": "│› [x]   1. danger-5   5.9 GB  TRASH    stale target artifacts  payments-api/target                │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "f02770cad",
-  "text": "│  [x]   2. danger-5   1.1 GB  TRASH    stale node_modules  …vtrim-demo/dev/storefront/node_modules│",
+  "id": "f33c55567",
+  "text": "│  [x]   2. danger-5   1.1 GB  TRASH    stale node_modules  storefront/node_modules                │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "fd3861e8e",
-  "text": "│  [x]   3. danger-5   614 MB  TRASH    stale .next artifacts  …p/devtrim-demo/dev/storefront/.next│",
+  "id": "fafd8b077",
+  "text": "│  [x]   3. danger-5   614 MB  TRASH    stale .next artifacts  storefront/.next                    │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "f4b798dd9",
-  "text": "│  [x]   4. danger-5   205 MB  TRASH    stale .turbo artifacts  …devtrim-demo/dev/storefront/.turbo│",
+  "id": "ff35ae38b",
+  "text": "│  [x]   4. danger-5   205 MB  TRASH    stale .turbo artifacts  storefront/.turbo                  │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "f2552939b",
-  "text": "│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config/devtrim.toml re│",
+  "id": "fdcae30c5",
+  "text": "│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config/devtrim.toml r…│",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
@@ -125,18 +125,13 @@
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "f45350c84",
-  "text": "┌──────────────────────────────────────────────────────────────────────────────────────────────────┐",
+  "id": "fc956054d",
+  "text": " Space pick · A none · a apply · Enter details · s permanent · r rescan · b back · q quit · ? keys",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "f2519fb5d",
-  "text": "│Space pick · A none · a apply · s permanent · b back · ? keys                                     │",
-  "link": "https://mneves75.github.io/devtrim/#step-preview"
- },
- {
-  "id": "f6b0df191",
-  "text": "│Review every finding. Space leaves one out; a applies the rest                                    │",
+  "id": "fe77a13c2",
+  "text": " Review every finding. Space leaves one out; a applies the rest",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
@@ -150,28 +145,28 @@
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
-  "id": "f7eaed02a",
-  "text": "│  [x]   1. danger-5   5.9 GB  TRASH    stale target artifacts  …ayments-api/target│",
+  "id": "fbaf38f7f",
+  "text": "│  [x]   1. danger-5   5.9 GB  TRASH    stale target artifacts  payments-api/target│",
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
-  "id": "f3696e411",
-  "text": "│  [x]   2. danger-5   1.1 GB  TRASH    stale node_modules  …torefront/node_modules│",
+  "id": "ff36b0a9f",
+  "text": "│  [x]   2. danger-5   1.1 GB  TRASH    stale node_modules  storefront/node_modules│",
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
-  "id": "f00bd58da",
-  "text": "│› [ ]   3. danger-5   614 MB  TRASH    stale .next artifacts  …ev/storefront/.next│",
+  "id": "f5fad5d17",
+  "text": "│› [ ]   3. danger-5   614 MB  TRASH    stale .next artifacts  storefront/.next    │",
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
-  "id": "fb308d16f",
-  "text": "│  [x]   4. danger-5   205 MB  TRASH    stale .turbo artifacts  …/storefront/.turbo│",
+  "id": "f01a57ddd",
+  "text": "│  [x]   4. danger-5   205 MB  TRASH    stale .turbo artifacts  storefront/.turbo  │",
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
-  "id": "f4ca6e479",
-  "text": "│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config│",
+  "id": "fe4f1e82f",
+  "text": "│  info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.confi…│",
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
@@ -190,93 +185,48 @@
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "f3bd3e9e5",
-  "text": "│ ┌ Confirm exact plan ──────────────────────────────────────────────────────────┐t│",
+  "id": "f58d40d09",
+  "text": "  ┌ Confirm exact plan · danger-5 ───────────────────────────────────────────────┐",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "f60f4c794",
-  "text": "│ │DATA-LOSS WARNING                                                             │s│",
+  "id": "f1d5f6ea8",
+  "text": "  │DATA-LOSS WARNING                                                             │",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "f078ed9fe",
-  "text": "│›│This plan: 3 of 4 selected · 1 left out                                       │t│",
+  "id": "f37ec6626",
+  "text": "  │Moves 3 items (7.2 GB) to the Trash.                                          │",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "f1a105091",
-  "text": "│ │Applying this plan can delete data. devtrim is provided AS IS, without        │o│",
+  "id": "fa65c7425",
+  "text": "  │This plan: 3 of 4 selected · 1 left out                                       │",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "f5bdf594b",
-  "text": "│ │warranties; you assume the risk for the exact targets shown. Keep backups and │g│",
+  "id": "fcc2b91ef",
+  "text": "  │Applying this plan can delete data. devtrim is provided AS IS, without        │",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "fe66cea2f",
-  "text": "│ │grant macOS permissions manually only when you understand the request.        │ │",
+  "id": "f776d8f1b",
+  "text": "  │warranties; you assume the risk for the exact targets shown. Keep backups and │",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "f05125f04",
-  "text": "│ │                                                                              │ │",
+  "id": "f6e271f01",
+  "text": "  │grant macOS permissions manually only when you understand the request.        │",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "ffd745f85",
-  "text": "└─│Danger-5. Press y to apply this exact plan, or n/Esc to cancel.               │─┘",
+  "id": "f78cd3e06",
+  "text": "  └──────────────────────────────────────────────────────────────────────────────┘",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "f9c5867ab",
-  "text": "┌ │                                                                              │─┐",
-  "link": "https://mneves75.github.io/devtrim/#step-confirm"
- },
- {
-  "id": "f9d263011",
-  "text": "│s│>                                                                             │ │",
-  "link": "https://mneves75.github.io/devtrim/#step-confirm"
- },
- {
-  "id": "f748b1c0e",
-  "text": "│6│                                                                              │ │",
-  "link": "https://mneves75.github.io/devtrim/#step-confirm"
- },
- {
-  "id": "f0618ebb1",
-  "text": "│L│                                                                              │ │",
-  "link": "https://mneves75.github.io/devtrim/#step-confirm"
- },
- {
-  "id": "fd969ea6c",
-  "text": "│/│                                                                              │ │",
-  "link": "https://mneves75.github.io/devtrim/#step-confirm"
- },
- {
-  "id": "f778a9fde",
-  "text": "│r│                                                                              │ │",
-  "link": "https://mneves75.github.io/devtrim/#step-confirm"
- },
- {
-  "id": "f449b96ae",
-  "text": "│p│                                                                              │ │",
-  "link": "https://mneves75.github.io/devtrim/#step-confirm"
- },
- {
-  "id": "f713e2b01",
-  "text": "└─└──────────────────────────────────────────────────────────────────────────────┘─┘",
-  "link": "https://mneves75.github.io/devtrim/#step-confirm"
- },
- {
-  "id": "f8b9b6fba",
-  "text": "┌──────────────────────────────────────────────────────────────────────────────────┐",
-  "link": "https://mneves75.github.io/devtrim/#step-confirm"
- },
- {
-  "id": "f16ff7fb1",
-  "text": "│Esc cancel · type the exact requested acknowledgment                              │",
+  "id": "f55c77f3b",
+  "text": " y apply · n/Esc cancel",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
@@ -1275,8 +1225,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-worktrees"
  },
  {
-  "id": "f742232a9",
-  "text": "Read-only list of every repository's linked worktrees under your scan roots, from one git worktree list --porcelain -z per repository through the same hardened Git invocation the scans use: branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is the repository's own claim, so it is measured only when it is a real directory inside a scan root whose .git file leads back to that repository; anything else is listed unsized with the reason. The main worktree is listed but not measured. Sizes follow no link, stay on one device, never count a nested worktree twice, and are lower bounds when entries cannot be read. The report never says safe, stale or removable and shows no date: uncommitted, untracked and ignored work leave none. A bare repository has no .git marker and is found only through one of its worktrees. git worktree remove <path> runs the repository's configured programs, so use it only in a repository you trust, after your own review.",
+  "id": "fb18ced1d",
+  "text": "Read-only list of every repository's linked worktrees under your scan roots, from one git worktree list --porcelain -z per repository through the same hardened Git invocation the scans use: branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is the repository's own claim, so it is measured only when it is a real directory inside a scan root whose .git file leads back to that repository; anything else is listed unsized with the reason. The main worktree is listed but not measured. Sizes follow no link, stay on one device, never count a nested worktree twice, and are lower bounds when entries cannot be read; such a row stays listed and the run exits 1. The report never says safe, stale or removable and shows no date: uncommitted, untracked and ignored work leave none. A bare repository has no .git marker and is found only through one of its worktrees. git worktree remove <path> runs the repository's configured programs, so use it only in a repository you trust, after your own review.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-worktrees"
  },
  {

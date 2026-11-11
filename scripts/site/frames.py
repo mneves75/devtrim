@@ -130,6 +130,18 @@ def colored_screen(output, rows, columns):
     return grid
 
 
+def box_rows(grid):
+    """The rows of the first bordered block: its `┌` title row through the
+    first `└` below it. The frames start there, whatever the header's height."""
+    text = ["".join(character for _, character in cells) for cells in grid]
+    top = next((index for index, line in enumerate(text) if line.startswith("┌")), None)
+    if top is None:
+        raise AssertionError("no bordered block on the captured screen:\n" + "\n".join(text))
+    # The confirmation clears the block beneath its title, leaving no bottom border.
+    bottom = next((index for index in range(top, len(text)) if text[index].startswith("└")), len(text) - 1)
+    return top, bottom + 1
+
+
 def to_html(grid, first_row=0, last_row=None):
     lines = []
     for cells in grid[first_row:last_row]:
@@ -260,7 +272,7 @@ def main():
             (None, ("Scan everything",)),
             (b"p", ("Review every finding", "payments-api")),
         ])
-        frames["tui:results"] = block("purge preview", columns, to_html(results, 3, rows))
+        frames["tui:results"] = block("purge preview", columns, to_html(results, box_rows(results)[0], rows))
         select = capture(binary, home, rows, 84, [
             (None, ("Scan everything",)),
             (b"p", ("Review every finding", "payments-api")),
@@ -268,14 +280,15 @@ def main():
         ])
         # Only the preview block (title row to its bottom border), as wide as the confirmation
         # it stacks above, which carries the rest of the story.
-        frames["tui:select"] = block("one finding left out", 84, to_html(select, 3, 12))
-        confirm = capture(binary, home, rows, 84, [
+        frames["tui:select"] = block("one finding left out", 84, to_html(select, *box_rows(select)))
+        # At the minimum height the centred confirmation leaves the least empty space.
+        confirm = capture(binary, home, 18, 84, [
             (None, ("Scan everything",)),
             (b"p", ("Review every finding", "payments-api")),
             (b"jj ", ("Left out of this plan",)),
             (b"a", ("This plan:",)),
         ])
-        frames["tui:confirm"] = block("confirm exact plan", 84, to_html(confirm, 3, rows))
+        frames["tui:confirm"] = block("confirm exact plan", 84, to_html(confirm, box_rows(confirm)[0]))
         scan, scan_columns = scan_summary(binary, home)
         frames["cli:scan"] = block("devtrim scan", scan_columns, scan)
         frames["cli:refusals"] = (

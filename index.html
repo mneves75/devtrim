@@ -58,11 +58,15 @@
             <figcaption><strong>Preview.</strong> Two stale demo projects: every finding with its danger, size and path, before anything changes.</figcaption>
 <!-- tui:results -->
 <div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: purge preview"><code>┌ TRASH-FIRST · 4/4 selected · 7.8 GB · danger-5 ──────────────────────────────────────────────────┐
-│<span class="g b">› </span>[x] <span class="y">  1. danger-5 </span><span class="c">  5.9 GB  TRASH    </span><span class="b">stale target artifacts</span><span class="k">  …vtrim-demo/dev/payments-api/target</span>│
-│  [x] <span class="y">  2. danger-5 </span><span class="c">  1.1 GB  TRASH    </span><span class="b">stale node_modules</span><span class="k">  …vtrim-demo/dev/storefront/node_modules</span>│
-│  [x] <span class="y">  3. danger-5 </span><span class="c">  614 MB  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  …p/devtrim-demo/dev/storefront/.next</span>│
-│  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  …devtrim-demo/dev/storefront/.turbo</span>│
-│  <span class="y">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config/devtrim.toml re</span>│
+│<span class="g b">› </span>[x] <span class="y">  1. danger-5 </span><span class="c">  5.9 GB  TRASH    </span><span class="b">stale target artifacts</span><span class="k">  payments-api/target</span>                │
+│  [x] <span class="y">  2. danger-5 </span><span class="c">  1.1 GB  TRASH    </span><span class="b">stale node_modules</span><span class="k">  storefront/node_modules</span>                │
+│  [x] <span class="y">  3. danger-5 </span><span class="c">  614 MB  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>                    │
+│  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>                  │
+│  <span class="k">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config/devtrim.toml r…</span>│
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -74,10 +78,8 @@
 │<span class="k">repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml</span>                                │
 │project: /private/tmp/devtrim-demo/dev/payments-api                                               │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│<span class="c">Space pick · A none · a apply · s permanent · b back · ? keys</span>                                     │
-│<span class="y">Review every finding. Space leaves one out; a applies the rest</span>                                    │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘</code></pre></div>
+ <span class="c">Space</span> pick<span class="k"> · </span><span class="c">A</span> none<span class="k"> · </span><span class="c">a</span> apply<span class="k"> · </span><span class="c">Enter</span> details<span class="k"> · </span><span class="c">s</span> permanent<span class="k"> · </span><span class="c">r</span> rescan<span class="k"> · </span><span class="c">b</span> back<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
+ <span class="k">Review every finding. Space leaves one out; a applies the rest</span></code></pre></div>
 <!-- /tui:results -->
           </figure>
         </li>
@@ -86,11 +88,15 @@
             <figcaption><strong>Leave one out.</strong> <kbd>Space</kbd> empties a finding's box and the title recounts the plan.</figcaption>
 <!-- tui:select -->
 <div class="term-frame" data-cols="84" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: one finding left out"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
-│  [x] <span class="y">  1. danger-5 </span><span class="c">  5.9 GB  TRASH    </span><span class="b">stale target artifacts</span><span class="k">  …ayments-api/target</span>│
-│  [x] <span class="y">  2. danger-5 </span><span class="c">  1.1 GB  TRASH    </span><span class="b">stale node_modules</span><span class="k">  …torefront/node_modules</span>│
-│<span class="g b">› </span>[ ] <span class="y">  3. danger-5 </span><span class="c">  614 MB  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  …ev/storefront/.next</span>│
-│  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  …/storefront/.turbo</span>│
-│  <span class="y">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config</span>│
+│  [x] <span class="y">  1. danger-5 </span><span class="c">  5.9 GB  TRASH    </span><span class="b">stale target artifacts</span><span class="k">  payments-api/target</span>│
+│  [x] <span class="y">  2. danger-5 </span><span class="c">  1.1 GB  TRASH    </span><span class="b">stale node_modules</span><span class="k">  storefront/node_modules</span>│
+│<span class="g b">› </span>[ ] <span class="y">  3. danger-5 </span><span class="c">  614 MB  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>    │
+│  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>  │
+│  <span class="k">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.confi…</span>│
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
 │                                                                                  │
 │                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────┘</code></pre></div>
@@ -102,26 +108,21 @@
             <figcaption><strong>Confirm.</strong> The confirmation names the exact plan, how many findings it covers and how many you left out.</figcaption>
 <!-- tui:confirm -->
 <div class="term-frame" data-cols="84" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: confirm exact plan"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
-│ ┌ Confirm exact plan ──────────────────────────────────────────────────────────┐<span class="k">t</span>│
-│ │<span class="r b">DATA-LOSS WARNING</span>                                                             │<span class="k">s</span>│
-│<span class="g b">›</span>│This plan: 3 of 4 selected · 1 left out                                       │<span class="k">t</span>│
-│ │Applying this plan can delete data. devtrim is provided AS IS, without        │<span class="k">o</span>│
-│ │warranties; you assume the risk for the exact targets shown. Keep backups and │<span class="y">g</span>│
-│ │grant macOS permissions manually only when you understand the request.        │ │
-│ │                                                                              │ │
-└─│<span class="y">Danger-5. Press y to apply this exact plan, or n/Esc to cancel.</span>               │─┘
-┌ │                                                                              │─┐
-│<span class="g b">s</span>│&gt;                                                                             │ │
-│6│                                                                              │ │
-│<span class="y">L</span>│                                                                              │ │
-│/│                                                                              │ │
-│<span class="k">r</span>│                                                                              │ │
-│p│                                                                              │ │
-└─└──────────────────────────────────────────────────────────────────────────────┘─┘
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│<span class="c">Esc cancel · type the exact requested acknowledgment</span>                              │
-│                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────┘</code></pre></div>
+
+
+  ┌ Confirm exact plan · danger-5 ───────────────────────────────────────────────┐
+  │<span class="r b">DATA-LOSS WARNING</span>                                                             │
+  │<span class="b">Moves 3 items (7.2 GB) to the Trash.</span>                                          │
+  │This plan: 3 of 4 selected · 1 left out                                       │
+  │Applying this plan can delete data. devtrim is provided AS IS, without        │
+  │warranties; you assume the risk for the exact targets shown. Keep backups and │
+  │grant macOS permissions manually only when you understand the request.        │
+  └──────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+ <span class="c">y</span> apply<span class="k"> · </span><span class="c">n/Esc</span> cancel</code></pre></div>
 <!-- /tui:confirm -->
           </figure>
         </li>
