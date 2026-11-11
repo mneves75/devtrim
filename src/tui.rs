@@ -311,18 +311,10 @@ impl Default for App {
 }
 
 impl App {
-    /// The previewed findings still in the plan, in display order.
-    fn selected_findings(&self) -> Vec<Finding> {
-        self.findings
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| !self.excluded.contains(index))
-            .map(|(_, finding)| finding.clone())
-            .collect()
-    }
-
+    /// The findings still in the plan, in display order, with the actions the
+    /// current mode gives them.
     fn effective_findings(&self) -> Vec<Finding> {
-        let mut findings = self.selected_findings();
+        let mut findings: Vec<Finding> = self.in_plan().cloned().collect();
         report::effective_actions(&mut findings, self.shred);
         findings
     }
