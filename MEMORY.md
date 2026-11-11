@@ -1,6 +1,30 @@
 # Project Memory
 
-## Current production state (0.12.6)
+## Current production state (0.13.0)
+
+0.13.0 is the UI/UX redesign and whole-project audit (#86): TUI results title
+leads with the mode, confirmation states effect and count, the footer keeps
+`q quit`/`b back`/`? keys` at 64×18, site frames come from the real binary,
+13 audit fixes and 11 behavior-preserving refactors (−393 lines). Plan:
+`plans/016`. Source `2fc5b85c5e523d9b3a80d7ccc128ca8dd36bfd0f`, tree
+`532ead709e03c19dbf03b0ba152c70638c6749fe`.
+
+Immutable `v0.13.0-beta1` and stable `v0.13.0` (published 2026-11-11T20:56:55Z)
+carry the ZIP SHA-256
+`d09dc6e8368caf300ca6f792d0b8c7bfea3c1f04daeaeb623ed91f37fb11be19`; both pass
+`verify-live.sh`. Homebrew tap `e90ea63cd2aeb8a0a1b7d190a179df59c23198f2`
+publishes 0.13.0; the sole visible `/opt/homebrew/bin/devtrim` has SHA-256
+`d1851c1e01856a6656d2fc512c4d9df5f59c4cf727ce4341abfd03bceca9beb4`.
+
+Independent acceptance: Sol code review, `reviewer` agent, autoreview
+scoped-clean at P1, mneves-verify PASS 7/7 on its third round. Security gate
+WAIVED solely for GHSA-g3hv-75wg-m249 through 2026-11-30 (records reused for
+2fc5b85 from 1192c58, same tree). The stable release run 43089044465 needed two
+reruns of its deterministic-gates job for runner infrastructure only
+(`hdiutil create` "Resource busy", then a RustSec advisory-db fetch IO error);
+no code, test or gate changed.
+
+## Previous production state (0.12.6)
 
 0.12.6 adds `app-storage`, a metadata-only report of four known WhatsApp
 containers and saved Screen Studio projects under explicit roots (#80).
