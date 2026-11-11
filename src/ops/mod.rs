@@ -1179,16 +1179,11 @@ pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
 pub fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>> {
     use crate::journal::TrashedIdentity;
 
+    // A complete read refuses a malformed line or an oversized snapshot rather
+    // than skip it, so it never returns a history that could be missing the
+    // record that tells an item apart.
     let history = crate::journal::read_complete_history(&ctx.journal_path)
         .context("cannot read the apply journal that records what devtrim moved to the Trash")?;
-    // A history read only in part could be missing the very record that tells
-    // an item apart, so nothing is offered rather than a part.
-    if !history.errors.is_empty() {
-        anyhow::bail!(
-            "cannot read the whole apply journal, so which Trash items devtrim moved there is unknown; nothing is offered: {}",
-            history.errors.join("; ")
-        );
-    }
     let moved = history
         .entries
         .iter()

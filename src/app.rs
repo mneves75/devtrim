@@ -256,9 +256,8 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 fn run_history(limit: Option<usize>, json: bool) -> Result<ExitCode> {
-    let limit = limit.unwrap_or(20).clamp(1, 1000);
     let journal_path = safety::default_journal_path()?;
-    let history = match journal::read_history(&journal_path, limit) {
+    let history = match journal::read_history(&journal_path, limit.unwrap_or(20)) {
         Ok(history) => history,
         Err(error) if json => {
             let history = journal::History {

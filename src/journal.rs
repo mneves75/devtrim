@@ -649,12 +649,19 @@ fn acquire_history_lock(location: &JournalLocation) -> Result<Option<File>> {
 }
 
 pub(crate) fn read_history(path: &Path, limit: usize) -> Result<History> {
-    read_history_with_lock_observer(path, limit, || {})
+    // One entry past the limit is read only to learn whether older ones exist.
+    let limit = limit.clamp(1, 1000);
+    let mut history = read_history_snapshot(path, HistoryScope::Tail(limit + 1))?;
+    if history.entries.len() > limit {
+        history.entries.truncate(limit);
+        history.truncated = true;
+    }
+    Ok(history)
 }
 
 /// Read every retained generation, or refuse the entire ownership history.
 pub(crate) fn read_complete_history(path: &Path) -> Result<History> {
-    read_history_snapshot(path, HistoryScope::Complete, || {})
+    read_history_snapshot(path, HistoryScope::Complete)
 }
 
 #[derive(Clone, Copy)]
@@ -663,26 +670,7 @@ enum HistoryScope {
     Complete,
 }
 
-fn read_history_with_lock_observer(
-    path: &Path,
-    limit: usize,
-    lock_acquired: impl FnMut(),
-) -> Result<History> {
-    // One entry past the limit is read only to learn whether older ones exist.
-    let limit = limit.clamp(1, 1000);
-    let mut history = read_history_snapshot(path, HistoryScope::Tail(limit + 1), lock_acquired)?;
-    if history.entries.len() > limit {
-        history.entries.truncate(limit);
-        history.truncated = true;
-    }
-    Ok(history)
-}
-
-fn read_history_snapshot(
-    path: &Path,
-    scope: HistoryScope,
-    mut lock_acquired: impl FnMut(),
-) -> Result<History> {
+fn read_history_snapshot(path: &Path, scope: HistoryScope) -> Result<History> {
     let Some(location) = JournalLocation::open(path, ParentMode::Existing)? else {
         return Ok(History {
             entries: Vec::new(),
@@ -695,7 +683,6 @@ fn read_history_snapshot(
         let mut snapshot = None;
         for attempt in 0..=HISTORY_LOCK_RACE_RETRIES {
             if let Some(lock) = acquire_history_lock(&location)? {
-                lock_acquired();
                 snapshot = Some((Some(lock), open_history_snapshot(&location)?));
                 break;
             }
