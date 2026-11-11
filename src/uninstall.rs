@@ -8,15 +8,18 @@
 //! `/Library` are outside the catalog too. This is a conservative report, not an
 //! inventory, and the output says so.
 //!
-//! This command reports; it never deletes, and that is a structural fact rather
-//! than a policy choice. `safety::is_protected` refuses `/Applications` and
+//! This command reports; it never deletes: it has no deletion path at all.
+//! For most of what it lists that is also a structural fact rather than a
+//! policy choice. `safety::is_protected` refuses `/Applications` and
 //! everything beneath it, and refuses everything under `~/Library` outside a
 //! closed allowlist of developer-managed paths — a boundary the repository's own
 //! property tests assert
-//! (`is_protected(home/"Library/Application Support")`). Deleting an app bundle
-//! and its support files would require widening that list for every code path,
-//! not just this one, so the useful half devtrim can honestly do is the half a
-//! person cannot do by hand: resolve the identifier and find what is keyed to it.
+//! (`is_protected(home/"Library/Application Support")`). `~/Applications`,
+//! which this command also searches, is not under that boundary. Deleting an
+//! app bundle and its support files would require widening that list for every
+//! code path, not just this one, so the useful half devtrim can honestly do is
+//! the half a person cannot do by hand: resolve the identifier and find what is
+//! keyed to it.
 //!
 //! Matching is by EXACT bundle identifier, never by name. `com.example.thing`
 //! must not select `com.example.thingy`, and a display name like "Notes" must
@@ -311,7 +314,7 @@ pub(crate) fn locate(
     let mut findings = vec![info_finding(
         "application bundle",
         app.to_path_buf(),
-        "report-only; devtrim refuses every path under /Applications",
+        "report-only; this command never removes a bundle, in /Applications or ~/Applications",
         &mut errors,
     )?];
 
@@ -400,9 +403,9 @@ pub fn run(ctx: &Ctx, app: &str) -> Result<ExitCode> {
 and only those. An app that stores data under a product name is not listed — Visual \
 Studio Code keeps ~/Library/Application Support/Code, which contains no identifier — \
 so treat this as a conservative report, not an inventory. devtrim does not remove \
-them: /Applications and all of ~/Library outside a closed allowlist of developer-managed \
-paths are refused \
-by the protected-path boundary, for every command rather than only this one.",
+them: this command only reports, and /Applications and all of ~/Library outside a \
+closed allowlist of developer-managed paths are refused by the protected-path \
+boundary, for every command rather than only this one.",
         report::terminal_safe(&identifier),
         "report-only:".yellow().bold(),
     ))?;
