@@ -2244,7 +2244,7 @@ fn footer_keys(app: &App) -> Vec<(&'static str, &'static str)> {
                     "all"
                 };
                 keys.extend([("Space", "pick"), ("A", toggle), ("a", "apply")]);
-            } else {
+            } else if app.row_count() > 1 {
                 keys.push(("↑↓", "move"));
             }
             if app.row_count() > 0 {
@@ -2378,25 +2378,28 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App, shown: &Shown) 
     for row in wrap_words(safety::DATA_LOSS_NOTICE, inner) {
         lines.push(Line::raw(row));
     }
-    let status = Line::styled(
-        report::terminal_safe(&app.status),
-        app.theme.style(app.status_token),
-    );
+    // The answer and, under it, the feedback on it: a mismatch or a refused
+    // key. The popup covers the footer at 64x18, so it must say this itself.
+    // Every status set here is devtrim's own text.
+    let answer = Text::from(vec![
+        Line::from(vec![
+            Span::raw("> "),
+            Span::styled(app.input.clone(), app.theme.bold(Token::Accent)),
+        ]),
+        Line::styled(app.status.as_str(), app.theme.style(Token::Warning)),
+    ]);
     match confirmation {
-        ConfirmationKind::YesNo { .. } => {
-            if !app.status.is_empty() {
-                lines.push(status);
-            }
-        }
+        ConfirmationKind::YesNo { .. } => lines.extend(
+            answer
+                .lines
+                .into_iter()
+                .skip(1)
+                .filter(|_| !app.status.is_empty()),
+        ),
         ConfirmationKind::Critical { .. } | ConfirmationKind::TrashPurge { .. } => {
             lines.push(Line::raw(""));
-            lines.push(Line::from(vec![
-                Span::raw("> "),
-                Span::styled(app.input.clone(), app.theme.bold(Token::Accent)),
-            ]));
-            // A mismatch or a refused key is reported under the answer it
-            // concerns; the row is kept so the popup does not jump.
-            lines.push(status);
+            // The feedback row is kept while empty so the popup does not jump.
+            lines.extend(answer.lines);
         }
     }
     let danger = match confirmation {
@@ -4021,6 +4024,10 @@ mod tests {
         let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
         assert_eq!(output.matches("Nothing found").count(), 1, "{output}");
         assert!(!output.contains("No findings"), "{output}");
+        assert!(
+            !output.contains("move"),
+            "the footer offers no movement over nothing: {output}"
+        );
     }
 
     #[test]
