@@ -145,6 +145,30 @@ impl Ctx {
         Ok(ctx)
     }
 
+    /// A context for tests: confirmed (`yes`), non-interactive, default roots
+    /// and windows, diagnostics captured, and the journal at
+    /// `home/journal.jsonl`. Tests override fields with struct update syntax.
+    #[cfg(test)]
+    pub(crate) fn for_test(home: PathBuf) -> Self {
+        Self {
+            yes: true,
+            yolo: false,
+            json: false,
+            roots: Vec::new(),
+            roots_origin: RootsOrigin::Default,
+            active_days: 30,
+            retain_days: 30,
+            protect: Vec::new(),
+            journal_path: home.join("journal.jsonl"),
+            home,
+            interactive: false,
+            diagnostic_output: DiagnosticOutput::Capture,
+            diagnostics: Default::default(),
+            journal_errors: Default::default(),
+            apply_results: Default::default(),
+        }
+    }
+
     pub fn diagnostic(&self, level: &str, message: impl Into<String>) {
         let message = message.into();
         match self.diagnostic_output {
@@ -2808,21 +2832,10 @@ mod tests {
     #[test]
     fn yes_does_not_bypass_critical_typed_confirmation() {
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: true,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
             journal_path: PathBuf::from("/tmp/devtrim-test-journal.jsonl"),
-            home: PathBuf::from("/Users/example"),
-            interactive: false,
+            json: true,
             diagnostic_output: DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(PathBuf::from("/Users/example"))
         };
 
         let error = gate(9, &ctx, &[]).unwrap_err();

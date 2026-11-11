@@ -1168,21 +1168,8 @@ mod tests {
         std::fs::write(&path, "").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
             journal_path: path.clone(),
-            home: root.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(root.clone())
         };
         let record =
             JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
@@ -1204,21 +1191,8 @@ mod tests {
         let target = root.join("unrelated-file");
         std::fs::write(&target, "unchanged").unwrap();
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
             journal_path: path.clone(),
-            home: root.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(root.clone())
         };
 
         symlink(&target, &path).unwrap();
@@ -1330,21 +1304,8 @@ mod tests {
         symlink(root.join("actual"), &alias).unwrap();
         let path = alias.join("devtrim/journal.jsonl");
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
             journal_path: path.clone(),
-            home: root.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(root.clone())
         };
         let record =
             JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
@@ -1416,21 +1377,8 @@ mod tests {
             JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
         append_to_path(&path, &attempt).unwrap();
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
             journal_path: path.clone(),
-            home: root.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(root.clone())
         };
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
 
@@ -1491,21 +1439,8 @@ mod tests {
         oversized.write_all(b"\n").unwrap();
         drop(oversized);
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
             journal_path: path.clone(),
-            home: root.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(root.clone())
         };
         let record =
             JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/cache"), 4);
@@ -1544,21 +1479,8 @@ mod tests {
 
     fn append_writer_records(path: &Path, writer: &str) {
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
             journal_path: path.to_path_buf(),
-            home: path.parent().unwrap().to_path_buf(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(path.parent().unwrap().to_path_buf())
         };
         for sequence in 0..50 {
             let target = PathBuf::from(format!("/tmp/writer-{writer}-{sequence}"));

@@ -454,23 +454,7 @@ mod tests {
     }
 
     fn test_context(home: PathBuf) -> Ctx {
-        Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home,
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        }
+        Ctx::for_test(home)
     }
 
     /// A toolchain that cannot be measured offers nothing and is named in one

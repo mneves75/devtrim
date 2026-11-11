@@ -866,21 +866,8 @@ mod tests {
         )
         .with_authority(TargetAuthority::NpmCache);
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home.clone())
         };
 
         let outcome = Caches.apply(&[finding], &ctx).unwrap();
@@ -950,23 +937,7 @@ mod tests {
         );
         assert_eq!(whole[0].authority(), TargetAuthority::BrewCache);
 
-        let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        };
+        let ctx = Ctx::for_test(home.clone());
         let entry = |path: PathBuf| {
             Finding::new(
                 "forged homebrew entry",
@@ -1051,23 +1022,7 @@ mod tests {
         std::fs::write(uv.join("entry"), "cached").unwrap();
         let running_uv = std::fs::File::create(uv.join(".lock")).unwrap();
         rustix::fs::flock(&running_uv, rustix::fs::FlockOperation::LockShared).unwrap();
-        let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        };
+        let ctx = Ctx::for_test(home.clone());
         let plan = || {
             let mut findings = vec![cache_finding("uv package cache", uv.clone(), 6, 3)];
             crate::report::effective_actions(&mut findings, true);
@@ -1112,23 +1067,7 @@ mod tests {
         let home = home.canonicalize().unwrap();
         std::fs::write(home.join("elsewhere/uv/entry"), "cached").unwrap();
         std::os::unix::fs::symlink(home.join("elsewhere"), home.join(".cache")).unwrap();
-        let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        };
+        let ctx = Ctx::for_test(home.clone());
         let mut plan = vec![cache_finding(
             "uv package cache",
             home.join(".cache/uv"),
@@ -1175,21 +1114,8 @@ mod tests {
             Action::Shred,
         );
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home.clone())
         };
 
         let outcome = Caches.apply(&[finding], &ctx).unwrap();
