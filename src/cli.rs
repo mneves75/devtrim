@@ -130,19 +130,10 @@ pub enum Command {
 }
 
 impl Target {
+    /// The category's name, which is also its `clean` argument: one table,
+    /// each operation's own `Op::name`.
     pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Caches => "caches",
-            Self::NodeModules => "node-modules",
-            Self::Artifacts => "artifacts",
-            Self::Simulators => "simulators",
-            Self::Xcode => "xcode",
-            Self::Docker => "docker",
-            Self::Toolchains => "toolchains",
-            Self::Installers => "installers",
-            Self::Agents => "agents",
-            Self::Leftovers => "leftovers",
-        }
+        crate::ops::for_target(*self).name()
     }
 }
 

@@ -1367,6 +1367,24 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
+    /// `clean <target>` reaches exactly the categories `scan` runs, each under
+    /// the name the CLI parses, so a category added to one list and not the
+    /// other, or spelled two ways, fails here.
+    #[test]
+    fn every_cli_target_is_one_registered_category_under_its_cli_name() {
+        use clap::ValueEnum as _;
+
+        let mut from_targets = Vec::new();
+        for target in crate::cli::Target::value_variants() {
+            let parsed = target.to_possible_value().unwrap();
+            assert_eq!(for_target(*target).name(), parsed.get_name());
+            assert_eq!(target.as_str(), parsed.get_name());
+            from_targets.push(target.as_str());
+        }
+        let registered = all().iter().map(|op| op.name()).collect::<Vec<_>>();
+        assert_eq!(from_targets, registered);
+    }
+
     /// Finder's AppleScript path failed on 2026-10-02 for lack of Automation
     /// permission and is slow on a loaded machine. Moving a real item would put
     /// it in the developer's actual Trash, whatever `HOME` says, so this pins

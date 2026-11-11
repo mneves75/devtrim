@@ -5,7 +5,7 @@ use crate::{
     uninstall, worktrees,
 };
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser, error::ErrorKind};
+use clap::{CommandFactory, Parser, ValueEnum as _, error::ErrorKind};
 use colored::Colorize;
 use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
@@ -195,19 +195,14 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
 }
 
 fn clean_operation_from_args(args: &[OsString]) -> &'static str {
-    match first_positional(args).and_then(|(argument, _)| argument.to_str()) {
-        Some("caches") => "caches",
-        Some("node-modules") => "node-modules",
-        Some("artifacts") => "artifacts",
-        Some("installers") => "installers",
-        Some("simulators") => "simulators",
-        Some("xcode") => "xcode",
-        Some("docker") => "docker",
-        Some("toolchains") => "toolchains",
-        Some("agents") => "agents",
-        Some("leftovers") => "leftovers",
-        _ => "clean",
-    }
+    first_positional(args)
+        .and_then(|(argument, _)| argument.to_str())
+        .and_then(|argument| {
+            cli::Target::value_variants()
+                .iter()
+                .find(|target| target.as_str() == argument)
+        })
+        .map_or("clean", cli::Target::as_str)
 }
 
 fn clap_error(error: clap::Error, json: bool, operation: &str) -> ExitCode {
