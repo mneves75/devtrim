@@ -412,7 +412,15 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             let actionable = findings
                 .iter()
                 .any(|finding| finding.action.is_actionable());
-            let nothing_to_purge = format!("{} nothing to purge in the Trash", "✓".green());
+            // A failure never reads as an empty Trash.
+            let nothing_to_purge = if scan_errors.is_empty() {
+                format!("{} nothing to purge in the Trash", "✓".green())
+            } else {
+                format!(
+                    "{} nothing offered: the Trash items above could not be measured",
+                    "✗".red()
+                )
+            };
             if !cli.apply {
                 if ctx.json {
                     report::print_json("trash-empty", false, &findings, None, &scan_errors)?;

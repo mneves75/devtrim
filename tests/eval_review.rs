@@ -214,6 +214,9 @@ fn review_trash_empty_unmeasurable_item_human_preview_fails() {
         assert!(!output.status.success(), "{name}: {shown}");
         assert!(shown.contains("locked"), "{name}: {shown}");
         assert!(!shown.contains("--confirm"), "{name}: {shown}");
+        // A failure never reads as an empty Trash.
+        assert!(!shown.contains("nothing to purge"), "{name}: {shown}");
+        assert!(shown.contains("could not be measured"), "{name}: {shown}");
     }
     assert!(locked.join("inner/secret").exists());
 }
