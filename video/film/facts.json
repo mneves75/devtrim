@@ -785,8 +785,8 @@
   "link": "https://mneves75.github.io/devtrim/#safety-h"
  },
  {
-  "id": "f8c23d998",
-  "text": "Install v0.12.6.",
+  "id": "f3405dbac",
+  "text": "Install v0.13.0.",
   "link": "https://mneves75.github.io/devtrim/#install-h"
  },
  {
@@ -845,8 +845,8 @@
   "link": "https://mneves75.github.io/devtrim/#brew-install"
  },
  {
-  "id": "f6eec973f",
-  "text": "devtrim v0.12.6",
+  "id": "f92e06b0a",
+  "text": "devtrim v0.13.0",
   "link": "https://mneves75.github.io/devtrim/#brew-install"
  },
  {
@@ -2232,11 +2232,6 @@
  {
   "id": "ff9e5d5c6",
   "text": "devtrim returns nonzero and includes the error in JSON. Failed actions are never counted as touched or reclaimed; fix the owner tool and preview again.",
-  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
- },
- {
-  "id": "f92e06b0a",
-  "text": "devtrim v0.13.0",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {
