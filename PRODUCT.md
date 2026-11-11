@@ -27,7 +27,8 @@ marketing voice. Never cute, never corporate-slop ("unleash", "elevate").
 - Safety information outranks aesthetics at every decision point.
 - Danger semantics: green = safe, amber = think, red = irreversible.
 - Works offline, dark-first (terminal audience), light fully supported.
-- Single self-contained HTML file. No external fonts, no JS dependencies.
+- Two static pages (index.html, MANUAL.html) and one stylesheet (styles.css).
+  No external fonts, no JS dependencies.
 - TUI safety and action meaning must be legible without color; keyboard-only
   navigation and scrolling are complete, scanner diagnostics remain visible,
   and terminals below the supported size block operation input visibly.

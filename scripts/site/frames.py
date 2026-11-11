@@ -2,9 +2,9 @@
 """Render real devtrim screens into the landing page.
 
 The pictures on index.html are not mock-ups: this script runs the binary in a
-sized PTY against a disposable home holding two stale demo projects (sparse
-files, so their logical sizes cost no disk), rebuilds each screen with its
-colors from the bytes the TUI writes, and replaces the HTML between the
+sized PTY against a disposable home holding two stale demo projects, rebuilds
+each screen with its colors from the bytes the TUI writes, and replaces the HTML
+between the
 `<!-- tui:NAME -->` / `<!-- cli:NAME -->` markers. Rerun it after any change
 to the interface:
 
@@ -12,9 +12,13 @@ to the interface:
 
 The demo home is the fixed `/private/tmp/devtrim-demo`, so the paths the frames
 show are the same on every run; it must not exist beforehand and is removed on
-exit. The real HOME is never read or changed. Each frame's column count goes
-into `styles.css` between the `frames:cols` markers, since the page's CSP
-admits no inline style attribute to carry it.
+exit. devtrim measures allocated blocks, so a sparse file would read 0 B: the
+projects are built from APFS clones of one real 0.1 GiB file, each reporting
+its own blocks as `du` counts them, so 7.8 GB of findings cost about 100 MiB.
+The real HOME is never read or changed; the script never applies a plan, since
+a Trash move goes to the developer's own Trash whatever HOME says. Each frame's
+column count goes into `styles.css` between the `frames:cols` markers, since the
+page's CSP admits no inline style attribute to carry it.
 """
 
 import html
@@ -31,9 +35,17 @@ spec = importlib.util.spec_from_file_location("tui", ROOT / "scripts/tests/tui.p
 tui = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tui)
 
-# Named ANSI foreground colors (30-37, 90-97) mapped to the page's classes.
+# Named ANSI foreground colors (30-37, 90-97, or 38;5;0-15) mapped to the page's
+# classes. Black and bright black are the dim grey `k`; white stays the frame's ink.
 FOREGROUND = {1: "r", 2: "g", 3: "y", 4: "u", 5: "m", 6: "c"}
 GIB = 1024**3
+
+
+def named(base):
+    """The class for named color `base` (0-7); None is the default ink."""
+    if base == 0:
+        return "k"
+    return FOREGROUND.get(base)
 
 
 def colored_screen(output, rows, columns):
@@ -82,10 +94,14 @@ def colored_screen(output, rows, columns):
             elif value == 27:
                 style["reverse"] = False
             elif 30 <= value <= 37 or 90 <= value <= 97:
-                base = value % 10
-                style["fg"] = "k" if value == 90 else FOREGROUND.get(base)
+                style["fg"] = named(value % 10)
             elif value == 39:
                 style["fg"] = None
+            elif value == 38 and values[index + 1:index + 2] == [5]:
+                # Crossterm writes Ratatui's named colors as 38;5;N, N in 0-15.
+                number = values[index + 2] if index + 2 < len(values) else -1
+                style["fg"] = named(number % 8) if 0 <= number <= 15 else None
+                index += 2
             elif value in (38, 48):
                 index += 2 if values[index + 1:index + 2] == [5] else 4
             index += 1
@@ -134,10 +150,21 @@ def to_html(grid, first_row=0, last_row=None):
     return "\n".join(lines).rstrip()
 
 
-def sparse(path, size):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as handle:
-        handle.truncate(size)
+CHUNK = GIB // 10
+
+
+def chunks(home, folder, tenths):
+    """`tenths` APFS clones of the home's one real chunk in `folder`: each clone
+    reports the chunk's blocks, so the folder measures tenths/10 GiB."""
+    folder.mkdir(parents=True, exist_ok=True)
+    seed = home / ".chunk"
+    if not seed.exists():
+        with open(seed, "wb") as handle:
+            for _ in range(CHUNK // (1 << 20)):
+                handle.write(b"\x01" * (1 << 20))
+            handle.write(b"\x01" * (CHUNK % (1 << 20)))
+    for number in range(tenths):
+        subprocess.run(["/bin/cp", "-c", str(seed), str(folder / f"part-{number:02}")], check=True)
 
 
 def demo_home(home):
@@ -148,14 +175,14 @@ def demo_home(home):
     api = home / "dev" / "payments-api"
     (api / ".git").mkdir(parents=True)
     (api / "Cargo.toml").write_text('[package]\nname = "payments-api"\n')
-    sparse(api / "target" / "debug" / "deps" / "libpayments.rlib", int(4.6 * GIB))
-    sparse(api / "target" / "release" / "payments-api", int(1.3 * GIB))
+    chunks(home, api / "target" / "debug" / "deps", 46)
+    chunks(home, api / "target" / "release", 13)
     shop = home / "dev" / "storefront"
     (shop / ".git").mkdir(parents=True)
     (shop / "package.json").write_text("{}\n")
-    sparse(shop / "node_modules" / "next" / "dist" / "bundle.js", int(1.1 * GIB))
-    sparse(shop / ".next" / "cache" / "webpack" / "pack", int(0.6 * GIB))
-    sparse(shop / ".turbo" / "cache" / "run.tar", int(0.2 * GIB))
+    chunks(home, shop / "node_modules" / "next" / "dist", 11)
+    chunks(home, shop / ".next" / "cache" / "webpack", 6)
+    chunks(home, shop / ".turbo" / "cache", 2)
 
 
 def capture(binary, home, rows, columns, steps):
@@ -210,7 +237,7 @@ def scan_summary(binary, home):
 def block(name, columns, body):
     return (
         f'<div class="term-frame" data-cols="{columns}" data-ui>'
-        f'<pre class="term" tabindex="0" aria-label="devtrim screen: {name}"><code>{body}</code></pre></div>'
+        f'<pre class="term" role="region" tabindex="0" aria-label="devtrim screen: {name}"><code>{body}</code></pre></div>'
     )
 
 
@@ -252,7 +279,7 @@ def main():
         scan, scan_columns = scan_summary(binary, home)
         frames["cli:scan"] = block("devtrim scan", scan_columns, scan)
         frames["cli:refusals"] = (
-            f'<pre class="term" tabindex="0" aria-label="devtrim refusals"><code>{refusals(binary, home)}</code></pre>'
+            f'<pre class="term" role="region" tabindex="0" aria-label="devtrim refusals"><code>{refusals(binary, home)}</code></pre>'
         )
     finally:
         shutil.rmtree(home)
