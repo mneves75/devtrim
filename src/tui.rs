@@ -2257,7 +2257,7 @@ fn footer_keys(app: &App) -> Vec<(&'static str, &'static str)> {
             }
             keys.extend([("r", "rescan"), ("b", "back")]);
         }
-        Screen::Detail => keys.extend([("↑↓", "move"), ("Esc", "back")]),
+        Screen::Detail => keys.extend([("↑↓", "move"), ("Esc/b", "back")]),
         Screen::Outcome | Screen::Error => {
             keys.extend([("↑↓", "move"), ("r", "rescan"), ("b", "back")]);
         }
@@ -3363,7 +3363,7 @@ mod tests {
             }
             if matches!(
                 app.screen,
-                Screen::Results | Screen::Outcome | Screen::Error
+                Screen::Results | Screen::Detail | Screen::Outcome | Screen::Error
             ) {
                 assert!(
                     row.contains("b back"),

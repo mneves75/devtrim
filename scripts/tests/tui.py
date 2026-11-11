@@ -467,7 +467,7 @@ def verify_minimum_size(binary):
             session.wait_for_screen("Left out of this plan", "more line(s); Enter shows all")
             session.send(b"\r")
             session.wait_for_screen(
-                "Esc back", "Details · lines 1-", str(project / "node_modules")
+                "Esc/b back", "Details · lines 1-", str(project / "node_modules")
             )
             visible = screen_text(render_screen(session.output, session.rows, session.columns))
             if f"project: {project}" in visible:
