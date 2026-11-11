@@ -2040,8 +2040,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
  },
  {
-  "id": "fc8a68923",
-  "text": "an applied document adds \"summary\"; its bytes_trashed_estimate is the part of bytes_freed_estimate moved to Trash and still on disk until the Trash is emptied. It also adds \"results\", one entry per actionable finding in plan order — finding (its index in findings), path, status and, on failure, error — where ok and error repeat what the journal recorded for that item and not_attempted is an item its category refused before journaling, or never reached. If a target fails, errors names each failure and the process exits nonzero; caches, agents, trash-empty, xcode, artifacts, and node-modules continue past a refused item — artifacts and node-modules after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and purge runs its node-modules and artifacts halves independently",
+  "id": "f3b645839",
+  "text": "an applied document adds \"summary\"; its bytes_trashed_estimate is the part of bytes_freed_estimate moved to Trash and still on disk until the Trash is emptied. It also adds \"results\", one entry per actionable finding in plan order — finding (its index in findings), path, status and, on failure, error — where ok and error repeat what the journal recorded for that item and not_attempted is an item its category refused before journaling, or never reached. If a target fails, errors names each failure and the process exits nonzero; caches, agents, trash-empty, xcode, installers, toolchains, simulators, artifacts, and node-modules continue past a refused item — artifacts and node-modules after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and purge runs its node-modules and artifacts halves independently",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
  },
  {
