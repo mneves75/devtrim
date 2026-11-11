@@ -532,6 +532,7 @@ fn gradle_processes() -> Result<Vec<u32>> {
         PROBE_TIMEOUT,
         "the Gradle process probe",
     )
+    .context("the Gradle process probe failed")
 }
 
 /// Gradle's caches and Wrapper distributions, unless a Gradle process runs.

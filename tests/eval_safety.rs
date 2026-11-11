@@ -430,6 +430,27 @@ fn eval_gradle_caches_are_kept_while_gradle_runs() {
     assert!(output.contains("while Gradle is running"), "{output}");
 }
 
+/// A Gradle probe that fails names itself in the error, withholds only
+/// Gradle's caches, and fails the run; the caches beside it are still offered.
+#[test]
+fn eval_a_failed_gradle_probe_names_itself() {
+    let sandbox = Sandbox::in_target("eval-gradle-probe-failed");
+    let gradle = cache(&sandbox, ".gradle/caches");
+    write(&gradle.join("modules-2/files-2.1/x.jar"), "module");
+    let other = cache(&sandbox, ".cache/gh");
+    sandbox.script("pgrep", "exit 2");
+    let preview = run(&sandbox, &["clean", "caches", "--json"]);
+    let document = json(&preview);
+    assert_eq!(actionable_targets(&document), std::slice::from_ref(&other));
+    assert!(
+        document
+            .to_string()
+            .contains("the Gradle process probe failed"),
+        "{document}"
+    );
+    assert!(!preview.status.success(), "{document}");
+}
+
 /// Makes one folder read-only, as Go makes its module cache, and on drop
 /// makes every folder under `root` writable again, wherever a failed removal
 /// left it, so the sandbox can still be removed.

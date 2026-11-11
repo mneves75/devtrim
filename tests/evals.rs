@@ -1769,6 +1769,45 @@ fn eval_leftovers_partial_read_keeps_the_row_and_fails_the_run() {
     );
 }
 
+/// Agent evidence and agent scratch read in part keep their rows as lower
+/// bounds, as `.scratch` rows do, and the run exits nonzero.
+#[test]
+fn eval_leftovers_agent_hints_read_in_part_keep_their_rows() {
+    let sandbox = Sandbox::in_target("eval-leftovers-hints-partial");
+    let dev = sandbox.path().join("dev");
+    let evidence = dev.join(".supergoal/evidence");
+    let scratch = dev.join("codex-worktree.a1b2c3");
+    for folder in [&evidence, &scratch] {
+        write(&folder.join("run.log"), &"x".repeat(13));
+        write(&folder.join("locked/secret"), "secret");
+    }
+    let locked = [
+        Unreadable::new(evidence.join("locked")),
+        Unreadable::new(scratch.join("locked")),
+    ];
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            dev.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    drop(locked);
+    let document = json(&output);
+    for folder in [&evidence, &scratch] {
+        let row = finding_at(&document, folder);
+        assert!(
+            row["note"].as_str().unwrap().contains("lower bound")
+                && row["size_bytes"].as_u64().unwrap() > 0,
+            "{document}"
+        );
+    }
+    assert!(!output.status.success(), "{document}");
+}
+
 #[test]
 fn eval_leftovers_reports_ignored_scratch_folders_only() {
     let sandbox = Sandbox::in_target("eval-leftovers-scratch");
