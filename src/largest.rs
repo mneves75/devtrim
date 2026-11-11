@@ -23,9 +23,12 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
     // Overlapping roots (e.g. ~/work and ~/work/project) would count the same
     // files twice; keep only roots not contained in another configured root.
     for root in crate::ops::project::normalized_roots(roots) {
+        // One device, as every other report walk: a mounted volume below a
+        // root is not part of the root's disk usage.
         for result in walkdir::WalkDir::new(root)
             .follow_links(false)
             .follow_root_links(false)
+            .same_file_system(true)
         {
             let entry = match result {
                 Ok(entry) => entry,

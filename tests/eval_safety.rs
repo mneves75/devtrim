@@ -730,6 +730,51 @@ fn eval_trash_empty_refuses_an_unwritable_journal_before_the_purge() {
     assert!(!item.exists());
 }
 
+/// An empty Trash asks for no size or consent, but its apply still validates
+/// the Trash root and still refuses an unwritable journal before it starts.
+#[test]
+fn eval_trash_empty_with_nothing_to_purge_keeps_the_root_and_journal_checks() {
+    let apply = ["trash-empty", "--apply", "--json"];
+    let control = Sandbox::in_target("eval-trash-nothing-control");
+    std::fs::create_dir_all(control.path().join(".Trash")).unwrap();
+    let result = run(&control, &apply);
+    assert!(result.status.success(), "control: {}", json(&result));
+
+    let sandbox = Sandbox::in_target("eval-trash-nothing-journal");
+    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
+    std::fs::create_dir_all(sandbox.journal()).unwrap();
+    std::fs::set_permissions(
+        sandbox.journal().parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let result = run(&sandbox, &apply);
+    let document = json(&result);
+    assert!(!result.status.success(), "{document}");
+    assert_eq!(
+        document["applied"], false,
+        "eval/trash-nothing-journal: an empty purge skipped the journal check: {document}"
+    );
+
+    let linked = Sandbox::in_target("eval-trash-nothing-link");
+    std::fs::create_dir_all(linked.path().join("elsewhere")).unwrap();
+    symlink(
+        linked.path().join("elsewhere"),
+        linked.path().join(".Trash"),
+    )
+    .unwrap();
+    let result = run(&linked, &apply);
+    let document = json(&result);
+    assert!(
+        !result.status.success()
+            && document["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("refusing unverified Trash"),
+        "eval/trash-nothing-root: a linked Trash was accepted: {document}"
+    );
+}
+
 /// Hardlinks an unrelated sentinel as `leaf` in the journal folder and proves
 /// apply refuses before changing the sentinel's bytes or mode, or the cache.
 fn assert_hardlinked_journal_leaf_refused(leaf: &str, allowed: &[&str], marker: &str) {

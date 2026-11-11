@@ -78,7 +78,7 @@ pub(crate) fn report(ctx: &Ctx) -> WorktreesReport {
                     continue;
                 }
             }
-            match list_repository(&repository, &scan_roots, &mut listed) {
+            match list_repository(&repository, &scan_roots, &mut listed, &mut report.errors) {
                 Ok(rows) => report.findings.extend(rows),
                 Err(error) => report.errors.push(format!("{error:#}")),
             }
@@ -101,11 +101,13 @@ pub(crate) fn report(ctx: &Ctx) -> WorktreesReport {
 }
 
 /// The rows for one repository: its main worktree and each linked one, or
-/// nothing when it has no linked worktree.
+/// nothing when it has no linked worktree. A worktree read only in part keeps
+/// its row and adds one entry to `errors`.
 fn list_repository(
     repository: &Path,
     scan_roots: &[PathBuf],
     listed: &mut HashSet<(u64, u64)>,
+    errors: &mut Vec<String>,
 ) -> Result<Vec<Finding>> {
     let records = parse_porcelain(&project::worktree_listing(repository)?)
         .with_context(|| format!("cannot read the worktree list of {}", repository.display()))?;
@@ -146,12 +148,10 @@ fn list_repository(
                     .cloned()
                     .collect();
                 let measured = measure_lenient(&record.path, &nested);
-                if measured.unread > 0 {
-                    note.push_str(&format!(
-                        "; lower bound: {} entries could not be read",
-                        measured.unread
-                    ));
+                if let Some(lower_bound) = measured.lower_bound_note() {
+                    note.push_str(&format!("; {lower_bound}"));
                 }
+                errors.extend(measured.partial_read_error(&record.path));
                 measured.bytes
             }
             Err(reason) => {

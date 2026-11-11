@@ -1231,6 +1231,70 @@ fn eval_an_unreadable_xcode_folder_blocks_only_itself() {
     );
 }
 
+/// The Xcode liveness probe asks for this user's processes only: another
+/// user's Xcode, whose open files `lsof` cannot read, must not refuse
+/// DerivedData. The control is this user's Xcode with the same unreadable
+/// listing, which still refuses.
+#[test]
+fn eval_another_users_xcode_does_not_refuse_derived_data() {
+    let uid = rustix::process::getuid().as_raw();
+    let sandbox = Sandbox::in_target("eval-xcode-foreign-user");
+    let derived = sandbox.path().join("Library/Developer/Xcode/DerivedData");
+    write(&derived.join("App-old/Build/out"), "built");
+    age(&derived.join("App-old"), 60);
+    sandbox.script("lsof", "exit 1");
+    let offered = derived.canonicalize().unwrap().join("App-old");
+
+    sandbox.script(
+        "pgrep",
+        &format!(
+            "case \" $* \" in *\" -U {uid} \"*) exit 1;; esac\ncase \"$*\" in *Xcode*) echo 4242 ;; *) exit 1 ;; esac"
+        ),
+    );
+    let foreign = run(&sandbox, &["clean", "xcode", "--json"]);
+    let document = json(&foreign);
+    assert_eq!(
+        actionable_targets(&document),
+        vec![offered],
+        "eval/xcode-current-user: another user's Xcode refused DerivedData: {document}"
+    );
+    assert!(foreign.status.success(), "{document}");
+
+    sandbox.script(
+        "pgrep",
+        "case \"$*\" in *Xcode*) echo 4242 ;; *) exit 1 ;; esac",
+    );
+    let own = run(&sandbox, &["clean", "xcode", "--json"]);
+    let document = json(&own);
+    assert!(
+        !own.status.success() && actionable_targets(&document).is_empty(),
+        "control: this user's unreadable Xcode must refuse DerivedData: {document}"
+    );
+}
+
+/// An Xcode support folder that cannot be listed fails the category and
+/// names itself.
+#[test]
+fn eval_an_unlistable_xcode_support_folder_is_named() {
+    let sandbox = Sandbox::in_target("eval-xcode-unlistable");
+    let support = sandbox
+        .path()
+        .join("Library/Developer/Xcode/iOS DeviceSupport");
+    write(&support.join("17.0 (21A329)/Symbols/dyld"), "symbols");
+    let _locked = Unreadable::new(support.clone());
+    let output = run(&sandbox, &["clean", "xcode", "--json"]);
+    let document = json(&output);
+    assert!(!output.status.success(), "{document}");
+    assert!(
+        document["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error.as_str().unwrap().contains("iOS DeviceSupport")),
+        "eval/xcode-unlistable: the error must name the folder: {document}"
+    );
+}
+
 // ---------- two windows: active_days and retain_days ----------
 
 /// `active_days` gates regenerable build output; `retain_days` gates what
@@ -1611,6 +1675,97 @@ fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_reposit
             .status
             .code()
             == Some(2)
+    );
+}
+
+/// A worktree that cannot be read in full is still listed with its
+/// lower-bound size, and the partial read is an error: the run exits nonzero.
+#[test]
+fn eval_worktrees_partial_read_keeps_the_row_and_fails_the_run() {
+    let sandbox = Sandbox::in_target("eval-worktrees-partial");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let dev = sandbox.path().join("dev");
+    let app = dev.join("app");
+    write(&app.join("README"), "readme");
+    repo(&sandbox, &app, STALE, &["README"]);
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &["worktree", "add", "-q", "-b", "feature", "../app-feature"],
+    );
+    let feature = dev.join("app-feature");
+    write(&feature.join("locked/secret.bin"), &"x".repeat(4096));
+    let locked = Unreadable::new(feature.join("locked"));
+    let output = run(
+        &sandbox,
+        &["worktrees", "--root", dev.to_str().unwrap(), "--json"],
+    );
+    drop(locked);
+    let document = json(&output);
+    let row = finding_at(&document, &feature);
+    assert!(
+        row["note"].as_str().unwrap().contains("lower bound")
+            && row["size_bytes"].as_u64().unwrap() > 0,
+        "{document}"
+    );
+    assert!(
+        !output.status.success(),
+        "eval/worktrees-partial: a partial read exited 0: {document}"
+    );
+    assert!(
+        document["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error.as_str().unwrap().contains(feature.to_str().unwrap())),
+        "eval/worktrees-partial: the error must name the worktree: {document}"
+    );
+}
+
+/// A `.scratch` folder that cannot be read in full keeps its row and its
+/// lower-bound size, and the partial read makes the run exit nonzero.
+#[test]
+fn eval_leftovers_partial_read_keeps_the_row_and_fails_the_run() {
+    let sandbox = Sandbox::in_target("eval-leftovers-partial");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let dev = sandbox.path().join("dev");
+    let kept = dev.join("kept");
+    write(&kept.join(".gitignore"), ".scratch/\n");
+    repo(&sandbox, &kept, STALE, &[".gitignore"]);
+    let evidence = kept.join(".scratch/evidence");
+    write(&evidence.join("run.log"), &"x".repeat(13));
+    write(&evidence.join("locked/secret"), "secret");
+    let locked = Unreadable::new(evidence.join("locked"));
+    let output = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            dev.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    drop(locked);
+    let document = json(&output);
+    let row = finding_at(&document, &evidence);
+    assert!(
+        row["note"].as_str().unwrap().contains("lower bound")
+            && row["size_bytes"].as_u64().unwrap() > 0,
+        "{document}"
+    );
+    assert!(
+        !output.status.success(),
+        "eval/leftovers-partial: a partial read exited 0: {document}"
+    );
+    assert!(
+        document["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error.as_str().unwrap().contains(evidence.to_str().unwrap())),
+        "eval/leftovers-partial: the error must name the folder: {document}"
     );
 }
 

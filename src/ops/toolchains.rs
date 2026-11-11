@@ -85,12 +85,12 @@ impl Op for Toolchains {
                 apply_filesystem_finding(self.name(), finding, ctx)?;
                 Ok(removal_note(finding, path.display()))
             })();
+            // Toolchains are independent folders: one that became referenced or
+            // that the sink refuses must not strand the rest of the plan. Every
+            // failure is recorded, so the run still reports nonzero.
             match result {
                 Ok(note) => outcome.record(finding, note),
-                Err(error) => {
-                    outcome.fail(error);
-                    break;
-                }
+                Err(error) => outcome.fail(error),
             }
         }
         Ok(outcome)

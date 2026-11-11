@@ -183,11 +183,8 @@ fn scratch_findings(repository: &Path, findings: &mut Vec<Finding>) -> Result<()
         };
         let measured = measure_lenient(&child, &Default::default());
         let mut note = "review manually; ignored files are still your data".to_owned();
-        if measured.unread > 0 {
-            note.push_str(&format!(
-                "; lower bound: {} entries could not be read",
-                measured.unread
-            ));
+        if let Some(lower_bound) = measured.lower_bound_note() {
+            note.push_str(&format!("; {lower_bound}"));
         }
         findings.push(Finding::new(
             label,
@@ -197,6 +194,12 @@ fn scratch_findings(repository: &Path, findings: &mut Vec<Finding>) -> Result<()
             1,
             Action::Info,
         ));
+        if let Some(error) = measured.partial_read_error(&child) {
+            findings.push(project::error_finding(
+                format!("repository scratch `{name}`: partial size"),
+                error,
+            ));
+        }
     }
     Ok(())
 }

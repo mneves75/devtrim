@@ -263,40 +263,56 @@ pub(crate) fn matches_identifier_file(name: &str, identifier: &str, extension: &
 /// Allocated bytes under `path` and how many entries could not be read. A
 /// protected folder inside a container lowers that one size to a disclosed
 /// lower bound instead of hiding every path the report found.
-fn measure(path: &Path) -> Result<(u64, usize)> {
+fn measure(path: &Path) -> Result<crate::safety::Measured> {
     let metadata = std::fs::symlink_metadata(path)
         .with_context(|| format!("cannot inspect {}", path.display()))?;
     if metadata.file_type().is_dir() {
-        let measured = crate::safety::measure_lenient(path, &Default::default());
-        Ok((measured.bytes, measured.unread))
+        Ok(crate::safety::measure_lenient(path, &Default::default()))
     } else {
-        Ok((crate::safety::allocated_bytes(&metadata, path)?, 0))
+        Ok(crate::safety::Measured {
+            bytes: crate::safety::allocated_bytes(&metadata, path)?,
+            unread: 0,
+        })
     }
 }
 
-fn info_finding(label: impl Into<String>, path: PathBuf, note: &str) -> Result<Finding> {
-    let (size, unread) = measure(&path)?;
-    let note = if unread == 0 {
-        note.to_owned()
-    } else {
-        format!("{note}; size is a lower bound: {unread} entries could not be read")
+/// The row for `path`; a partial measurement keeps the row with its
+/// lower-bound size and adds one entry to `errors`.
+fn info_finding(
+    label: impl Into<String>,
+    path: PathBuf,
+    note: &str,
+    errors: &mut Vec<String>,
+) -> Result<Finding> {
+    let measured = measure(&path)?;
+    let note = match measured.lower_bound_note() {
+        Some(lower_bound) => format!("{note}; {lower_bound}"),
+        None => note.to_owned(),
     };
+    errors.extend(measured.partial_read_error(&path));
     Ok(Finding::new(
         label,
         Some(path),
-        size,
+        measured.bytes,
         &note,
         1,
         Action::Info,
     ))
 }
 
-/// Every path that belongs to `identifier`, plus the bundle itself.
-pub(crate) fn locate(app: &Path, identifier: &str, home: &Path) -> Result<Vec<Finding>> {
+/// Every path that belongs to `identifier`, plus the bundle itself, and an
+/// error for each one measured only in part.
+pub(crate) fn locate(
+    app: &Path,
+    identifier: &str,
+    home: &Path,
+) -> Result<(Vec<Finding>, Vec<String>)> {
+    let mut errors = Vec::new();
     let mut findings = vec![info_finding(
         "application bundle",
         app.to_path_buf(),
         "report-only; devtrim refuses every path under /Applications",
+        &mut errors,
     )?];
 
     for directory in ID_DIRECTORIES {
@@ -319,6 +335,7 @@ pub(crate) fn locate(app: &Path, identifier: &str, home: &Path) -> Result<Vec<Fi
                     format!("{directory} entry"),
                     entry.path(),
                     "report-only; belongs to this bundle identifier",
+                    &mut errors,
                 )?);
             }
         }
@@ -344,12 +361,13 @@ pub(crate) fn locate(app: &Path, identifier: &str, home: &Path) -> Result<Vec<Fi
                     format!("{directory} entry"),
                     entry.path(),
                     "report-only; belongs to this bundle identifier",
+                    &mut errors,
                 )?);
             }
         }
     }
 
-    Ok(findings)
+    Ok((findings, errors))
 }
 
 pub fn run(ctx: &Ctx, app: &str) -> Result<ExitCode> {
@@ -363,11 +381,17 @@ pub fn run(ctx: &Ctx, app: &str) -> Result<ExitCode> {
             bundle.display()
         );
     }
-    let findings = locate(&bundle, &identifier, &ctx.home)?;
+    let (findings, errors) = locate(&bundle, &identifier, &ctx.home)?;
+    // A partial read is a partial operation: disclosed in errors AND status.
+    let status = if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    };
 
     if ctx.json {
-        report::print_json("uninstall", false, &findings, None, &[])?;
-        return Ok(ExitCode::SUCCESS);
+        report::print_json("uninstall", false, &findings, None, &errors)?;
+        return Ok(status);
     }
 
     report::print_human(&findings)?;
@@ -382,5 +406,8 @@ by the protected-path boundary, for every command rather than only this one.",
         report::terminal_safe(&identifier),
         "report-only:".yellow().bold(),
     ))?;
-    Ok(ExitCode::SUCCESS)
+    for error in &errors {
+        eprintln!("{} {}", "warn".yellow(), report::terminal_safe(error));
+    }
+    Ok(status)
 }

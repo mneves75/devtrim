@@ -1485,6 +1485,26 @@ pub(crate) struct Measured {
     pub(crate) unread: usize,
 }
 
+impl Measured {
+    /// The note a report row carries when this measurement is partial: the
+    /// row and its lower-bound size stay, never dropped for a partial read.
+    pub(crate) fn lower_bound_note(&self) -> Option<String> {
+        (self.unread > 0).then(|| {
+            format!(
+                "size is a lower bound: {} entries could not be read",
+                self.unread
+            )
+        })
+    }
+
+    /// The error a partial measurement of `path` adds to its report, so the
+    /// run exits nonzero (`SECURITY.md` § Defense layers 9).
+    pub(crate) fn partial_read_error(&self, path: &Path) -> Option<String> {
+        self.lower_bound_note()
+            .map(|note| format!("{}: {note}", path.display()))
+    }
+}
+
 pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured {
     let mut measured = Measured {
         bytes: 0,
@@ -1845,10 +1865,17 @@ pub(crate) struct OpenFile {
 
 /// Whether an Xcode-family process runs and, if so, every file the running
 /// ones hold open, from one `lsof` that must report them all.
+///
+/// This user's processes only (`pgrep -U`, the real user ID), as in
+/// [`build_process_pids`]: `lsof` cannot read another logged-in user's Xcode,
+/// and its exit 1 refused DerivedData on every run. An Xcode another user runs
+/// against this user's DerivedData is not seen, the same accepted limit.
 pub(crate) fn xcode_activity() -> Result<XcodeActivity> {
+    let user = rustix::process::getuid().as_raw().to_string();
     let pids = pgrep_pids(
         Command::new("pgrep")
             .args(PGREP_MATCH_ARGS)
+            .args(["-U", user.as_str()])
             .arg(XCODE_BUILD_PATTERN),
         PROBE_TIMEOUT,
         "Xcode build liveness probe",

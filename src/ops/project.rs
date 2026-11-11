@@ -755,7 +755,7 @@ pub(crate) fn unjudged_finding(subject: &str, path: &Path, error: &anyhow::Error
 
 /// A finding that offers nothing and carries no target; its `scan_error`
 /// makes the run report failure.
-fn error_finding(label: String, message: String) -> Finding {
+pub(crate) fn error_finding(label: String, message: String) -> Finding {
     Finding::new(label, None, 0, &message, 5, Action::Info).with_scan_error(message)
 }
 

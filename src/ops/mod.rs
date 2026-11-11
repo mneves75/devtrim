@@ -1215,7 +1215,9 @@ pub fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>> {
 /// Direct Trash children `keep` accepts, judged before any is measured.
 fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Result<Vec<Finding>> {
     let directory = crate::safety::validate_trash_root(&ctx.home)?;
-    let mut entries = std::fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries = std::fs::read_dir(&directory)
+        .and_then(|listing| listing.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("cannot list the Trash: {}", directory.display()))?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     let mut findings = Vec::with_capacity(entries.len());
     let mut unread = Vec::new();

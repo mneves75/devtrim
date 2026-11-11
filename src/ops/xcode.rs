@@ -118,7 +118,14 @@ impl Xcode {
             let entries = match std::fs::read_dir(&directory) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "cannot read Xcode support directory {}",
+                            directory.display()
+                        )
+                    });
+                }
             };
             for entry in entries {
                 let entry = match entry.with_context(|| {

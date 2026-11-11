@@ -376,8 +376,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             ref path,
             ref output,
             no_open,
-        } => dashboard::run(&ctx, path.as_deref(), output.as_deref(), no_open)
-            .context("dashboard failed"),
+        } => dashboard::run(&ctx, path.as_deref(), output.as_deref(), no_open),
         cli::Command::Largest { top } => {
             if !ctx.json {
                 ctx.diagnostic("info", ctx.roots_note());
@@ -450,9 +449,18 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                 .filter_map(report::Finding::scan_error)
                 .map(str::to_owned)
                 .collect();
+            let actionable = findings
+                .iter()
+                .any(|finding| finding.action.is_actionable());
+            let nothing_to_purge = format!("{} nothing to purge in the Trash", "✓".green());
             if !cli.apply {
                 if ctx.json {
                     report::print_json("trash-empty", false, &findings, None, &scan_errors)?;
+                } else if !actionable {
+                    if !findings.is_empty() {
+                        report::print_human(&findings)?;
+                    }
+                    report::print_line(&nothing_to_purge)?;
                 } else {
                     report::print_human(&findings)?;
                     let narrowed = if only_devtrim { " --only-devtrim" } else { "" };
@@ -468,6 +476,34 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                 } else {
                     ExitCode::from(1)
                 });
+            }
+            // As in `run_op`: a plan with nothing to purge has no size to
+            // acknowledge and no consent to give, but it still starts an
+            // apply, so an unwritable journal refuses it.
+            if !actionable {
+                return match journal::check_writable(&ctx) {
+                    Err(error) => command_error("trash-empty", false, &findings, &ctx, error),
+                    Ok(()) if ctx.json => print_outcome(
+                        "trash-empty",
+                        &findings,
+                        &ops::ApplyOutcome::new("trash-empty"),
+                        &ctx,
+                    ),
+                    Ok(()) if findings.is_empty() => {
+                        report::print_line(&nothing_to_purge)?;
+                        Ok(ExitCode::SUCCESS)
+                    }
+                    Ok(()) => {
+                        report::print_human(&findings)?;
+                        report::print_line(&nothing_to_purge)?;
+                        print_outcome(
+                            "trash-empty",
+                            &findings,
+                            &ops::ApplyOutcome::new("trash-empty"),
+                            &ctx,
+                        )
+                    }
+                };
             }
             if !ctx.json {
                 report::print_human(&findings)?;

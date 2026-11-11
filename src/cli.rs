@@ -15,11 +15,11 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Apply the exact previewed actions; cleanup can delete data (cleanup commands only)
+    /// Apply the exact previewed actions; can delete data (clean except leftovers, purge, trash-empty, optimize)
     #[arg(long, global = true)]
     pub apply: bool,
 
-    /// Accept data-loss risk and skip y/N prompts; required for non-TTY mutation (cleanup commands only)
+    /// Accept data-loss risk and skip y/N prompts; non-TTY y/N plans need it, typed-size plans need --yolo
     #[arg(short = 'y', long, global = true)]
     pub yes: bool,
 
@@ -93,7 +93,7 @@ pub enum Command {
         #[arg(long = "task")]
         tasks: Vec<String>,
     },
-    /// Move stale node_modules and build artifacts to Trash across projects, largest first
+    /// Remove stale node_modules and build artifacts across projects, largest first (Trash unless --shred)
     Purge,
     /// Clean one category
     Clean {

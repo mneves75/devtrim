@@ -297,17 +297,11 @@ impl Op for Simulators {
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
+        // The freed estimate is the sum of the previewed device sizes. Measuring
+        // the whole Devices tree before and after would walk every working
+        // simulator's data twice, and one unreadable folder in a device the plan
+        // never touches would refuse the whole apply.
         let mut outcome = ApplyOutcome::new(self.name());
-        // The CLI applies a plan that holds only the report-only disclosure, and
-        // measuring before and after walks every simulator's data to change
-        // nothing.
-        if !findings
-            .iter()
-            .any(|finding| finding.action.is_actionable())
-        {
-            return Ok(outcome);
-        }
-        let before = dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices"))?;
         for finding in findings {
             // The available-device disclosure is report-only. Skipping on
             // actionability, never on a missing authority, keeps an actionable
@@ -343,18 +337,12 @@ impl Op for Simulators {
                     |_| format!("deleted unavailable simulator device {udid}"),
                 )
             })();
+            // Each device is deleted by its own UDID, so one refused device
+            // (it became available, or vanished) says nothing about the others;
+            // every failure is recorded, so the run still reports nonzero.
             match result {
                 Ok(note) => outcome.record(finding, note),
-                Err(error) => {
-                    outcome.fail(error);
-                    break;
-                }
-            }
-        }
-        match dir_size(&ctx.home.join("Library/Developer/CoreSimulator/Devices")) {
-            Ok(after) => outcome.summary.bytes_freed_estimate = before.saturating_sub(after),
-            Err(error) => {
-                outcome.fail(error.context("cannot measure simulator storage after apply"))
+                Err(error) => outcome.fail(error),
             }
         }
         Ok(outcome)
@@ -450,8 +438,8 @@ mod tests {
             Action::None,
         );
         // Real authority whose action changed after preview: apply refuses it
-        // with its own message before anything runs. Apply stops at the first
-        // error, so a disclosure mistaken for a command would surface instead.
+        // with its own message before anything runs. A disclosure mistaken for
+        // a command would add a second error.
         let mut forged = Finding::command(
             "unavailable Apple simulator device 60E60E60-0000-4000-8000-000000000001",
             10,
