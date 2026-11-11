@@ -878,20 +878,10 @@ impl Agents {
         })();
         match release_findings {
             Ok(releases) => releases,
-            Err(error) => {
-                let message = format!("Codex release cleanup refused: {error:#}");
-                vec![
-                    Finding::new(
-                        format!("Codex standalone releases unavailable{suffix}"),
-                        None,
-                        0,
-                        &message,
-                        5,
-                        Action::Info,
-                    )
-                    .with_scan_error(message),
-                ]
-            }
+            Err(error) => vec![super::project::error_finding(
+                format!("Codex standalone releases unavailable{suffix}"),
+                format!("Codex release cleanup refused: {error:#}"),
+            )],
         }
     }
 

@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use super::project::{UnreadFolder, has_git_marker, unread_folders_finding};
+use super::project::{UnreadFolder, error_finding, has_git_marker, unread_folders_finding};
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, apply_uv_cache_finding, dir_size,
     removal_note,
@@ -437,16 +437,10 @@ fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
 /// A finding for a cache whose owner could not be asked: it offers nothing,
 /// and the run reports failure, while the other caches are still offered.
 fn not_judged(subject: &str, error: &anyhow::Error) -> Finding {
-    let message = format!("cannot judge the {subject}: {error:#}");
-    Finding::new(
+    error_finding(
         format!("{subject} not judged"),
-        None,
-        0,
-        &message,
-        5,
-        Action::Info,
+        format!("cannot judge the {subject}: {error:#}"),
     )
-    .with_scan_error(message)
 }
 
 /// Gradle's user home: `GRADLE_USER_HOME`, by default `~/.gradle` (Gradle 9.8.1
