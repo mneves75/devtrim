@@ -1,0 +1,7 @@
+# One exact finding, never a rule or a path: the OpenSSH banner in a unit-test
+# fixture (body "AAAABODYsecret", no key material) at src/secrets.rs:556 in commit
+# 6a038a9 on the unmerged branch cursor/diskpilot-gaps-b530 (PR #83). Its next
+# commit dc78677 rewrote the fixture, but the scan reads every ref, so the old
+# commit failed main and would fail the release job. Remove this line once no
+# ref reaches 6a038a9.
+6a038a9c39d19f7b2376d9ed2e97122aa8288fa2:src/secrets.rs:private-key:556
