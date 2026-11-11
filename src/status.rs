@@ -23,7 +23,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph};
 
 use crate::report;
 use crate::safety::Ctx;
@@ -742,7 +742,7 @@ fn format_uptime(seconds: u64) -> String {
     }
 }
 
-fn print_human(report: &StatusReport) -> Result<()> {
+fn human_text(report: &StatusReport) -> String {
     use std::fmt::Write as _;
 
     let mut output = String::new();
@@ -753,68 +753,15 @@ fn print_human(report: &StatusReport) -> Result<()> {
     };
 
     heading(&mut output, "machine");
-    if let Some(uptime) = report.uptime_seconds {
-        let _ = writeln!(output, "  uptime          {}", format_uptime(uptime));
-    }
-    if let (Some(load), Some(cpus)) = (report.load_average, report.cpu_count) {
-        let _ = writeln!(
-            output,
-            "  load            {:.2} {:.2} {:.2}  over {cpus} logical CPUs",
-            load[0], load[1], load[2]
-        );
-    }
-    if let Some(memory) = report.memory {
-        let percent = memory.used_percent();
-        let _ = writeln!(
-            output,
-            "  memory          {} of {} used ({percent:.0}%) = active + wired + compressed",
-            report::gb(memory.used_bytes),
-            report::gb(memory.total_bytes)
-        );
-        let _ = writeln!(
-            output,
-            "                  {} wired, {} compressed, {} inactive (reclaimable), {} free",
-            report::gb(memory.wired_bytes),
-            report::gb(memory.compressed_bytes),
-            report::gb(memory.inactive_bytes),
-            report::gb(memory.free_bytes)
-        );
-    }
-    if let Some(disk) = report.disk {
-        let _ = writeln!(
-            output,
-            "  disk            {} used, {} available ({:.0}% of used + available)",
-            report::gb(disk.used_bytes),
-            report::gb(disk.available_bytes),
-            disk.used_percent()
-        );
-    }
-    if let Some(battery) = &report.battery {
-        let _ = writeln!(
-            output,
-            "  battery         {}%, {}{}",
-            battery.percent,
-            report::terminal_safe(&battery.state),
-            if battery.on_ac_power { ", on AC" } else { "" }
-        );
-    }
-    if let Some(thermal) = &report.thermal {
-        let _ = writeln!(
-            output,
-            "  thermal         {}",
-            thermal.cpu_speed_limit_percent.map_or_else(
-                || "no limit recorded".to_string(),
-                |limit| format!("CPU limited to {limit}%")
-            )
-        );
-    }
-    if let Some(network) = report.network {
-        let _ = writeln!(
-            output,
-            "  network         {} in, {} out (cumulative since boot)",
-            report::gb(network.received_bytes),
-            report::gb(network.sent_bytes)
-        );
+    // Only what was read: the reasons for the rest follow the headline.
+    for (label, metric) in metric_rows(report) {
+        let Metric::Read(lines) = metric else {
+            continue;
+        };
+        for (index, line) in lines.iter().enumerate() {
+            let label = if index == 0 { label } else { "" };
+            let _ = writeln!(output, "  {label:<16}{}", report::terminal_safe(line));
+        }
     }
 
     if !report.top_processes.is_empty() {
@@ -849,8 +796,7 @@ fn print_human(report: &StatusReport) -> Result<()> {
     for entry in &report.unavailable {
         let _ = writeln!(output, "  unavailable: {}", report::terminal_safe(entry));
     }
-    report::write_stdout(output.as_bytes())?;
-    Ok(())
+    output
 }
 
 /// How often the live dashboard re-reads the machine. Collection spawns ten
@@ -902,16 +848,25 @@ fn run_watch(ctx: &Ctx) -> Result<std::process::ExitCode> {
     let mut latest: Option<StatusReport> = None;
     let outcome = (|| -> Result<std::process::ExitCode> {
         let mut redraw = true;
+        let mut sampled_at: Option<std::time::Instant> = None;
+        let mut shown_age = None;
         loop {
             if let Some(signal) = interrupts.received() {
                 crate::tui::restore_and_exit(signal);
             }
             while let Ok(report) = receiver.try_recv() {
                 latest = Some(report);
+                sampled_at = Some(std::time::Instant::now());
+                redraw = true;
+            }
+            // The footer counts whole seconds, so it is redrawn as each passes.
+            let age = sampled_at.map(|at| at.elapsed());
+            if age.map(|age| age.as_secs()) != shown_age {
                 redraw = true;
             }
             if redraw {
-                terminal.draw(|frame| render_watch(frame, latest.as_ref(), theme))?;
+                terminal.draw(|frame| render_watch(frame, latest.as_ref(), theme, age))?;
+                shown_age = age.map(|age| age.as_secs());
                 redraw = false;
             }
             if !event::poll(WATCH_POLL).context("cannot poll terminal input")? {
@@ -921,8 +876,7 @@ fn run_watch(ctx: &Ctx) -> Result<std::process::ExitCode> {
                 Event::Resize(_, _) => redraw = true,
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let quit = matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                        || (key.modifiers.contains(event::KeyModifiers::CONTROL)
-                            && key.code == KeyCode::Char('c'));
+                        || crate::tui::is_interrupt(key);
                     if quit {
                         let failed = latest
                             .as_ref()
@@ -957,7 +911,26 @@ fn run_watch(ctx: &Ctx) -> Result<std::process::ExitCode> {
     }
 }
 
-fn render_watch(frame: &mut Frame, report: Option<&StatusReport>, theme: Theme) {
+/// The token a health headline is drawn in: its band's, and Warning when no
+/// signal was read, as the CLI colours it.
+fn headline_token(health: &Health) -> Token {
+    if health.missing_inputs.len() >= HEALTH_INPUTS {
+        return Token::Warning;
+    }
+    match health.score {
+        90..=100 => Token::Success,
+        70..=89 => Token::Warning,
+        _ => Token::Critical,
+    }
+}
+
+/// `age` is how long ago `report` was sampled.
+fn render_watch(
+    frame: &mut Frame,
+    report: Option<&StatusReport>,
+    theme: Theme,
+    age: Option<Duration>,
+) {
     let area = frame.area();
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(1),
@@ -968,157 +941,228 @@ fn render_watch(frame: &mut Frame, report: Option<&StatusReport>, theme: Theme) 
 
     crate::tui::render_header(frame, header, theme, "status");
 
-    let mut lines = vec![Line::raw(report.map_or_else(
-        || "sampling…".to_string(),
-        |report| health_headline(&report.health),
-    ))];
-    if let Some(report) = report {
-        for (label, value) in watch_rows(report) {
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {label:<12}"), theme.style(Token::Muted)),
-                Span::raw(report::terminal_safe(&value)),
-            ]));
-        }
-        if !report.top_processes.is_empty() {
-            lines.push(Line::raw(""));
+    let width = usize::from(body.width.saturating_sub(2));
+    let height = usize::from(body.height.saturating_sub(2));
+    let mut lines = Vec::new();
+    match report {
+        None => lines.push(Line::raw("sampling…")),
+        Some(report) => {
             lines.push(Line::styled(
-                "  busiest processes",
-                theme.style(Token::AccentSecondary),
+                health_headline(&report.health),
+                theme.bold(headline_token(&report.health)),
             ));
-            for process in &report.top_processes {
-                lines.push(Line::raw(format!(
-                    "  {:>7}  {:>6.1}%  {:>9}  {}",
-                    process.pid,
-                    process.cpu_percent,
-                    report::gb(process.resident_bytes),
-                    report::terminal_safe(&process.command)
-                )));
+            // A value too wide for its row is wrapped under itself rather than
+            // cut: these are the numbers the view exists to show.
+            let metric_lines = |details: bool| {
+                const LABEL: usize = 14;
+                let mut lines = Vec::new();
+                for (label, metric) in metric_rows(report) {
+                    let rows = match metric {
+                        Metric::Read(values) => {
+                            let shown = if details { values.len() } else { 1 };
+                            values
+                                .iter()
+                                .take(shown)
+                                .flat_map(|value| {
+                                    let value = report::terminal_safe(value);
+                                    if Span::raw(value.as_str()).width() + LABEL <= width {
+                                        vec![value]
+                                    } else {
+                                        crate::tui::wrap_words(&value, width.saturating_sub(LABEL))
+                                    }
+                                })
+                                .map(Span::raw)
+                                .collect()
+                        }
+                        Metric::Absent => vec![Span::styled("none", theme.style(Token::Muted))],
+                        Metric::Unavailable => {
+                            vec![Span::styled("unavailable", theme.style(Token::Warning))]
+                        }
+                    };
+                    for (index, value) in rows.into_iter().enumerate() {
+                        let label = if index == 0 { label } else { "" };
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("  {label:<12}"), theme.style(Token::Muted)),
+                            value,
+                        ]));
+                    }
+                }
+                lines
+            };
+            // Each reason is why a row above reads "unavailable", so they come
+            // before the processes, which take only the rows left. A metric's
+            // detail lines (the memory breakdown) give way before a reason.
+            let mut reasons = Vec::new();
+            for entry in &report.unavailable {
+                let reason = format!("unavailable: {}", report::terminal_safe(entry));
+                for (index, row) in crate::tui::wrap_words(&reason, width.saturating_sub(4))
+                    .into_iter()
+                    .enumerate()
+                {
+                    let indent = if index == 0 { "  " } else { "    " };
+                    reasons.push(Line::styled(
+                        format!("{indent}{row}"),
+                        theme.style(Token::Warning),
+                    ));
+                }
+            }
+            let mut metrics = metric_lines(true);
+            if lines.len() + metrics.len() + reasons.len() > height {
+                metrics = metric_lines(false);
+            }
+            lines.extend(metrics);
+            lines.extend(reasons);
+            let room = height.saturating_sub(lines.len());
+            if !report.top_processes.is_empty() && room >= 3 {
+                lines.push(Line::raw(""));
+                lines.push(Line::styled(
+                    "  busiest processes",
+                    theme.style(Token::AccentSecondary),
+                ));
+                for process in report.top_processes.iter().take(room - 2) {
+                    let row = format!(
+                        "  {:>7}  {:>6.1}%  {:>9}  {}",
+                        process.pid,
+                        process.cpu_percent,
+                        report::gb(process.resident_bytes),
+                        report::terminal_safe(&process.command)
+                    );
+                    lines.push(Line::raw(crate::tui::truncate_right(&row, width)));
+                }
             }
         }
-        for entry in &report.unavailable {
-            lines.push(Line::styled(
-                format!("  unavailable: {}", report::terminal_safe(entry)),
-                theme.style(Token::Critical),
-            ));
-        }
+    }
+    if lines.len() > height && height > 0 {
+        let hidden = lines.len() - (height - 1);
+        lines.truncate(height - 1);
+        lines.push(Line::styled(
+            format!("  … {hidden} more line(s); a taller window shows them"),
+            theme.style(Token::Muted),
+        ));
     }
     frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Machine ")),
+        Paragraph::new(Text::from(lines)).block(Block::bordered().title(" Machine ")),
         body,
     );
 
+    let status = age.map_or_else(
+        || "Waiting for the first sample. Read-only.".to_string(),
+        |age| format!("Sampled {} s ago. Read-only.", age.as_secs()),
+    );
     crate::tui::render_footer_rows(
         frame,
         footer,
         theme,
         &[("q", "quit")],
-        (
-            &format!("Refreshing every {}s. Read-only.", WATCH_INTERVAL.as_secs()),
-            Token::Muted,
-        ),
+        (&status, Token::Muted),
     );
 }
 
-/// Label/value rows shared by the live dashboard, in a fixed order so panels do
-/// not move between refreshes.
-fn watch_rows(report: &StatusReport) -> Vec<(&'static str, String)> {
-    /// Shown in place of a metric that could not be read. The slot is kept so
-    /// every other row stays where the operator last saw it.
-    const UNAVAILABLE: &str = "unavailable";
+/// One metric as both surfaces state it.
+enum Metric {
+    /// Read: the lines that state it, the first beside its label.
+    Read(Vec<String>),
+    /// Read and found not to exist: a desktop has no battery.
+    Absent,
+    /// Its probe failed; the reason is in [`StatusReport::unavailable`].
+    Unavailable,
+}
 
-    let mut rows = vec![
+/// Every metric in a fixed order, worded once. `status` prints the ones it
+/// read; `--watch` keeps a row for each so none moves between refreshes.
+fn metric_rows(report: &StatusReport) -> Vec<(&'static str, Metric)> {
+    let read = |line: String| Metric::Read(vec![line]);
+    let battery = match &report.battery {
+        Some(battery) => read(format!(
+            "{}%, {}{}",
+            battery.percent,
+            battery.state,
+            if battery.on_ac_power { ", on AC" } else { "" }
+        )),
+        // A failed probe and a machine without a battery both leave the field
+        // empty. Only the first is a gap, and calling it "none" would assert a
+        // hardware fact the probe never established.
+        None if report
+            .unavailable
+            .iter()
+            .any(|entry| entry.starts_with("battery:")) =>
+        {
+            Metric::Unavailable
+        }
+        None => Metric::Absent,
+    };
+    vec![
         (
             "uptime",
             report
                 .uptime_seconds
-                .map_or_else(|| UNAVAILABLE.to_string(), format_uptime),
+                .map_or(Metric::Unavailable, |seconds| read(format_uptime(seconds))),
         ),
         (
             "load",
             match (report.load_average, report.cpu_count) {
-                (Some(load), Some(cpus)) => format!(
-                    "{:.2} {:.2} {:.2}  over {cpus} CPUs",
+                (Some(load), Some(cpus)) => read(format!(
+                    "{:.2} {:.2} {:.2}  over {cpus} logical CPUs",
                     load[0], load[1], load[2]
-                ),
-                _ => UNAVAILABLE.to_string(),
+                )),
+                _ => Metric::Unavailable,
             },
         ),
-    ];
-    if let Some(memory) = report.memory {
-        let percent = memory.used_percent();
-        rows.push((
+        (
             "memory",
-            format!(
-                "{} of {} ({percent:.0}%)",
-                report::gb(memory.used_bytes),
-                report::gb(memory.total_bytes)
-            ),
-        ));
-    } else {
-        rows.push(("memory", UNAVAILABLE.to_string()));
-    }
-    if let Some(disk) = report.disk {
-        rows.push((
+            report.memory.map_or(Metric::Unavailable, |memory| {
+                Metric::Read(vec![
+                    format!(
+                        "{} of {} used ({:.0}%) = active + wired + compressed",
+                        report::gb(memory.used_bytes),
+                        report::gb(memory.total_bytes),
+                        memory.used_percent()
+                    ),
+                    format!(
+                        "{} wired, {} compressed, {} inactive (reclaimable), {} free",
+                        report::gb(memory.wired_bytes),
+                        report::gb(memory.compressed_bytes),
+                        report::gb(memory.inactive_bytes),
+                        report::gb(memory.free_bytes)
+                    ),
+                ])
+            }),
+        ),
+        (
             "disk",
-            format!(
-                "{} of {} ({:.0}%), {} free",
-                report::gb(disk.used_bytes),
-                report::gb(disk.total_bytes),
-                disk.used_percent(),
-                report::gb(disk.available_bytes)
-            ),
-        ));
-    } else {
-        rows.push(("disk", UNAVAILABLE.to_string()));
-    }
-    if let Some(battery) = &report.battery {
-        rows.push((
-            "battery",
-            format!(
-                "{}%, {}{}",
-                battery.percent,
-                battery.state,
-                if battery.on_ac_power { ", on AC" } else { "" }
-            ),
-        ));
-    } else if report
-        .unavailable
-        .iter()
-        .any(|entry| entry.starts_with("battery:"))
-    {
-        // A failed probe and a machine without a battery both leave the field
-        // empty. Only the first is a gap, and calling it "none" would assert a
-        // hardware fact the probe never established.
-        rows.push(("battery", UNAVAILABLE.to_string()));
-    } else {
-        rows.push(("battery", "none".to_string()));
-    }
-    if let Some(thermal) = &report.thermal {
-        rows.push((
+            report.disk.map_or(Metric::Unavailable, |disk| {
+                read(format!(
+                    "{} used, {} available ({:.0}% of used + available)",
+                    report::gb(disk.used_bytes),
+                    report::gb(disk.available_bytes),
+                    disk.used_percent()
+                ))
+            }),
+        ),
+        ("battery", battery),
+        (
             "thermal",
-            thermal.cpu_speed_limit_percent.map_or_else(
-                || "no limit recorded".to_string(),
-                |limit| format!("CPU limited to {limit}%"),
-            ),
-        ));
-    } else {
-        rows.push(("thermal", UNAVAILABLE.to_string()));
-    }
-    if let Some(network) = report.network {
-        rows.push((
+            report
+                .thermal
+                .as_ref()
+                .map_or(Metric::Unavailable, |thermal| {
+                    read(thermal.cpu_speed_limit_percent.map_or_else(
+                        || "no limit recorded".to_string(),
+                        |limit| format!("CPU limited to {limit}%"),
+                    ))
+                }),
+        ),
+        (
             "network",
-            format!(
-                "{} in, {} out since boot",
-                report::gb(network.received_bytes),
-                report::gb(network.sent_bytes)
-            ),
-        ));
-    } else {
-        rows.push(("network", UNAVAILABLE.to_string()));
-    }
-    rows
+            report.network.map_or(Metric::Unavailable, |network| {
+                read(format!(
+                    "{} in, {} out (cumulative since boot)",
+                    report::gb(network.received_bytes),
+                    report::gb(network.sent_bytes)
+                ))
+            }),
+        ),
+    ]
 }
 
 pub fn run(ctx: &Ctx, watch: bool) -> Result<std::process::ExitCode> {
@@ -1132,7 +1176,7 @@ pub fn run(ctx: &Ctx, watch: bool) -> Result<std::process::ExitCode> {
         report::write_stdout(document.as_bytes())?;
         report::write_stdout(b"\n")?;
     } else {
-        print_human(&report)?;
+        report::write_stdout(human_text(&report).as_bytes())?;
     }
     // Partial visibility is disclosed in the document AND in the exit status,
     // matching scan and largest.
@@ -1146,6 +1190,7 @@ pub fn run(ctx: &Ctx, watch: bool) -> Result<std::process::ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::ColorSupport;
 
     const VM_STAT: &str = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
 Pages free:                                   145575.\n\
@@ -1352,5 +1397,288 @@ Note: No CPU power status has been recorded\n";
     fn processes_fail_closed_when_none_parse() {
         assert!(parse_processes("PID %CPU RSS COMM\n", 5).is_err());
         assert!(parse_processes("", 5).is_err());
+    }
+
+    const GIB: u64 = 1 << 30;
+
+    /// A laptop read in full, with `processes` busy processes.
+    fn sample(processes: usize) -> StatusReport {
+        let mut report = StatusReport {
+            uptime_seconds: Some(93_784),
+            load_average: Some([2.5, 2.0, 1.5]),
+            cpu_count: Some(10),
+            memory: Some(Memory {
+                total_bytes: 32 * GIB,
+                free_bytes: 2 * GIB,
+                active_bytes: 10 * GIB,
+                inactive_bytes: 8 * GIB,
+                wired_bytes: 4 * GIB,
+                compressed_bytes: 2 * GIB,
+                used_bytes: 16 * GIB,
+            }),
+            disk: Some(Disk {
+                total_bytes: 994 * GIB,
+                used_bytes: 500 * GIB,
+                available_bytes: 400 * GIB,
+            }),
+            battery: Some(Battery {
+                percent: 80,
+                state: "charging".into(),
+                on_ac_power: true,
+            }),
+            thermal: Some(Thermal {
+                cpu_speed_limit_percent: None,
+            }),
+            network: Some(Network {
+                received_bytes: 3 * GIB,
+                sent_bytes: GIB,
+            }),
+            top_processes: (0..processes)
+                .map(|index| Process {
+                    pid: 100 + index as u32,
+                    cpu_percent: 50.0 - index as f64,
+                    resident_bytes: GIB,
+                    command: format!("process-{index}"),
+                })
+                .collect(),
+            health: Health {
+                score: 0,
+                missing_inputs: Vec::new(),
+            },
+            unavailable: Vec::new(),
+        };
+        report.health = health(&report);
+        report
+    }
+
+    fn draw(
+        report: Option<&StatusReport>,
+        theme: Theme,
+        age: Option<Duration>,
+        width: u16,
+        height: u16,
+    ) -> ratatui::buffer::Buffer {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_watch(frame, report, theme, age))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The cell where `text` starts, searching row by row.
+    fn find(buffer: &ratatui::buffer::Buffer, text: &str) -> Option<(u16, u16)> {
+        rows(buffer).iter().enumerate().find_map(|(y, row)| {
+            row.find(text).map(|byte| {
+                let x = row[..byte].chars().count();
+                (x as u16, y as u16)
+            })
+        })
+    }
+
+    #[test]
+    fn unread_metrics_are_listed_before_processes_take_what_is_left() {
+        let mut report = sample(10);
+        report.battery = None;
+        report.thermal = None;
+        report.network = None;
+        report.unavailable = vec![
+            "battery: pmset exited with status 1".into(),
+            "thermal: pmset exited with status 1".into(),
+            "network: netstat exited with status 1".into(),
+        ];
+        report.health = health(&report);
+        let buffer = draw(
+            Some(&report),
+            Theme::new(ColorSupport::None),
+            Some(Duration::from_secs(1)),
+            64,
+            18,
+        );
+        let screen = rows(&buffer).join("\n");
+        for entry in &report.unavailable {
+            assert!(
+                screen.contains(entry.as_str()),
+                "the reason {entry:?} fell off the screen:\n{screen}"
+            );
+        }
+        assert!(
+            !screen.contains("more line(s)"),
+            "nothing is hidden when only detail gave way:\n{screen}"
+        );
+
+        // Taller, the processes take exactly the rows left, under the reasons.
+        let buffer = draw(
+            Some(&report),
+            Theme::new(ColorSupport::None),
+            Some(Duration::from_secs(1)),
+            64,
+            24,
+        );
+        let screen = rows(&buffer).join("\n");
+        let shown = (0..10)
+            .filter(|index| screen.contains(&format!("process-{index}")))
+            .count();
+        assert!(
+            (1..10).contains(&shown),
+            "{shown} of 10 processes shown; they must fill the rows left, not more:\n{screen}"
+        );
+        let last_body_row = &rows(&buffer)[24 - 4];
+        assert!(
+            last_body_row.contains(&format!("process-{}", shown - 1)),
+            "the last process sits on the last row of the box:\n{screen}"
+        );
+        let reasons = find(&buffer, "unavailable: network").unwrap().1;
+        let processes = find(&buffer, "busiest processes").unwrap().1;
+        assert!(
+            reasons < processes,
+            "reasons come before processes:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn a_box_too_short_says_how_many_lines_it_hides() {
+        let mut report = sample(8);
+        report.unavailable = (0..12)
+            .map(|index| format!("probe-{index}: exited with status 1"))
+            .collect();
+        let buffer = draw(
+            Some(&report),
+            Theme::new(ColorSupport::None),
+            Some(Duration::ZERO),
+            64,
+            18,
+        );
+        let screen = rows(&buffer);
+        assert!(
+            screen[18 - 4].contains("more line(s); a taller window shows them"),
+            "the last row of the box names what it hides:\n{}",
+            screen.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_headline_carries_the_colour_of_its_band() {
+        let theme = Theme::new(ColorSupport::Named);
+        let mut unknown = sample(0);
+        unknown.health = Health {
+            score: 100,
+            missing_inputs: ["disk", "memory", "load", "thermal"]
+                .map(String::from)
+                .to_vec(),
+        };
+        for (score, token) in [
+            (95, Token::Success),
+            (75, Token::Warning),
+            (40, Token::Critical),
+        ] {
+            let mut report = sample(0);
+            report.health.score = score;
+            let buffer = draw(Some(&report), theme, Some(Duration::ZERO), 100, 30);
+            let (x, y) = find(&buffer, "health ").expect("headline drawn");
+            assert_eq!(
+                buffer[(x, y)].style().fg,
+                theme.bold(token).fg,
+                "score {score}"
+            );
+            assert!(
+                buffer[(x, y)]
+                    .style()
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::BOLD),
+                "score {score}"
+            );
+        }
+        let buffer = draw(Some(&unknown), theme, Some(Duration::ZERO), 100, 30);
+        let (x, y) = find(&buffer, "health unknown").unwrap();
+        assert_eq!(buffer[(x, y)].style().fg, theme.bold(Token::Warning).fg);
+    }
+
+    #[test]
+    fn the_footer_says_how_old_the_sample_is() {
+        let theme = Theme::new(ColorSupport::None);
+        let report = sample(0);
+        let screen = rows(&draw(
+            Some(&report),
+            theme,
+            Some(Duration::from_millis(3_400)),
+            64,
+            18,
+        ))
+        .join("\n");
+        assert!(screen.contains("Sampled 3 s ago."), "{screen}");
+        assert!(!screen.contains("Refreshing every"), "{screen}");
+        let waiting = rows(&draw(None, theme, None, 64, 18)).join("\n");
+        assert!(waiting.contains("sampling…"), "{waiting}");
+        assert!(!waiting.contains("Sampled"), "{waiting}");
+    }
+
+    #[test]
+    fn an_unread_metric_reads_as_a_warning_not_a_failure() {
+        let theme = Theme::new(ColorSupport::Named);
+        let mut report = sample(0);
+        report.thermal = None;
+        report.unavailable = vec!["thermal: pmset exited with status 1".into()];
+        report.health = health(&report);
+        let buffer = draw(Some(&report), theme, Some(Duration::ZERO), 100, 30);
+        for text in ["unavailable", "unavailable: thermal"] {
+            let (x, y) = find(&buffer, text).unwrap();
+            assert_eq!(
+                buffer[(x, y)].style().fg,
+                theme.style(Token::Warning).fg,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_report_and_the_watch_state_each_metric_in_the_same_words() {
+        let report = sample(0);
+        // `colored` styles only the headings and the headline, never a metric
+        // line, so no escape sequence can sit inside the text compared here.
+        let cli = human_text(&report);
+        let screen = rows(&draw(
+            Some(&report),
+            Theme::new(ColorSupport::None),
+            Some(Duration::ZERO),
+            120,
+            40,
+        ))
+        .join("\n");
+        let mut compared = 0;
+        for (label, metric) in metric_rows(&report) {
+            let Metric::Read(lines) = metric else {
+                continue;
+            };
+            assert!(
+                cli.contains(&format!("  {label:<16}{}", lines[0])),
+                "the report does not say {label} as {:?}:\n{cli}",
+                lines[0]
+            );
+            for line in &lines {
+                assert!(
+                    screen.contains(line.as_str()),
+                    "the watch does not say {label} as {line:?}:\n{screen}"
+                );
+            }
+            compared += 1;
+        }
+        assert_eq!(compared, 7, "every metric of a full sample is compared");
+        // The watch once wrote "X of TOTAL (P%)" with P a share of used +
+        // available, not of TOTAL.
+        assert!(
+            screen.contains("500.0 GB used, 400.0 GB available"),
+            "{screen}"
+        );
     }
 }

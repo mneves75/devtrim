@@ -2143,7 +2143,7 @@ fn truncate_left(text: &str, max: usize) -> String {
 
 /// Keeps the start of `text` within `max` terminal columns, ending in `…`
 /// when anything was cut, and never in a space, which would read as padding.
-fn truncate_right(text: &str, max: usize) -> String {
+pub(crate) fn truncate_right(text: &str, max: usize) -> String {
     let span = Span::raw(text);
     if span.width() <= max {
         return text.to_string();
