@@ -1,6 +1,6 @@
 # 016 — UI/UX redesign and whole-project audit (0.13.0)
 
-Status: IN PROGRESS (2026-11-11). Branch `feat/ux-0.13`, from `main` `af269a3`.
+Status: DONE in 0.13.0 (2026-11-11). Branch `feat/ux-0.13`, from `main` `af269a3`. Track C skipped one item: the shared group-kill helper, because two planted cases anchor separate kill lines.
 
 ## Request
 
