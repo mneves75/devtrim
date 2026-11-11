@@ -2408,7 +2408,17 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App, shown: &Shown) 
         ConfirmationKind::TrashPurge { .. } => shown.danger,
     };
     let popup = centered_rect(area, 100, lines.len());
-    frame.render_widget(Clear, Rect::new(area.x, popup.y, area.width, popup.height));
+    // Only the results title, which names the mode, stays behind the popup:
+    // a half-hidden list or path beside it would read as part of the plan.
+    frame.render_widget(
+        Clear,
+        Rect::new(
+            area.x,
+            area.y + 1,
+            area.width,
+            area.height.saturating_sub(1),
+        ),
+    );
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .block(Block::bordered().title(format!(" Confirm exact plan · danger-{danger} "))),
@@ -3827,6 +3837,48 @@ mod tests {
                 cells_text(&last[left + 1..right]).trim() != "",
                 "the popup ends in a blank row at {width}x{height}: {rows:#?}"
             );
+        }
+    }
+
+    #[test]
+    fn nothing_of_the_details_shows_around_the_confirmation() {
+        let long = format!("/tmp/{}/target", "a-folder-whose-name-wraps-".repeat(12));
+        let finding = Finding::new(
+            "stale target artifacts",
+            Some(std::path::PathBuf::from(&long)),
+            16 * 1024,
+            "too much bandwidth or rebuild time",
+            5,
+            Action::Trash,
+        );
+        let mut app = cleanup(vec![finding, trash("second", 4 * 1024, 5)]);
+        app.begin_confirmation();
+        assert_eq!(app.screen, Screen::Confirm);
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (100, 30)] {
+            let rows = screen_rows(&app, width, height);
+            let (top, bottom, left, right) = popup_rows(&rows);
+            // Between the results title (row 1) and the footer, only the
+            // popup is drawn.
+            for (index, row) in rows
+                .iter()
+                .enumerate()
+                .take(usize::from(height) - 2)
+                .skip(2)
+            {
+                let cells: Vec<char> = row.chars().collect();
+                let outside = if (top..=bottom).contains(&index) {
+                    cells[..left]
+                        .iter()
+                        .chain(&cells[right + 1..])
+                        .collect::<String>()
+                } else {
+                    cells.iter().collect::<String>()
+                };
+                assert!(
+                    outside.trim().is_empty(),
+                    "row {index} shows text outside the popup at {width}x{height}: {rows:#?}"
+                );
+            }
         }
     }
 
