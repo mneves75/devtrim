@@ -1577,7 +1577,7 @@ pub fn dir_size(path: &Path) -> Result<u64> {
 /// fresh timestamp.
 ///
 /// The timestamp is `None` when any file's modification time could not be read.
-/// It is deliberately not an error: `dir_size` — which nine of the ten
+/// It is deliberately not an error: `dir_size` — which eight of the ten
 /// categories reach for and which needs no timestamp at all — would otherwise
 /// start failing on a tree it can measure perfectly well. A caller that judges
 /// staleness must treat `None` as a refusal; one that only wants bytes can

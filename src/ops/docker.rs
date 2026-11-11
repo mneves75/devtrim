@@ -108,8 +108,9 @@ fn is_local_docker_host(host: &str) -> bool {
 ///
 /// A VM disk image is sparse, so the two differ by orders of magnitude: a real
 /// OrbStack image measured 926 GB logical against 35 GB allocated, which is
-/// why every devtrim size is allocated bytes. Returns `None` when the path is absent or is not a regular
-/// file; a stat failure for a path that does exist fails closed.
+/// why every devtrim size is allocated bytes. Returns `None` when the path is
+/// absent or is not a regular file; a stat failure for a path that does exist
+/// fails closed.
 fn allocated_bytes(path: &Path) -> Result<Option<u64>> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -239,8 +240,9 @@ impl Op for Docker {
         //
         // The cost of that strictness is real and worth stating: when `docker`
         // is installed but its daemon is down, this op errors and the host
-        // image disclosure above is lost with it. The error names the daemon,
-        // which is itself the actionable next step.
+        // image findings above are lost with it. The error names the daemon,
+        // which is itself the actionable next step, and carries each image's
+        // name and size instead.
         let Some(host) = docker_host()? else {
             return Ok(findings);
         };

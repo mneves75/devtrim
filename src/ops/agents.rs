@@ -1148,13 +1148,12 @@ fn relative_display(path: &Path, base: &Path) -> String {
         .to_string()
 }
 
-/// Direct children of `base` exactly `depth` levels down.
+/// The entries exactly `depth` levels below `base`.
 ///
 /// Traversal refuses to descend through a symlink, so a link planted inside an
-/// authorized root cannot widen the candidate set to a foreign tree.
-/// The entries exactly `depth` levels below `base`. A folder that cannot be
-/// read is recorded in `unread` and its subtree is not entered, so one sealed
-/// folder never hides its siblings.
+/// authorized root cannot widen the candidate set to a foreign tree. A folder
+/// that cannot be read is recorded in `unread` and its subtree is not entered,
+/// so one sealed folder never hides its siblings.
 fn collect_at_depth(
     base: &Path,
     depth: usize,

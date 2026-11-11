@@ -97,8 +97,6 @@ impl Op for Toolchains {
     }
 }
 
-/// Everything that says a toolchain is in use, read afresh by each scan and
-/// each apply.
 /// The finding for one toolchain folder: report-only when swiftly installed
 /// it, none when a verified symlink references it, otherwise offered.
 fn toolchain_finding(path: PathBuf, references: &References) -> Result<Option<Finding>> {
@@ -141,6 +139,8 @@ fn toolchain_finding(path: PathBuf, references: &References) -> Result<Option<Fi
     )))
 }
 
+/// Everything that says a toolchain is in use, read afresh by each scan and
+/// each apply.
 struct References {
     /// Canonical targets of the verified symlinks in the Toolchains folder.
     linked: BTreeSet<PathBuf>,

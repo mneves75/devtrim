@@ -640,7 +640,7 @@ pub(crate) fn gitfile_target(bytes: &[u8]) -> Option<&std::ffi::OsStr> {
 }
 
 /// Whether `repo` is a new repository: on an unborn branch (Git glossary:
-/// HEAD names a branch that has no commit yet), with no reference of any kind
+/// HEAD names a branch that has no commit yet) and holding no commit object
 /// — `git init` before the first commit. The activity query fails there, so
 /// the scanners leave such a repository out and name it instead of failing
 /// the category; they ask only after that query has failed, so no repository
@@ -652,10 +652,9 @@ pub(crate) fn gitfile_target(bytes: &[u8]) -> Option<&std::ffi::OsStr> {
 /// before the first commit are only blobs. The listing must also finish
 /// without a complaint: Git skips an object folder or pack it cannot read,
 /// says so on stderr, and still exits 0, so a silent omission would read as
-/// no history. A branch turned into a dangling
-/// symbolic reference, a file holding an object ID where the loose-ref folder
-/// was, and an orphan checkout beside other branches all keep their commits
-/// and their error. Three more answers keep a damaged repository an error
+/// no history. A branch turned into a dangling symbolic reference, a file
+/// holding an object ID where the loose-ref folder was, and an orphan
+/// checkout beside other branches all keep their commits and their error. Three more answers keep a damaged repository an error
 /// rather than a new one. HEAD is symbolic (`symbolic-ref -q HEAD`), so a
 /// detached HEAD naming a missing commit is not new. Git finds the reference
 /// storage sound (`refs verify`, Git 2.47 and later): a loose-ref folder that
@@ -878,11 +877,6 @@ mod tests {
         path
     }
 
-    /// An unborn branch (Git glossary: HEAD names a branch that has no commit
-    /// yet — `git init` before the first commit, or `checkout --orphan`) is a
-    /// state Git defines, and the activity query fails there. Only that state
-    /// is recognized: a HEAD naming a commit whose object is gone and a
-    /// detached HEAD both stay what they are, so their failures still refuse.
     /// Removes every loose object, as a damaged or emptied store would be.
     fn empty_object_store(repo: &Path) {
         for entry in std::fs::read_dir(repo.join(".git/objects")).unwrap() {
@@ -893,6 +887,12 @@ mod tests {
         }
     }
 
+    /// A new repository (Git glossary: HEAD names a branch that has no commit
+    /// yet — `git init` before the first commit) is a state Git defines, and
+    /// the activity query fails there. Only that state is recognized: an
+    /// orphan checkout beside other branches, a HEAD naming a commit whose
+    /// object is gone and a detached HEAD all stay what they are, so their
+    /// failures still refuse.
     #[test]
     fn an_unborn_branch_is_recognized_and_a_dangling_head_is_not() {
         let base = temp("unborn");
