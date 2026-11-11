@@ -533,12 +533,11 @@ const GRADLE_PROCESS_PATTERN: &str = "org\\.gradle\\.(launcher\\.daemon\\.bootst
 /// runs. A probe that fails refuses as well. `-a` keeps a Gradle build that
 /// started devtrim visible to the probe.
 fn gradle_processes() -> Result<Vec<u32>> {
-    let output = std::process::Command::new("pgrep")
-        .args(["-a", "-f", GRADLE_PROCESS_PATTERN])
-        .output_within(PROBE_TIMEOUT)
-        .context("cannot run the Gradle process probe")?;
-    crate::safety::parse_pgrep_pids(&output.stdout, output.status.code())
-        .context("the Gradle process probe failed")
+    crate::safety::pgrep_pids(
+        std::process::Command::new("pgrep").args(["-a", "-f", GRADLE_PROCESS_PATTERN]),
+        PROBE_TIMEOUT,
+        "the Gradle process probe",
+    )
 }
 
 /// Gradle's caches and Wrapper distributions, unless a Gradle process runs.

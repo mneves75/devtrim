@@ -1628,7 +1628,7 @@ fn probe_output(command: &mut Command, limit: Duration, probe: &str) -> Result<O
 
 /// The processes `pgrep` matched. Exit 1 (no match) is an empty list; a probe
 /// that did not finish is an error, never an empty list.
-fn pgrep_pids(command: &mut Command, limit: Duration, probe: &str) -> Result<Vec<u32>> {
+pub(crate) fn pgrep_pids(command: &mut Command, limit: Duration, probe: &str) -> Result<Vec<u32>> {
     let output = probe_output(command, limit, probe)?;
     parse_pgrep_pids(&output.stdout, output.status.code())
 }
