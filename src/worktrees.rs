@@ -190,7 +190,7 @@ fn leads_back(path: &Path, scan_roots: &[PathBuf], common: (u64, u64)) -> Result
         return Err(not_ours);
     }
     let bytes = std::fs::read(&marker).map_err(|_| not_ours)?;
-    let gitdir = gitfile_target(&bytes).ok_or(not_ours)?;
+    let gitdir = project::gitfile_target(&bytes).ok_or(not_ours)?;
     let gitdir = path.join(gitdir);
     let registry = gitdir.parent().ok_or(not_ours)?;
     if registry.file_name() != Some(OsStr::new("worktrees")) {
@@ -200,17 +200,6 @@ fn leads_back(path: &Path, scan_roots: &[PathBuf], common: (u64, u64)) -> Result
         Some(found) if found == common => Ok(()),
         _ => Err(not_ours),
     }
-}
-
-/// The path a `.git` file names, read as Git reads it (git v2.51.0
-/// `setup.c` `read_gitfile_gently`): the exact prefix `gitdir: `, then every
-/// byte but trailing CR and LF.
-fn gitfile_target(bytes: &[u8]) -> Option<&OsStr> {
-    let mut target = bytes.strip_prefix(b"gitdir: ")?;
-    while let [rest @ .., b'\n' | b'\r'] = target {
-        target = rest;
-    }
-    (!target.is_empty()).then(|| OsStr::from_bytes(target))
 }
 
 fn identity(path: &Path) -> Option<(u64, u64)> {

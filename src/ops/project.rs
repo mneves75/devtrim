@@ -611,28 +611,32 @@ pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
     if !metadata.file_type().is_file() {
         return Ok(false);
     }
-    // Parsed as Git parses it (git v2.51.0 `setup.c`, `read_gitfile_gently`):
-    // the exact prefix `gitdir: `, then every byte but trailing CR and LF, so a
-    // path holding a newline or ending in a space is read whole. Anything Git
-    // would reject is not an orphan: it goes to Git, which refuses it.
+    // Anything Git would reject is not an orphan: it goes to Git, which
+    // refuses it.
     let bytes = std::fs::read(&marker)
         .with_context(|| format!("cannot read Git marker {}", marker.display()))?;
-    let Some(mut target) = bytes.strip_prefix(b"gitdir: ") else {
+    let Some(target) = gitfile_target(&bytes) else {
         return Ok(false);
     };
-    while let [rest @ .., b'\n' | b'\r'] = target {
-        target = rest;
-    }
-    if target.is_empty() {
-        return Ok(false);
-    }
-    let target = std::ffi::OsStr::from_bytes(target);
     match std::fs::symlink_metadata(repo.join(target)) {
         Ok(_) => Ok(false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
         Err(error) => Err(error)
             .with_context(|| format!("cannot inspect the gitdir named by {}", marker.display())),
     }
+}
+
+/// The path a `.git` file names, read as Git reads it (git v2.51.0
+/// `setup.c` `read_gitfile_gently`): the exact prefix `gitdir: `, then every
+/// byte but trailing CR and LF, so a path holding a newline or ending in a
+/// space is read whole. `None` when the prefix is missing or nothing follows.
+/// A relative path is relative to the folder holding the `.git` file.
+pub(crate) fn gitfile_target(bytes: &[u8]) -> Option<&std::ffi::OsStr> {
+    let mut target = bytes.strip_prefix(b"gitdir: ")?;
+    while let [rest @ .., b'\n' | b'\r'] = target {
+        target = rest;
+    }
+    (!target.is_empty()).then(|| std::ffi::OsStr::from_bytes(target))
 }
 
 /// Whether `repo` is a new repository: on an unborn branch (Git glossary:
