@@ -12,7 +12,7 @@ use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
 use crate::report::CommandAuthority;
 use crate::safety::{Ctx, escalate};
 
-pub struct Simulators;
+pub(crate) struct Simulators;
 
 #[derive(serde::Deserialize)]
 struct DeviceList {
@@ -356,21 +356,9 @@ mod tests {
 
     fn test_ctx() -> Ctx {
         Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
             journal_path: PathBuf::from("/tmp/devtrim-simulators-test-journal.jsonl"),
-            home: PathBuf::from("/tmp"),
-            interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(PathBuf::from("/tmp"))
         }
     }
 

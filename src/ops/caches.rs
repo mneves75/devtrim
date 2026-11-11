@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use super::project::{UnreadFolder, has_git_marker, unread_folders_finding};
+use super::project::{UnreadFolder, error_finding, has_git_marker, unread_folders_finding};
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, apply_uv_cache_finding, dir_size,
     removal_note,
@@ -12,7 +12,7 @@ use crate::process::{BoundedCommand as _, PROBE_TIMEOUT, QUERY_TIMEOUT};
 use crate::report::TargetAuthority;
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
-pub struct Caches;
+pub(crate) struct Caches;
 
 const UV_CACHE: &str = ".cache/uv";
 
@@ -437,16 +437,10 @@ fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
 /// A finding for a cache whose owner could not be asked: it offers nothing,
 /// and the run reports failure, while the other caches are still offered.
 fn not_judged(subject: &str, error: &anyhow::Error) -> Finding {
-    let message = format!("cannot judge the {subject}: {error:#}");
-    Finding::new(
+    error_finding(
         format!("{subject} not judged"),
-        None,
-        0,
-        &message,
-        5,
-        Action::Info,
+        format!("cannot judge the {subject}: {error:#}"),
     )
-    .with_scan_error(message)
 }
 
 /// Gradle's user home: `GRADLE_USER_HOME`, by default `~/.gradle` (Gradle 9.8.1
@@ -533,12 +527,11 @@ const GRADLE_PROCESS_PATTERN: &str = "org\\.gradle\\.(launcher\\.daemon\\.bootst
 /// runs. A probe that fails refuses as well. `-a` keeps a Gradle build that
 /// started devtrim visible to the probe.
 fn gradle_processes() -> Result<Vec<u32>> {
-    let output = std::process::Command::new("pgrep")
-        .args(["-a", "-f", GRADLE_PROCESS_PATTERN])
-        .output_within(PROBE_TIMEOUT)
-        .context("cannot run the Gradle process probe")?;
-    crate::safety::parse_pgrep_pids(&output.stdout, output.status.code())
-        .context("the Gradle process probe failed")
+    crate::safety::pgrep_pids(
+        std::process::Command::new("pgrep").args(["-a", "-f", GRADLE_PROCESS_PATTERN]),
+        PROBE_TIMEOUT,
+        "the Gradle process probe",
+    )
 }
 
 /// Gradle's caches and Wrapper distributions, unless a Gradle process runs.
@@ -873,21 +866,8 @@ mod tests {
         )
         .with_authority(TargetAuthority::NpmCache);
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home.clone())
         };
 
         let outcome = Caches.apply(&[finding], &ctx).unwrap();
@@ -957,23 +937,7 @@ mod tests {
         );
         assert_eq!(whole[0].authority(), TargetAuthority::BrewCache);
 
-        let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        };
+        let ctx = Ctx::for_test(home.clone());
         let entry = |path: PathBuf| {
             Finding::new(
                 "forged homebrew entry",
@@ -1058,23 +1022,7 @@ mod tests {
         std::fs::write(uv.join("entry"), "cached").unwrap();
         let running_uv = std::fs::File::create(uv.join(".lock")).unwrap();
         rustix::fs::flock(&running_uv, rustix::fs::FlockOperation::LockShared).unwrap();
-        let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        };
+        let ctx = Ctx::for_test(home.clone());
         let plan = || {
             let mut findings = vec![cache_finding("uv package cache", uv.clone(), 6, 3)];
             crate::report::effective_actions(&mut findings, true);
@@ -1119,23 +1067,7 @@ mod tests {
         let home = home.canonicalize().unwrap();
         std::fs::write(home.join("elsewhere/uv/entry"), "cached").unwrap();
         std::os::unix::fs::symlink(home.join("elsewhere"), home.join(".cache")).unwrap();
-        let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        };
+        let ctx = Ctx::for_test(home.clone());
         let mut plan = vec![cache_finding(
             "uv package cache",
             home.join(".cache/uv"),
@@ -1182,21 +1114,8 @@ mod tests {
             Action::Shred,
         );
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home.clone())
         };
 
         let outcome = Caches.apply(&[finding], &ctx).unwrap();

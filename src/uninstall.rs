@@ -8,15 +8,18 @@
 //! `/Library` are outside the catalog too. This is a conservative report, not an
 //! inventory, and the output says so.
 //!
-//! This command reports; it never deletes, and that is a structural fact rather
-//! than a policy choice. `safety::is_protected` refuses `/Applications` and
+//! This command reports; it never deletes: it has no deletion path at all.
+//! For most of what it lists that is also a structural fact rather than a
+//! policy choice. `safety::is_protected` refuses `/Applications` and
 //! everything beneath it, and refuses everything under `~/Library` outside a
 //! closed allowlist of developer-managed paths — a boundary the repository's own
 //! property tests assert
-//! (`is_protected(home/"Library/Application Support")`). Deleting an app bundle
-//! and its support files would require widening that list for every code path,
-//! not just this one, so the useful half devtrim can honestly do is the half a
-//! person cannot do by hand: resolve the identifier and find what is keyed to it.
+//! (`is_protected(home/"Library/Application Support")`). `~/Applications`,
+//! which this command also searches, is not under that boundary. Deleting an
+//! app bundle and its support files would require widening that list for every
+//! code path, not just this one, so the useful half devtrim can honestly do is
+//! the half a person cannot do by hand: resolve the identifier and find what is
+//! keyed to it.
 //!
 //! Matching is by EXACT bundle identifier, never by name. `com.example.thing`
 //! must not select `com.example.thingy`, and a display name like "Notes" must
@@ -110,7 +113,7 @@ impl BundlePlist {
 
 /// The identifier becomes a filename this module compares against, so it is
 /// validated as one: no separators, no traversal, no surprises.
-pub(crate) fn validate_bundle_identifier(identifier: &str) -> Result<()> {
+fn validate_bundle_identifier(identifier: &str) -> Result<()> {
     if identifier.is_empty() || identifier.len() > 255 {
         bail!("implausible bundle identifier length");
     }
@@ -159,7 +162,7 @@ fn is_approved_app_bundle(app: &Path, home: &Path) -> Result<bool> {
 ///
 /// Ambiguity is refused rather than guessed: naming the wrong app here would
 /// send the operator to delete another program's files.
-pub(crate) fn resolve_app(name: &str, home: &Path) -> Result<PathBuf> {
+fn resolve_app(name: &str, home: &Path) -> Result<PathBuf> {
     if name.is_empty() {
         bail!("name an application, for example `devtrim uninstall AltTab`");
     }
@@ -231,7 +234,7 @@ fn describe_roots(home: &Path) -> String {
 /// What this does NOT guarantee: `comm` is the command value, not an
 /// authenticated executable path, so this is a courtesy check against reviewing
 /// a live app's files, not a security boundary. Nothing here deletes anything.
-pub(crate) fn parse_running_bundle(output: &str, app: &Path) -> bool {
+fn parse_running_bundle(output: &str, app: &Path) -> bool {
     let prefix = format!("{}/", app.display());
     output.lines().any(|line| line.starts_with(&prefix))
 }
@@ -249,12 +252,12 @@ fn app_is_running(app: &Path) -> Result<bool> {
 }
 
 /// True when `name` is exactly `identifier`, never a prefix of a longer one.
-pub(crate) fn matches_identifier(name: &str, identifier: &str) -> bool {
+fn matches_identifier(name: &str, identifier: &str) -> bool {
     name == identifier
 }
 
 /// True when `name` is exactly `<identifier>.<extension>`.
-pub(crate) fn matches_identifier_file(name: &str, identifier: &str, extension: &str) -> bool {
+fn matches_identifier_file(name: &str, identifier: &str, extension: &str) -> bool {
     name.strip_suffix(extension)
         .and_then(|rest| rest.strip_suffix('.'))
         .is_some_and(|stem| stem == identifier)
@@ -302,16 +305,12 @@ fn info_finding(
 
 /// Every path that belongs to `identifier`, plus the bundle itself, and an
 /// error for each one measured only in part.
-pub(crate) fn locate(
-    app: &Path,
-    identifier: &str,
-    home: &Path,
-) -> Result<(Vec<Finding>, Vec<String>)> {
+fn locate(app: &Path, identifier: &str, home: &Path) -> Result<(Vec<Finding>, Vec<String>)> {
     let mut errors = Vec::new();
     let mut findings = vec![info_finding(
         "application bundle",
         app.to_path_buf(),
-        "report-only; devtrim refuses every path under /Applications",
+        "report-only; this command never removes a bundle, in /Applications or ~/Applications",
         &mut errors,
     )?];
 
@@ -370,7 +369,7 @@ pub(crate) fn locate(
     Ok((findings, errors))
 }
 
-pub fn run(ctx: &Ctx, app: &str) -> Result<ExitCode> {
+pub(crate) fn run(ctx: &Ctx, app: &str) -> Result<ExitCode> {
     let bundle = resolve_app(app, &ctx.home)?;
     let identifier = BundlePlist::for_app(&bundle, &ctx.home)?.bundle_identifier()?;
     // A running app's files are in use; reporting them as removable would be
@@ -400,9 +399,9 @@ pub fn run(ctx: &Ctx, app: &str) -> Result<ExitCode> {
 and only those. An app that stores data under a product name is not listed — Visual \
 Studio Code keeps ~/Library/Application Support/Code, which contains no identifier — \
 so treat this as a conservative report, not an inventory. devtrim does not remove \
-them: /Applications and all of ~/Library outside a closed allowlist of developer-managed \
-paths are refused \
-by the protected-path boundary, for every command rather than only this one.",
+them: this command only reports, and /Applications and all of ~/Library outside a \
+closed allowlist of developer-managed paths are refused by the protected-path \
+boundary, for every command rather than only this one.",
         report::terminal_safe(&identifier),
         "report-only:".yellow().bold(),
     ))?;

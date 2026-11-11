@@ -10,7 +10,7 @@ use super::{Action, ApplyOutcome, Finding, Op, dir_size};
 use crate::safety::Ctx;
 use crate::safety::measure_lenient;
 
-pub struct Leftovers;
+pub(crate) struct Leftovers;
 
 fn is_agent_scratch(name: &str) -> bool {
     let Some((prefix, suffix)) = name.rsplit_once('.') else {
@@ -228,21 +228,9 @@ mod tests {
         std::fs::write(evidence.join("run.log"), "log").unwrap();
         let sealed = crate::ops::Unreadable::new(&root.join("sealed"), 0o000);
         let ctx = Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
             roots: vec![root.clone()],
             roots_origin: crate::safety::RootsOrigin::Flag,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home: home.clone(),
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home.clone())
         };
 
         let findings = Leftovers.scan(&ctx, &Default::default()).unwrap();

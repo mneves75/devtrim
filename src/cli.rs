@@ -11,7 +11,7 @@ use clap_complete::Shell;
     about = "Developer-machine disk hygiene: measure, classify, trim — safely.",
     long_about = None
 )]
-pub struct Cli {
+pub(crate) struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
@@ -23,7 +23,7 @@ pub struct Cli {
     #[arg(short = 'y', long, global = true)]
     pub yes: bool,
 
-    /// Accept data-loss risk and skip prompts; operation acknowledgments still apply (cleanup commands only)
+    /// Accept data-loss risk and skip all interactive prompts, typed-size confirmations included; operation acknowledgments such as --confirm still apply (cleanup commands only)
     #[arg(long, global = true)]
     pub yolo: bool,
 
@@ -41,7 +41,7 @@ pub struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum Command {
+pub(crate) enum Command {
     /// Open the interactive terminal interface
     Tui,
     /// Read-only report of every reclaimable category with sizes and risk
@@ -130,24 +130,15 @@ pub enum Command {
 }
 
 impl Target {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Caches => "caches",
-            Self::NodeModules => "node-modules",
-            Self::Artifacts => "artifacts",
-            Self::Simulators => "simulators",
-            Self::Xcode => "xcode",
-            Self::Docker => "docker",
-            Self::Toolchains => "toolchains",
-            Self::Installers => "installers",
-            Self::Agents => "agents",
-            Self::Leftovers => "leftovers",
-        }
+    /// The category's name, which is also its `clean` argument: one table,
+    /// each operation's own `Op::name`.
+    pub(crate) fn as_str(&self) -> &'static str {
+        crate::ops::for_target(*self).name()
     }
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Target {
+pub(crate) enum Target {
     Caches,
     NodeModules,
     Artifacts,

@@ -50,7 +50,7 @@ use super::project::{UnreadFolder, unread_folders_finding};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
-pub struct Agents;
+pub(crate) struct Agents;
 
 /// Caches an agent rebuilds on demand. Exact paths relative to `$HOME`; nothing
 /// is matched by prefix, so a sibling directory can never inherit authority.
@@ -878,20 +878,10 @@ impl Agents {
         })();
         match release_findings {
             Ok(releases) => releases,
-            Err(error) => {
-                let message = format!("Codex release cleanup refused: {error:#}");
-                vec![
-                    Finding::new(
-                        format!("Codex standalone releases unavailable{suffix}"),
-                        None,
-                        0,
-                        &message,
-                        5,
-                        Action::Info,
-                    )
-                    .with_scan_error(message),
-                ]
-            }
+            Err(error) => vec![super::project::error_finding(
+                format!("Codex standalone releases unavailable{suffix}"),
+                format!("Codex release cleanup refused: {error:#}"),
+            )],
         }
     }
 
@@ -1158,13 +1148,12 @@ fn relative_display(path: &Path, base: &Path) -> String {
         .to_string()
 }
 
-/// Direct children of `base` exactly `depth` levels down.
+/// The entries exactly `depth` levels below `base`.
 ///
 /// Traversal refuses to descend through a symlink, so a link planted inside an
-/// authorized root cannot widen the candidate set to a foreign tree.
-/// The entries exactly `depth` levels below `base`. A folder that cannot be
-/// read is recorded in `unread` and its subtree is not entered, so one sealed
-/// folder never hides its siblings.
+/// authorized root cannot widen the candidate set to a foreign tree. A folder
+/// that cannot be read is recorded in `unread` and its subtree is not entered,
+/// so one sealed folder never hides its siblings.
 fn collect_at_depth(
     base: &Path,
     depth: usize,
@@ -1220,23 +1209,7 @@ mod tests {
     use std::time::Duration;
 
     fn test_ctx(home: PathBuf) -> Ctx {
-        Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home,
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
-        }
+        Ctx::for_test(home)
     }
 
     fn write_aged(path: &Path, contents: &str, days: u64) {

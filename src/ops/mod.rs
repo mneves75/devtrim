@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{BoundedCommand as _, MUTATION_TIMEOUT};
 pub use crate::report::{Action, Finding, Summary};
-pub use crate::safety::dir_size;
+pub(crate) use crate::safety::dir_size;
 use crate::safety::{Ctx, FileIdentity, MarkerGrant, VerifiedTarget, is_git_metadata_name};
 
 static QUARANTINE_ATTEMPT: AtomicU64 = AtomicU64::new(0);
@@ -43,7 +43,7 @@ pub(crate) fn has_node_modules_ancestor(path: &Path) -> bool {
         .any(is_node_modules_name)
 }
 
-pub use icloud::icloud_status;
+pub(crate) use icloud::icloud_status;
 
 /// A command that could not start or exited unsuccessfully, named with its exit
 /// status and stderr so the error and the journal say what actually failed.
@@ -117,7 +117,7 @@ pub(crate) fn removal_note(finding: &Finding, subject: impl std::fmt::Display) -
     )
 }
 
-pub trait Op: Sync {
+pub(crate) trait Op: Sync {
     fn name(&self) -> &'static str;
     /// Whether the scan walks the configured project roots (`--root`, `roots`,
     /// or the default project folders); previews then name those roots.
@@ -129,13 +129,13 @@ pub trait Op: Sync {
 }
 
 #[derive(Debug)]
-pub struct ApplyOutcome {
+pub(crate) struct ApplyOutcome {
     pub summary: Summary,
     pub errors: Vec<String>,
 }
 
 impl ApplyOutcome {
-    pub fn new(operation: &str) -> Self {
+    pub(crate) fn new(operation: &str) -> Self {
         Self {
             summary: Summary {
                 op: operation.into(),
@@ -148,7 +148,7 @@ impl ApplyOutcome {
         }
     }
 
-    pub fn record(&mut self, finding: &Finding, note: String) {
+    pub(crate) fn record(&mut self, finding: &Finding, note: String) {
         self.summary.items_touched = self.summary.items_touched.saturating_add(1);
         self.summary.bytes_freed_estimate = self
             .summary
@@ -183,11 +183,11 @@ impl ApplyOutcome {
         self.errors.extend(other.errors);
     }
 
-    pub fn fail(&mut self, error: anyhow::Error) {
+    pub(crate) fn fail(&mut self, error: anyhow::Error) {
         self.errors.push(format!("{error:#}"));
     }
 }
-pub struct ScanResult {
+pub(crate) struct ScanResult {
     pub findings: Vec<Finding>,
     /// Each category's contiguous slice of `findings`, in registry order.
     pub sections: Vec<crate::report::ScanSection>,
@@ -196,7 +196,7 @@ pub struct ScanResult {
 
 /// The registered categories a scan has no section for: every category that
 /// scanned has one, even an empty one, so these are the ones that failed.
-pub fn failed_categories(sections: &[crate::report::ScanSection]) -> Vec<&'static str> {
+pub(crate) fn failed_categories(sections: &[crate::report::ScanSection]) -> Vec<&'static str> {
     all()
         .iter()
         .map(|operation| operation.name())
@@ -204,7 +204,7 @@ pub fn failed_categories(sections: &[crate::report::ScanSection]) -> Vec<&'stati
         .collect()
 }
 
-pub fn all() -> Vec<Box<dyn Op>> {
+pub(crate) fn all() -> Vec<Box<dyn Op>> {
     vec![
         Box::new(caches::Caches),
         Box::new(node_modules::NodeModules),
@@ -219,7 +219,7 @@ pub fn all() -> Vec<Box<dyn Op>> {
     ]
 }
 
-pub fn for_target(target: crate::cli::Target) -> Box<dyn Op> {
+pub(crate) fn for_target(target: crate::cli::Target) -> Box<dyn Op> {
     match target {
         crate::cli::Target::Caches => Box::new(caches::Caches),
         crate::cli::Target::NodeModules => Box::new(node_modules::NodeModules),
@@ -234,7 +234,7 @@ pub fn for_target(target: crate::cli::Target) -> Box<dyn Op> {
     }
 }
 
-pub fn scan_all(ctx: &Ctx) -> ScanResult {
+pub(crate) fn scan_all(ctx: &Ctx) -> ScanResult {
     let operations = all();
     let observations = project::ScanObservations::default();
     let mut findings = Vec::new();
@@ -282,7 +282,7 @@ pub fn scan_all(ctx: &Ctx) -> ScanResult {
 /// Drops actionable findings the sink would refuse as protected — a built-in
 /// protected path (`/Volumes`, `~/Library` outside its carve-out) or a
 /// configured `protect` entry — so a preview never offers what apply refuses.
-pub fn filter_protected_findings(findings: &mut Vec<Finding>, ctx: &Ctx) {
+pub(crate) fn filter_protected_findings(findings: &mut Vec<Finding>, ctx: &Ctx) {
     findings.retain(|finding| {
         let protected = finding
             .action
@@ -305,7 +305,7 @@ pub fn filter_protected_findings(findings: &mut Vec<Finding>, ctx: &Ctx) {
     });
 }
 
-pub fn apply_filesystem_finding(op: &str, finding: &Finding, ctx: &Ctx) -> Result<()> {
+pub(crate) fn apply_filesystem_finding(op: &str, finding: &Finding, ctx: &Ctx) -> Result<()> {
     apply_verified_finding(op, finding, ctx, Ok)
 }
 
@@ -1165,7 +1165,7 @@ fn restore_quarantined_target(
     })
 }
 
-pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
+pub(crate) fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
     trash_findings_where(ctx, |_| true)
 }
 
@@ -1176,19 +1176,14 @@ pub fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
 /// nothing; the identity does. The selection only narrows: an item no record
 /// names stays, and a history that cannot be read whole refuses the command,
 /// because the record that tells an item apart might be the one missed.
-pub fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>> {
+pub(crate) fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>> {
     use crate::journal::TrashedIdentity;
 
+    // A complete read refuses a malformed line or an oversized snapshot rather
+    // than skip it, so it never returns a history that could be missing the
+    // record that tells an item apart.
     let history = crate::journal::read_complete_history(&ctx.journal_path)
         .context("cannot read the apply journal that records what devtrim moved to the Trash")?;
-    // A history read only in part could be missing the very record that tells
-    // an item apart, so nothing is offered rather than a part.
-    if !history.errors.is_empty() {
-        anyhow::bail!(
-            "cannot read the whole apply journal, so which Trash items devtrim moved there is unknown; nothing is offered: {}",
-            history.errors.join("; ")
-        );
-    }
     let moved = history
         .entries
         .iter()
@@ -1260,7 +1255,7 @@ fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Resul
     Ok(findings)
 }
 
-pub fn purge_trash(findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
+pub(crate) fn purge_trash(findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
     let directory = crate::safety::validate_trash_root(&ctx.home)?;
     let mut outcome = ApplyOutcome::new("trash-empty");
     for finding in findings {
@@ -1372,6 +1367,24 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
+    /// `clean <target>` reaches exactly the categories `scan` runs, each under
+    /// the name the CLI parses, so a category added to one list and not the
+    /// other, or spelled two ways, fails here.
+    #[test]
+    fn every_cli_target_is_one_registered_category_under_its_cli_name() {
+        use clap::ValueEnum as _;
+
+        let mut from_targets = Vec::new();
+        for target in crate::cli::Target::value_variants() {
+            let parsed = target.to_possible_value().unwrap();
+            assert_eq!(for_target(*target).name(), parsed.get_name());
+            assert_eq!(target.as_str(), parsed.get_name());
+            from_targets.push(target.as_str());
+        }
+        let registered = all().iter().map(|op| op.name()).collect::<Vec<_>>();
+        assert_eq!(from_targets, registered);
+    }
+
     /// Finder's AppleScript path failed on 2026-10-02 for lack of Automation
     /// permission and is slow on a loaded machine. Moving a real item would put
     /// it in the developer's actual Trash, whatever `HOME` says, so this pins
@@ -1426,21 +1439,8 @@ mod tests {
 
     fn context(home: PathBuf) -> Ctx {
         Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
             roots: vec![],
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home,
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home)
         }
     }
 

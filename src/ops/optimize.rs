@@ -17,7 +17,7 @@ use super::{ApplyOutcome, Finding, Op};
 use crate::report::{CommandAuthority, MaintenanceTask};
 use crate::safety::Ctx;
 
-pub struct Optimize {
+pub(crate) struct Optimize {
     tasks: Vec<MaintenanceTask>,
 }
 
@@ -29,7 +29,7 @@ impl Optimize {
     /// differ by orders of magnitude in cost, and `plan_danger` takes the
     /// maximum, so an unnamed task would ride in on another's prompt. Naming
     /// several with repeated `--task` is consent to each of them.
-    pub fn new(names: &[String], apply: bool) -> Result<Self> {
+    pub(crate) fn new(names: &[String], apply: bool) -> Result<Self> {
         if names.is_empty() {
             // Previewing everything is useful; applying everything behind one
             // prompt is the thing `--task` exists to prevent, so the shortcut
@@ -150,21 +150,9 @@ mod tests {
 
     fn test_ctx() -> Ctx {
         Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
             journal_path: PathBuf::from("/tmp/devtrim-optimize-test-journal.jsonl"),
-            home: PathBuf::from("/tmp"),
-            interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(PathBuf::from("/tmp"))
         }
     }
 

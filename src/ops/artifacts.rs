@@ -32,7 +32,7 @@ const EXCLUDED_NAMES: &[&str] = &[
     "DerivedData",
 ];
 
-pub struct Artifacts;
+pub(crate) struct Artifacts;
 
 #[derive(Debug)]
 struct ArtifactCandidate {
@@ -736,21 +736,8 @@ mod tests {
 
     fn context(home: PathBuf) -> Ctx {
         Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
             roots: vec![home.clone()],
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home,
-            interactive: false,
-            diagnostic_output: crate::safety::DiagnosticOutput::Capture,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home)
         }
     }
 

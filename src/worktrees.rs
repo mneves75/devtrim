@@ -190,7 +190,7 @@ fn leads_back(path: &Path, scan_roots: &[PathBuf], common: (u64, u64)) -> Result
         return Err(not_ours);
     }
     let bytes = std::fs::read(&marker).map_err(|_| not_ours)?;
-    let gitdir = gitfile_target(&bytes).ok_or(not_ours)?;
+    let gitdir = project::gitfile_target(&bytes).ok_or(not_ours)?;
     let gitdir = path.join(gitdir);
     let registry = gitdir.parent().ok_or(not_ours)?;
     if registry.file_name() != Some(OsStr::new("worktrees")) {
@@ -202,17 +202,6 @@ fn leads_back(path: &Path, scan_roots: &[PathBuf], common: (u64, u64)) -> Result
     }
 }
 
-/// The path a `.git` file names, read as Git reads it (git v2.51.0
-/// `setup.c` `read_gitfile_gently`): the exact prefix `gitdir: `, then every
-/// byte but trailing CR and LF.
-fn gitfile_target(bytes: &[u8]) -> Option<&OsStr> {
-    let mut target = bytes.strip_prefix(b"gitdir: ")?;
-    while let [rest @ .., b'\n' | b'\r'] = target {
-        target = rest;
-    }
-    (!target.is_empty()).then(|| OsStr::from_bytes(target))
-}
-
 fn identity(path: &Path) -> Option<(u64, u64)> {
     std::fs::metadata(path)
         .ok()
@@ -221,7 +210,7 @@ fn identity(path: &Path) -> Option<(u64, u64)> {
 
 /// One record of `git worktree list --porcelain -z`.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct Record {
+struct Record {
     path: PathBuf,
     branch: Option<String>,
     detached: bool,
@@ -253,7 +242,7 @@ impl Record {
 /// field ends a record. Unknown attributes are ignored; an attribute before
 /// any `worktree` line, a record left unterminated, or no record at all is an
 /// error.
-pub(crate) fn parse_porcelain(output: &[u8]) -> Result<Vec<Record>> {
+fn parse_porcelain(output: &[u8]) -> Result<Vec<Record>> {
     // Every field ends in NUL, so the piece after the last one is not a field;
     // without this, a list cut right after a field would read as complete.
     let Some(fields) = output.strip_suffix(b"\0") else {

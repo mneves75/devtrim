@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, removal_note};
 use crate::safety::{Ctx, escalate};
 
-pub struct Installers;
+pub(crate) struct Installers;
 
 /// Directories whose direct children may be considered. Scanning is deliberately
 /// non-recursive: `Downloads` routinely contains extracted project trees, and an
@@ -232,21 +232,8 @@ mod tests {
 
     fn test_ctx(home: PathBuf) -> Ctx {
         Ctx {
-            yes: true,
-            yolo: false,
-            json: false,
-            roots: Vec::new(),
-            roots_origin: crate::safety::RootsOrigin::Default,
-            active_days: 30,
-            retain_days: 30,
-            protect: Vec::new(),
-            journal_path: home.join("journal.jsonl"),
-            home,
-            interactive: false,
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
-            diagnostics: Default::default(),
-            journal_errors: Default::default(),
-            apply_results: Default::default(),
+            ..Ctx::for_test(home)
         }
     }
 
