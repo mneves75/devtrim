@@ -457,27 +457,24 @@ fn bar(size: u64, largest: u64, width: usize) -> String {
 fn render(frame: &mut Frame, explorer: &Explorer) {
     let area = frame.area();
     let [header, body, footer] = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Min(3),
-        Constraint::Length(3),
+        Constraint::Length(2),
     ])
     .areas(area);
 
     let total = explorer.total();
     let partial = explorer.entries.iter().any(|entry| entry.partial);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" analyze ", explorer.theme.bold(Token::Accent)),
-            Span::raw(report::terminal_safe(
-                &explorer.current().display().to_string(),
-            )),
-            Span::styled(
-                format!("  {}{}", report::gb(total), if partial { "+" } else { "" }),
-                explorer.theme.style(Token::AccentSecondary),
-            ),
-        ]))
-        .block(Block::bordered().title(" measure · classify · trim ")),
+    crate::tui::render_header(
+        frame,
         header,
+        explorer.theme,
+        &format!(
+            "analyze · {} · {}{}",
+            explorer.current().display(),
+            report::gb(total),
+            if partial { "+" } else { "" }
+        ),
     );
 
     let largest = explorer.entries.first().map_or(0, |entry| entry.size);
@@ -536,25 +533,29 @@ fn render(frame: &mut Frame, explorer: &Explorer) {
                 "Read-only. This screen never deletes anything.".to_string()
             }
         },
-        |error| report::terminal_safe(error),
+        // Raw: the footer escapes at its sink.
+        Clone::clone,
     );
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                "↑/↓ move · Enter open · Esc up · r rescan · ? keys · q quit",
-                explorer.theme.style(Token::AccentSecondary),
-            ),
-            Line::styled(
-                status,
-                explorer.theme.style(if explorer.errors.is_empty() {
-                    Token::Muted
-                } else {
-                    Token::Critical
-                }),
-            ),
-        ])
-        .block(Block::bordered()),
+    crate::tui::render_footer_rows(
+        frame,
         footer,
+        explorer.theme,
+        &[
+            ("↑↓", "move"),
+            ("Enter", "open"),
+            ("Esc", "back"),
+            ("r", "rescan"),
+            ("q", "quit"),
+            ("?", "keys"),
+        ],
+        (
+            &status,
+            if explorer.errors.is_empty() {
+                Token::Muted
+            } else {
+                Token::Critical
+            },
+        ),
     );
 
     if explorer.help {

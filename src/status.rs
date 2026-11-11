@@ -960,25 +960,18 @@ fn run_watch(ctx: &Ctx) -> Result<std::process::ExitCode> {
 fn render_watch(frame: &mut Frame, report: Option<&StatusReport>, theme: Theme) {
     let area = frame.area();
     let [header, body, footer] = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Min(3),
-        Constraint::Length(3),
+        Constraint::Length(2),
     ])
     .areas(area);
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" status ", theme.bold(Token::Accent)),
-            Span::raw(report.map_or_else(
-                || "sampling…".to_string(),
-                |report| health_headline(&report.health),
-            )),
-        ]))
-        .block(Block::bordered().title(" measure · classify · trim ")),
-        header,
-    );
+    crate::tui::render_header(frame, header, theme, "status");
 
-    let mut lines = Vec::new();
+    let mut lines = vec![Line::raw(report.map_or_else(
+        || "sampling…".to_string(),
+        |report| health_headline(&report.health),
+    ))];
     if let Some(report) = report {
         for (label, value) in watch_rows(report) {
             lines.push(Line::from(vec![
@@ -1016,19 +1009,15 @@ fn render_watch(frame: &mut Frame, report: Option<&StatusReport>, theme: Theme) 
         body,
     );
 
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                format!("refreshing every {}s · q quit", WATCH_INTERVAL.as_secs()),
-                theme.style(Token::AccentSecondary),
-            ),
-            Line::styled(
-                "read-only; this screen never changes anything",
-                theme.style(Token::Muted),
-            ),
-        ])
-        .block(Block::bordered()),
+    crate::tui::render_footer_rows(
+        frame,
         footer,
+        theme,
+        &[("q", "quit")],
+        (
+            &format!("Refreshing every {}s. Read-only.", WATCH_INTERVAL.as_secs()),
+            Token::Muted,
+        ),
     );
 }
 
