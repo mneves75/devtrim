@@ -48,6 +48,7 @@ if [[ "$mode" == offline ]]; then
   run workflow actionlint
   run release-policy bash scripts/tests/release-policy.sh
   run planted-violations python3 scripts/tests/planted-violations.py
+  run planted-violations-controls python3 -B scripts/tests/planted-violations-controls.py
   run film-controls python3 -B scripts/tests/film-controls.py
   run msrv rustup run 1.88.0 cargo test --locked --all-targets --all-features
   run audit cargo audit --no-fetch
