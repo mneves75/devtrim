@@ -18,6 +18,13 @@ reports a mutant as caught when *a* test fails, which is exactly the confusion
 this exists to remove, and its cost is unbounded. Review still owns every
 assertion these cases do not name.
 
+The mutation stage runs on isolated workers: each further worker starts from
+a clone of the built baseline, holds its own source copy and cargo target
+directory, and restores the file it mutated before its next case, because
+several cases share one replacement site. A worker exception or a case left
+without a result is a reported failure, never a pass, and the run finishes
+every case before it reports.
+
 Marker names must stay mutually non-prefixing: the check is a substring match,
 so `PV evidence/agents` would also accept a failure tagged
 `PV evidence/agents-history` and attribute it to the wrong guard.
@@ -29,6 +36,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -37,8 +45,8 @@ from collections import deque
 from pathlib import Path
 
 TOOLCHAIN = "1.98.1"
-# Every mutant is a full rebuild; a feature-eval mutant also relinks the
-# binary and runs it against real fixtures, about a minute each.
+# Every mutant recompiles the devtrim crate; a feature-eval mutant also relinks
+# the binary and runs it against real fixtures.
 TOTAL_DEADLINE_SECONDS = 3600
 # Unit fixtures can also build and query many real Git repositories. Give
 # them the same bounded budget as feature evals; a timeout is never proof.
@@ -2083,27 +2091,87 @@ def job_count() -> int:
     return positive_integer_setting("DEVTRIM_PV_JOBS", default)
 
 
-def run(command: list[str], cwd: Path, env_target: Path, timeout: int):
-    env = dict(os.environ)
-    env["CARGO_TARGET_DIR"] = str(env_target)
-    return subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 
 
-def run_threads(count: int, function) -> None:
-    threads = [threading.Thread(target=function, daemon=True) for _ in range(count)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        # A bounded wait keeps the main thread able to take a signal.
-        while thread.is_alive():
-            thread.join(0.5)
+class Supervisor:
+    """Every child process and thread the harness starts, so a stop reaches all."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.stopping = False
+        self.children: set[subprocess.Popen] = set()
+        self.threads: list[threading.Thread] = []
+
+    def run(self, command: list[str], cwd: Path, env_target: Path, timeout: int):
+        env = dict(os.environ)
+        env["CARGO_TARGET_DIR"] = str(env_target)
+        with self.lock:
+            # Checked under the lock `stop` takes, so no child starts after it.
+            if self.stopping:
+                raise RuntimeError("the harness is stopping")
+            # A session of its own, so killing the group reaches every rustc
+            # and test process the command started.
+            child = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            self.children.add(child)
+        try:
+            stdout, stderr = child.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            with self.lock:
+                self.kill(child)
+            child.communicate()
+            with self.lock:
+                self.children.discard(child)
+            raise
+        # Any other exception leaves the child registered for `stop` to kill.
+        with self.lock:
+            self.children.discard(child)
+        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+
+    @staticmethod
+    def kill(child: subprocess.Popen) -> None:
+        # Once the leader is reaped its group id may belong to someone else.
+        if child.returncode is None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def run_threads(self, count: int, function) -> None:
+        threads = [threading.Thread(target=function, daemon=True) for _ in range(count)]
+        with self.lock:
+            self.threads.extend(threads)
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            # A bounded wait keeps the main thread able to take a signal.
+            while thread.is_alive():
+                thread.join(0.5)
+
+    def stop(self) -> None:
+        with self.lock:
+            self.stopping = True
+            for child in self.children:
+                self.kill(child)
+            threads = list(self.threads)
+        finish_by = time.monotonic() + 30
+        for thread in threads:
+            thread.join(max(0, finish_by - time.monotonic()))
+
+
+SUPERVISOR = Supervisor()
+
+
+def stop_on_signal(signum: int, frame) -> None:
+    raise SystemExit(128 + signum)
 
 
 def build_test_binary(
@@ -2119,7 +2187,7 @@ def build_test_binary(
     remaining = int(max(1, deadline - time.monotonic()))
     selection = ["--lib"] if target == "lib" else ["--test", target]
     kind = ["lib"] if target == "lib" else ["test"]
-    result = run(
+    result = SUPERVISOR.run(
         [
             "rustup", "run", TOOLCHAIN, "cargo", "test",
             "--locked", "--offline", *selection, "--all-features",
@@ -2149,7 +2217,7 @@ def build_error_tail(result: subprocess.CompletedProcess) -> str:
 
 
 def run_one_test(binary: Path, test: str, target_dir: Path) -> subprocess.CompletedProcess:
-    return run(
+    return SUPERVISOR.run(
         [str(binary), "--exact", "--nocapture", test],
         REPOSITORY,
         target_dir,
@@ -2309,21 +2377,80 @@ class MutationStage:
 def main() -> int:
     """Every exit path removes the scratch tree.
 
-    `fail()` exits through `SystemExit` and a build can raise `TimeoutExpired`,
-    so cleanup cannot live at the end of the happy path: each early exit would
-    otherwise leave a full source copy and an `--all-features` debug build under
+    `fail()` exits through `SystemExit`, a build can raise `TimeoutExpired`,
+    and SIGTERM, SIGHUP and SIGINT raise `SystemExit` in the main thread, so
+    cleanup cannot live at the end of the happy path: each early exit would
+    otherwise leave full source copies and `--all-features` debug builds under
     `target/`. The likeliest failures — `--offline` without a fetched
     dependency, or the pinned toolchain missing — happen *after* the copy, in a
-    gate developers run locally.
+    gate developers run locally. A run killed outright cannot clean up, so its
+    scratch tree carries its pid and a later run removes it once that pid is
+    gone.
     """
-    scratch = REPOSITORY / "target" / f"planted-violations-{int(time.time())}"
+    # An optional name prefix narrows the run while developing a case; the
+    # gate runs with no argument, so every case.
+    if len(sys.argv) > 2:
+        fail("usage: planted-violations.py [PREFIX]")
+    prefix = sys.argv[1] if len(sys.argv) == 2 else ""
+    jobs = job_count()
+    test_jobs = positive_integer_setting("DEVTRIM_PV_TEST_JOBS", jobs)
+
+    previous = {signum: signal.signal(signum, stop_on_signal) for signum in STOP_SIGNALS}
+    scratch = None
     started = time.monotonic()
     summary: dict = {"timings": {}, "jobs": 0, "test_jobs": 0, "notes": []}
     try:
-        return run_cases(scratch, summary)
+        scratch = create_scratch()
+        return run_cases(scratch, prefix, jobs, test_jobs, summary)
     finally:
+        # A second signal must not interrupt the cleanup it would ask for.
+        for signum in previous:
+            signal.signal(signum, signal.SIG_IGN)
+        SUPERVISOR.stop()
         print_timing(time.monotonic() - started, summary)
-        shutil.rmtree(scratch, ignore_errors=True)
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+            if scratch.exists():
+                shutil.rmtree(scratch, ignore_errors=True)
+            if scratch.exists():
+                print(f"planted-violations: could not remove {scratch}", file=sys.stderr)
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def create_scratch() -> Path:
+    parent = REPOSITORY / "target"
+    parent.mkdir(exist_ok=True)
+    # Only a tree this harness marked with a pid that no longer runs is
+    # removed; one without a pid file may belong to an older harness.
+    for entry in parent.iterdir():
+        if not re.fullmatch(r"planted-violations-\d+", entry.name):
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            pid = int((entry / "pid").read_text())
+        except (OSError, ValueError):
+            continue
+        # Zero and negative pids address process groups, not a process.
+        if pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            continue
+    number = int(time.time())
+    while True:
+        scratch = parent / f"planted-violations-{number}"
+        try:
+            os.mkdir(scratch)
+        except FileExistsError:
+            number += 1
+            continue
+        (scratch / "pid").write_text(f"{os.getpid()}\n")
+        return scratch
 
 
 def print_timing(wall: float, summary: dict) -> None:
@@ -2343,14 +2470,7 @@ def print_timing(wall: float, summary: dict) -> None:
     print("\n".join(lines), file=sys.stderr)
 
 
-def run_cases(scratch: Path, summary: dict) -> int:
-    # An optional name prefix narrows the run while developing a case; the
-    # gate runs with no argument, so every case.
-    if len(sys.argv) > 2:
-        fail("usage: planted-violations.py [PREFIX]")
-    prefix = sys.argv[1] if len(sys.argv) == 2 else ""
-    jobs = job_count()
-    test_jobs = positive_integer_setting("DEVTRIM_PV_TEST_JOBS", jobs)
+def run_cases(scratch: Path, prefix: str, jobs: int, test_jobs: int, summary: dict) -> int:
     # The marker check is a substring match, so one marker that prefixes
     # another would let a failure tagged for one guard prove the other.
     markers = sorted({case.marker for case in CASES})
@@ -2367,7 +2487,7 @@ def run_cases(scratch: Path, summary: dict) -> int:
     deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS
     workspace = scratch / "src-copy"
     target_dir = scratch / "cargo-target"
-    workspace.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir()
 
     for entry in SOURCE_INPUTS:
         source = REPOSITORY / entry
@@ -2418,7 +2538,7 @@ def run_cases(scratch: Path, summary: dict) -> int:
                 result = None
             baseline_results[(target, test)] = result
 
-    run_threads(min(test_jobs, len(pending)), run_baseline_tests)
+    SUPERVISOR.run_threads(min(test_jobs, len(pending)), run_baseline_tests)
     for case in cases:
         for test in case.tests:
             if (case.target, test) not in baseline_results:
@@ -2442,7 +2562,7 @@ def run_cases(scratch: Path, summary: dict) -> int:
         for name in ("src-copy", "cargo-target"):
             if sys.platform == "darwin":
                 remaining = int(max(1, deadline - time.monotonic()))
-                copy = run(["/bin/cp", "-cRp", str(scratch / name), str(root / name)], scratch, target_dir, remaining)
+                copy = SUPERVISOR.run(["/bin/cp", "-cRp", str(scratch / name), str(root / name)], scratch, target_dir, remaining)
                 if copy.returncode != 0:
                     fail(f"ERROR: cannot clone {name} for worker {index}: {copy.stderr.strip()}")
             else:
@@ -2453,7 +2573,7 @@ def run_cases(scratch: Path, summary: dict) -> int:
 
     stage = MutationStage(cases, pristine, deadline, threading.Semaphore(test_jobs))
     worker_queue = list(workers)
-    run_threads(jobs, lambda: stage.work(worker_queue.pop()))
+    SUPERVISOR.run_threads(jobs, lambda: stage.work(worker_queue.pop()))
 
     caught = []
     failures = []
