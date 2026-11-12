@@ -16,7 +16,9 @@ import contextlib
 import importlib.util
 import io
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 HARNESS_PATH = Path(__file__).resolve().parent / "planted-violations.py"
@@ -31,8 +33,33 @@ def load_harness():
     return module
 
 
+def timed_out_child_releases_its_worker(harness) -> bool:
+    """A process that left the killed group still holds the output pipes.
+
+    Waiting for those pipes to close would hang the worker for as long as that
+    process lives, so the harness must only reap the child it killed.
+    """
+    holder = "import time; time.sleep(40)"
+    command = [
+        sys.executable,
+        "-c",
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {holder!r}], start_new_session=True); "
+        "time.sleep(120)",
+    ]
+    started = time.monotonic()
+    try:
+        harness.SUPERVISOR.run(command, HARNESS_PATH.parent, HARNESS_PATH.parent, 5)
+    except subprocess.TimeoutExpired:
+        return time.monotonic() - started < 20
+    return False
+
+
 def main() -> int:
     harness = load_harness()
+    if not timed_out_child_releases_its_worker(harness):
+        print("FAIL: a timed-out child kept its worker waiting on a pipe", file=sys.stderr)
+        return 1
     real = {case.name: case for case in harness.CASES}
     caught = real["report/quotes-literal"]
     other = real["journal/bounded-error"]

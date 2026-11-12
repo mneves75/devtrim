@@ -2127,7 +2127,11 @@ class Supervisor:
         except subprocess.TimeoutExpired:
             with self.lock:
                 self.kill(child)
-            child.communicate()
+            # Reap only the child: a process that left the group can hold the
+            # pipes open, and waiting for them would hang this worker.
+            child.wait()
+            child.stdout.close()
+            child.stderr.close()
             with self.lock:
                 self.children.discard(child)
             raise
