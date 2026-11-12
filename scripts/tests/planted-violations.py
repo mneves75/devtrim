@@ -2135,13 +2135,30 @@ def main() -> int:
     gate developers run locally.
     """
     scratch = REPOSITORY / "target" / f"planted-violations-{int(time.time())}"
+    started = time.monotonic()
+    timings: dict[str, tuple[float, float]] = {}
     try:
-        return run_cases(scratch)
+        return run_cases(scratch, timings)
     finally:
+        print_timing(time.monotonic() - started, timings, jobs=1)
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def run_cases(scratch: Path) -> int:
+def print_timing(wall: float, timings: dict[str, tuple[float, float]], jobs: int) -> None:
+    """Report where the time went on stderr, so stdout stays the proof record."""
+    build = sum(seconds for seconds, _ in timings.values())
+    tests = sum(seconds for _, seconds in timings.values())
+    lines = [
+        f"timing: {wall:.1f}s wall, {build:.1f}s building mutants, "
+        f"{tests:.1f}s running mutant tests, {len(timings)} case(s), {jobs} job(s)"
+    ]
+    slowest = sorted(timings.items(), key=lambda item: -sum(item[1]))[:5]
+    for name, (build_seconds, test_seconds) in slowest:
+        lines.append(f"timing: slow {name}: {build_seconds:.1f}s build, {test_seconds:.1f}s tests")
+    print("\n".join(lines), file=sys.stderr)
+
+
+def run_cases(scratch: Path, timings: dict[str, tuple[float, float]]) -> int:
     # An optional name prefix narrows the run while developing a case; the
     # gate runs with no argument, so every case.
     if len(sys.argv) > 2:
@@ -2213,16 +2230,23 @@ def run_cases(scratch: Path) -> int:
         original = pristine[case.relative_path]
         path.write_text(original.replace(case.before, case.after, 1))
 
+        build_started = time.monotonic()
         mutant = build_test_binary(workspace, target_dir, deadline, case.target)
+        build_seconds = time.monotonic() - build_started
+        timings[case.name] = (build_seconds, 0.0)
         path.write_text(original)
         if mutant is None:
             fail(f"ERROR {case.name}: mutant did not compile")
 
         for test in case.tests:
+            test_started = time.monotonic()
             try:
                 result = run_one_test(case, mutant, test, target_dir)
             except subprocess.TimeoutExpired:
                 fail(f"ERROR {case.name}: mutant test timed out ({test})")
+            finally:
+                build_seconds, test_seconds = timings[case.name]
+                timings[case.name] = (build_seconds, test_seconds + time.monotonic() - test_started)
             if result.returncode == 0:
                 fail(f"MISSED {case.name}: boundary violation survived ({test})")
             combined = result.stdout + result.stderr
