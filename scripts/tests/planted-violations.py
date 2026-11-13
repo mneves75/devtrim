@@ -2106,6 +2106,9 @@ class Supervisor:
     def run(self, command: list[str], cwd: Path, env_target: Path, timeout: int):
         env = dict(os.environ)
         env["CARGO_TARGET_DIR"] = str(env_target)
+        # Verdicts read panic text and its source location, which need no
+        # debug info; leaving it out cut mutant build time by a quarter.
+        env["CARGO_PROFILE_DEV_DEBUG"] = "0"
         with self.lock:
             # Checked under the lock `stop` takes, so no child starts after it.
             if self.stopping:
