@@ -55,6 +55,20 @@ def timed_out_child_releases_its_worker(harness) -> bool:
     return False
 
 
+def run_harness(harness, cases, jobs: int) -> tuple[int, str, str]:
+    harness.CASES = tuple(cases)
+    os.environ["DEVTRIM_PV_JOBS"] = str(jobs)
+    os.environ.pop("DEVTRIM_PV_TEST_JOBS", None)
+    sys.argv = [str(HARNESS_PATH)]
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        try:
+            status = harness.main()
+        except SystemExit as stop:
+            status = stop.code
+    return status, stdout.getvalue(), stderr.getvalue()
+
+
 def main() -> int:
     harness = load_harness()
     if not timed_out_child_releases_its_worker(harness):
@@ -77,37 +91,38 @@ def main() -> int:
         fields.update(changes)
         return harness.Case(**fields)
 
-    harness.CASES = (
-        variant("control/no-op", caught, after="    // planted no-op mutant\n" + caught.before),
-        variant(
-            "control/does-not-compile",
+    def install_faults(module) -> None:
+        # Bound to this module's own prove_case: each run has its own supervisor.
+        prove_case = module.prove_case
+
+        def faulty_prove_case(case, worker, *arguments):
+            if case.name == "control/worker-fault":
+                raise RuntimeError(WORKER_FAULT)
+            if case.name == "control/restore-fault":
+                # The restoration failed: the worker's copy keeps the mutant.
+                path = worker.workspace / case.relative_path
+                path.write_text(path.read_text().replace(case.before, case.after, 1))
+                raise OSError("planted restoration failure")
+            return prove_case(case, worker, *arguments)
+
+        module.prove_case = faulty_prove_case
+
+    install_faults(harness)
+    status, output, errors = run_harness(
+        harness,
+        (
+            variant("control/no-op", caught, after="    // planted no-op mutant\n" + caught.before),
+            variant(
+                "control/does-not-compile",
+                caught,
+                after='    compile_error!("planted compile failure");\n' + caught.before,
+            ),
+            variant("control/wrong-marker", other, marker="PV control/never-printed"),
+            variant("control/worker-fault", other),
             caught,
-            after='    compile_error!("planted compile failure");\n' + caught.before,
         ),
-        variant("control/wrong-marker", other, marker="PV control/never-printed"),
-        variant("control/worker-fault", other),
-        caught,
+        jobs=2,
     )
-
-    prove_case = harness.prove_case
-
-    def faulty_prove_case(case, *arguments):
-        if case.name == "control/worker-fault":
-            raise RuntimeError(WORKER_FAULT)
-        return prove_case(case, *arguments)
-
-    harness.prove_case = faulty_prove_case
-    os.environ["DEVTRIM_PV_JOBS"] = "2"
-    os.environ.pop("DEVTRIM_PV_TEST_JOBS", None)
-    sys.argv = [str(HARNESS_PATH)]
-    stdout, stderr = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        try:
-            status = harness.main()
-        except SystemExit as stop:
-            status = stop.code
-    output, errors = stdout.getvalue(), stderr.getvalue()
-
     expectations = [
         ("exit status 1", status == 1),
         ("MISSED for the no-op mutant", "MISSED control/no-op: boundary violation survived" in errors),
@@ -117,9 +132,51 @@ def main() -> int:
         ("positive control caught", f"CAUGHT {caught.name}: " in output),
         ("no planted fault caught", "CAUGHT control/" not in output),
     ]
+
+    # A worker whose copy may still hold a mutant must take no further case:
+    # a no-op in another file, judged by the leaked mutant's test, would pass.
+    harness = load_harness()
+    install_faults(harness)
+    status, leak_output, leak_errors = run_harness(
+        harness,
+        (
+            variant("control/restore-fault", caught),
+            variant(
+                "control/after-leak",
+                other,
+                after="    // planted no-op mutant\n" + other.before,
+                tests=caught.tests,
+                marker=caught.marker,
+            ),
+        ),
+        jobs=1,
+    )
+    output, errors = output + leak_output, errors + leak_errors
+    expectations += [
+        ("exit status 1 after a failed restoration", status == 1),
+        ("restoration failure reported", "ERROR control/restore-fault: worker failed" in leak_errors),
+        ("no case proven on a contaminated copy", "CAUGHT control/after-leak" not in leak_output),
+    ]
+
+    # A worker that dies while publishing a result is a failure even when
+    # every result was stored first.
+    harness = load_harness()
+    record = harness.MutationStage.record
+
+    def failing_record(stage, index, outcome):
+        record(stage, index, outcome)
+        raise OSError("planted publication failure")
+
+    harness.MutationStage.record = failing_record
+    status, publish_output, publish_errors = run_harness(harness, (caught,), jobs=1)
+    output, errors = output + publish_output, errors + publish_errors
+    expectations += [
+        ("exit status 1 after a publication failure", status == 1),
+        ("publication failure reported", "planted publication failure" in publish_errors),
+    ]
+
     missing = [label for label, held in expectations if not held]
     if missing:
-        print(f"planted-violations-controls: exit status {status}", file=sys.stderr)
         print(f"--- stdout\n{output}--- stderr\n{errors}", file=sys.stderr)
         for label in missing:
             print(f"FAIL: {label}", file=sys.stderr)

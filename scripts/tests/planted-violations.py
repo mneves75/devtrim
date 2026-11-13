@@ -2346,6 +2346,7 @@ class MutationStage:
             self.remaining.setdefault(case.target, deque()).append(index)
         self.outcomes: list[Outcome | None] = [None] * len(cases)
         self.printed = 0
+        self.fatal: list[str] = []
 
     def take(self, last_target: str) -> int | None:
         with self.lock:
@@ -2368,17 +2369,24 @@ class MutationStage:
                 self.printed += 1
 
     def work(self, worker: Worker) -> None:
-        while (index := self.take(worker.last_target)) is not None:
-            case = self.cases[index]
-            if time.monotonic() > self.deadline:
-                self.record(index, Outcome(f"ERROR {case.name}: total deadline exceeded before mutation"))
-                continue
-            try:
-                outcome = prove_case(case, worker, self.pristine, self.deadline, self.test_slots)
-            except Exception as error:
-                self.record(index, Outcome(f"ERROR {case.name}: worker failed: {error}"))
-                continue
-            self.record(index, outcome)
+        try:
+            while (index := self.take(worker.last_target)) is not None:
+                case = self.cases[index]
+                if time.monotonic() > self.deadline:
+                    self.record(index, Outcome(f"ERROR {case.name}: total deadline exceeded before mutation"))
+                    continue
+                try:
+                    outcome = prove_case(case, worker, self.pristine, self.deadline, self.test_slots)
+                except Exception as error:
+                    self.record(index, Outcome(f"ERROR {case.name}: worker failed: {error}"))
+                    # Its copy may still hold the mutant, which could prove a
+                    # later case; the other workers take the rest.
+                    return
+                self.record(index, outcome)
+        except Exception as error:
+            # Even a failure after every result was stored fails the run.
+            with self.lock:
+                self.fatal.append(f"ERROR: worker {worker.index} failed: {error}")
 
 
 def main() -> int:
@@ -2603,6 +2611,7 @@ def run_cases(scratch: Path, prefix: str, jobs: int, test_jobs: int, summary: di
         if worker.rebuilt_dependencies is not None
     ]
 
+    failures.extend(stage.fatal)
     expected = sum(len(case.tests) for case in cases)
     if failures or len(caught) != expected:
         for failure in failures:
