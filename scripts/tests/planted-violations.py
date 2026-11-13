@@ -18,6 +18,13 @@ reports a mutant as caught when *a* test fails, which is exactly the confusion
 this exists to remove, and its cost is unbounded. Review still owns every
 assertion these cases do not name.
 
+The mutation stage runs on isolated workers: each further worker starts from
+a clone of the built baseline, holds its own source copy and cargo target
+directory, and restores the file it mutated before its next case, because
+several cases share one replacement site. A worker exception or a case left
+without a result is a reported failure, never a pass, and the run finishes
+every case before it reports.
+
 Marker names must stay mutually non-prefixing: the check is a substring match,
 so `PV evidence/agents` would also accept a failure tagged
 `PV evidence/agents-history` and attribute it to the wrong guard.
@@ -26,20 +33,27 @@ so `PV evidence/agents` would also accept a failure tagged
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
+from collections import deque
 from pathlib import Path
 
 TOOLCHAIN = "1.98.1"
-# Every mutant is a full rebuild; a feature-eval mutant also relinks the
-# binary and runs it against real fixtures, about a minute each.
+# Every mutant recompiles the devtrim crate; a feature-eval mutant also relinks
+# the binary and runs it against real fixtures.
 TOTAL_DEADLINE_SECONDS = 3600
 # Unit fixtures can also build and query many real Git repositories. Give
 # them the same bounded budget as feature evals; a timeout is never proof.
 TEST_TIMEOUT_SECONDS = 120
+# Isolated workers in the mutation stage. Each holds its own source copy and
+# cargo target directory, so memory and disk, not cores, set the ceiling.
+JOBS_CAP = 6
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SOURCE_INPUTS = ("src", "tests", "Cargo.toml", "Cargo.lock")
@@ -2057,32 +2071,130 @@ def fail(message: str) -> None:
     sys.exit(1)
 
 
-def run(command: list[str], cwd: Path, env_target: Path, timeout: int):
-    import os
-
-    env = dict(os.environ)
-    env["CARGO_TARGET_DIR"] = str(env_target)
-    return subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+def positive_integer_setting(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    if not (raw.isascii() and raw.isdigit() and int(raw) >= 1):
+        fail(f"usage: {name} must be an integer of at least 1, got {raw!r}")
+    return int(raw)
 
 
-def build_test_binary(workspace: Path, target_dir: Path, deadline: float, target: str) -> Path:
+def job_count() -> int:
+    cpus = os.cpu_count() or 1
+    if cpus <= 2:
+        default = 1
+    elif cpus <= 4:
+        default = 2
+    else:
+        default = min(JOBS_CAP, cpus // 2)
+    return positive_integer_setting("DEVTRIM_PV_JOBS", default)
+
+
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+
+
+class Supervisor:
+    """Every child process and thread the harness starts, so a stop reaches all."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.stopping = False
+        self.children: set[subprocess.Popen] = set()
+        self.threads: list[threading.Thread] = []
+
+    def run(self, command: list[str], cwd: Path, env_target: Path, timeout: int):
+        env = dict(os.environ)
+        env["CARGO_TARGET_DIR"] = str(env_target)
+        # Verdicts read panic text and its source location, which need no
+        # debug info; leaving it out cut mutant build time by a quarter.
+        env["CARGO_PROFILE_DEV_DEBUG"] = "0"
+        with self.lock:
+            # Checked under the lock `stop` takes, so no child starts after it.
+            if self.stopping:
+                raise RuntimeError("the harness is stopping")
+            # A session of its own, so killing the group reaches every rustc
+            # and test process the command started.
+            child = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            self.children.add(child)
+        try:
+            stdout, stderr = child.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            with self.lock:
+                self.kill(child)
+            # Reap only the child: a process that left the group can hold the
+            # pipes open, and waiting for them would hang this worker.
+            child.wait()
+            child.stdout.close()
+            child.stderr.close()
+            with self.lock:
+                self.children.discard(child)
+            raise
+        # Any other exception leaves the child registered for `stop` to kill.
+        with self.lock:
+            self.children.discard(child)
+        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+
+    @staticmethod
+    def kill(child: subprocess.Popen) -> None:
+        # Once the leader is reaped its group id may belong to someone else.
+        if child.returncode is None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def run_threads(self, count: int, function) -> None:
+        threads = [threading.Thread(target=function, daemon=True) for _ in range(count)]
+        with self.lock:
+            self.threads.extend(threads)
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            # A bounded wait keeps the main thread able to take a signal.
+            while thread.is_alive():
+                thread.join(0.5)
+
+    def stop(self) -> None:
+        with self.lock:
+            self.stopping = True
+            for child in self.children:
+                self.kill(child)
+            threads = list(self.threads)
+        finish_by = time.monotonic() + 30
+        for thread in threads:
+            thread.join(max(0, finish_by - time.monotonic()))
+
+
+SUPERVISOR = Supervisor()
+
+
+def stop_on_signal(signum: int, frame) -> None:
+    raise SystemExit(128 + signum)
+
+
+def build_test_binary(
+    workspace: Path, target_dir: Path, deadline: float, target: str
+) -> tuple[Path | None, subprocess.CompletedProcess]:
     """Compile one test target and return the executable cargo produced.
 
     An integration test target also rebuilds the `devtrim` binary it runs
     (`CARGO_BIN_EXE_devtrim`), so a mutant is exercised through the real
-    entry point, not a stale build.
+    entry point, not a stale build. The caller decides whether a build failure
+    is an error and shows its reason, so it also gets cargo's result.
     """
     remaining = int(max(1, deadline - time.monotonic()))
     selection = ["--lib"] if target == "lib" else ["--test", target]
     kind = ["lib"] if target == "lib" else ["test"]
-    result = run(
+    result = SUPERVISOR.run(
         [
             "rustup", "run", TOOLCHAIN, "cargo", "test",
             "--locked", "--offline", *selection, "--all-features",
@@ -2093,10 +2205,7 @@ def build_test_binary(workspace: Path, target_dir: Path, deadline: float, target
         remaining,
     )
     if result.returncode != 0:
-        # The caller decides whether a build failure is an error; either way the
-        # reason must be visible, or an unproven case cannot be diagnosed.
-        print("\n".join(result.stderr.splitlines()[-20:]), file=sys.stderr)
-        return None
+        return None, result
     executable = None
     for line in result.stdout.splitlines():
         try:
@@ -2107,11 +2216,15 @@ def build_test_binary(workspace: Path, target_dir: Path, deadline: float, target
             built = message.get("target", {})
             if built.get("kind") == kind and (target == "lib" or built.get("name") == target):
                 executable = message["executable"]
-    return Path(executable) if executable else None
+    return (Path(executable) if executable else None), result
 
 
-def run_one_test(case: Case, binary: Path, test: str, target_dir: Path) -> subprocess.CompletedProcess:
-    return run(
+def build_error_tail(result: subprocess.CompletedProcess) -> str:
+    return "\n".join(result.stderr.splitlines()[-20:])
+
+
+def run_one_test(binary: Path, test: str, target_dir: Path) -> subprocess.CompletedProcess:
+    return SUPERVISOR.run(
         [str(binary), "--exact", "--nocapture", test],
         REPOSITORY,
         target_dir,
@@ -2124,29 +2237,255 @@ def selected_exactly_one(output: str) -> bool:
     return bool(match) and match.group(1) == "1"
 
 
+class Worker:
+    """One isolated source copy and cargo target directory."""
+
+    def __init__(self, index: int, workspace: Path, target_dir: Path, last_target: str) -> None:
+        self.index = index
+        self.workspace = workspace
+        self.target_dir = target_dir
+        self.last_target = last_target
+        # Counted on a clone's first build: how much of the cloned cargo
+        # target directory cargo trusted.
+        self.rebuilt_dependencies: int | None = None
+
+
+class Outcome:
+    def __init__(self, failure: str | None = None) -> None:
+        self.observations: list[str] = []
+        self.failure = failure
+        self.build_seconds = 0.0
+        self.test_seconds = 0.0
+
+
+def prove_case(
+    case: Case,
+    worker: Worker,
+    pristine: dict[str, str],
+    deadline: float,
+    test_slots: threading.Semaphore,
+) -> Outcome:
+    """Build one mutant in the worker's own copy and run its named tests."""
+    path = worker.workspace / case.relative_path
+    original = pristine[case.relative_path]
+    path.write_text(original.replace(case.before, case.after, 1))
+    started = time.monotonic()
+    try:
+        mutant, build = build_test_binary(worker.workspace, worker.target_dir, deadline, case.target)
+    except subprocess.TimeoutExpired:
+        return Outcome(f"ERROR {case.name}: total deadline exceeded while building the mutant")
+    finally:
+        # Cases share replacement sites, so the next case must start pristine.
+        path.write_text(original)
+    outcome = Outcome()
+    outcome.build_seconds = time.monotonic() - started
+    worker.last_target = case.target
+    if worker.index > 0 and worker.rebuilt_dependencies is None:
+        worker.rebuilt_dependencies = 0
+        for line in build.stdout.splitlines():
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if (
+                message.get("reason") == "compiler-artifact"
+                and not str(message.get("package_id", "")).startswith("path+")
+                and message.get("fresh") is False
+            ):
+                worker.rebuilt_dependencies += 1
+    if mutant is None:
+        outcome.failure = f"{build_error_tail(build)}\nERROR {case.name}: mutant did not compile"
+        return outcome
+
+    for test in case.tests:
+        with test_slots:
+            started = time.monotonic()
+            try:
+                result = run_one_test(mutant, test, worker.target_dir)
+            except subprocess.TimeoutExpired:
+                outcome.failure = f"ERROR {case.name}: mutant test timed out ({test})"
+                return outcome
+            finally:
+                outcome.test_seconds += time.monotonic() - started
+        if result.returncode == 0:
+            outcome.failure = f"MISSED {case.name}: boundary violation survived ({test})"
+            return outcome
+        combined = result.stdout + result.stderr
+        if case.marker not in combined:
+            outcome.failure = (
+                f"ERROR {case.name}: {test} failed, but not at the named "
+                f"assertion '{case.marker}' — a different check refused, so "
+                f"this is not proof the boundary is covered\n{combined}"
+            )
+            return outcome
+        location = re.search(r"((?:src|tests)/[^\s:]+:\d+)", combined)
+        outcome.observations.append(
+            f"CAUGHT {case.name}: {test.rsplit('::', 1)[-1]}"
+            f" at {location.group(1) if location else 'unknown'}"
+        )
+    return outcome
+
+
+class MutationStage:
+    """The shared case queue and the results, printed in `CASES` order."""
+
+    def __init__(
+        self,
+        cases: list[Case],
+        pristine: dict[str, str],
+        deadline: float,
+        test_slots: threading.Semaphore,
+    ) -> None:
+        self.cases = cases
+        self.pristine = pristine
+        self.deadline = deadline
+        self.test_slots = test_slots
+        self.lock = threading.Lock()
+        self.remaining: dict[str, deque[int]] = {}
+        for index, case in enumerate(cases):
+            self.remaining.setdefault(case.target, deque()).append(index)
+        self.outcomes: list[Outcome | None] = [None] * len(cases)
+        self.printed = 0
+        self.fatal: list[str] = []
+
+    def take(self, last_target: str) -> int | None:
+        with self.lock:
+            # The same target reuses the worker's last build of everything but
+            # the mutated crate; otherwise drain the longest queue first.
+            if self.remaining.get(last_target):
+                return self.remaining[last_target].popleft()
+            pending = [target for target in sorted(self.remaining) if self.remaining[target]]
+            if not pending:
+                return None
+            target = max(pending, key=lambda name: len(self.remaining[name]))
+            return self.remaining[target].popleft()
+
+    def record(self, index: int, outcome: Outcome) -> None:
+        with self.lock:
+            self.outcomes[index] = outcome
+            while self.printed < len(self.outcomes) and self.outcomes[self.printed] is not None:
+                for observation in self.outcomes[self.printed].observations:
+                    print(observation, flush=True)
+                self.printed += 1
+
+    def work(self, worker: Worker) -> None:
+        try:
+            while (index := self.take(worker.last_target)) is not None:
+                case = self.cases[index]
+                if time.monotonic() > self.deadline:
+                    self.record(index, Outcome(f"ERROR {case.name}: total deadline exceeded before mutation"))
+                    continue
+                try:
+                    outcome = prove_case(case, worker, self.pristine, self.deadline, self.test_slots)
+                except Exception as error:
+                    self.record(index, Outcome(f"ERROR {case.name}: worker failed: {error}"))
+                    # Its copy may still hold the mutant, which could prove a
+                    # later case; the other workers take the rest.
+                    return
+                self.record(index, outcome)
+        except Exception as error:
+            # Even a failure after every result was stored fails the run.
+            with self.lock:
+                self.fatal.append(f"ERROR: worker {worker.index} failed: {error}")
+
+
 def main() -> int:
     """Every exit path removes the scratch tree.
 
-    `fail()` exits through `SystemExit` and a build can raise `TimeoutExpired`,
-    so cleanup cannot live at the end of the happy path: each early exit would
-    otherwise leave a full source copy and an `--all-features` debug build under
+    `fail()` exits through `SystemExit`, a build can raise `TimeoutExpired`,
+    and SIGTERM, SIGHUP and SIGINT raise `SystemExit` in the main thread, so
+    cleanup cannot live at the end of the happy path: each early exit would
+    otherwise leave full source copies and `--all-features` debug builds under
     `target/`. The likeliest failures — `--offline` without a fetched
     dependency, or the pinned toolchain missing — happen *after* the copy, in a
-    gate developers run locally.
+    gate developers run locally. A run killed outright cannot clean up, so its
+    scratch tree carries its pid and a later run removes it once that pid is
+    gone.
     """
-    scratch = REPOSITORY / "target" / f"planted-violations-{int(time.time())}"
-    try:
-        return run_cases(scratch)
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
-
-
-def run_cases(scratch: Path) -> int:
     # An optional name prefix narrows the run while developing a case; the
     # gate runs with no argument, so every case.
     if len(sys.argv) > 2:
         fail("usage: planted-violations.py [PREFIX]")
     prefix = sys.argv[1] if len(sys.argv) == 2 else ""
+    jobs = job_count()
+    test_jobs = positive_integer_setting("DEVTRIM_PV_TEST_JOBS", jobs)
+
+    previous = {signum: signal.signal(signum, stop_on_signal) for signum in STOP_SIGNALS}
+    scratch = None
+    started = time.monotonic()
+    summary: dict = {"timings": {}, "jobs": 0, "test_jobs": 0, "notes": []}
+    try:
+        scratch = create_scratch()
+        return run_cases(scratch, prefix, jobs, test_jobs, summary)
+    finally:
+        # A second signal must not interrupt the cleanup it would ask for.
+        for signum in previous:
+            signal.signal(signum, signal.SIG_IGN)
+        SUPERVISOR.stop()
+        print_timing(time.monotonic() - started, summary)
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+            if scratch.exists():
+                shutil.rmtree(scratch, ignore_errors=True)
+            if scratch.exists():
+                print(f"planted-violations: could not remove {scratch}", file=sys.stderr)
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def create_scratch() -> Path:
+    parent = REPOSITORY / "target"
+    parent.mkdir(exist_ok=True)
+    # Only a tree this harness marked with a pid that no longer runs is
+    # removed; one without a pid file may belong to an older harness.
+    for entry in parent.iterdir():
+        if not re.fullmatch(r"planted-violations-\d+", entry.name):
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            pid = int((entry / "pid").read_text())
+        except (OSError, ValueError):
+            continue
+        # Zero and negative pids address process groups, not a process.
+        if pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            continue
+    number = int(time.time())
+    while True:
+        scratch = parent / f"planted-violations-{number}"
+        try:
+            os.mkdir(scratch)
+        except FileExistsError:
+            number += 1
+            continue
+        (scratch / "pid").write_text(f"{os.getpid()}\n")
+        return scratch
+
+
+def print_timing(wall: float, summary: dict) -> None:
+    """Report where the time went on stderr, so stdout stays the proof record."""
+    timings: dict[str, tuple[float, float]] = summary["timings"]
+    build = sum(seconds for seconds, _ in timings.values())
+    tests = sum(seconds for _, seconds in timings.values())
+    lines = [
+        f"timing: {wall:.1f}s wall, {build:.1f}s building mutants, "
+        f"{tests:.1f}s running mutant tests, {len(timings)} case(s), "
+        f"{summary['jobs']} job(s), {summary['test_jobs']} test slot(s)"
+    ]
+    slowest = sorted(timings.items(), key=lambda item: -sum(item[1]))[:5]
+    for name, (build_seconds, test_seconds) in slowest:
+        lines.append(f"timing: slow {name}: {build_seconds:.1f}s build, {test_seconds:.1f}s tests")
+    lines.extend(f"timing: {note}" for note in summary["notes"])
+    print("\n".join(lines), file=sys.stderr)
+
+
+def run_cases(scratch: Path, prefix: str, jobs: int, test_jobs: int, summary: dict) -> int:
     # The marker check is a substring match, so one marker that prefixes
     # another would let a failure tagged for one guard prove the other.
     markers = sorted({case.marker for case in CASES})
@@ -2158,10 +2497,12 @@ def run_cases(scratch: Path) -> int:
     cases = [case for case in CASES if case.name.startswith(prefix)]
     if not cases:
         fail(f"ERROR: no case name starts with {prefix!r}")
+    jobs = min(jobs, len(cases))
+    summary["jobs"], summary["test_jobs"] = jobs, test_jobs
     deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS
     workspace = scratch / "src-copy"
     target_dir = scratch / "cargo-target"
-    workspace.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir()
 
     for entry in SOURCE_INPUTS:
         source = REPOSITORY / entry
@@ -2186,60 +2527,97 @@ def run_cases(scratch: Path) -> int:
                 f"found {occurrences} — the guarded code moved or changed shape"
             )
 
+    targets = sorted({case.target for case in cases})
     baselines = {}
-    for target in sorted({case.target for case in cases}):
-        baselines[target] = build_test_binary(workspace, target_dir, deadline, target)
+    for target in targets:
+        baselines[target], build = build_test_binary(workspace, target_dir, deadline, target)
         if baselines[target] is None:
+            print(build_error_tail(build), file=sys.stderr)
             fail(f"ERROR: the unmutated copy did not compile ({target}); gate cannot run")
 
-    # Every named test must pass before it can prove anything by failing.
+    # Every named test must pass before it can prove anything by failing. Two
+    # cases naming the same test share one baseline run.
+    pending = list(dict.fromkeys((case.target, test) for case in cases for test in case.tests))
+    baseline_results: dict[tuple[str, str], subprocess.CompletedProcess | None] = {}
+    pending_lock = threading.Lock()
+
+    def run_baseline_tests() -> None:
+        while True:
+            with pending_lock:
+                if not pending:
+                    return
+                target, test = pending.pop(0)
+            try:
+                result = run_one_test(baselines[target], test, target_dir)
+            except subprocess.TimeoutExpired:
+                result = None
+            baseline_results[(target, test)] = result
+
+    SUPERVISOR.run_threads(min(test_jobs, len(pending)), run_baseline_tests)
     for case in cases:
         for test in case.tests:
-            try:
-                result = run_one_test(case, baselines[case.target], test, target_dir)
-            except subprocess.TimeoutExpired:
+            if (case.target, test) not in baseline_results:
+                fail(f"ERROR {case.name}: baseline test did not run ({test})")
+            result = baseline_results[(case.target, test)]
+            if result is None:
                 fail(f"ERROR {case.name}: baseline test timed out ({test})")
             if not selected_exactly_one(result.stdout):
                 fail(f"ERROR {case.name}: expected exactly one test, ran 0 ({test})")
             if result.returncode != 0:
                 fail(f"ERROR {case.name}: baseline test already fails ({test})")
 
+    # Each further worker starts from a clone of the built baseline, so only
+    # the mutated crate recompiles there. APFS clones share blocks until a file
+    # changes; `cp -c` copies where cloning is unsupported.
+    workers = [Worker(0, workspace, target_dir, targets[-1])]
+    cloning_started = time.monotonic()
+    for index in range(1, jobs):
+        root = scratch / f"w{index}"
+        root.mkdir()
+        for name in ("src-copy", "cargo-target"):
+            if sys.platform == "darwin":
+                remaining = int(max(1, deadline - time.monotonic()))
+                copy = SUPERVISOR.run(["/bin/cp", "-cRp", str(scratch / name), str(root / name)], scratch, target_dir, remaining)
+                if copy.returncode != 0:
+                    fail(f"ERROR: cannot clone {name} for worker {index}: {copy.stderr.strip()}")
+            else:
+                shutil.copytree(scratch / name, root / name, symlinks=True)
+        workers.append(Worker(index, root / "src-copy", root / "cargo-target", targets[-1]))
+
+    clone_note = f"{time.monotonic() - cloning_started:.1f}s cloning {jobs - 1} worker(s)"
+
+    stage = MutationStage(cases, pristine, deadline, threading.Semaphore(test_jobs))
+    worker_queue = list(workers)
+    SUPERVISOR.run_threads(jobs, lambda: stage.work(worker_queue.pop()))
+
     caught = []
-    for case in cases:
-        if time.monotonic() > deadline:
-            fail(f"ERROR {case.name}: total deadline exceeded before mutation")
+    failures = []
+    for index, (case, outcome) in enumerate(zip(cases, stage.outcomes)):
+        if outcome is None:
+            failures.append(f"ERROR {case.name}: worker failed: no result recorded")
+            continue
+        summary["timings"][case.name] = (outcome.build_seconds, outcome.test_seconds)
+        caught.extend(outcome.observations)
+        if index >= stage.printed:
+            # A case without a result stopped the in-order flush; what was
+            # proven after it still belongs in the record.
+            for observation in outcome.observations:
+                print(observation, flush=True)
+        if outcome.failure:
+            failures.append(outcome.failure)
+    summary["notes"] = [clone_note] + [
+        f"worker {worker.index}: {worker.rebuilt_dependencies} dependency crates rebuilt after clone"
+        for worker in workers[1:]
+        if worker.rebuilt_dependencies is not None
+    ]
 
-        path = workspace / case.relative_path
-        original = pristine[case.relative_path]
-        path.write_text(original.replace(case.before, case.after, 1))
-
-        mutant = build_test_binary(workspace, target_dir, deadline, case.target)
-        path.write_text(original)
-        if mutant is None:
-            fail(f"ERROR {case.name}: mutant did not compile")
-
-        for test in case.tests:
-            try:
-                result = run_one_test(case, mutant, test, target_dir)
-            except subprocess.TimeoutExpired:
-                fail(f"ERROR {case.name}: mutant test timed out ({test})")
-            if result.returncode == 0:
-                fail(f"MISSED {case.name}: boundary violation survived ({test})")
-            combined = result.stdout + result.stderr
-            if case.marker not in combined:
-                fail(
-                    f"ERROR {case.name}: {test} failed, but not at the named "
-                    f"assertion '{case.marker}' — a different check refused, so "
-                    f"this is not proof the boundary is covered\n{combined}"
-                )
-            location = re.search(r"((?:src|tests)/[^\s:]+:\d+)", combined)
-            observation = (
-                f"CAUGHT {case.name}: {test.rsplit('::', 1)[-1]}"
-                f" at {location.group(1) if location else 'unknown'}"
-            )
-            caught.append(observation)
-            print(observation, flush=True)
-
+    failures.extend(stage.fatal)
+    expected = sum(len(case.tests) for case in cases)
+    if failures or len(caught) != expected:
+        for failure in failures:
+            print(failure, file=sys.stderr)
+        print(f"planted-violations: {len(caught)} of {expected} test runs proven", file=sys.stderr)
+        return 1
     print(f"planted-violations: {len(caught)} boundary/ies proven covered")
     return 0
 

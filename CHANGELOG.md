@@ -5,6 +5,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ## [Unreleased]
 
 ### Changed
+- The planted-violations gate proves its mutants on isolated parallel workers instead of one at a time: each worker holds its own source copy and cargo target directory, cloned from the built baseline, and the verdicts print in table order whatever the worker count. It finishes every case before reporting, so one run names every failing case; a worker that raises or a case left without a result is a failure. It reports where its time went, removes its scratch tree when stopped by SIGTERM, SIGHUP or SIGINT, and a later run removes a tree whose recorded process is gone. `planted-violations-controls.py` proves each of those failures is reported. Workflows and `release-policy.sh` are unchanged.
 - The landing page links the verified immutable 0.13.0 release after production
   promotion, with regenerated film facts.
 
