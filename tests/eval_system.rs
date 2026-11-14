@@ -26,8 +26,8 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use support::{
-    Allowed, Interactive, Sandbox, Tree, actionable_targets, assert_journaled, journal_lines, json,
-    run, write,
+    Allowed, Interactive, ModeGuard, Sandbox, Tree, actionable_targets, assert_journaled,
+    journal_lines, json, run, write,
 };
 
 const DAY: u64 = 60 * 60 * 24;
@@ -1128,6 +1128,15 @@ fn eval_a_malformed_codex_homes_setting_refuses_the_run() {
             &["clean", "agents", "--apply", "--shred", "--yolo", "--json"],
         );
         assert!(!apply.status.success(), "{name}");
+        // Refused for the setting, not for something else in the fixture.
+        for output in [&preview, &apply] {
+            let shown = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(shown.contains("codex_homes"), "{name}: {shown}");
+        }
         pristine.assert_only(
             &Tree::snapshot(sandbox.path()),
             &Allowed {
@@ -1136,23 +1145,6 @@ fn eval_a_malformed_codex_homes_setting_refuses_the_run() {
             },
             "eval/codex-homes-closed-apply",
         );
-    }
-}
-
-/// Makes a folder unreadable and restores it when dropped, so the sandbox
-/// can still be removed after a failed assertion.
-struct Unreadable(PathBuf);
-
-impl Unreadable {
-    fn new(path: PathBuf) -> Self {
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for Unreadable {
-    fn drop(&mut self) {
-        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
     }
 }
 
@@ -1169,7 +1161,7 @@ fn eval_agents_lists_every_finding_past_an_unreadable_history_folder() {
     write_aged(&stale.join("rollout.jsonl"), "{}", 400);
     let locked = home.join(".codex/sessions/2025/01/02");
     write_aged(&locked.join("rollout.jsonl"), "{}", 400);
-    let _locked = Unreadable::new(locked.clone());
+    let _locked = ModeGuard::unreadable(locked.clone());
 
     let preview = run(&sandbox, &["clean", "agents", "--json"]);
     let document = json(&preview);
@@ -2024,7 +2016,7 @@ fn eval_trash_empty_with_nothing_to_purge_asks_for_nothing() {
     // the run nonzero.
     let locked = sandbox.path().join(".Trash/locked");
     write(&locked.join("inner/secret"), "secret");
-    let sealed = Unreadable::new(locked.join("inner"));
+    let sealed = ModeGuard::unreadable(locked.join("inner"));
     let unread = run(&sandbox, &["trash-empty", "--apply", "--json"]);
     drop(sealed);
     let document = json(&unread);
@@ -2051,7 +2043,7 @@ fn eval_trash_empty_names_an_unreadable_trash() {
     let sandbox = Sandbox::in_target("eval-trash-unlisted");
     let trash = sandbox.path().join(".Trash");
     write(&trash.join("notes.txt"), "notes");
-    let locked = Unreadable::new(trash.clone());
+    let locked = ModeGuard::unreadable(trash.clone());
     let output = run(&sandbox, &["trash-empty", "--json"]);
     drop(locked);
     let document = json(&output);
@@ -2100,7 +2092,6 @@ fn eval_trash_empty_continues_past_an_item_holding_a_repository() {
 /// nothing; every other item is still listed and purged.
 #[test]
 fn eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item() {
-    use std::os::unix::fs::PermissionsExt;
     let sandbox = Sandbox::in_target("eval-trash-unreadable");
     let trash = sandbox.path().join(".Trash");
     let readable = trash.join("b-ok");
@@ -2108,17 +2099,13 @@ fn eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item() {
     let locked = trash.join("a-locked");
     write(&locked.join("inner/secret"), "secret");
     let pristine = Tree::snapshot(sandbox.path());
-    let lock = |mode| {
-        std::fs::set_permissions(locked.join("inner"), std::fs::Permissions::from_mode(mode))
-            .unwrap()
-    };
-    lock(0o000);
+    let sealed = ModeGuard::unreadable(locked.join("inner"));
     let preview = run(&sandbox, &["trash-empty", "--json"]);
     let apply = run(
         &sandbox,
         &["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"],
     );
-    lock(0o755);
+    drop(sealed);
     let (preview_document, document) = (json(&preview), json(&apply));
     assert_eq!(
         actionable_targets(&preview_document),
@@ -2182,7 +2169,7 @@ fn eval_trash_empty_purges_a_read_only_tree_it_owns() {
 /// `--only-devtrim` offers only items whose identity the journal recorded for
 /// a successful move; names prove nothing, and an unfinished or failed move
 /// proves nothing either. The journal is written by hand because a real Trash
-/// move drives Finder.
+/// move writes to the developer's own Trash.
 #[test]
 fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
     use std::os::macos::fs::MetadataExt;
@@ -2535,7 +2522,7 @@ fn eval_toolchains_list_every_finding_past_an_unreadable_toolchain() {
         .path()
         .join("Library/Developer/Toolchains/swift-5.6-RELEASE.xctoolchain");
     write(&locked.join("usr/bin/swift"), "unreadable toolchain");
-    let _locked = Unreadable::new(locked.join("usr"));
+    let _locked = ModeGuard::unreadable(locked.join("usr"));
 
     let preview = run(&sandbox, &["clean", "toolchains", "--json"]);
     let document = json(&preview);
@@ -2559,7 +2546,7 @@ fn eval_simulators_list_every_device_past_an_unreadable_one() {
     let devices = simulator_devices(&sandbox);
     let listing = simctl_list(&[(GONE_TWO, false), (WORKING, true), (GONE_ONE, false)]);
     simulator_stub(&sandbox, &listing, &listing);
-    let _locked = Unreadable::new(devices.join(GONE_TWO).join("data"));
+    let _locked = ModeGuard::unreadable(devices.join(GONE_TWO).join("data"));
 
     let preview = run(&sandbox, &["clean", "simulators", "--json"]);
     let document = json(&preview);
@@ -2583,7 +2570,7 @@ fn eval_simulators_apply_ignores_an_unreadable_working_device() {
     let devices = simulator_devices(&sandbox);
     let listing = simctl_list(&[(WORKING, true), (GONE_ONE, false)]);
     simulator_stub(&sandbox, &listing, &listing);
-    let _locked = Unreadable::new(devices.join(WORKING).join("data"));
+    let _locked = ModeGuard::unreadable(devices.join(WORKING).join("data"));
 
     let apply = run(
         &sandbox,
@@ -2619,7 +2606,7 @@ fn eval_an_unreadable_archive_never_withholds_device_support() {
     );
     let locked = xcode.join("Archives/2026-01-02");
     write(&locked.join("App.xcarchive/Info.plist"), "archive");
-    let _locked = Unreadable::new(locked);
+    let _locked = ModeGuard::unreadable(locked);
 
     let preview = run(&sandbox, &["clean", "xcode", "--json"]);
     let document = json(&preview);
@@ -2645,7 +2632,7 @@ fn eval_leftovers_report_every_folder_past_an_unreadable_one() {
     write(&evidence.join("run.log"), "log");
     let sealed = dev.join("sealed");
     write(&sealed.join(".supergoal/evidence/run.log"), "hidden");
-    let _sealed = Unreadable::new(sealed.clone());
+    let _sealed = ModeGuard::unreadable(sealed.clone());
 
     let output = run(
         &sandbox,

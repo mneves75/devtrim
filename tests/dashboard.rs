@@ -11,7 +11,7 @@ mod support;
 use serde_json::Value;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::process::Command;
-use support::{Allowed, Sandbox, Tree, git_activity, json, on_disk, run, write};
+use support::{Allowed, ModeGuard, Sandbox, Tree, git_activity, json, on_disk, run, write};
 
 /// Under `target`: a home in the temporary folder resolves inside the
 /// protected `/private/var`, where no cleanup preview offers anything.
@@ -518,11 +518,7 @@ fn partial_inventory_keeps_readable_bytes_and_does_not_follow_symlinks() {
     write(&sandbox.path().join("outside/large"), &"x".repeat(8192));
     symlink("../outside", mapped.join("linked")).unwrap();
     let before = Tree::snapshot(&mapped);
-    std::fs::set_permissions(
-        mapped.join("locked"),
-        std::fs::Permissions::from_mode(0o000),
-    )
-    .unwrap();
+    let locked = ModeGuard::unreadable(mapped.join("locked"));
     let output = sandbox.path().join("partial.html");
     let result = run(
         &sandbox,
@@ -535,12 +531,8 @@ fn partial_inventory_keeps_readable_bytes_and_does_not_follow_symlinks() {
             "--json",
         ],
     );
-    // Restore before assertions and the filesystem oracle, including on failure.
-    std::fs::set_permissions(
-        mapped.join("locked"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    // Restored before the filesystem oracle reads the tree.
+    drop(locked);
     assert!(!result.status.success());
     let data = json(&result);
     assert_eq!(data["coverage"]["partial"], true);

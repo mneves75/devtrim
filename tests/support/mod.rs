@@ -11,6 +11,7 @@ use std::hash::{DefaultHasher, Hasher};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -106,6 +107,94 @@ pub fn json(output: &Output) -> Value {
     })
 }
 
+/// The developer's `git`, resolved once per test binary.
+pub fn real_git() -> &'static Path {
+    static GIT: OnceLock<PathBuf> = OnceLock::new();
+    GIT.get_or_init(|| {
+        let resolved = Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap();
+        assert!(resolved.status.success(), "git is required for this test");
+        PathBuf::from(String::from_utf8(resolved.stdout).unwrap().trim())
+    })
+}
+
+/// Run fixture-building Git in `repo` as of `date`, isolated from the
+/// caller's environment (a stray `GIT_DIR` would commit the fixture into
+/// another repository) and the developer's own Git configuration.
+pub fn git(sandbox: &Sandbox, repo: &Path, date: &str, args: &[&str]) {
+    let output = Command::new(real_git())
+        .env_clear()
+        .args([
+            "-c",
+            "user.name=devtrim-test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+        ])
+        .args(args)
+        .current_dir(repo)
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Sets a fixture's mode and puts back the one it had when dropped, so a
+/// failed assertion still leaves the sandbox removable and a later snapshot
+/// sees the original mode.
+pub struct ModeGuard {
+    path: PathBuf,
+    original: std::fs::Permissions,
+}
+
+impl ModeGuard {
+    pub fn set(path: impl Into<PathBuf>, mode: u32) -> Self {
+        let path = path.into();
+        let original = std::fs::symlink_metadata(&path).unwrap().permissions();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        Self { path, original }
+    }
+
+    /// Mode 0, refused unless the fixture really became unreadable: a user
+    /// whose privileges ignore modes would make the test prove nothing.
+    pub fn unreadable(path: impl Into<PathBuf>) -> Self {
+        let guard = Self::set(path, 0o000);
+        let readable = if std::fs::symlink_metadata(&guard.path).unwrap().is_dir() {
+            std::fs::read_dir(&guard.path).is_ok()
+        } else {
+            std::fs::File::open(&guard.path).is_ok()
+        };
+        assert!(
+            !readable,
+            "fixture is still readable; run without privileges that ignore modes"
+        );
+        guard
+    }
+}
+
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        std::fs::set_permissions(&self.path, self.original.clone()).ok();
+    }
+}
+
 /// A `git` answering devtrim's two activity queries — HEAD's commit date, then
 /// the newest HEAD reflog entry (`-g`) — with `commit` and `reflog`, and its
 /// tracked-file check (`ls-files`) with nothing tracked.
@@ -156,10 +245,6 @@ impl Tree {
             root: root.to_path_buf(),
             entries,
         }
-    }
-
-    pub fn contains(&self, path: &Path) -> bool {
-        self.entries.contains_key(path)
     }
 
     /// Compare against a later snapshot of the same root: `Err` names every
@@ -383,7 +468,7 @@ impl Interactive {
             .env("NO_COLOR", "1")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
