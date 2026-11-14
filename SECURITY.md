@@ -424,14 +424,19 @@ Non-negotiable boundaries:
 13. **Write-ahead journal** — attempt/result records surround every deletion and
    typed command; symlink-safe parent handles, serialized appends, and
    bounded read-only history preserve a coherent local audit trail.
-14. **Regression gates** — macOS CI runs format, strict Clippy (which forbids
-   `unsafe`, `unwrap`/`expect`, and unreasoned lint suppression in the crate),
-   tests, MSRV tests, root and fuzz-lock dependency audits, positive-control
-   structural lints for the deletion sink, shell invocation, and naming,
-   full-history Gitleaks and TruffleHog secret scans, and an explicit arm64
-   release build and a real PTY menu/help/cancel/quit flow with isolated
-   HOME/PATH, explicit dimensions, visible-content checks, and terminal
-   restoration checks. A non-rendering executable is a negative control.
+14. **Regression gates** — CI runs two jobs. The Ubuntu `portable checks`
+   job runs format, root and fuzz-lock dependency audits, positive-control
+   structural lints for the deletion sink, shell invocation, naming, and
+   unbounded subprocesses, the site and video-audit controls, and the video
+   lint, audit and build. The macOS `verify` job runs the release-policy
+   tests, ShellCheck, full-history Gitleaks and TruffleHog secret scans,
+   strict Clippy (which forbids `unsafe`, `unwrap`/`expect`, and unreasoned
+   lint suppression in the crate), tests, a real PTY menu/help/cancel/quit
+   flow with isolated HOME/PATH, explicit dimensions, visible-content checks,
+   and terminal restoration checks, the planted violations and MSRV tests
+   (skipped only for a pull request that changes nothing but documentation,
+   site, media or lint rules), and an explicit arm64 release build. A
+   non-rendering executable is a negative control.
    Read-only hosted release jobs additionally run all five bounded fuzz targets, video,
    workflow-policy, and repeat the secret scans before publication authority is
    available.
@@ -486,8 +491,9 @@ Non-negotiable boundaries:
   variables from Homebrew execution, and requires strict audit, upgrade, test,
   and sole-path/version proof.
 - Release preparation runs both Cargo lockfile audits, all five bounded fuzz
-  targets, a strict clean npm install plus low-severity audit/lint/format/build
-  gates for the demo video, Gitleaks, and TruffleHog; results are recorded in
+  targets, a strict clean npm install plus audit/lint/format/build gates for
+  the demo video (the audit fails on an advisory at any severity unless
+  `video/audit-waivers.json` waives it in date), Gitleaks, and TruffleHog; results are recorded in
   the matching changelog section only after they execute.
 - Shipped HTML uses a deny-by-default CSP; inline scripts and `<style>` elements are admitted only by exact SHA-256 hashes, never `'unsafe-inline'`, and the pages carry no `style` attributes. `scripts/site/csp.py --check` fails a stale hash; `scripts/verify-live.sh` checks the served pages after each deploy.
 
