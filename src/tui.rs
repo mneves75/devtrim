@@ -23,7 +23,7 @@ use crate::theme::{Theme, Token, danger_token};
 const MIN_WIDTH: u16 = 64;
 const MIN_HEIGHT: u16 = 18;
 /// Rows PgUp and PgDn move, in every list and scrolling view.
-const PAGE_ROWS: u16 = 8;
+pub(crate) const PAGE_ROWS: u16 = 8;
 /// Longer than every typed acknowledgment (`PURGE ` and a `u64` of
 /// gigabytes), so a held key or a stuck repeat cannot grow the answer
 /// without bound.
@@ -1228,10 +1228,7 @@ fn run_scan(ctx: &Ctx, operation: Operation) -> Loaded {
     };
     match scanned {
         Ok(mut findings) => {
-            // iCloud status reports only; it offers nothing to protect.
-            if operation != Operation::Icloud {
-                ops::filter_protected_findings(&mut findings, ctx);
-            }
+            ops::filter_protected_findings(&mut findings, ctx);
             Loaded::Findings(findings, ctx.take_diagnostics())
         }
         Err(error) => Loaded::Failed(error, ctx.take_diagnostics()),
