@@ -3,10 +3,14 @@
 
 usage: music.py <timing.json> <out-dir>
 
-Writes <out-dir>/music.wav (music only) and <out-dir>/mix.wav (music plus one
-swish per scene change and one click per keystroke, each placed on the exact
-frame timing.json names). Both are 48 kHz stereo 16-bit with peaks at -3 dBFS;
-loudness.py brings them to the delivery target. Standard library only, fixed
+Writes <out-dir>/music.wav (music only), <out-dir>/mix.wav (music plus every
+cue in timing.json: a swish per scene change, a click per keystroke, a hit
+where one is named, each placed on its exact frame) and one effects stem per
+cue kind, <out-dir>/sfx-swish.wav, sfx-click.wav and sfx-hit.wav, which
+check_sync.py --sfx reads. All are 48 kHz stereo 16-bit. music.wav and mix.wav
+are scaled so their highest sample sits at -3 dBFS (sample peak, not true
+peak); the stems keep the cues' mixing gains unscaled. loudness.py brings
+music.wav and mix.wav to the delivery target. Standard library only, fixed
 seed, so the same timing.json always yields the same bytes.
 
 timing.json fields read: fps, bpm, durationFrames, music.chords (one chord per
@@ -136,7 +140,7 @@ def click() -> list[float]:
 
 def hit() -> list[float]:
     body = kick()
-    return [s * 1.0 for s in body] + [0.0] * int(0.2 * RATE)
+    return body + [0.0] * int(0.2 * RATE)
 
 
 def peak_normalize(track: Track, dbfs: float) -> None:
@@ -227,8 +231,6 @@ def main() -> int:
     peak_normalize(mix, -3)
     write(music, out_dir / "music.wav")
     write(mix, out_dir / "mix.wav")
-    # The effects alone, one stem per kind: check_sync.py --sfx proves each cue sounds
-    # on its frame, which the mix cannot show where a cue shares its frame with a kick.
     for kind, stem in stems.items():
         write(stem, out_dir / f"sfx-{kind}.wav")
     print(f"music.py: {seconds:.2f} s at {bpm} BPM, {len(timing['cues'])} cues -> {out_dir}/music.wav, mix.wav, sfx-*.wav")

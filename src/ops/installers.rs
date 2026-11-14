@@ -6,9 +6,10 @@
 //! danger score sits above the regenerable caches.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use super::project::{UnreadFolder, error_finding, unjudged_finding};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, removal_note};
 use crate::safety::{Ctx, escalate};
 
@@ -122,7 +123,42 @@ fn refusal(path: &Path, home: &Path, retain_days: u32) -> Result<String> {
     })
 }
 
-fn scan_directory(directory: &Path, ctx: &Ctx, findings: &mut Vec<Finding>) -> Result<()> {
+/// One installer folder. A folder that cannot be inspected or listed is one
+/// error naming it, and archives whose metadata cannot be read are one error
+/// naming them (`CODING_STANDARDS.md` S8); the other folder is still judged.
+fn scan_directory(directory: &Path, ctx: &Ctx, findings: &mut Vec<Finding>) {
+    let mut unread = Vec::new();
+    if let Err(error) = scan_entries(directory, ctx, findings, &mut unread) {
+        findings.push(unjudged_finding("installers", directory, &error));
+    }
+    if unread.is_empty() {
+        return;
+    }
+    let mut named = unread
+        .iter()
+        .take(3)
+        .map(|entry| format!("{} ({})", entry.path.display(), entry.reason))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if unread.len() > 3 {
+        named.push_str(&format!(" and {} more", unread.len() - 3));
+    }
+    findings.push(error_finding(
+        "installers not judged".to_string(),
+        format!(
+            "cannot judge {} installer(s) in {}, so they are not offered: {named}",
+            unread.len(),
+            directory.display()
+        ),
+    ));
+}
+
+fn scan_entries(
+    directory: &Path,
+    ctx: &Ctx,
+    findings: &mut Vec<Finding>,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<()> {
     // The sink refuses a target below a link, so a linked folder is named
     // rather than previewed with archives apply would refuse.
     match std::fs::symlink_metadata(directory) {
@@ -151,31 +187,55 @@ fn scan_directory(directory: &Path, ctx: &Ctx, findings: &mut Vec<Finding>) -> R
     };
     for entry in entries {
         let entry = entry.with_context(|| format!("cannot enumerate {}", directory.display()))?;
-        let path = entry.path();
-        let Some((age, size)) = installer_details(&path, &ctx.home, ctx.retain_days)? else {
-            continue;
-        };
-        if size == 0 {
-            continue;
-        }
-        findings.push(Finding::new(
-            format!(
-                "installer archive: {}",
-                path.file_name()
-                    .map_or_else(|| path.display().to_string(), |name| name
-                        .to_string_lossy()
-                        .into_owned())
-            ),
-            Some(path),
-            size,
-            format!(
-                "untouched for {age} days; installers do not re-download automatically, re-obtain from the vendor if needed"
-            ),
-            escalate(3, size),
-            Action::Trash,
-        ));
+        scan_entry(entry.path(), ctx, findings, unread);
     }
     Ok(())
+}
+
+/// One direct child of an installer folder. An entry removed since the
+/// listing is skipped; one whose metadata cannot be read is recorded in
+/// `unread` and offers nothing.
+fn scan_entry(
+    path: PathBuf,
+    ctx: &Ctx,
+    findings: &mut Vec<Finding>,
+    unread: &mut Vec<UnreadFolder>,
+) {
+    let (age, size) = match installer_details(&path, &ctx.home, ctx.retain_days) {
+        Ok(Some(details)) => details,
+        Ok(None) => return,
+        Err(error)
+            if error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return;
+        }
+        Err(error) => {
+            unread.push(UnreadFolder::new(&path, &error));
+            return;
+        }
+    };
+    if size == 0 {
+        return;
+    }
+    findings.push(Finding::new(
+        format!(
+            "installer archive: {}",
+            path.file_name()
+                .map_or_else(|| path.display().to_string(), |name| name
+                    .to_string_lossy()
+                    .into_owned())
+        ),
+        Some(path),
+        size,
+        format!(
+            "untouched for {age} days; installers do not re-download automatically, re-obtain from the vendor if needed"
+        ),
+        escalate(3, size),
+        Action::Trash,
+    ));
 }
 
 impl Op for Installers {
@@ -190,7 +250,7 @@ impl Op for Installers {
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         for directory in INSTALLER_DIRECTORIES {
-            scan_directory(&ctx.home.join(directory), ctx, &mut findings)?;
+            scan_directory(&ctx.home.join(directory), ctx, &mut findings);
         }
         Ok(findings)
     }
@@ -227,8 +287,6 @@ impl Op for Installers {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::path::PathBuf;
 
     fn test_ctx(home: PathBuf) -> Ctx {
         Ctx {
@@ -333,17 +391,138 @@ mod tests {
         std::fs::create_dir_all(&elsewhere).unwrap();
         let forged = elsewhere.join("Tool.dmg");
         stale_file(&forged, 2048);
-
-        assert!(
-            installer_details(&forged, home.path(), 30)
-                .unwrap()
-                .is_none()
+        let finding = Finding::new(
+            "installer archive: Tool.dmg",
+            Some(forged.clone()),
+            2048,
+            "test",
+            3,
+            Action::Trash,
         );
+
+        let outcome = Installers
+            .apply(&[finding], &test_ctx(home.path().to_path_buf()))
+            .unwrap();
+
+        assert_eq!(outcome.summary.items_touched, 0, "{outcome:?}");
+        assert_eq!(outcome.errors.len(), 1, "{outcome:?}");
+        assert!(
+            outcome.errors[0].contains("outside its authorized namespace"),
+            "{outcome:?}"
+        );
+        assert!(forged.exists());
+
+        // The eligible control stays at the predicate: applying it would reach
+        // the real Trash, which no test touches.
 
         let authorized = home.path().join("Downloads");
         std::fs::create_dir_all(&authorized).unwrap();
         let real = authorized.join("Tool.dmg");
         stale_file(&real, 2048);
         assert!(installer_details(&real, home.path(), 30).unwrap().is_some());
+    }
+
+    /// A folder that cannot be listed (macOS privacy answers EPERM for
+    /// `Desktop`) is one error naming it; the archives in the other folder are
+    /// still offered.
+    #[test]
+    fn an_unreadable_installer_folder_withholds_only_itself() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-installers-unread")
+            .tempdir()
+            .unwrap();
+        let downloads = home.path().join("Downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        stale_file(&downloads.join("Old.dmg"), 2048);
+        let desktop = home.path().join("Desktop");
+        let sealed = crate::ops::Unreadable::new(&desktop, 0o000);
+
+        let findings = Installers.scan(
+            &test_ctx(home.path().to_path_buf()),
+            &crate::ops::project::ScanObservations::default(),
+        );
+
+        drop(sealed);
+        let findings = findings.unwrap();
+        let offered = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        assert_eq!(offered, vec![downloads.join("Old.dmg").as_path()]);
+        let errors = findings
+            .iter()
+            .filter_map(Finding::scan_error)
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1, "{findings:?}");
+        assert!(
+            errors[0].contains(&*desktop.to_string_lossy()),
+            "{errors:?}"
+        );
+    }
+
+    /// A folder that can be listed but not searched fails each entry's
+    /// metadata read: that folder's archives become one error naming the
+    /// folder, and the other folder's archives are still offered.
+    #[test]
+    fn an_uninspectable_installer_withholds_only_its_folder() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-installers-entry")
+            .tempdir()
+            .unwrap();
+        let desktop = home.path().join("Desktop");
+        std::fs::create_dir_all(&desktop).unwrap();
+        stale_file(&desktop.join("Kept.pkg"), 2048);
+        let downloads = home.path().join("Downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        stale_file(&downloads.join("First.dmg"), 2048);
+        stale_file(&downloads.join("Second.iso"), 2048);
+        // `Unreadable` restores the folder on drop, even when a test panics.
+        let sealed = crate::ops::Unreadable::new(&downloads, 0o000);
+        std::fs::set_permissions(&downloads, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let findings = Installers.scan(
+            &test_ctx(home.path().to_path_buf()),
+            &crate::ops::project::ScanObservations::default(),
+        );
+
+        drop(sealed);
+        let findings = findings.unwrap();
+        let offered = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        assert_eq!(offered, vec![desktop.join("Kept.pkg").as_path()]);
+        let errors = findings
+            .iter()
+            .filter_map(Finding::scan_error)
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1, "{findings:?}");
+        assert!(errors[0].contains("First.dmg"), "{errors:?}");
+        assert!(errors[0].contains("Second.iso"), "{errors:?}");
+    }
+
+    /// An entry that vanished between the listing and its metadata read is
+    /// simply gone: no finding, no error.
+    #[test]
+    fn a_vanished_installer_is_skipped() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-installers-vanished")
+            .tempdir()
+            .unwrap();
+        let downloads = home.path().join("Downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        let ctx = test_ctx(home.path().to_path_buf());
+        let mut findings = Vec::new();
+        let mut unread = Vec::new();
+
+        scan_entry(downloads.join("Gone.dmg"), &ctx, &mut findings, &mut unread);
+
+        assert!(findings.is_empty() && unread.is_empty(), "{findings:?}");
+
+        stale_file(&downloads.join("Here.dmg"), 2048);
+        scan_entry(downloads.join("Here.dmg"), &ctx, &mut findings, &mut unread);
+        assert_eq!(findings.len(), 1, "positive control: {findings:?}");
     }
 }

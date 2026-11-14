@@ -59,7 +59,6 @@ cp "$source_formula" "$test_root/duplicate-sha.rb"
 printf '%s\n' '  sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' >> "$test_root/duplicate-sha.rb"
 expect_rejection "duplicate checksum" "$test_root/duplicate-sha.rb"
 
-cp "$source_formula" "$test_root/malformed-version.rb"
 sed 's/version "0.9.0"/version "beta"/' "$source_formula" > "$test_root/malformed-version.rb"
 expect_rejection "malformed explicit version" "$test_root/malformed-version.rb"
 

@@ -167,8 +167,6 @@ impl Op for Caches {
             Ok(Some(path)) => {
                 let size = measured(&path, &mut unread);
                 if size > 0 {
-                    // `npm config get cache` names npm's whole cache folder, not
-                    // only the content store `npm cache clean` empties.
                     let mut finding = cache_finding("npm cache folder", path, size, 2)
                         .with_authority(TargetAuthority::NpmCache);
                     finding.note =

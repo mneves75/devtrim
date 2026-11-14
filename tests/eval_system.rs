@@ -26,8 +26,8 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use support::{
-    Allowed, Interactive, Sandbox, Tree, actionable_targets, assert_journaled, journal_lines, json,
-    run, write,
+    Allowed, Interactive, ModeGuard, Sandbox, Tree, actionable_targets, assert_journaled,
+    journal_lines, json, run, write,
 };
 
 const DAY: u64 = 60 * 60 * 24;
@@ -386,12 +386,12 @@ fn eval_clean_toolchains_removes_only_unreferenced_toolchains() {
     assert_eq!(
         actionable_targets(&document),
         targets,
-        "PV eval/toolchains-plan: the preview must offer exactly the unreferenced toolchains"
+        "eval/toolchains-plan: the preview must offer exactly the unreferenced toolchains"
     );
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/toolchains-preview",
+        "eval/toolchains-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -413,7 +413,7 @@ fn eval_clean_toolchains_removes_only_unreferenced_toolchains() {
             removed: targets.clone(),
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
-        "PV eval/toolchains-apply",
+        "eval/toolchains-apply",
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
@@ -480,11 +480,11 @@ fn eval_clean_toolchains_fails_closed_without_a_verifiable_latest() {
                 scratch: vec![sandbox.path().join(".local/state/devtrim")],
                 ..Allowed::default()
             },
-            "PV eval/toolchains-closed-apply",
+            "eval/toolchains-closed-apply",
         );
         assert!(
             !apply.status.success(),
-            "PV eval/toolchains-closed-apply: {name} must fail the apply"
+            "eval/toolchains-closed-apply: {name} must fail the apply"
         );
     }
 }
@@ -685,12 +685,12 @@ fn eval_clean_installers_removes_only_stale_installer_files() {
     assert_eq!(
         actionable_targets(&document),
         targets,
-        "PV eval/installers-plan: the preview must offer exactly the stale installer files"
+        "eval/installers-plan: the preview must offer exactly the stale installer files"
     );
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/installers-preview",
+        "eval/installers-preview",
     );
     let tool = document["findings"]
         .as_array()
@@ -725,7 +725,7 @@ fn eval_clean_installers_removes_only_stale_installer_files() {
             removed: targets.clone(),
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
-        "PV eval/installers-apply",
+        "eval/installers-apply",
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
@@ -1019,7 +1019,7 @@ fn eval_clean_agents_removes_only_regenerable_caches_and_stale_history() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/agents-preview",
+        "eval/agents-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -1034,7 +1034,7 @@ fn eval_clean_agents_removes_only_regenerable_caches_and_stale_history() {
             removed: targets.clone(),
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
-        "PV eval/agents-apply",
+        "eval/agents-apply",
     );
     // `.local` is scratch above, so OpenCode's persistent state is checked here.
     assert_eq!(
@@ -1042,7 +1042,7 @@ fn eval_clean_agents_removes_only_regenerable_caches_and_stale_history() {
             .ok()
             .as_deref(),
         Some("keep"),
-        "PV eval/agents-apply: OpenCode's persistent state was removed"
+        "eval/agents-apply: OpenCode's persistent state was removed"
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
@@ -1128,31 +1128,23 @@ fn eval_a_malformed_codex_homes_setting_refuses_the_run() {
             &["clean", "agents", "--apply", "--shred", "--yolo", "--json"],
         );
         assert!(!apply.status.success(), "{name}");
+        // Refused for the setting, not for something else in the fixture.
+        for output in [&preview, &apply] {
+            let shown = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(shown.contains("codex_homes"), "{name}: {shown}");
+        }
         pristine.assert_only(
             &Tree::snapshot(sandbox.path()),
             &Allowed {
                 scratch: vec![sandbox.path().join(".local/state/devtrim")],
                 ..Allowed::default()
             },
-            "PV eval/codex-homes-closed-apply",
+            "eval/codex-homes-closed-apply",
         );
-    }
-}
-
-/// Makes a folder unreadable and restores it when dropped, so the sandbox
-/// can still be removed after a failed assertion.
-struct Unreadable(PathBuf);
-
-impl Unreadable {
-    fn new(path: PathBuf) -> Self {
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for Unreadable {
-    fn drop(&mut self) {
-        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
     }
 }
 
@@ -1169,7 +1161,7 @@ fn eval_agents_lists_every_finding_past_an_unreadable_history_folder() {
     write_aged(&stale.join("rollout.jsonl"), "{}", 400);
     let locked = home.join(".codex/sessions/2025/01/02");
     write_aged(&locked.join("rollout.jsonl"), "{}", 400);
-    let _locked = Unreadable::new(locked.clone());
+    let _locked = ModeGuard::unreadable(locked.clone());
 
     let preview = run(&sandbox, &["clean", "agents", "--json"]);
     let document = json(&preview);
@@ -1265,7 +1257,7 @@ fn eval_clean_simulators_deletes_only_unavailable_devices_by_exact_udid() {
             argv(&["xcrun", "simctl", "delete", GONE_ONE]),
             argv(&["xcrun", "simctl", "delete", GONE_TWO]),
         ],
-        "PV eval/simulators-plan: the preview must offer a delete for exactly the unavailable devices"
+        "eval/simulators-plan: the preview must offer a delete for exactly the unavailable devices"
     );
     // The working device appears only as report-only disclosure.
     assert_eq!(
@@ -1277,7 +1269,7 @@ fn eval_clean_simulators_deletes_only_unavailable_devices_by_exact_udid() {
             "Simulator device data (1 available device)".to_string(),
             "none".to_string()
         )],
-        "PV eval/simulators-plan: working simulators must stay report-only"
+        "eval/simulators-plan: working simulators must stay report-only"
     );
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
@@ -1285,12 +1277,12 @@ fn eval_clean_simulators_deletes_only_unavailable_devices_by_exact_udid() {
             scratch: vec![sandbox.path().join("stub")],
             ..Allowed::default()
         },
-        "PV eval/simulators-preview",
+        "eval/simulators-preview",
     );
     assert_eq!(
         calls(&sandbox),
         vec![argv(&["xcrun", "--version"]), list.clone()],
-        "PV eval/simulators-preview: a preview may only probe, never delete"
+        "eval/simulators-preview: a preview may only probe, never delete"
     );
     assert!(preview.status.success(), "{document}");
     let before = calls(&sandbox).len();
@@ -1309,7 +1301,7 @@ fn eval_clean_simulators_deletes_only_unavailable_devices_by_exact_udid() {
                 sandbox.path().join(".local/state/devtrim"),
             ],
         },
-        "PV eval/simulators-apply",
+        "eval/simulators-apply",
     );
     // Scan once, then a fresh recheck before each previewed delete.
     assert_eq!(
@@ -1322,7 +1314,7 @@ fn eval_clean_simulators_deletes_only_unavailable_devices_by_exact_udid() {
             list,
             argv(&["xcrun", "simctl", "delete", GONE_TWO]),
         ],
-        "PV eval/simulators-apply: the exact xcrun sequence"
+        "eval/simulators-apply: the exact xcrun sequence"
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], 2);
@@ -1550,12 +1542,12 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
             scratch: vec![sandbox.path().join("stub")],
             ..Allowed::default()
         },
-        "PV eval/docker-preview",
+        "eval/docker-preview",
     );
     assert_eq!(
         calls(&sandbox),
         probes,
-        "PV eval/docker-preview: a preview may only probe the daemon"
+        "eval/docker-preview: a preview may only probe the daemon"
     );
     assert!(preview.status.success(), "{document}");
     let before = calls(&sandbox).len();
@@ -1574,7 +1566,7 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
             ],
             ..Allowed::default()
         },
-        "PV eval/docker-apply",
+        "eval/docker-apply",
     );
     let mut expected = probes;
     expected.push(image_prune.clone());
@@ -1582,7 +1574,7 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
     assert_eq!(
         calls(&sandbox)[before..],
         expected,
-        "PV eval/docker-apply: probes, then exactly the two previewed prunes"
+        "eval/docker-apply: probes, then exactly the two previewed prunes"
     );
     assert!(
         calls(&sandbox)
@@ -1592,7 +1584,7 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
             && !calls(&sandbox)
                 .iter()
                 .any(|call| call.contains(&"volume".to_string())),
-        "PV eval/docker-apply: a volume or system prune ran"
+        "eval/docker-apply: a volume or system prune ran"
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], 2);
@@ -1739,12 +1731,12 @@ fn eval_optimize_runs_exactly_the_selected_fixed_argv() {
             fonts.clone(),
             argv(&[LSREGISTER, "-gc", "-r", "-f", "-apps", "local,user"]),
         ],
-        "PV eval/optimize-plan: the catalog's fixed argv, with no root-requiring task"
+        "eval/optimize-plan: the catalog's fixed argv, with no root-requiring task"
     );
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/optimize-preview",
+        "eval/optimize-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -1805,12 +1797,12 @@ fn eval_optimize_runs_exactly_the_selected_fixed_argv() {
             ],
             ..Allowed::default()
         },
-        "PV eval/optimize-apply",
+        "eval/optimize-apply",
     );
     assert_eq!(
         calls(&sandbox),
         vec![quicklook.clone(), fonts.clone()],
-        "PV eval/optimize-apply: exactly the two selected commands, each once, in order"
+        "eval/optimize-apply: exactly the two selected commands, each once, in order"
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], 2);
@@ -1922,7 +1914,7 @@ fn eval_trash_empty_purges_exactly_the_previewed_direct_children() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/trash-empty-preview",
+        "eval/trash-empty-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -1949,11 +1941,11 @@ fn eval_trash_empty_purges_exactly_the_previewed_direct_children() {
                 scratch: vec![sandbox.path().join(".local/state/devtrim")],
                 ..Allowed::default()
             },
-            "PV eval/trash-empty-refusals",
+            "eval/trash-empty-refusals",
         );
         assert!(
             !refused.status.success(),
-            "PV eval/trash-empty-refusals: {name} must be refused"
+            "eval/trash-empty-refusals: {name} must be refused"
         );
     }
 
@@ -1968,7 +1960,7 @@ fn eval_trash_empty_purges_exactly_the_previewed_direct_children() {
             removed: targets.clone(),
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
-        "PV eval/trash-empty-apply",
+        "eval/trash-empty-apply",
     );
     assert!(
         String::from_utf8_lossy(&apply.stderr).contains("skipping Git metadata Trash item"),
@@ -2024,7 +2016,7 @@ fn eval_trash_empty_with_nothing_to_purge_asks_for_nothing() {
     // the run nonzero.
     let locked = sandbox.path().join(".Trash/locked");
     write(&locked.join("inner/secret"), "secret");
-    let sealed = Unreadable::new(locked.join("inner"));
+    let sealed = ModeGuard::unreadable(locked.join("inner"));
     let unread = run(&sandbox, &["trash-empty", "--apply", "--json"]);
     drop(sealed);
     let document = json(&unread);
@@ -2051,7 +2043,7 @@ fn eval_trash_empty_names_an_unreadable_trash() {
     let sandbox = Sandbox::in_target("eval-trash-unlisted");
     let trash = sandbox.path().join(".Trash");
     write(&trash.join("notes.txt"), "notes");
-    let locked = Unreadable::new(trash.clone());
+    let locked = ModeGuard::unreadable(trash.clone());
     let output = run(&sandbox, &["trash-empty", "--json"]);
     drop(locked);
     let document = json(&output);
@@ -2100,7 +2092,6 @@ fn eval_trash_empty_continues_past_an_item_holding_a_repository() {
 /// nothing; every other item is still listed and purged.
 #[test]
 fn eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item() {
-    use std::os::unix::fs::PermissionsExt;
     let sandbox = Sandbox::in_target("eval-trash-unreadable");
     let trash = sandbox.path().join(".Trash");
     let readable = trash.join("b-ok");
@@ -2108,17 +2099,13 @@ fn eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item() {
     let locked = trash.join("a-locked");
     write(&locked.join("inner/secret"), "secret");
     let pristine = Tree::snapshot(sandbox.path());
-    let lock = |mode| {
-        std::fs::set_permissions(locked.join("inner"), std::fs::Permissions::from_mode(mode))
-            .unwrap()
-    };
-    lock(0o000);
+    let sealed = ModeGuard::unreadable(locked.join("inner"));
     let preview = run(&sandbox, &["trash-empty", "--json"]);
     let apply = run(
         &sandbox,
         &["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"],
     );
-    lock(0o755);
+    drop(sealed);
     let (preview_document, document) = (json(&preview), json(&apply));
     assert_eq!(
         actionable_targets(&preview_document),
@@ -2182,7 +2169,7 @@ fn eval_trash_empty_purges_a_read_only_tree_it_owns() {
 /// `--only-devtrim` offers only items whose identity the journal recorded for
 /// a successful move; names prove nothing, and an unfinished or failed move
 /// proves nothing either. The journal is written by hand because a real Trash
-/// move drives Finder.
+/// move writes to the developer's own Trash.
 #[test]
 fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
     use std::os::macos::fs::MetadataExt;
@@ -2283,7 +2270,7 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
     pristine.assert_only(
         &Tree::snapshot(home),
         &Allowed::default(),
-        "PV eval/trash-only-preview",
+        "eval/trash-only-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -2305,7 +2292,7 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
             removed: targets.clone(),
             scratch: vec![home.join(".local")],
         },
-        "PV eval/trash-only-apply",
+        "eval/trash-only-apply",
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
@@ -2521,7 +2508,7 @@ fn eval_commands_reject_flags_they_cannot_honor_and_change_nothing() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/flags-nothing-changed",
+        "eval/flags-nothing-changed",
     );
 }
 
@@ -2535,7 +2522,7 @@ fn eval_toolchains_list_every_finding_past_an_unreadable_toolchain() {
         .path()
         .join("Library/Developer/Toolchains/swift-5.6-RELEASE.xctoolchain");
     write(&locked.join("usr/bin/swift"), "unreadable toolchain");
-    let _locked = Unreadable::new(locked.join("usr"));
+    let _locked = ModeGuard::unreadable(locked.join("usr"));
 
     let preview = run(&sandbox, &["clean", "toolchains", "--json"]);
     let document = json(&preview);
@@ -2559,7 +2546,7 @@ fn eval_simulators_list_every_device_past_an_unreadable_one() {
     let devices = simulator_devices(&sandbox);
     let listing = simctl_list(&[(GONE_TWO, false), (WORKING, true), (GONE_ONE, false)]);
     simulator_stub(&sandbox, &listing, &listing);
-    let _locked = Unreadable::new(devices.join(GONE_TWO).join("data"));
+    let _locked = ModeGuard::unreadable(devices.join(GONE_TWO).join("data"));
 
     let preview = run(&sandbox, &["clean", "simulators", "--json"]);
     let document = json(&preview);
@@ -2583,7 +2570,7 @@ fn eval_simulators_apply_ignores_an_unreadable_working_device() {
     let devices = simulator_devices(&sandbox);
     let listing = simctl_list(&[(WORKING, true), (GONE_ONE, false)]);
     simulator_stub(&sandbox, &listing, &listing);
-    let _locked = Unreadable::new(devices.join(WORKING).join("data"));
+    let _locked = ModeGuard::unreadable(devices.join(WORKING).join("data"));
 
     let apply = run(
         &sandbox,
@@ -2619,7 +2606,7 @@ fn eval_an_unreadable_archive_never_withholds_device_support() {
     );
     let locked = xcode.join("Archives/2026-01-02");
     write(&locked.join("App.xcarchive/Info.plist"), "archive");
-    let _locked = Unreadable::new(locked);
+    let _locked = ModeGuard::unreadable(locked);
 
     let preview = run(&sandbox, &["clean", "xcode", "--json"]);
     let document = json(&preview);
@@ -2645,7 +2632,7 @@ fn eval_leftovers_report_every_folder_past_an_unreadable_one() {
     write(&evidence.join("run.log"), "log");
     let sealed = dev.join("sealed");
     write(&sealed.join(".supergoal/evidence/run.log"), "hidden");
-    let _sealed = Unreadable::new(sealed.clone());
+    let _sealed = ModeGuard::unreadable(sealed.clone());
 
     let output = run(
         &sandbox,

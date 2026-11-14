@@ -423,7 +423,6 @@ impl TrackedIndex {
 fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
     let mut command = hardened_git(root, git);
     command
-        // `format-local` dates render in this zone: UTC, as the cutoff is.
         .env("TZ", "UTC0")
         // Signature display runs the repository's `gpg.program`.
         .args([
@@ -915,8 +914,7 @@ mod tests {
             "PV project/unborn-branch: a repository without commits was not recognized"
         );
 
-        // `git add` before the first commit stores blobs, not commits: the
-        // repository on the owner's Mac that this case comes from held 27.
+        // `git add` before the first commit stores blobs, not commits.
         let staged = base.join("staged");
         std::fs::create_dir_all(&staged).unwrap();
         git(&staged, &["init", "-q"]);

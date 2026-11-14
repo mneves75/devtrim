@@ -284,8 +284,8 @@ const STOP_SIGNALS: [i32; 3] = [
 /// disposition, and the crate forbids `unsafe`; a run that must outlive its
 /// terminal belongs in `tmux`, `screen` or a launchd job.
 ///
-/// Not installed for the TUI, which runs in raw mode where Ctrl-C is a key and
-/// must restore its terminal before it exits: it installs
+/// Not installed for the full-screen views, which run in raw mode where Ctrl-C
+/// is a key and must restore the terminal before exiting: they install
 /// [`forward_interrupts`] instead.
 pub(crate) fn exit_on_interrupt() -> io::Result<()> {
     let mut signals = signal_hook::iterator::Signals::new(STOP_SIGNALS)?;
@@ -358,12 +358,12 @@ fn kill_and_reap(child: &mut Child) -> bool {
     }
 }
 
-/// What the TUI installs in place of [`exit_on_interrupt`]. Its terminal is in
-/// raw mode and must be restored before devtrim exits, and only the TUI's own
-/// thread writes to it, so a SIGINT, SIGTERM or SIGHUP is recorded for that thread
-/// instead of ending the run here: the TUI restores the terminal and then
+/// What the full-screen views install in place of [`exit_on_interrupt`]. The
+/// terminal is in raw mode and must be restored before devtrim exits, and only
+/// the view's own thread writes to it, so a SIGINT, SIGTERM or SIGHUP is recorded for that thread
+/// instead of ending the run here: the view restores the terminal and then
 /// calls [`kill_and_exit`] with the signal. A second signal kills every
-/// command and exits at once, leaving the terminal as it is, so a TUI that
+/// command and exits at once, leaving the terminal as it is, so a view that
 /// stopped polling cannot keep devtrim or its commands alive.
 pub(crate) fn forward_interrupts() -> io::Result<Interrupts> {
     let received = Arc::new(AtomicI32::new(0));
@@ -381,7 +381,7 @@ pub(crate) fn forward_interrupts() -> io::Result<Interrupts> {
     Ok(Interrupts(received))
 }
 
-/// The signal [`forward_interrupts`] recorded for the TUI to act on.
+/// The signal [`forward_interrupts`] recorded for the full-screen view to act on.
 pub(crate) struct Interrupts(Arc<AtomicI32>);
 
 impl Interrupts {

@@ -98,17 +98,6 @@ impl Ctx {
             warnings: root_warnings,
         } = resolve_roots(&cli.roots, &cfg_roots, &home)?;
         let journal_path = journal_path(&home);
-        let journal_warnings = if matches!(
-            cli.command.as_ref(),
-            Some(crate::cli::Command::Dashboard { .. } | crate::cli::Command::AppStorage)
-        ) {
-            Vec::new()
-        } else {
-            match crate::journal::rotate_if_needed(&journal_path) {
-                Ok(warnings) => warnings,
-                Err(error) => vec![format!("cannot rotate apply journal: {error:#}")],
-            }
-        };
         let ctx = Self {
             yes: cli.yes,
             yolo: cli.yolo,
@@ -137,9 +126,6 @@ impl Ctx {
             ctx.diagnostic("warn", warning);
         }
         for warning in protect_warnings {
-            ctx.diagnostic("warn", warning);
-        }
-        for warning in journal_warnings {
             ctx.diagnostic("warn", warning);
         }
         Ok(ctx)
@@ -1256,10 +1242,6 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
     // the sibling `local_storage` file backs `localStorage`. Both are documented
     // as persistent across runs and nothing rebuilds them. An exact-name list
     // cannot express a `location_data` exclusion.
-    // Go's own `go help cache` says clearing it should not be necessary in
-    // typical use. The one part that is not a pure rebuild is the fuzz corpus
-    // kept beneath it: those coverage-expanding inputs come back only by
-    // fuzzing again.
     DeletionEntry {
         label: "Go build cache",
         relative: "go-build",
@@ -1296,16 +1278,18 @@ pub(crate) const REBUILT_BY_COMMAND: &[(&str, &str)] = &[
     ("CocoaPods", "pod install"),
 ];
 
+/// `~/Library` subtrees outside `Caches` that categories manage.
+pub(crate) const MANAGED_LIBRARY_SUBPATHS: &[&str] = &[
+    "Developer/Toolchains",
+    "Developer/Xcode/iOS DeviceSupport",
+    "Developer/Xcode/watchOS DeviceSupport",
+    "Developer/Xcode/tvOS DeviceSupport",
+    "Developer/Xcode/visionOS DeviceSupport",
+    "Developer/Xcode/DerivedData",
+    "Caches/Homebrew",
+];
+
 fn is_managed_library_subpath(relative: &Path) -> bool {
-    const MANAGED: &[&str] = &[
-        "Developer/Toolchains",
-        "Developer/Xcode/iOS DeviceSupport",
-        "Developer/Xcode/watchOS DeviceSupport",
-        "Developer/Xcode/tvOS DeviceSupport",
-        "Developer/Xcode/visionOS DeviceSupport",
-        "Developer/Xcode/DerivedData",
-        "Caches/Homebrew",
-    ];
     let mut components = relative.iter();
     if components
         .next()
@@ -1317,7 +1301,7 @@ fn is_managed_library_subpath(relative: &Path) -> bool {
     let owned = components.collect::<PathBuf>();
     let owned = owned.to_string_lossy();
     let covered = |managed: &str| owned == managed || owned.starts_with(&format!("{managed}/"));
-    MANAGED.iter().copied().any(covered)
+    MANAGED_LIBRARY_SUBPATHS.iter().copied().any(covered)
         || MANAGED_LIBRARY_CACHES
             .iter()
             .any(|entry| covered(&format!("Caches/{}", entry.relative)))
@@ -1450,14 +1434,14 @@ fn warn_data_loss(ctx: &Ctx) {
 /// the acknowledgment unsatisfiable once a large item is excluded from the plan.
 pub(crate) fn trash_gate(findings: &[Finding], confirm_gb: Option<u64>) -> Result<()> {
     let Some(want) = confirm_gb else {
-        bail!("Trash purge requires --confirm=<gb> matching current Trash size");
+        bail!("Trash purge requires --confirm=<gb> matching the previewed items' size");
     };
     let actual_gb = crate::report::actionable_bytes(findings) / (1024 * 1024 * 1024);
     let low = actual_gb.saturating_sub(2);
     let high = actual_gb.saturating_add(2);
     if !(low..=high).contains(&want) {
         bail!(
-            "--confirm={want} but Trash holds ~{actual_gb} GB; pass --confirm={actual_gb} to acknowledge"
+            "--confirm={want} but the previewed items total ~{actual_gb} GB; pass --confirm={actual_gb} to acknowledge"
         );
     }
     Ok(())
@@ -1576,15 +1560,14 @@ pub(crate) fn dir_size(path: &Path) -> Result<u64> {
 /// fresh timestamp.
 ///
 /// The timestamp is `None` when any file's modification time could not be read.
-/// It is deliberately not an error: `dir_size` — which eight of the ten
-/// categories reach for and which needs no timestamp at all — would otherwise
+/// It is deliberately not an error: `dir_size`, which most categories reach
+/// for and which needs no timestamp at all, would otherwise
 /// start failing on a tree it can measure perfectly well. A caller that judges
 /// staleness must treat `None` as a refusal; one that only wants bytes can
 /// ignore it.
 ///
 /// A subtree with no regular files reports `UNIX_EPOCH`, which reads as
-/// maximally stale — harmless, because it also measures zero bytes, and every
-/// caller skips a zero-byte target.
+/// maximally stale; a caller that judges age must handle it, as `xcode` does.
 pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTime>)> {
     let mut bytes = 0u64;
     let mut usage = DiskUsage::default();
@@ -1939,7 +1922,10 @@ const LSOF_NON_PATH_TYPES: &[&[u8]] = &[
 /// file could lie anywhere. A name lsof built from the mount instead is judged
 /// against the folder's own volume (`xcode::derived_data_in_use`). An
 /// ambiguous escape refuses, as everywhere else.
-fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Result<Vec<OpenFile>> {
+pub(crate) fn parse_lsof_open_files(
+    output: &[u8],
+    exit_code: Option<i32>,
+) -> Result<Vec<OpenFile>> {
     match exit_code {
         Some(0) => {}
         Some(code) => bail!("lsof open-file probe exited with status {code}"),
@@ -2034,7 +2020,7 @@ pub(crate) fn parse_pgrep_pids(output: &[u8], exit_code: Option<i32>) -> Result<
 /// runs in — leaving that repository's dependencies deletable mid-build. The
 /// unambiguous escapes are decoded; `^X` is refused because lsof renders a
 /// control byte and a literal caret identically.
-fn decode_lsof_name(name: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn decode_lsof_name(name: &[u8]) -> Result<Vec<u8>> {
     let mut decoded = Vec::with_capacity(name.len());
     let mut index = 0;
     while let Some(&byte) = name.get(index) {
@@ -2045,7 +2031,7 @@ fn decode_lsof_name(name: &[u8]) -> Result<Vec<u8>> {
                     .get(index + 2..index + 4)
                     .and_then(|hex| std::str::from_utf8(hex).ok())
                     .and_then(|hex| u8::from_str_radix(hex, 16).ok())
-                    .ok_or_else(|| anyhow::anyhow!("lsof returned an invalid cwd escape"))?;
+                    .ok_or_else(|| anyhow::anyhow!("lsof returned an invalid name escape"))?;
                 decoded.push(value);
                 index += 4;
                 continue;
@@ -2057,11 +2043,11 @@ fn decode_lsof_name(name: &[u8]) -> Result<Vec<u8>> {
                 b'r' => b'\r',
                 b'b' => 0x08,
                 b'f' => 0x0c,
-                _ => bail!("lsof returned an unknown cwd escape"),
+                _ => bail!("lsof returned an unknown name escape"),
             }),
-            (b'\\', None) => bail!("lsof returned a truncated cwd escape"),
+            (b'\\', None) => bail!("lsof returned a truncated name escape"),
             (b'^', Some(b'@'..=b'_' | b'?')) => {
-                bail!("lsof cwd name is ambiguous: `^X` may stand for a control byte")
+                bail!("lsof name is ambiguous: `^X` may stand for a control byte")
             }
             (other, _) => {
                 decoded.push(other);
@@ -2817,6 +2803,16 @@ mod tests {
         assert!(trash_gate(&both, Some(0)).is_err());
         assert!(trash_gate(&both, Some(10)).is_ok());
         assert!(trash_gate(&both, None).is_err());
+        // The refusals name what is measured: with `--only-devtrim` the Trash
+        // holds more than the plan, so "the Trash holds" would misstate it.
+        for refusal in [
+            trash_gate(&both, Some(0)).unwrap_err(),
+            trash_gate(&both, None).unwrap_err(),
+        ] {
+            let message = refusal.to_string();
+            assert!(message.contains("previewed items"), "{message}");
+            assert!(!message.contains("Trash holds"), "{message}");
+        }
     }
 
     #[test]

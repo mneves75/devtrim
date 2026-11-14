@@ -16,8 +16,7 @@ fn is_agent_scratch(name: &str) -> bool {
     let Some((prefix, suffix)) = name.rsplit_once('.') else {
         return false;
     };
-    !prefix.is_empty()
-        && (prefix.starts_with("kimi-") || matches!(prefix, "codex-worktree" | "claude-worktree"))
+    (prefix.starts_with("kimi-") || matches!(prefix, "codex-worktree" | "claude-worktree"))
         && suffix.len() == 6
         && suffix
             .chars()
@@ -95,13 +94,20 @@ impl Op for Leftovers {
                 }
                 for child in ["evidence", "perf"] {
                     let path = entry.path().join(child);
-                    if is_directory_if_present(&path)? {
-                        push_measured(
+                    // A `.supergoal` that cannot be searched is named as the
+                    // folder the walk could not read, once.
+                    match is_directory_if_present(&path) {
+                        Ok(true) => push_measured(
                             &mut findings,
                             format!("supergoal {child} artifacts"),
                             &path,
                             "review manually; completion cannot be inferred from a path",
-                        );
+                        ),
+                        Ok(false) => {}
+                        Err(error) => {
+                            unread_once(&mut unread, entry.path(), &error);
+                            break;
+                        }
                     }
                 }
             }
@@ -242,5 +248,47 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(errors.len(), 1, "{findings:?}");
         assert_eq!(errors[0].matches("sealed").count(), 1, "{errors:?}");
+    }
+
+    /// A `.supergoal` that cannot be searched is where the scan could not
+    /// look: it is named once beside the other unread folders, and the
+    /// readable `.supergoal` in another project is still reported.
+    #[test]
+    fn an_unreadable_supergoal_withholds_only_itself() {
+        let fixture = crate::ops::TestFixture::new("devtrim-leftovers-supergoal");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let root = home.join("dev");
+        let evidence = root.join("readable/.supergoal/evidence");
+        std::fs::create_dir_all(&evidence).unwrap();
+        std::fs::write(evidence.join("run.log"), "log").unwrap();
+        let blocked = root.join("blocked/.supergoal");
+        std::fs::create_dir_all(blocked.join("evidence")).unwrap();
+        let sealed = crate::ops::Unreadable::new(&blocked, 0o000);
+        let ctx = Ctx {
+            roots: vec![root.clone()],
+            roots_origin: crate::safety::RootsOrigin::Flag,
+            ..Ctx::for_test(home.clone())
+        };
+
+        let findings = Leftovers.scan(&ctx, &Default::default());
+
+        drop(sealed);
+        let findings = findings.unwrap();
+        let reported = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
+        assert_eq!(reported, vec![evidence.as_path()], "{findings:?}");
+        let errors = findings
+            .iter()
+            .filter_map(Finding::scan_error)
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1, "{findings:?}");
+        assert_eq!(
+            errors[0].matches(&*blocked.to_string_lossy()).count(),
+            1,
+            "{errors:?}"
+        );
     }
 }

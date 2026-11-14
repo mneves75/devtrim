@@ -65,6 +65,35 @@ pub mod fuzz_api {
         crate::safety::parse_lsof_mappings(output, exit_code)
     }
 
+    pub fn parse_lsof_open_files(
+        output: &[u8],
+        exit_code: Option<i32>,
+    ) -> anyhow::Result<Vec<(u64, PathBuf)>> {
+        crate::safety::parse_lsof_open_files(output, exit_code).map(|files| {
+            files
+                .into_iter()
+                .map(|file| (file.dev, file.path))
+                .collect()
+        })
+    }
+
+    pub fn decode_lsof_name(name: &[u8]) -> anyhow::Result<Vec<u8>> {
+        crate::safety::decode_lsof_name(name)
+    }
+
+    /// The `~/Library` subtrees outside `Caches` the protection boundary carves out.
+    pub fn managed_library_subpaths() -> &'static [&'static str] {
+        crate::safety::MANAGED_LIBRARY_SUBPATHS
+    }
+
+    /// The `~/Library/Caches` children the protection boundary carves out.
+    pub fn managed_library_caches() -> Vec<&'static str> {
+        crate::safety::MANAGED_LIBRARY_CACHES
+            .iter()
+            .map(|entry| entry.relative)
+            .collect()
+    }
+
     pub fn codex_version_core(version: &str) -> Option<[u64; 3]> {
         crate::ops::agents::codex_version_core(version)
     }

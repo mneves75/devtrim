@@ -16,10 +16,6 @@ use std::process::Output;
 use std::time::{Duration, SystemTime};
 use support::{Allowed, Sandbox, Tree, json, on_disk, run, write};
 
-fn sandbox(name: &str) -> Sandbox {
-    Sandbox::in_target(name)
-}
-
 fn unchanged(before: &Tree, sandbox: &Sandbox) {
     before
         .diff(&Tree::snapshot(sandbox.path()), &Allowed::default())
@@ -51,7 +47,7 @@ fn findings(document: &Value) -> Vec<(PathBuf, u64)> {
 
 #[test]
 fn eval_largest_ranks_fixture_totals_and_honors_top() {
-    let sandbox = sandbox("report-largest");
+    let sandbox = Sandbox::in_target("report-largest");
     let root = sandbox.path().join("work");
     // Sizes span many blocks, so the ranking stays strict on disk.
     write(&root.join("large/deep/blob"), &"x".repeat(73 * 1024));
@@ -97,7 +93,7 @@ fn eval_largest_ranks_fixture_totals_and_honors_top() {
 
 #[test]
 fn eval_icloud_reports_large_logical_files_with_local_allocation() {
-    let sandbox = sandbox("report-icloud");
+    let sandbox = Sandbox::in_target("report-icloud");
     let root = sandbox
         .path()
         .join("Library/Mobile Documents/com~apple~CloudDocs");
@@ -134,7 +130,7 @@ fn eval_icloud_reports_large_logical_files_with_local_allocation() {
 
 #[test]
 fn eval_leftovers_reports_exact_hints_and_sizes() {
-    let sandbox = sandbox("report-leftovers");
+    let sandbox = Sandbox::in_target("report-leftovers");
     let root = sandbox.path().join("work");
     write(&root.join("codex-worktree.aB1234/blob"), &"x".repeat(31));
     write(
@@ -204,7 +200,7 @@ fn eval_leftovers_reports_exact_hints_and_sizes() {
 
 #[test]
 fn eval_uninstall_attributes_only_exact_bundle_identifier() {
-    let sandbox = sandbox("report-uninstall");
+    let sandbox = Sandbox::in_target("report-uninstall");
     let app = sandbox.path().join("Applications/EvalUniqueWidget.app");
     write(
         &app.join("Contents/Info.plist"),
@@ -249,7 +245,7 @@ fn eval_uninstall_attributes_only_exact_bundle_identifier() {
 
 #[test]
 fn eval_history_limit_selects_newest_results_across_rotation() {
-    let sandbox = sandbox("report-history");
+    let sandbox = Sandbox::in_target("report-history");
     write(
         &sandbox.path().join(".config/devtrim.toml"),
         "malformed = [\n",
@@ -308,7 +304,7 @@ fn eval_history_limit_selects_newest_results_across_rotation() {
 
 #[test]
 fn eval_analyze_measures_children_and_discloses_partial_lower_bounds() {
-    let sandbox = sandbox("report-analyze");
+    let sandbox = Sandbox::in_target("report-analyze");
     let root = sandbox.path().join("browse");
     write(&root.join("folder/visible"), &"x".repeat(23 * 1024));
     write(&root.join("folder/locked/hidden"), &"x".repeat(47 * 1024));
@@ -365,7 +361,7 @@ fn eval_analyze_measures_children_and_discloses_partial_lower_bounds() {
 
 #[test]
 fn eval_status_uses_resident_memory_and_names_unavailable_metrics() {
-    let sandbox = sandbox("report-status");
+    let sandbox = Sandbox::in_target("report-status");
     sandbox.script("sysctl", "case \"$*\" in *hw.memsize*) printf '1048576\\n';; *hw.logicalcpu*) printf '4\\n';; *vm.loadavg*) printf '{ 1.25 0.75 0.5 }\\n';; *kern.boottime*) printf '{ sec = 1700000000, usec = 0 }\\n';; *) exit 1;; esac");
     sandbox.script("vm_stat", "printf 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\\nPages free: 10.\\nPages speculative: 2.\\nPages active: 20.\\nPages inactive: 80.\\nPages wired down: 5.\\nPages occupied by compressor: 3.\\n'");
     sandbox.script("df", "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/eval 1000 250 750 25%% /\\n'");
@@ -425,7 +421,7 @@ fn eval_status_uses_resident_memory_and_names_unavailable_metrics() {
 #[test]
 fn eval_status_data_failure_never_uses_sealed_root() {
     assert!(std::fs::metadata("/System/Volumes/Data").is_ok());
-    let sandbox = sandbox("report-status-data");
+    let sandbox = Sandbox::in_target("report-status-data");
     sandbox.script("sysctl", "case \"$*\" in *hw.memsize*) printf '1048576\\n';; *hw.logicalcpu*) printf '4\\n';; *vm.loadavg*) printf '{ 0 0 0 }\\n';; *kern.boottime*) printf '{ sec = 1700000000, usec = 0 }\\n';; *) exit 1;; esac");
     sandbox.script("vm_stat", "printf 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\\nPages free: 10.\\nPages speculative: 2.\\nPages active: 20.\\nPages inactive: 80.\\nPages wired down: 5.\\nPages occupied by compressor: 3.\\n'");
     sandbox.script("pmset", "case \"$*\" in *batt*) printf \"Now drawing from 'AC Power'\\n\";; *therm*) printf 'CPU_Speed_Limit = 100\\n';; *) exit 1;; esac");
@@ -484,7 +480,7 @@ fn eval_status_data_failure_never_uses_sealed_root() {
 
 #[test]
 fn eval_generated_docs_expose_commands_and_refuse_json() {
-    let sandbox = sandbox("report-generated");
+    let sandbox = Sandbox::in_target("report-generated");
     write(
         &sandbox.path().join(".config/devtrim.toml"),
         "malformed = [\n",
@@ -523,7 +519,7 @@ fn eval_generated_docs_expose_commands_and_refuse_json() {
 
 #[test]
 fn eval_scan_human_summarizes_large_categories_and_all_lists_every_target() {
-    let sandbox = sandbox("report-scan");
+    let sandbox = Sandbox::in_target("report-scan");
     let root = sandbox.path().join("work");
     std::fs::create_dir_all(&root).unwrap();
     for index in 0..10 {
@@ -569,7 +565,7 @@ fn eval_scan_human_summarizes_large_categories_and_all_lists_every_target() {
 /// failed with the command that retries it, instead of vanishing.
 #[test]
 fn eval_scan_table_keeps_a_failed_category_visible() {
-    let sandbox = sandbox("report-scan-failed");
+    let sandbox = Sandbox::in_target("report-scan-failed");
     sandbox.script("pgrep", "exit 3");
     let root = sandbox.path().join("dev");
     std::fs::create_dir_all(&root).unwrap();
@@ -590,7 +586,7 @@ fn eval_scan_table_keeps_a_failed_category_visible() {
 /// disclosed lower bound; every path is still reported.
 #[test]
 fn eval_uninstall_reports_every_path_past_an_unreadable_folder() {
-    let sandbox = sandbox("report-uninstall-unreadable");
+    let sandbox = Sandbox::in_target("report-uninstall-unreadable");
     let app = sandbox.path().join("Applications/EvalLockedWidget.app");
     write(&app.join("Contents/Info.plist"), "plist");
     sandbox.script("plutil", "printf 'com.devtrim.evallocked\\n'");
@@ -648,7 +644,7 @@ fn eval_uninstall_reports_every_path_past_an_unreadable_folder() {
 /// permission lists its names while every lookup inside it fails.
 #[test]
 fn eval_icloud_lists_what_it_can_read_past_an_unreadable_file() {
-    let sandbox = sandbox("report-icloud-unstat");
+    let sandbox = Sandbox::in_target("report-icloud-unstat");
     let root = sandbox
         .path()
         .join("Library/Mobile Documents/com~apple~CloudDocs");
@@ -699,7 +695,7 @@ fn eval_icloud_lists_what_it_can_read_past_an_unreadable_file() {
 /// files that could be read are still listed.
 #[test]
 fn eval_icloud_lists_what_it_can_read_past_an_unreadable_folder() {
-    let sandbox = sandbox("report-icloud-unreadable");
+    let sandbox = Sandbox::in_target("report-icloud-unreadable");
     let root = sandbox
         .path()
         .join("Library/Mobile Documents/com~apple~CloudDocs");
@@ -732,5 +728,48 @@ fn eval_icloud_lists_what_it_can_read_past_an_unreadable_folder() {
     assert!(
         document["errors"].to_string().contains("locked"),
         "{document}"
+    );
+}
+
+/// Rotation belongs to an apply: a read-only command never renames the
+/// journal, so `trash-empty --only-devtrim` cannot rotate away the oldest
+/// ownership evidence it is about to read. The apply is the positive control
+/// proving this fixture is oversized enough to rotate.
+#[test]
+fn eval_only_an_apply_rotates_the_journal() {
+    let sandbox = Sandbox::in_target("report-rotation-on-apply");
+    write(&sandbox.journal(), "audit evidence\n");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(sandbox.journal())
+        .unwrap()
+        .set_len(10 * 1024 * 1024 + 1)
+        .unwrap();
+    std::fs::create_dir_all(sandbox.path().join("Downloads")).unwrap();
+    let before = Tree::snapshot(sandbox.path());
+    for args in [
+        vec!["clean", "installers"],
+        vec!["clean", "installers", "--json"],
+        vec!["trash-empty", "--only-devtrim", "--json"],
+        vec!["history", "--json"],
+        vec!["largest", "--root", "Downloads", "--json"],
+    ] {
+        let output = run(&sandbox, &args);
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("rotation"),
+            "{args:?}: {output:?}"
+        );
+        before
+            .diff(&Tree::snapshot(sandbox.path()), &Allowed::default())
+            .unwrap_or_else(|error| panic!("{args:?} rotated the journal: {error}"));
+    }
+    let apply = run(
+        &sandbox,
+        &["clean", "installers", "--apply", "-y", "--json"],
+    );
+    successful(&apply);
+    assert!(
+        sandbox.journal().with_extension("jsonl.1").exists(),
+        "an apply must rotate the oversized journal: {apply:?}"
     );
 }

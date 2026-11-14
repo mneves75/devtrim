@@ -33,7 +33,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CHECK = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "scripts" / "site" / "csp.py"
+CHECK = ROOT / "scripts" / "site" / "csp.py"
 
 
 def check(page: Path, mode: str = "--check") -> subprocess.CompletedProcess[str]:
@@ -47,7 +47,11 @@ def check(page: Path, mode: str = "--check") -> subprocess.CompletedProcess[str]
 
 # Plants rewritten with --write before --check, so a stale hash cannot be
 # what refuses them.
-REWRITTEN = {"double-escaped-script", "double-escaped-src-script", "nul-in-style", "end-tag-like-text-in-script", "spaced-script-end-tag", "end-tag-not-exactly-spelled", "title-rcdata-escape", "comment-spaced-close", "unicode-folded-end-tag"}
+REWRITTEN = {
+    "double-escaped-script", "double-escaped-src-script", "nul-in-style", "end-tag-like-text-in-script",
+    "spaced-script-end-tag", "end-tag-not-exactly-spelled", "title-rcdata-escape", "comment-spaced-close",
+    "unicode-folded-end-tag", "self-closing-style", "self-closing-script", "style-in-svg",
+}
 
 
 def hashed_in_svg(manual: str, opening: str = "<svg>") -> str:
@@ -129,8 +133,6 @@ def main() -> int:
             '<script src=""><!--<script></script><style></script><script>window.x=1;</script></style></body>',
             1,
         ),
-        # The browser turns NUL into U+FFFD before tokenizing, so the text it
-        # hashes is not the text read here.
         # Parsers differ on which "</..." ends raw text.
         "end-tag-like-text-in-script": manual.replace("</body>", "<script>x = '</script/x>';</script></body>", 1),
         # A browser ignores src on a style and checks its text as inline CSS.
@@ -184,6 +186,8 @@ def main() -> int:
         "charset-beyond-prescan": manual.replace(
             '<meta charset="utf-8">', f'<meta name="filler" content="{"x" * 1024}"><meta charset="utf-8">', 1
         ),
+        # The browser turns NUL into U+FFFD before tokenizing, so the text it
+        # hashes is not the text read here.
         "nul-in-style": manual.replace("</body>", "<style>p::after { content: '\x00'; }</style></body>", 1),
         "srcdoc-iframe": manual.replace(
             "</body>", '<iframe srcdoc="<style>p{color:red}</style>"></iframe></body>', 1
@@ -207,8 +211,11 @@ def main() -> int:
             if label in REWRITTEN:
                 # The attack hashes what csp.py reads; only a refusal stops it.
                 check(page, "--write")
-            if check(page).returncode == 0:
+            result = check(page)
+            if result.returncode == 0:
                 failures.append(f"{label}: csp.py --check accepted a page it must refuse")
+            elif label in REWRITTEN and "stale CSP" in result.stderr:
+                failures.append(f"{label}: refused on a stale hash, so its own rule is unproven")
     finally:
         shutil.rmtree(base)
 

@@ -25,6 +25,17 @@ if [[ "${DEVTRIM_RELEASE_POLICY_MOCK:-}" == "1" ]]; then
         if [[ " $* " == *' --json conclusion,status '* ]]; then
           printf 'success\n'
         else
+          # The release-run lookup after the tag push fails as many times as
+          # the counter file says, so its retry loop can be proven.
+          failures_file="${DEVTRIM_RELEASE_POLICY_RUN_LIST_FAILURES:-}"
+          if [[ -n "$failures_file" ]]; then
+            failures_left=$(< "$failures_file")
+            if [[ "$failures_left" -gt 0 ]]; then
+              printf '%s\n' "$((failures_left - 1))" > "$failures_file"
+              echo "mocked transient gh run list failure" >&2
+              exit 1
+            fi
+          fi
           printf '4242\n'
         fi
       elif [[ "${1:-}" == "run" && "${2:-}" == "watch" ]]; then
@@ -57,6 +68,9 @@ if [[ "${DEVTRIM_RELEASE_POLICY_MOCK:-}" == "1" ]]; then
         echo "unexpected mocked gh invocation: $*" >&2
         exit 98
       fi
+      exit 0
+      ;;
+    sleep)
       exit 0
       ;;
     cargo|npm|npx|rustup|ast-grep|gitleaks|trufflehog|shellcheck|actionlint)
@@ -758,7 +772,7 @@ git clone "$origin" "$subject" >/dev/null
 git -C "$subject" config user.name release-policy
 git -C "$subject" config user.email release-policy@example.invalid
 
-for tool in gh cargo npm npx rustup ast-grep gitleaks trufflehog shellcheck actionlint; do
+for tool in gh sleep cargo npm npx rustup ast-grep gitleaks trufflehog shellcheck actionlint; do
   ln -s "$script_dir/release-policy.sh" "$fake_bin/$tool"
 done
 
@@ -939,6 +953,39 @@ bash "$subject/scripts/release.sh" 1.2.3-beta1 >/dev/null
 [[ ! -e "$homebrew_invocations" ]] || fail "beta release unexpectedly invoked Homebrew publication"
 [[ "$(git -C "$subject" for-each-ref --format='%(contents)' refs/tags/v1.2.3-beta1)" == *"security gate: PASS (staging, tree "* ]] ||
   fail "beta tag message does not record the staging gate verdict"
+
+# A failed lookup of the release run happens after the tag is pushed, so it
+# must be retried like an empty answer, never end the script unexplained.
+run_list_failures="$test_root/run-list-failures"
+printf '3\n' > "$run_list_failures"
+DEVTRIM_RELEASE_POLICY_MOCK=1 \
+DEVTRIM_RELEASE_POLICY_HEAD="$current_head" \
+DEVTRIM_AUTOREVIEW_COMMIT="$current_head" \
+DEVTRIM_RELEASE_POLICY_RUN_LIST_FAILURES="$run_list_failures" \
+GH_TOKEN=release-policy-token \
+PATH="$fake_bin:$PATH" \
+bash "$subject/scripts/release.sh" 1.2.3-beta2 >/dev/null ||
+  fail "release ended on a transient failure to list its workflow run"
+[[ "$(< "$run_list_failures")" == "0" ]] ||
+  fail "release-run lookup failures were not exercised"
+printf '1000\n' > "$run_list_failures"
+set +e
+lookup_output=$(
+  DEVTRIM_RELEASE_POLICY_MOCK=1 \
+  DEVTRIM_RELEASE_POLICY_HEAD="$current_head" \
+  DEVTRIM_AUTOREVIEW_COMMIT="$current_head" \
+  DEVTRIM_RELEASE_POLICY_RUN_LIST_FAILURES="$run_list_failures" \
+  GH_TOKEN=release-policy-token \
+  PATH="$fake_bin:$PATH" \
+  bash "$subject/scripts/release.sh" 1.2.3-beta3 2>&1
+)
+lookup_status=$?
+set -e
+[[ "$lookup_status" -ne 0 ]] || fail "release passed although its workflow run could never be listed"
+[[ "$(< "$run_list_failures")" == "970" ]] ||
+  fail "release-run lookup was not attempted exactly 30 times"
+grep -Fq 'RECOVER: inspect Actions for the pushed tag; never move or reuse it' <<<"$lookup_output" ||
+  fail "a release-run lookup that kept failing gave no recovery guidance: $lookup_output"
 
 write_gate_record production waived pass '[
     {

@@ -17,8 +17,9 @@ const MAX_JOURNAL_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_JOURNAL_RECORD_BYTES: usize = 64 * 1024;
 const HISTORY_READ_CHUNK_BYTES: usize = 8 * 1024;
 const KEEP_ROTATED: usize = 3;
-// A resource ceiling, not a claim about retained size: each generation may
-// overshoot rotation by one record, and any larger complete snapshot refuses.
+// A resource ceiling, not a claim about retained size: rotation runs before an
+// apply, so a generation overshoots by what one apply writes, and a complete
+// snapshot larger than this refuses rather than reads unbounded input.
 const MAX_COMPLETE_HISTORY_BYTES: usize =
     (KEEP_ROTATED + 1) * (MAX_JOURNAL_BYTES as usize + MAX_JOURNAL_RECORD_BYTES + 1);
 const HISTORY_LOCK_RACE_RETRIES: usize = 3;
@@ -307,7 +308,6 @@ fn append_at(location: &JournalLocation, record: &JournalRecord) -> Result<()> {
         }
     }
     file.write_all(&line)?;
-    file.flush()?;
     file.sync_data()?;
     Ok(())
 }
@@ -326,7 +326,19 @@ fn open_journal_file(location: &JournalLocation) -> io::Result<File> {
 /// Opens the journal, its folder and its lock exactly as `begin` will, writing
 /// no record, so an apply that could not journal its first attempt is refused
 /// before it starts rather than after the operation has begun.
+///
+/// Rotation happens here and nowhere else: an apply is the only writer, so a
+/// read-only command never renames the evidence it may be about to read, and
+/// no apply is split across generations.
 pub(crate) fn check_writable(ctx: &Ctx) -> Result<()> {
+    match rotate_if_needed(&ctx.journal_path) {
+        Ok(warnings) => {
+            for warning in warnings {
+                ctx.diagnostic("warn", warning);
+            }
+        }
+        Err(error) => ctx.diagnostic("warn", format!("cannot rotate apply journal: {error:#}")),
+    }
     let location = JournalLocation::open(&ctx.journal_path, ParentMode::Create)
         .with_context(|| format!("cannot open apply journal: {}", ctx.journal_path.display()))?
         .ok_or_else(|| anyhow::anyhow!("journal parent unexpectedly disappeared"))?;

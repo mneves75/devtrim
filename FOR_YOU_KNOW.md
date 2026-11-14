@@ -140,7 +140,7 @@ deleted — so even a swap in the microseconds between check and delete hits
 the quarantine wall instead of your data.
 Two things stay path-based, and the docs say so instead of hiding it: parent
 resolution, and the Trash call, because macOS simply has no fd-anchored Trash
-API. The journal also grew up: rotation is shift-and-rename at startup only —
+API. The journal also grew up: rotation is shift-and-rename when an apply starts —
 never truncation, the bash-history mistake — so an in-flight apply's records
 can never be clipped, and each record is synced to disk before devtrim claims
 success. Shipping binaries got an explicit ad-hoc signature in the release

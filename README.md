@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.13.0.
+This source tree and its packaged documentation describe devtrim v0.13.1.
 
 ## Install
 
@@ -719,11 +719,15 @@ bash scripts/verify.sh focused
 bash scripts/verify.sh offline
 ```
 
-`focused` runs Rust checks and the real terminal smoke test. `offline` adds
-the local workflow, shell, MSRV, cached dependency, and Gitleaks checks. Both
-report failed prerequisites and exit nonzero on failure. Neither installs
-tools nor substitutes for fresh advisory scans, TruffleHog, fuzzing, video
-checks, and review before delivery. Cached audit success does not prove that
+`focused` compares the agent docs, runs the site, live-verification and
+video-audit controls, then the Rust checks (format, structural lints, Clippy,
+tests, build) and the real terminal smoke tests. `offline` adds shell syntax,
+ShellCheck, actionlint, the release-policy tests, the planted violations and
+their controls, the film controls, MSRV, cached dependency audits, and
+Gitleaks with its positive control. Both stop at the first failing gate and
+exit nonzero. Neither installs tools nor substitutes for fresh advisory
+scans, TruffleHog, fuzzing, the video install, audit, lint, format and build,
+and review before delivery. Cached audit success does not prove that
 the advisory database is current.
 
 The PTY smoke test can also run against an already built binary:
@@ -816,7 +820,7 @@ See [`SECURITY.md`](SECURITY.md) for the threat model and reporting process.
 Release notes live in [`CHANGELOG.md`](CHANGELOG.md). After committing and
 pushing a version bump, enable GitHub immutable releases and run
 `scripts/release.sh <version>-beta<N>` for staging. Each retry uses a new
-counter. Run the local gates and P3 autoreview before committing. Before
+counter. Run the local gates and the local autoreview helper before committing. Before
 tagging, the script performs only clean-tree, current-default-branch,
 exact-CI/autoreview, and immutable-release provenance checks; it does not run
 project or dependency code in that privileged preflight. Hosted

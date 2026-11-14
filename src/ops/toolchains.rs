@@ -46,10 +46,14 @@ impl Op for Toolchains {
         // A toolchain that cannot be inspected or measured offers nothing and
         // is named in one error finding (S8); the others are still judged.
         let mut unread = Vec::new();
-        for entry in std::fs::read_dir(&directory)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
+        for entry in std::fs::read_dir(&directory)
+            .with_context(|| format!("cannot read {}", directory.display()))?
+        {
+            let entry = entry.with_context(|| format!("cannot read {}", directory.display()))?;
             let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("cannot inspect {}", path.display()))?;
             if !file_type.is_dir()
                 || path
                     .extension()
@@ -178,12 +182,18 @@ fn linked_targets(directory: &Path) -> Result<BTreeSet<PathBuf>> {
         );
     }
     let mut preserved = BTreeSet::new();
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_symlink() {
+    for entry in std::fs::read_dir(directory)
+        .with_context(|| format!("cannot read {}", directory.display()))?
+    {
+        let entry = entry.with_context(|| format!("cannot read {}", directory.display()))?;
+        let link = entry.path();
+        if !entry
+            .file_type()
+            .with_context(|| format!("cannot inspect {}", link.display()))?
+            .is_symlink()
+        {
             continue;
         }
-        let link = entry.path();
         let target = std::fs::read_link(&link)
             .with_context(|| format!("cannot read symlink {}", link.display()))?;
         let target = if target.is_absolute() {
@@ -394,7 +404,7 @@ fn authorize_toolchain_target(
     path: &Path,
     directory: &Path,
     references: &References,
-) -> Result<PathBuf> {
+) -> Result<()> {
     if path.parent() != Some(directory) {
         anyhow::bail!(
             "refusing toolchain target outside the direct Toolchains children: {}",
@@ -438,7 +448,7 @@ fn authorize_toolchain_target(
             path.display()
         );
     }
-    Ok(canonical)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -524,5 +534,37 @@ mod tests {
         assert!(outcome.errors[0].contains("direct Toolchains children"));
         assert!(nested.exists());
         crate::ops::remove_test_path(root);
+    }
+
+    /// A Toolchains folder that can be searched but not listed fails while
+    /// its links are read, and the error says which folder: a bare
+    /// "Permission denied" names nothing to fix (`CODING_STANDARDS.md` S7).
+    #[test]
+    fn an_unlistable_toolchains_folder_is_named_in_the_error() {
+        let (_fixture, root) = target_temp("unlistable");
+        let home = root.canonicalize().unwrap();
+        let directory = home.join("Library/Developer/Toolchains");
+        std::fs::create_dir_all(directory.join("swift-1.xctoolchain")).unwrap();
+        symlink(
+            "swift-1.xctoolchain",
+            directory.join("swift-latest.xctoolchain"),
+        )
+        .unwrap();
+        let sealed = crate::ops::Unreadable::new(&directory, 0o100);
+
+        let error = linked_targets(&directory).map(|_| ());
+        let outcome = Toolchains.apply(&[], &test_context(home.clone()));
+
+        drop(sealed);
+        let error = format!("{:#}", error.unwrap_err());
+        assert!(
+            error.contains(&*directory.to_string_lossy()),
+            "the error must name the folder: {error}"
+        );
+        let error = format!("{:#}", outcome.unwrap_err());
+        assert!(
+            error.contains(&*directory.to_string_lossy()),
+            "apply's error must name the folder: {error}"
+        );
     }
 }

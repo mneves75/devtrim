@@ -4,8 +4,8 @@
 A page-load gate that passes a blank, broken or slow page proves nothing. This
 serves seven control pages from a temporary folder and requires: a healthy
 page passes; a page that blocks its load past the budget fails the budget
-(exit 1); a page that paints after the old fixed observation delay reports
-its late paint and fails the budget (exit 1); a missing image, a
+(exit 1); a page that paints only 600 ms after its load reports that late
+paint and fails the budget (exit 1); a missing image, a
 Content-Security-Policy violation and a page that paints nothing are broken
 samples (exit 2).
 
@@ -28,7 +28,7 @@ PAGES = {
         "<!doctype html><meta charset=utf-8><title>slow</title><p>Slow</p>"
         "<script>const end = performance.now() + 400; while (performance.now() < end) {}</script>"
     ),
-    # Load finishes before any content can paint; waiting 250 ms cannot see LCP.
+    # Nothing paints until 600 ms after load, so its LCP is that late paint.
     "latepaint.html": (
         "<!doctype html><meta charset=utf-8><title>late paint</title>"
         '<p hidden id="late-target">Hello after load</p><script>'

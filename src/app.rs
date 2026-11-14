@@ -34,7 +34,6 @@ pub fn main_impl() -> ExitCode {
         return ExitCode::from(2);
     }
     if cli.command.is_none()
-        && !cli.json
         && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
     {
         if let Err(error) = cli::Cli::command().print_help() {

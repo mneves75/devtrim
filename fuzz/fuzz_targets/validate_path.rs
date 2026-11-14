@@ -23,22 +23,44 @@ const SYSTEM_ROOTS: &[&str] = &[
     "/Volumes",
 ];
 
-const MANAGED_LIBRARY_SUBPATHS: &[&str] = &[
-    "Developer/Toolchains",
-    "Developer/Xcode/iOS DeviceSupport",
-    "Developer/Xcode/DerivedData",
-    "Caches/Homebrew",
+/// Real folders of the fake home a fuzz input is appended to. The validator
+/// canonicalizes a target's parent, so only a leaf under an existing folder
+/// gets past that step to the protection it must enforce.
+const HOME_PARENTS: &[&str] = &[
+    "",
+    ".ssh",
+    ".gnupg",
+    ".Trash",
+    "Library",
+    "Library/Caches",
+    "Library/Preferences",
+    "Library/Developer",
+    "Library/Developer/Xcode",
+    "dev",
 ];
 
-struct PositiveControl {
+struct Fixture {
     home: PathBuf,
-    ordinary: PathBuf,
-    managed_library: PathBuf,
+    managed: Vec<String>,
 }
 
-fn positive_control() -> &'static PositiveControl {
-    static CONTROL: OnceLock<PositiveControl> = OnceLock::new();
-    CONTROL.get_or_init(|| {
+unsafe extern "C" {
+    fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
+}
+
+// libFuzzer leaves through `exit` when its time budget ends, and statics are
+// never dropped, so the fake home is removed here. A crash leaves through
+// `_Exit` and keeps it beside the crash artifact.
+extern "C" fn remove_home() {
+    if let Some(fixture) = FIXTURE.get() {
+        let _ = std::fs::remove_dir_all(&fixture.home);
+    }
+}
+
+static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+
+fn fixture() -> &'static Fixture {
+    FIXTURE.get_or_init(|| {
         let workspace = std::env::current_dir()
             .expect("fuzz working directory must be available")
             .canonicalize()
@@ -47,14 +69,26 @@ fn positive_control() -> &'static PositiveControl {
             "devtrim-validate-path-fuzz-home-{}",
             std::process::id()
         ));
-        std::fs::create_dir_all(home.join("dev")).expect("create ordinary positive-control parent");
-        std::fs::create_dir_all(home.join("Library/Developer/Toolchains"))
-            .expect("create managed-Library positive-control parent");
-        PositiveControl {
-            ordinary: home.join("dev/allowed-target"),
-            managed_library: home.join("Library/Developer/Toolchains/allowed-target"),
-            home,
+        let managed = devtrim::fuzz_api::managed_library_subpaths()
+            .iter()
+            .map(|managed| (*managed).to_owned())
+            .chain(
+                devtrim::fuzz_api::managed_library_caches()
+                    .into_iter()
+                    .map(|cache| format!("Caches/{cache}")),
+            )
+            .collect::<Vec<_>>();
+        for parent in HOME_PARENTS {
+            std::fs::create_dir_all(home.join(parent)).expect("create fake-home folder");
         }
+        for managed in &managed {
+            std::fs::create_dir_all(home.join("Library").join(managed))
+                .expect("create managed-Library folder");
+        }
+        // SAFETY: `remove_home` is a plain function that touches only the
+        // initialized fixture, and registering it has no other precondition.
+        assert_eq!(unsafe { atexit(remove_home) }, 0, "register fake-home removal");
+        Fixture { home, managed }
     })
 }
 
@@ -85,8 +119,9 @@ fn path_starts_with_ascii_case(path: &Path, base: &Path) -> bool {
     path_relative_to_ascii_case(path, base).is_some()
 }
 
-fn policy_protects(path: &Path, home: &Path) -> bool {
-    if path_eq_ascii_case(path, home) || path_eq_ascii_case(path, &home.join(".Trash")) {
+fn policy_protects(path: &Path, home: &Path, managed: &[String]) -> bool {
+    // The home folder and every folder above it.
+    if path_starts_with_ascii_case(home, path) || path_eq_ascii_case(path, &home.join(".Trash")) {
         return true;
     }
     for root in SYSTEM_ROOTS {
@@ -115,45 +150,79 @@ fn policy_protects(path: &Path, home: &Path) -> bool {
         return true;
     }
     let owned = relative.iter().skip(1).collect::<PathBuf>();
-    !MANAGED_LIBRARY_SUBPATHS
+    !managed
         .iter()
-        .any(|managed| owned == Path::new(managed) || owned.starts_with(Path::new(managed)))
+        .any(|managed| owned.starts_with(Path::new(managed)))
+}
+
+fn assert_policy(path: &Path, fixture: &Fixture) {
+    let allowed = devtrim::fuzz_api::validate_path_for_deletion(path, &fixture.home);
+    // Match the validator's absolute, lexical normalization before checking
+    // its deny policy.
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let cleaned = devtrim::fuzz_api::clean(&absolute);
+    if policy_protects(&cleaned, &fixture.home, &fixture.managed) {
+        assert!(!allowed, "protected path was accepted: {cleaned:?}");
+    }
+}
+
+fn positive_control() -> &'static Fixture {
+    static CHECKED: OnceLock<()> = OnceLock::new();
+    let fixture = fixture();
+    CHECKED.get_or_init(|| {
+        // A real existing-parent control prevents the filesystem-dependent
+        // validator from making every fuzz result `false` vacuously, and the
+        // protected children must be refused while their parents exist.
+        let home = &fixture.home;
+        let mut eligible = vec![home.join("dev/allowed-target")];
+        eligible.extend(
+            fixture
+                .managed
+                .iter()
+                .map(|managed| home.join("Library").join(managed).join("allowed-target")),
+        );
+        for target in &eligible {
+            assert!(
+                devtrim::fuzz_api::validate_path_for_deletion(target, home),
+                "eligible control was refused: {target:?}"
+            );
+            assert!(
+                !policy_protects(target, home, &fixture.managed),
+                "oracle protects an eligible control: {target:?}"
+            );
+        }
+        for protected in [".ssh/key", ".gnupg/key", "Library/Preferences/x", ".Trash"] {
+            let target = home.join(protected);
+            assert!(policy_protects(&target, home, &fixture.managed));
+            assert!(!devtrim::fuzz_api::validate_path_for_deletion(&target, home));
+        }
+    });
+    fixture
 }
 
 fuzz_target!(|data: &[u8]| {
-    let bytes = data
-        .iter()
-        .map(|byte| if *byte == 0 { b'_' } else { *byte })
-        .collect();
-    let path = PathBuf::from(OsString::from_vec(bytes));
-    let allowed = devtrim::fuzz_api::validate_path_for_deletion(&path, Path::new("/Users/fuzz"));
-
-    // Match the validator's absolute, lexical normalization before checking its
-    // deny policy. Ordinary home descendants and the four managed Library
-    // namespaces are intentionally not classified as universally protected.
-    let absolute = if path.is_absolute() {
-        path.clone()
+    let fixture = positive_control();
+    let (selector, rest) = data.split_first().map_or((0, data), |(s, rest)| (*s, rest));
+    let tail = PathBuf::from(OsString::from_vec(
+        rest.iter()
+            .map(|byte| if *byte == 0 { b'_' } else { *byte })
+            .collect(),
+    ));
+    // Even selectors take the input as a path of its own (system roots,
+    // relative paths); odd ones append it to a real folder of the fake home.
+    let path = if selector % 2 == 0 {
+        tail
     } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or_else(|_| path.clone())
+        let parent = HOME_PARENTS[usize::from(selector / 2) % HOME_PARENTS.len()];
+        fixture.home.join(parent).join(tail)
     };
-    let cleaned = devtrim::fuzz_api::clean(&absolute);
-    if policy_protects(&cleaned, Path::new("/Users/fuzz")) {
-        assert!(!allowed, "protected path was accepted: {cleaned:?}");
-    }
-
-    // A real existing-parent control prevents the filesystem-dependent
-    // validator from making every fuzz result `false` vacuously.
-    let control = positive_control();
-    assert!(devtrim::fuzz_api::validate_path_for_deletion(
-        &control.ordinary,
-        &control.home
-    ));
-    assert!(devtrim::fuzz_api::validate_path_for_deletion(
-        &control.managed_library,
-        &control.home
-    ));
+    assert_policy(&path, fixture);
 
     // Exercise configured protection independently from the filesystem-based
     // deletion validator. Deleting the entry, a child, or an ancestor must all

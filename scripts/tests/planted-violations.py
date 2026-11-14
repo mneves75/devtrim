@@ -1668,9 +1668,9 @@ CASES = (
     Case(
         name="eval/read-only",
         relative_path="src/journal.rs",
-        # Opening any command creates devtrim's state folder if it is absent.
-        before="    let location = match JournalLocation::open(path, ParentMode::Existing)? {\n        Some(location) => location,\n        None => return Ok(warnings),",
-        after="    let location = match JournalLocation::open(path, ParentMode::Create)? {\n        Some(location) => location,\n        None => return Ok(warnings),",
+        # Reading history creates devtrim's state folder if it is absent.
+        before="    let Some(location) = JournalLocation::open(path, ParentMode::Existing)? else {\n        return Ok(History {",
+        after="    let Some(location) = JournalLocation::open(path, ParentMode::Create)? else {\n        return Ok(History {",
         tests=("eval_read_only_commands_and_previews_change_nothing",),
         marker="PV eval/read-only",
         target="evals",
@@ -2232,9 +2232,14 @@ def run_one_test(binary: Path, test: str, target_dir: Path) -> subprocess.Comple
     )
 
 
-def selected_exactly_one(output: str) -> bool:
+def selection_error(output: str) -> str | None:
+    """Why a test run did not select exactly one test, or None when it did."""
     match = re.search(r"running (\d+) test", output)
-    return bool(match) and match.group(1) == "1"
+    if match is None:
+        return "no test count in its output"
+    if match.group(1) != "1":
+        return f"ran {match.group(1)}"
+    return None
 
 
 class Worker:
@@ -2426,8 +2431,6 @@ def main() -> int:
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
             if scratch.exists():
-                shutil.rmtree(scratch, ignore_errors=True)
-            if scratch.exists():
                 print(f"planted-violations: could not remove {scratch}", file=sys.stderr)
         for signum, handler in previous.items():
             signal.signal(signum, handler)
@@ -2493,6 +2496,18 @@ def run_cases(scratch: Path, prefix: str, jobs: int, test_jobs: int, summary: di
         for longer in markers:
             if longer != shorter and longer.startswith(shorter):
                 fail(f"ERROR: marker {shorter!r} is a prefix of {longer!r}")
+    # The same substring match lets any other `PV` tag that extends a marker
+    # (`PV eval/x-preview` beside `PV eval/x`) pass for that case's proof.
+    for source in sorted([*(REPOSITORY / "src").rglob("*.rs"), *(REPOSITORY / "tests").rglob("*.rs")]):
+        for match in set(re.findall(r"PV [A-Za-z0-9_./-]+", source.read_text())):
+            # A tag ending a sentence must not read as one with a longer name.
+            tag = match.rstrip(".-")
+            for marker in markers:
+                if tag != marker and tag.startswith(marker):
+                    fail(
+                        f"ERROR: tag {tag!r} in {source.relative_to(REPOSITORY)} "
+                        f"extends marker {marker!r}"
+                    )
 
     cases = [case for case in CASES if case.name.startswith(prefix)]
     if not cases:
@@ -2561,8 +2576,9 @@ def run_cases(scratch: Path, prefix: str, jobs: int, test_jobs: int, summary: di
             result = baseline_results[(case.target, test)]
             if result is None:
                 fail(f"ERROR {case.name}: baseline test timed out ({test})")
-            if not selected_exactly_one(result.stdout):
-                fail(f"ERROR {case.name}: expected exactly one test, ran 0 ({test})")
+            selection = selection_error(result.stdout)
+            if selection is not None:
+                fail(f"ERROR {case.name}: expected exactly one test, {selection} ({test})")
             if result.returncode != 0:
                 fail(f"ERROR {case.name}: baseline test already fails ({test})")
 

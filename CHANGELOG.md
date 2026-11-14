@@ -4,7 +4,41 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-14
+
+### Fixed
+- The apply journal rotates only when an apply starts, in the CLI and the TUI.
+  Read-only commands no longer rename journal files (a `trash-empty
+  --only-devtrim` preview could rotate away the oldest ownership evidence it
+  was about to read), and a long TUI session now rotates.
+- `clean leftovers`: an unreadable `.supergoal` is named as a folder the scan
+  could not read; it no longer fails the whole category.
+- `installers`: an unreadable `Downloads` or `Desktop`, or an archive that
+  cannot be inspected, is one error for that folder; the other folder's
+  findings are still listed, and an archive removed during the scan is skipped.
+- `toolchains` read errors name the folder.
+- `node_modules` notes name the lockfile the install came from (beside it, or
+  a workspace's at the repository root); a lockfile that cannot be inspected
+  reads `unknown` instead of withholding the repository.
+- `scan`: a summarized category names each project once with its own count.
+- `analyze`: every folder that was only partly readable during the session is
+  reported when it exits, and the exit status counts all of them, not only the
+  folder shown last; its help lists every key it accepts.
+- `status --watch` shows the resize screen below 64×18.
+- `trash-empty --confirm` messages say they measure the previewed items, not
+  the whole Trash.
+- `scripts/release.sh` retries a failed workflow-run lookup after the tag push
+  instead of exiting without recovery guidance.
+
 ### Changed
+- Code comments that restated code, repeated a nearby string or had gone
+  stale were removed or corrected (`plans/017` lists them and the workarounds
+  left for later); film, CSP and planted-violation controls now prove each
+  plant fails for its own reason.
+- The fuzz crate's lockfile moves `rustix` from 1.1.5 to 1.1.6, which the main
+  lockfile already used, clearing RUSTSEC-2026-0486 (unsound extended-attribute
+  buffers; devtrim makes no extended-attribute calls).
+- This release's local gates ran TruffleHog 3.99.9, Gitleaks 8.30.1, actionlint 1.7.12, ShellCheck 0.11.0, Node 26.13.0 and npm 12.2.2; the hosted run on the pinned versions is the authoritative one.
 - The planted-violations gate proves its mutants on isolated parallel workers instead of one at a time: each worker holds its own source copy and cargo target directory, cloned from the built baseline, and the verdicts print in table order whatever the worker count. It finishes every case before reporting, so one run names every failing case; a worker that raises or a case left without a result is a failure. It reports where its time went, removes its scratch tree when stopped by SIGTERM, SIGHUP or SIGINT, and a later run removes a tree whose recorded process is gone. `planted-violations-controls.py` proves each of those failures is reported. Workflows and `release-policy.sh` are unchanged.
 - The landing page links the verified immutable 0.13.0 release after production
   promotion, with regenerated film facts.
