@@ -1288,13 +1288,17 @@ fn run_apply(ctx: &Ctx, plan: ApprovedPlan) -> Result<ApplyOutcome> {
         findings,
         approval,
     } = plan;
+    let read_only = || anyhow::anyhow!("refusing to apply a read-only operation");
+    // Refused before the journal preflight, which may rotate the journal.
+    if matches!(operation, Operation::ScanAll | Operation::Icloud) {
+        return Err(read_only());
+    }
+    crate::journal::check_writable(ctx)?;
     let mut outcome = match operation {
         Operation::Clean(target) => ops::for_target(target).apply(&findings, ctx),
         Operation::Purge => ops::purge::Purge.apply(&findings, ctx),
         Operation::TrashEmpty => apply_trash(ctx, &findings, approval),
-        Operation::ScanAll | Operation::Icloud => {
-            Err(anyhow::anyhow!("refusing to apply a read-only operation"))
-        }
+        Operation::ScanAll | Operation::Icloud => Err(read_only()),
     }?;
     outcome.errors.extend(ctx.take_journal_errors());
     Ok(outcome)
@@ -2781,6 +2785,32 @@ mod tests {
         assert!(!approved_plan_matches(&app, &plan));
     }
 
+    /// A TUI apply starts as a CLI apply does, through the journal preflight
+    /// that rotates an oversized journal; the CLI side is
+    /// `eval_only_an_apply_rotates_the_journal`.
+    #[test]
+    fn an_apply_rotates_an_oversized_journal() {
+        let fixture = ops::TestFixture::new("tui-apply-rotation");
+        let ctx = Ctx::for_test(fixture.path().to_path_buf());
+        std::fs::create_dir_all(ctx.journal_path.parent().unwrap()).unwrap();
+        std::fs::write(&ctx.journal_path, "evidence\n").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&ctx.journal_path)
+            .unwrap()
+            .set_len(10 * 1024 * 1024 + 1)
+            .unwrap();
+        let plan = ApprovedPlan {
+            operation: Operation::Clean(Target::Installers),
+            findings: Vec::new(),
+            approval: Approval::Yes,
+        };
+
+        run_apply(&ctx, plan).unwrap();
+
+        assert!(ctx.journal_path.with_extension("jsonl.1").exists());
+    }
+
     #[test]
     fn forged_read_only_plan_fails_closed() {
         let mut app = App::default();
@@ -4113,8 +4143,8 @@ mod tests {
         assert!(rendered(&App::default(), MIN_WIDTH, MIN_HEIGHT).contains("Enter open"));
     }
 
-    /// Warnings queued before the first scan, such as a skipped root or a
-    /// journal rotation warning from `Ctx::from_cli`, reach its result.
+    /// Warnings queued before the first scan, such as a skipped root from
+    /// `Ctx::from_cli`, reach its result.
     #[test]
     fn warnings_queued_before_a_scan_reach_its_result() {
         let fixture = ops::TestFixture::new("tui-early-warnings");

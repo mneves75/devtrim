@@ -50,7 +50,7 @@ errors. There is no devtrim backend, account data store or telemetry processor.
 
 Apply history lives in `~/.local/state/devtrim/journal.jsonl`, replaced by
 `<XDG_STATE_HOME>/devtrim/journal.jsonl` when the override is absolute. The current
-file rotates at 10 MiB, retaining `.1`, `.2` and `.3`. This is a size policy,
+file rotates past 10 MiB when an apply starts, never during a read-only command, retaining `.1`, `.2` and `.3`. This is a size policy,
 not a time-based erasure deadline. `journal.lock` coordinates access in the same
 directory. To discard local data, first wait for every apply using that state
 directory to finish and exit the TUI, then identify and remove only the exact

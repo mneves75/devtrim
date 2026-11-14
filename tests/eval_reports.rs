@@ -734,3 +734,46 @@ fn eval_icloud_lists_what_it_can_read_past_an_unreadable_folder() {
         "{document}"
     );
 }
+
+/// Rotation belongs to an apply: a read-only command never renames the
+/// journal, so `trash-empty --only-devtrim` cannot rotate away the oldest
+/// ownership evidence it is about to read. The apply is the positive control
+/// proving this fixture is oversized enough to rotate.
+#[test]
+fn eval_only_an_apply_rotates_the_journal() {
+    let sandbox = sandbox("report-rotation-on-apply");
+    write(&sandbox.journal(), "audit evidence\n");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(sandbox.journal())
+        .unwrap()
+        .set_len(10 * 1024 * 1024 + 1)
+        .unwrap();
+    std::fs::create_dir_all(sandbox.path().join("Downloads")).unwrap();
+    let before = Tree::snapshot(sandbox.path());
+    for args in [
+        vec!["clean", "installers"],
+        vec!["clean", "installers", "--json"],
+        vec!["trash-empty", "--only-devtrim", "--json"],
+        vec!["history", "--json"],
+        vec!["largest", "--root", "Downloads", "--json"],
+    ] {
+        let output = run(&sandbox, &args);
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("rotation"),
+            "{args:?}: {output:?}"
+        );
+        before
+            .diff(&Tree::snapshot(sandbox.path()), &Allowed::default())
+            .unwrap_or_else(|error| panic!("{args:?} rotated the journal: {error}"));
+    }
+    let apply = run(
+        &sandbox,
+        &["clean", "installers", "--apply", "-y", "--json"],
+    );
+    successful(&apply);
+    assert!(
+        sandbox.journal().with_extension("jsonl.1").exists(),
+        "an apply must rotate the oversized journal: {apply:?}"
+    );
+}
