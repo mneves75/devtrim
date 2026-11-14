@@ -657,7 +657,6 @@ fn resolve_root(ctx: &Ctx, requested: Option<&str>) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// One-shot machine-readable breakdown of the requested directory.
 /// A lower bound is a partial measurement, and a partial operation is visible
 /// in its status as well as in its entries (`CLAUDE.md § Conventions`).
 fn lower_bound_errors(entries: &[Entry]) -> Vec<String> {
@@ -673,6 +672,7 @@ fn lower_bound_errors(entries: &[Entry]) -> Vec<String> {
         .collect()
 }
 
+/// One-shot machine-readable breakdown of the requested directory.
 fn run_json(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
     let root = resolve_root(ctx, requested)?;
     let cancel = AtomicBool::new(false);

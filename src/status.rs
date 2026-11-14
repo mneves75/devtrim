@@ -579,7 +579,8 @@ pub(crate) fn health(report: &StatusReport) -> Health {
 }
 
 fn now_unix() -> Result<u64> {
-    // Health inputs must fail closed on clock errors, so the shared clamping helper is unsuitable.
+    // Health inputs must fail closed on clock errors, so `project::unix_secs`,
+    // which falls back to 0, is unsuitable.
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
@@ -660,8 +661,6 @@ fn collect() -> StatusReport {
             None
         }
     };
-    // The parser distinguishes "no battery" (a desktop) from "unreadable"; only
-    // the second is an unavailable metric.
     let battery = read(&mut unavailable, SystemTool::Battery, |output| {
         parse_battery(&output)
     })
@@ -746,8 +745,6 @@ fn human_text(report: &StatusReport) -> String {
     use std::fmt::Write as _;
 
     let mut output = String::new();
-    // `colored` disables itself when NO_COLOR is set, which is the same
-    // baseline the TUI theme enforces through its own tokens.
     let heading = |output: &mut String, text: &str| {
         let _ = writeln!(output, "{}", text.bold());
     };

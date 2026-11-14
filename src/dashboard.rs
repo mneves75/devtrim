@@ -209,8 +209,9 @@ fn inventory(root: &Path) -> Result<(Node, Coverage)> {
         }
     }
     coverage.retained_nodes = nodes.len();
-    // `pop` keeps memory bounded by the overview budget, regardless of how much
-    // omitted detail the walk measured.
+    // Preorder puts every node after its parent, so popping from the end folds
+    // each node into its parent only once all its descendants are folded into
+    // it. Memory was already bounded during the walk, by `MAX_NODES`.
     while nodes.len() > 1 {
         if let (Some(mut child), Some(parent)) = (nodes.pop(), parents.pop()) {
             child.children.sort_by(|left, right| {

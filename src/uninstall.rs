@@ -60,16 +60,18 @@ const ID_FILES: &[(&str, &str)] = &[
     ("Library/LaunchAgents", "plist"),
 ];
 
-/// Where an app may be found. `/Applications` is system-wide; the per-user one
-/// is where Homebrew casks and hand-installed apps land.
+/// Where an app may be found: system-wide `/Applications`, where Homebrew
+/// casks also install by default, and the per-user `~/Applications`, where
+/// hand-installed apps and casks given `--appdir=~/Applications` land.
 const APPLICATION_ROOTS: &[&str] = &["/Applications"];
 const USER_APPLICATION_ROOT: &str = "Applications";
 
 /// Closed authority for the one dynamic argument this module hands to a
 /// process.
 ///
-/// `CODING_STANDARDS.md` S12 permits a dynamic argument only when a closed
-/// typed authority validates and carries it. Constructing this requires a path
+/// `CLAUDE.md` § Conventions ("Never add shell-string execution") permits a
+/// dynamic argument only when a closed typed authority validates and carries
+/// it. Constructing this requires a path
 /// already resolved to a real `.app` directory that is a direct child of an
 /// approved Applications root, so `plutil` can never be aimed at an arbitrary
 /// file.
@@ -166,7 +168,6 @@ fn resolve_app(name: &str, home: &Path) -> Result<PathBuf> {
     if name.is_empty() {
         bail!("name an application, for example `devtrim uninstall AltTab`");
     }
-    // An explicit path is accepted as-is, still subject to the approval check.
     let candidate = Path::new(name);
     if candidate.components().count() > 1 {
         if is_approved_app_bundle(candidate, home)? {

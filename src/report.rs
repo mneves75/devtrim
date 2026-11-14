@@ -330,7 +330,6 @@ fn escape_for_terminal(value: &str, keep: impl Fn(char) -> bool) -> String {
     let mut output = String::with_capacity(value.len());
     let mut marks_after_base: Option<u8> = None;
     for character in value.chars() {
-        // U+034F, the combining grapheme joiner, draws nothing.
         let accent = ('\u{300}'..='\u{36f}').contains(&character) && character != '\u{34f}';
         let literal = keep(character)
             || character.escape_debug().nth(1).is_none()
