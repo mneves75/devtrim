@@ -1920,7 +1920,10 @@ const LSOF_NON_PATH_TYPES: &[&[u8]] = &[
 /// file could lie anywhere. A name lsof built from the mount instead is judged
 /// against the folder's own volume (`xcode::derived_data_in_use`). An
 /// ambiguous escape refuses, as everywhere else.
-fn parse_lsof_open_files(output: &[u8], exit_code: Option<i32>) -> Result<Vec<OpenFile>> {
+pub(crate) fn parse_lsof_open_files(
+    output: &[u8],
+    exit_code: Option<i32>,
+) -> Result<Vec<OpenFile>> {
     match exit_code {
         Some(0) => {}
         Some(code) => bail!("lsof open-file probe exited with status {code}"),
@@ -2015,7 +2018,7 @@ pub(crate) fn parse_pgrep_pids(output: &[u8], exit_code: Option<i32>) -> Result<
 /// runs in — leaving that repository's dependencies deletable mid-build. The
 /// unambiguous escapes are decoded; `^X` is refused because lsof renders a
 /// control byte and a literal caret identically.
-fn decode_lsof_name(name: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn decode_lsof_name(name: &[u8]) -> Result<Vec<u8>> {
     let mut decoded = Vec::with_capacity(name.len());
     let mut index = 0;
     while let Some(&byte) = name.get(index) {
