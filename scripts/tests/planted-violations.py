@@ -1668,9 +1668,9 @@ CASES = (
     Case(
         name="eval/read-only",
         relative_path="src/journal.rs",
-        # Opening any command creates devtrim's state folder if it is absent.
-        before="    let location = match JournalLocation::open(path, ParentMode::Existing)? {\n        Some(location) => location,\n        None => return Ok(warnings),",
-        after="    let location = match JournalLocation::open(path, ParentMode::Create)? {\n        Some(location) => location,\n        None => return Ok(warnings),",
+        # Reading history creates devtrim's state folder if it is absent.
+        before="    let Some(location) = JournalLocation::open(path, ParentMode::Existing)? else {\n        return Ok(History {",
+        after="    let Some(location) = JournalLocation::open(path, ParentMode::Create)? else {\n        return Ok(History {",
         tests=("eval_read_only_commands_and_previews_change_nothing",),
         marker="PV eval/read-only",
         target="evals",
