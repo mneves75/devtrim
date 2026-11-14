@@ -81,6 +81,11 @@ pub mod fuzz_api {
         crate::safety::decode_lsof_name(name)
     }
 
+    /// The `~/Library` subtrees outside `Caches` the protection boundary carves out.
+    pub fn managed_library_subpaths() -> &'static [&'static str] {
+        crate::safety::MANAGED_LIBRARY_SUBPATHS
+    }
+
     /// The `~/Library/Caches` children the protection boundary carves out.
     pub fn managed_library_caches() -> Vec<&'static str> {
         crate::safety::MANAGED_LIBRARY_CACHES

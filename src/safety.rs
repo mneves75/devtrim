@@ -1278,16 +1278,18 @@ pub(crate) const REBUILT_BY_COMMAND: &[(&str, &str)] = &[
     ("CocoaPods", "pod install"),
 ];
 
+/// `~/Library` subtrees outside `Caches` that categories manage.
+pub(crate) const MANAGED_LIBRARY_SUBPATHS: &[&str] = &[
+    "Developer/Toolchains",
+    "Developer/Xcode/iOS DeviceSupport",
+    "Developer/Xcode/watchOS DeviceSupport",
+    "Developer/Xcode/tvOS DeviceSupport",
+    "Developer/Xcode/visionOS DeviceSupport",
+    "Developer/Xcode/DerivedData",
+    "Caches/Homebrew",
+];
+
 fn is_managed_library_subpath(relative: &Path) -> bool {
-    const MANAGED: &[&str] = &[
-        "Developer/Toolchains",
-        "Developer/Xcode/iOS DeviceSupport",
-        "Developer/Xcode/watchOS DeviceSupport",
-        "Developer/Xcode/tvOS DeviceSupport",
-        "Developer/Xcode/visionOS DeviceSupport",
-        "Developer/Xcode/DerivedData",
-        "Caches/Homebrew",
-    ];
     let mut components = relative.iter();
     if components
         .next()
@@ -1299,7 +1301,7 @@ fn is_managed_library_subpath(relative: &Path) -> bool {
     let owned = components.collect::<PathBuf>();
     let owned = owned.to_string_lossy();
     let covered = |managed: &str| owned == managed || owned.starts_with(&format!("{managed}/"));
-    MANAGED.iter().copied().any(covered)
+    MANAGED_LIBRARY_SUBPATHS.iter().copied().any(covered)
         || MANAGED_LIBRARY_CACHES
             .iter()
             .any(|entry| covered(&format!("Caches/{}", entry.relative)))

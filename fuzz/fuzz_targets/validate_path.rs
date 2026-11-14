@@ -23,19 +23,6 @@ const SYSTEM_ROOTS: &[&str] = &[
     "/Volumes",
 ];
 
-/// Mirrors the function-local `MANAGED` list in `is_managed_library_subpath`
-/// (`src/safety.rs`), which has no crate-visible name; the `Library/Caches`
-/// carve-out comes from the crate itself.
-const MANAGED_LIBRARY_SUBPATHS: &[&str] = &[
-    "Developer/Toolchains",
-    "Developer/Xcode/iOS DeviceSupport",
-    "Developer/Xcode/watchOS DeviceSupport",
-    "Developer/Xcode/tvOS DeviceSupport",
-    "Developer/Xcode/visionOS DeviceSupport",
-    "Developer/Xcode/DerivedData",
-    "Caches/Homebrew",
-];
-
 /// Real folders of the fake home a fuzz input is appended to. The validator
 /// canonicalizes a target's parent, so only a leaf under an existing folder
 /// gets past that step to the protection it must enforce.
@@ -82,7 +69,7 @@ fn fixture() -> &'static Fixture {
             "devtrim-validate-path-fuzz-home-{}",
             std::process::id()
         ));
-        let managed = MANAGED_LIBRARY_SUBPATHS
+        let managed = devtrim::fuzz_api::managed_library_subpaths()
             .iter()
             .map(|managed| (*managed).to_owned())
             .chain(
