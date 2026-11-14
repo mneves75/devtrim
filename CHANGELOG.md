@@ -35,6 +35,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   stale were removed or corrected (`plans/017` lists them and the workarounds
   left for later); film, CSP and planted-violation controls now prove each
   plant fails for its own reason.
+- The fuzz crate's lockfile moves `rustix` from 1.1.5 to 1.1.6, which the main
+  lockfile already used, clearing RUSTSEC-2026-0486 (unsound extended-attribute
+  buffers; devtrim makes no extended-attribute calls).
 - This release's local gates ran TruffleHog 3.99.9, Gitleaks 8.30.1, actionlint 1.7.12, ShellCheck 0.11.0, Node 26.13.0 and npm 12.2.2; the hosted run on the pinned versions is the authoritative one.
 - The planted-violations gate proves its mutants on isolated parallel workers instead of one at a time: each worker holds its own source copy and cargo target directory, cloned from the built baseline, and the verdicts print in table order whatever the worker count. It finishes every case before reporting, so one run names every failing case; a worker that raises or a case left without a result is a failure. It reports where its time went, removes its scratch tree when stopped by SIGTERM, SIGHUP or SIGINT, and a later run removes a tree whose recorded process is gone. `planted-violations-controls.py` proves each of those failures is reported. Workflows and `release-policy.sh` are unchanged.
 - The landing page links the verified immutable 0.13.0 release after production
