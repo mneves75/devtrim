@@ -1,6 +1,33 @@
 # Project Memory
 
-## Current production state (0.13.0)
+## Current production state (0.13.1)
+
+0.13.1 is the comment prune and whole-project audit (#89, #91): journal
+rotation only at apply start, scoped fail-closed in `leftovers` and
+`installers`, the `node_modules` lockfile note walks to the repository root,
+the `trash-empty --confirm` wording, `release.sh` recovery guidance, gate
+hardening, and the fuzz lock's rustix 1.1.6. Plan: `plans/017` (the comment
+refactor-versus-delete table). Source
+`2cce2065cbf1d82345251df405f4f86eed05dc20`, tree
+`4e219a1602e00d33c63a7426ee981ef9fc94cb1d`.
+
+Immutable `v0.13.1-beta1` and stable `v0.13.1` (published 2026-11-14T14:20:51Z,
+release run 43602278456) carry the ZIP SHA-256
+`30105738db2c725636e975c13535315c6b1cda4c0d7e80af72bc11204b3877a9`; both pass
+`verify-live.sh`. Homebrew tap `6a4eb6f` publishes 0.13.1 with the formula the
+gate audited (SHA-256 `726b03ee…`); the sole visible `/opt/homebrew/bin/devtrim`
+has SHA-256 `685ca52fc708efe029ba2a50c75887601eb7079a8a152273697b9b4ead4d0a19`.
+
+Independent acceptance: mneves-verify PASS (GPT-6.1 Sol), autoreview
+scoped-clean at P1, `reviewer` agent PASS. Security gate: a full audit per tree
+(2341bd8, then 4e219a1 after the changelog fix), WAIVED solely for
+GHSA-g3hv-75wg-m249 through 2026-11-30; production first blocked on SEC-21
+device evidence and the exact tap formula, both closed by evidence. Open
+needs-validation item: CORE-PARSE-1 (can Apple `lsof` omit a name record at
+exit 0). Merging to `main` deploys GitHub Pages, so a site change is gated
+before its merge.
+
+## Previous production state (0.13.0)
 
 0.13.0 is the UI/UX redesign and whole-project audit (#86): TUI results title
 leads with the mode, confirmation states effect and count, the footer keeps

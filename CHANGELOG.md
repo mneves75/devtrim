@@ -2,6 +2,12 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [Unreleased]
+
+### Changed
+- The landing page links the verified immutable 0.13.1 release after production
+  promotion, with regenerated film facts.
+
 ## [0.13.1] - 2026-11-14
 
 ### Fixed
