@@ -24,7 +24,7 @@ violates one cannot merge, so reporting it wastes the review.
 | `cargo audit` (root and `fuzz/`) | advisories |
 | `scripts/tests/shellcheck-tracked.sh` | every tracked `*.sh` plus both Git hooks; the helper uses a temporary NUL-delimited Git-index manifest, preserves whitespace, protects leading dashes, and fails before linting if ShellCheck is unavailable or worktree discovery/enumeration fails |
 | `bash -n` separately for each Bash script, `sh -n` separately for the hook and POSIX helpers, then `scripts/tests/release-policy.sh` | shell syntax (additional filename arguments to `-n` are not parsed), positive controls for difficult filenames, missing ShellCheck, and worktree failure, and that the hook, `ci.yml`, and `release.yml` still carry each pinned safety clause |
-| `npm run lint` in `video/` (ESLint followed by the explicit native TypeScript7.0.2 CLI) | Remotion lint rules and TypeScript types; classic5.9.3 remains for tooling APIs |
+| `npm run lint` in `video/` (ESLint followed by the explicit native TypeScript 7.0.2 CLI) | Remotion lint rules and TypeScript types; classic TypeScript 5.9.3 remains for tooling APIs |
 | `npm run format:check` in `video/` (prettier) | all `video/src` formatting |
 | `npm ci --strict-allow-scripts` + `scripts/video-audit.py` | video advisories at any severity unless waived in date in `video/audit-waivers.json`, and lifecycle scripts restricted to the `allowScripts` allowlist |
 | `npm run build` in `video/` (`remotion bundle`) | the video bundle still builds |
@@ -36,8 +36,9 @@ and review still owns what they cover: the five bounded fuzz targets
 `cmp -s AGENTS.md CLAUDE.md` (check the two agent docs changed together — S11),
 and `actionlint`.
 
-Both new rules have a stated blind spot, and the blind spot is where review
-still has work to do. `no-abbreviated-bindings` checks binding positions —
+`no-abbreviated-bindings` and `no-shell-invocation` each have a stated blind
+spot, and the blind spot is where review still has work to do.
+`no-abbreviated-bindings` checks binding positions —
 `let` patterns, closure parameters, function parameter patterns, tuple, struct,
 and tuple-struct patterns — against a fixed denylist, so an abbreviation
 outside that list is S6's job. `no-shell-invocation` matches the program name
@@ -223,8 +224,9 @@ exactly four:
   the simulator UDID must be validated and carried by that closed authority.
 - `capture` in `src/status.rs` — `SystemTool::parts()`, the same closed-enum
   shape.
-- `command_path` in `src/ops/caches.rs` — `"npm"`, `"brew"` or `"go"` from its
-  three callers, trusted only inside that owner's cache namespace.
+- `command_path` in `src/ops/caches.rs` — `"npm"` or `"brew"` from
+  `owner_cache_path` and `"go"` from `go_module_cache`, its two callers,
+  trusted only inside that owner's cache namespace.
 - `hardened_git` in `src/ops/project.rs` — `"git"`, from `repo_last_activity`
   through `hardened_git_log`, and as a literal from `TrackedIndex::list`,
   `unborn_branch`, `worktree_listing`, `git_common_dir`, `ignores_path` and `records_submodule`, its

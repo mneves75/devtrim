@@ -689,7 +689,7 @@ codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by agents like ~/.c
 <!-- ============ AGENTS ============ -->
 <section id="agents" aria-labelledby="h-agents">
   <h2 id="h-agents">Agent integration</h2>
-  <p>Every non-interactive command accepts <code>--json</code>, emitting exactly one document — for cleanup and report commands this response envelope:</p>
+  <p>Every non-interactive command except <code>completions</code> and <code>manpage</code>, which write plain text and refuse it, accepts <code>--json</code>, emitting exactly one document — for cleanup and report commands this response envelope:</p>
   <pre data-copy="none" tabindex="0"><code>{
   "operation": "xcode",
   "applied": false,
@@ -779,7 +779,7 @@ codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by agents like ~/.c
   </details>
 
   <details class="card"><summary><span class="ts-title">refusing protected path</span></summary>
-    <div class="card-body"><p>A root or computed target intersects the denylist. Check config <code>roots</code>; remember <code>--root ~</code> makes nearly everything protected-by-design.</p></div>
+    <div class="card-body"><p>A root or computed target intersects the denylist: the built-in system folders, the home folder and every folder above it, <code>~/.Trash</code>, <code>~/.ssh</code>, <code>~/.gnupg</code>, <code>~/Library</code> outside the managed caches, and your <code>protect</code> entries. Check config <code>roots</code>; <code>--root ~</code> is accepted with a warning, because its walk enters every folder in the home folder.</p></div>
   </details>
 
   <details class="card"><summary><span class="ts-title">simulator storage differs from the preview</span></summary>

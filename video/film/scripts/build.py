@@ -9,7 +9,7 @@ film/facts.json; writes into --out:
   film-muted.mp4    the same picture with no audio stream
   music.wav         the music alone at delivery loudness
   contact-*.png     one frame every 0.2 s, 20 to a sheet (review)
-  thumbs.png        a 15-frame sheet across the whole film (delivery)
+  thumbs-01.png     a 15-frame sheet across the whole film (delivery)
 --draft renders at half size for a quick look and skips the media size check.
 Stops at the first failing step and prints which one.
 """

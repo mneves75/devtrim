@@ -2232,9 +2232,14 @@ def run_one_test(binary: Path, test: str, target_dir: Path) -> subprocess.Comple
     )
 
 
-def selected_exactly_one(output: str) -> bool:
+def selection_error(output: str) -> str | None:
+    """Why a test run did not select exactly one test, or None when it did."""
     match = re.search(r"running (\d+) test", output)
-    return bool(match) and match.group(1) == "1"
+    if match is None:
+        return "no test count in its output"
+    if match.group(1) != "1":
+        return f"ran {match.group(1)}"
+    return None
 
 
 class Worker:
@@ -2426,8 +2431,6 @@ def main() -> int:
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
             if scratch.exists():
-                shutil.rmtree(scratch, ignore_errors=True)
-            if scratch.exists():
                 print(f"planted-violations: could not remove {scratch}", file=sys.stderr)
         for signum, handler in previous.items():
             signal.signal(signum, handler)
@@ -2561,8 +2564,9 @@ def run_cases(scratch: Path, prefix: str, jobs: int, test_jobs: int, summary: di
             result = baseline_results[(case.target, test)]
             if result is None:
                 fail(f"ERROR {case.name}: baseline test timed out ({test})")
-            if not selected_exactly_one(result.stdout):
-                fail(f"ERROR {case.name}: expected exactly one test, ran 0 ({test})")
+            selection = selection_error(result.stdout)
+            if selection is not None:
+                fail(f"ERROR {case.name}: expected exactly one test, {selection} ({test})")
             if result.returncode != 0:
                 fail(f"ERROR {case.name}: baseline test already fails ({test})")
 

@@ -1935,8 +1935,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-config"
  },
  {
-  "id": "f7eaad685",
-  "text": "Every non-interactive command accepts --json, emitting exactly one document — for cleanup and report commands this response envelope:",
+  "id": "fe6290eec",
+  "text": "Every non-interactive command except completions and manpage, which write plain text and refuse it, accepts --json, emitting exactly one document — for cleanup and report commands this response envelope:",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-agents"
  },
  {
@@ -2210,8 +2210,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {
-  "id": "f302e746e",
-  "text": "A root or computed target intersects the denylist. Check config roots; remember --root ~ makes nearly everything protected-by-design.",
+  "id": "f8244afc1",
+  "text": "A root or computed target intersects the denylist: the built-in system folders, the home folder and every folder above it, ~/.Trash, ~/.ssh, ~/.gnupg, ~/Library outside the managed caches, and your protect entries. Check config roots; --root ~ is accepted with a warning, because its walk enters every folder in the home folder.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {

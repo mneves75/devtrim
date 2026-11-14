@@ -58,13 +58,29 @@ def record(name: str, ok: bool, detail: str, dump: str = "") -> None:
             print(dump)
 
 
-def run(name: str, args: list[str], expect_ok: bool) -> None:
+def run(name: str, args: list[str], expect_ok: bool, reason: str = "") -> None:
+    """Run one check; a plant must exit nonzero with a FAIL line naming its own reason.
+
+    Only FAIL lines are searched, since paths and echoed arguments can hold any word.
+    """
+    if not expect_ok and not reason:
+        raise SystemExit(f"film-controls.py: plant {name!r} names no reason")
     result = subprocess.run(args, capture_output=True, text=True, timeout=600)
-    ok = (result.returncode == 0) == expect_ok
-    # The check's own last word, so a refusal can be seen to refuse for the planted reason.
     lines = (result.stdout + result.stderr).strip().splitlines()
-    said = next((line for line in lines if line.startswith("FAIL")), lines[-1] if lines else "")
-    detail = f"exit {result.returncode}: {said[:150]}" if ok else f"exit {result.returncode}, expected {'0' if expect_ok else 'nonzero'}"
+    refusals = [line for line in lines if line.startswith("FAIL")]
+    if expect_ok:
+        ok = result.returncode == 0
+        said = lines[-1] if lines else ""
+        detail = f"exit {result.returncode}: {said[:150]}" if ok else f"exit {result.returncode}, expected 0"
+    else:
+        said = next((line for line in refusals if reason in line), "")
+        ok = result.returncode != 0 and bool(said)
+        if ok:
+            detail = f"exit {result.returncode}: {said[:150]}"
+        elif result.returncode == 0:
+            detail = "exit 0, expected nonzero"
+        else:
+            detail = f"exit {result.returncode}, but no FAIL line names {reason!r}"
     record(name, ok, detail, result.stdout[-1500:] + "\n" + result.stderr[-1500:])
 
 
@@ -92,29 +108,29 @@ def media(root: Path) -> None:
 
     ffmpeg("-i", str(root / "mix-norm.wav"), "-af", "adelay=33:all=1", str(root / "late.wav"))
     ffmpeg("-i", str(root / "picture.mp4"), "-i", str(root / "late.wav"), *mux, str(root / "late.mp4"))
-    run("sync refuses audio two frames (33 ms) late", PY + [str(SCRIPTS / "check_sync.py"), str(timing), str(root / "late.mp4")], False)
+    run("sync refuses audio two frames (33 ms) late", PY + [str(SCRIPTS / "check_sync.py"), str(timing), str(root / "late.mp4")], False, "FAIL strongest attack near 0.000 s")
     off_grid = json.loads(json.dumps(TIMING))
     off_grid["scenes"][1]["from"] = 121
-    run("sync refuses a cut off the beat", PY + [str(SCRIPTS / "check_sync.py"), str(write_json(root / "off.json", off_grid)), str(root / "film.mp4")], False)
+    run("sync refuses a cut off the beat", PY + [str(SCRIPTS / "check_sync.py"), str(write_json(root / "off.json", off_grid)), str(root / "film.mp4")], False, "starts at frame 121, off the beat grid")
     # The click sits on a kick: the mix alone would pass without it, its own stem does not.
     silent = root / "no-click"
     silent.mkdir()
     no_click = {**TIMING, "cues": [c for c in TIMING["cues"] if c["kind"] != "click"]}
     run("music without the click", PY + [str(SCRIPTS / "music.py"), str(write_json(silent / "timing.json", no_click)), str(silent)], True)
-    run("sync refuses a missing click", PY + [str(SCRIPTS / "check_sync.py"), str(timing), str(root / "film.mp4"), "--sfx", str(silent)], False)
+    run("sync refuses a missing click", PY + [str(SCRIPTS / "check_sync.py"), str(timing), str(root / "film.mp4"), "--sfx", str(silent)], False, "click at frame 150 is missing from the effects")
     # A kick expected on frame 0 over silence: the strongest hop of nothing is not an attack.
     only_kick = {"fps": 60, "bpm": 120, "scenes": [{"id": "a", "from": 0, "to": 240}], "cues": [],
                  "music": {"sections": [{"from": 0, "to": 1, "voices": ["kick"]}]}}
     ffmpeg("-i", str(root / "picture.mp4"), "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", *mux, "-t", "4", str(root / "hush.mp4"))
     run("sync refuses a frame-0 kick over silence",
-        PY + [str(SCRIPTS / "check_sync.py"), str(write_json(root / "kick0.json", only_kick)), str(root / "hush.mp4")], False)
+        PY + [str(SCRIPTS / "check_sync.py"), str(write_json(root / "kick0.json", only_kick)), str(root / "hush.mp4")], False, "FAIL no attack near 0.000 s")
 
     ffmpeg("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=60:duration=4", "-pix_fmt", "yuv444p", "-c:v", "libx264", "-movflags", "+faststart", str(root / "444.mp4"))
-    run("media refuses yuv444p", PY + [str(SCRIPTS / "check_media.py"), str(root / "444.mp4"), *size], False)
+    run("media refuses yuv444p", PY + [str(SCRIPTS / "check_media.py"), str(root / "444.mp4"), *size], False, "FAIL yuv420p: yuv444p")
     # Every other frame dropped after 2 s: the timestamp base still says 60.
     ffmpeg("-i", str(root / "film.mp4"), "-vf", "select=lt(t\\,2)+not(mod(n\\,2))", "-fps_mode", "vfr", "-c:v", "libx264",
            "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", str(root / "vfr.mp4"))
-    run("media refuses a variable frame rate", PY + [str(SCRIPTS / "check_media.py"), str(root / "vfr.mp4"), *size, "--audio"], False)
+    run("media refuses a variable frame rate", PY + [str(SCRIPTS / "check_media.py"), str(root / "vfr.mp4"), *size, "--audio"], False, "FAIL constant frame interval")
 
     # Frame 0 alone is white: the first tile of the sheet, stamped 0 s, must be that frame.
     ffmpeg("-f", "lavfi", "-i", "color=black:size=320x180:rate=60:duration=2",
@@ -135,15 +151,15 @@ def facts(root: Path) -> None:
     (src / "Head.tsx").write_text(SOURCE, encoding="utf-8")
     run("facts", trace + [str(copy_json), str(src)], True)
     misquoted = {"head": {"text": "Approve twice.", "fact": "f00000001"}}
-    run("facts refuse a misquote", trace + [str(write_json(root / "bad.json", misquoted)), str(src)], False)
+    run("facts refuse a misquote", trace + [str(write_json(root / "bad.json", misquoted)), str(src)], False, "'Approve twice.' is not in f00000001")
     unshown = {**COPY, "tail": {"text": "Preview first.", "fact": "f00000001"}}
-    run("facts refuse a line never shown", trace + [str(write_json(root / "unshown.json", unshown)), str(src)], False)
+    run("facts refuse a line never shown", trace + [str(write_json(root / "unshown.json", unshown)), str(src)], False, "tail: in copy.json but never shown")
     single = root / "src-single"
     single.mkdir()
     (single / "Head.tsx").write_text(SOURCE.replace('"head"', "'head'"), encoding="utf-8")
     run("facts accept a single-quoted line()", trace + [str(copy_json), str(single)], True)
     (single / "Tail.tsx").write_text("export const Tail = () => <p>{line('tail')}</p>;\n", encoding="utf-8")
-    run("facts refuse a single-quoted unknown id", trace + [str(copy_json), str(single)], False)
+    run("facts refuse a single-quoted unknown id", trace + [str(copy_json), str(single)], False, "line('tail') is not in copy.json")
     # A line shown only from a .ts module (a literal list mapped through line()) is still shown.
     split = root / "src-split"
     split.mkdir()
@@ -158,7 +174,7 @@ def facts(root: Path) -> None:
     check = PY + [str(SCRIPTS / "facts.py"), "--check", str(root / "made.json"), "https://example.test/", str(page)]
     run("facts match their page", check, True)
     page.write_text("<!doctype html><title>t</title><p>Preview first. Approve twice.</p>\n", encoding="utf-8")
-    run("facts refuse a page edited since", check, False)
+    run("facts refuse a page edited since", check, False, "stale fact, no longer on the pages")
     # Page text is untrusted: a stale or new line holding terminal controls is reported
     # escaped, never as raw ESC/BEL bytes the operator's terminal would act on.
     page.write_text("<!doctype html><title>t</title><p>New \x1b[2J\x1b[H line.</p>\n", encoding="utf-8")
@@ -184,10 +200,10 @@ def contrast(root: Path) -> None:
     low = json.loads(json.dumps(THEME))
     low["colours"]["grey"] = "#444444"
     low["text"]["faint"] = ["grey", "bg"]
-    run("contrast refuses a faint pair", PY + [str(SCRIPTS / "check_contrast.py"), str(write_json(root / "low.json", low))], False)
+    run("contrast refuses a faint pair", PY + [str(SCRIPTS / "check_contrast.py"), str(write_json(root / "low.json", low))], False, "FAIL faint: grey on bg")
     many = json.loads(json.dumps(THEME))
     many["colours"].update({f"c{i}": "#ffffff" for i in range(4)})
-    run("contrast refuses a seventh colour", PY + [str(SCRIPTS / "check_contrast.py"), str(write_json(root / "many.json", many))], False)
+    run("contrast refuses a seventh colour", PY + [str(SCRIPTS / "check_contrast.py"), str(write_json(root / "many.json", many))], False, "FAIL palette: 7 colours (max 6)")
 
 
 def build(root: Path) -> None:
