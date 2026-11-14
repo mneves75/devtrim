@@ -143,7 +143,10 @@ fn review_trash_empty_only_devtrim_nothing_to_purge_refuses_an_unwritable_journa
     break_journal(&sandbox);
     let refused = run(&sandbox, &args);
     let document = json(&refused);
-    assert!(!refused.status.success(), "{document}");
+    assert!(
+        !refused.status.success(),
+        "review/trash-only-journal: an empty purge with an unwritable journal exited 0: {document}"
+    );
     assert_ne!(document["applied"], true, "{document}");
     assert!(
         error_text(&document).contains("journal"),
