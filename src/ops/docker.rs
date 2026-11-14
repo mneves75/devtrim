@@ -247,9 +247,6 @@ impl Op for Docker {
             return Ok(findings);
         };
         let version = docker(&host, &["version"]).map_err(|error| {
-            // The disclosure is lost with the op, so the error carries what the
-            // operator would otherwise never learn: that a host image exists,
-            // how large it is, and that starting the runtime reveals it.
             let disclosed = findings
                 .iter()
                 .map(|finding| {
@@ -440,8 +437,8 @@ mod tests {
         );
     }
 
-    /// The skip above must not become a hole: an actionable finding that
-    /// carries no command authority is a forgery and stays refused.
+    /// Apply's actionability skip must not become a hole: an actionable
+    /// finding that carries no command authority is a forgery and stays refused.
     #[test]
     fn rejects_forged_actions_without_authority() {
         let home = tempfile::Builder::new()
