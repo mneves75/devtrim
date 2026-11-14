@@ -929,6 +929,11 @@ fn render_watch(
     age: Option<Duration>,
 ) {
     let area = frame.area();
+    // `q` and Esc, the only keys this view takes, already quit at any size.
+    if crate::tui::terminal_too_small(area) {
+        crate::tui::render_too_small(frame, area, theme);
+        return;
+    }
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
@@ -1446,6 +1451,19 @@ Note: No CPU power status has been recorded\n";
         };
         report.health = health(&report);
         report
+    }
+
+    /// Below the supported size the watch shows the resize instruction the
+    /// other full-screen views show, rather than clipping the metrics.
+    #[test]
+    fn a_terminal_too_small_shows_the_resize_screen() {
+        let theme = Theme::new(ColorSupport::None);
+        let report = sample(4);
+        let screen = rows(&draw(Some(&report), theme, Some(Duration::ZERO), 40, 10)).join("\n");
+        assert!(screen.contains("terminal too small"), "{screen}");
+        assert!(!screen.contains("Machine"), "{screen}");
+        let full = rows(&draw(Some(&report), theme, Some(Duration::ZERO), 64, 18)).join("\n");
+        assert!(!full.contains("terminal too small"), "{full}");
     }
 
     fn draw(
