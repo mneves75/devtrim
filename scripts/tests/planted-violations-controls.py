@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Prove scripts/tests/planted-violations.py reports every planted fault.
 
-The harness runs its mutation stage on isolated workers and no longer stops at
-the first failing case, so a fault must be reported however the cases are
+The harness runs its mutation stage on isolated workers and finishes every
+case before it reports, so a fault must be reported however the cases are
 spread over the workers. This runs the real harness on two workers against a
 doctored table built from cheap unit-test cases: one real case is the positive
 control and must be caught; a no-op mutant, a mutant that does not compile, a

@@ -55,11 +55,9 @@ if [[ "$mode" == offline ]]; then
   run fuzz-audit cargo audit --no-fetch --file fuzz/Cargo.lock
   run gitleaks-control scripts/tests/gitleaks-positive-control.sh "$(command -v gitleaks)"
   run secrets gitleaks git --redact --no-banner .
-  # Online advisory refresh, verified secret scans, fuzzing, and video install
-  # remain explicit delivery gates; this helper never initiates network access.
 fi
 
 if [[ "$mode" == focused ]]; then
-  echo "Not run: offline-mode MSRV, shell/workflow/policy checks, planted violations, cached audits, and Gitleaks."
+  echo "Not run: offline-mode shell syntax, ShellCheck, actionlint, release policy, planted violations and their controls, film controls, MSRV, cached audits, and Gitleaks."
 fi
 printf '%s\n' "$mode checks complete. Not run: online advisory refresh, TruffleHog, bounded fuzzing, video install/audit/lint/format/build, release artifact verification, autoreview."

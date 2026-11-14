@@ -2431,8 +2431,6 @@ def main() -> int:
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
             if scratch.exists():
-                shutil.rmtree(scratch, ignore_errors=True)
-            if scratch.exists():
                 print(f"planted-violations: could not remove {scratch}", file=sys.stderr)
         for signum, handler in previous.items():
             signal.signal(signum, handler)

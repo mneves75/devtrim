@@ -152,8 +152,6 @@ with open(sys.argv[1], encoding="utf-8") as record:
   echo "ERROR: security-gate record ${gate_record} does not clear ${release_commit}: it must be one JSON document without a repeated key"
   exit 1
 fi
-# Slurped, so a file holding several documents is refused whole rather than
-# judged one document at a time.
 if ! gate_verdict=$(jq -ser --arg commit "$release_commit" --arg tree "$release_tree" --arg target "$gate_target" '
   select(length == 1) | .[0]
   | select(.schema == 1 and .commit == $commit and .tree == $tree and .target == $target and .open_blockers == 0)
