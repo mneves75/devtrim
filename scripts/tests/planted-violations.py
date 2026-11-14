@@ -2496,7 +2496,9 @@ def run_cases(scratch: Path, prefix: str, jobs: int, test_jobs: int, summary: di
     # The same substring match lets any other `PV` tag that extends a marker
     # (`PV eval/x-preview` beside `PV eval/x`) pass for that case's proof.
     for source in sorted([*(REPOSITORY / "src").rglob("*.rs"), *(REPOSITORY / "tests").rglob("*.rs")]):
-        for tag in set(re.findall(r"PV [A-Za-z0-9_./-]+", source.read_text())):
+        for match in set(re.findall(r"PV [A-Za-z0-9_./-]+", source.read_text())):
+            # A tag ending a sentence must not read as one with a longer name.
+            tag = match.rstrip(".-")
             for marker in markers:
                 if tag != marker and tag.startswith(marker):
                     fail(
