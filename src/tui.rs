@@ -23,7 +23,7 @@ use crate::theme::{Theme, Token, danger_token};
 const MIN_WIDTH: u16 = 64;
 const MIN_HEIGHT: u16 = 18;
 /// Rows PgUp and PgDn move, in every list and scrolling view.
-const PAGE_ROWS: u16 = 8;
+pub(crate) const PAGE_ROWS: u16 = 8;
 /// Longer than every typed acknowledgment (`PURGE ` and a `u64` of
 /// gigabytes), so a held key or a stuck repeat cannot grow the answer
 /// without bound.
@@ -1040,7 +1040,7 @@ pub(crate) fn is_interrupt(key: KeyEvent) -> bool {
     key.modifiers.contains(event::KeyModifiers::CONTROL) && key.code == KeyCode::Char('c')
 }
 
-/// What every full-screen view does with a SIGINT or SIGTERM that
+/// What every full-screen view does with a SIGINT, SIGTERM or SIGHUP that
 /// [`process::forward_interrupts`] recorded: leave bracketed paste, restore
 /// the terminal and show the cursor, then end the run as an interrupt does.
 /// Only the thread that owns the terminal calls it.
@@ -1129,8 +1129,8 @@ fn run_loop(
 ///
 /// During an apply, `q` and Ctrl+C are refused until it returns, and the
 /// working screen says so: quitting could abandon a target half moved or half
-/// deleted, and the operator can wait to see what changed. A SIGINT or SIGTERM
-/// still stops it at once, as it stops the CLI, because whoever sent it wants
+/// deleted, and the operator can wait to see what changed. A SIGINT, SIGTERM or
+/// SIGHUP still stops it at once, as it stops the CLI, because whoever sent it wants
 /// devtrim gone and refusing would only invite SIGKILL, which restores and
 /// kills nothing. The target in progress then keeps a journal attempt without
 /// a result, which `history` reports as interrupted.
@@ -1228,10 +1228,7 @@ fn run_scan(ctx: &Ctx, operation: Operation) -> Loaded {
     };
     match scanned {
         Ok(mut findings) => {
-            // iCloud status reports only; it offers nothing to protect.
-            if operation != Operation::Icloud {
-                ops::filter_protected_findings(&mut findings, ctx);
-            }
+            ops::filter_protected_findings(&mut findings, ctx);
             Loaded::Findings(findings, ctx.take_diagnostics())
         }
         Err(error) => Loaded::Failed(error, ctx.take_diagnostics()),
@@ -1862,10 +1859,6 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
         (true, true) => "[ ] ",
         (true, false) => "[x] ",
     };
-    // `style`, not `bold`: adding BOLD to every level collapses the monochrome
-    // ladder, because moderate carries no modifier and high carries BOLD. The
-    // theme's test pins the ladder `style()` draws; BOLD added here would
-    // collapse it where that test cannot see.
     // Wide enough for the last row's number, so every column stays aligned.
     let number = app.findings.len().to_string().len().max(3);
     let danger = format!("{:>number$}. danger-{} ", row + 1, finding.danger);
@@ -1881,6 +1874,10 @@ fn result_row(app: &App, row: usize, width: usize) -> Line<'static> {
     let mut spans = vec![
         marker,
         Span::raw(check),
+        // `style`, not `bold`: adding BOLD to every level collapses the monochrome
+        // ladder, because moderate carries no modifier and high carries BOLD. The
+        // theme's test pins the ladder `style()` draws; BOLD added here would
+        // collapse it where that test cannot see.
         Span::styled(danger, app.theme.style(danger_token(finding.danger))),
         Span::styled(size, app.theme.style(Token::AccentSecondary)),
     ];
@@ -2385,7 +2382,8 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App, shown: &Shown) 
         lines.push(Line::raw(row));
     }
     // The answer and, under it, the feedback on it: a mismatch or a refused
-    // key. The popup covers the footer at 64x18, so it must say this itself.
+    // key. The footer blanks its status on this screen, so the popup must say
+    // this itself.
     // Every status set here is devtrim's own text.
     let answer = Text::from(vec![
         Line::from(vec![
@@ -2960,7 +2958,8 @@ mod tests {
 
         let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
 
-        // The popup covers the footer there, so the feedback lives inside it.
+        // The footer blanks its status on the confirmation, so the feedback
+        // lives inside the popup.
         assert!(
             output.contains(&app.status) && app.status.contains("Confirmation mismatch"),
             "PV tui/confirmation-feedback: {output}"
@@ -2983,8 +2982,8 @@ mod tests {
             "PV tui/input-limit"
         );
         assert!(app.status.contains("Longer than"), "{}", app.status);
-        // Whole on one line, in the popup at the minimum size and in the
-        // footer, which does not wrap, on a larger terminal.
+        // Whole on one line in the popup, at the minimum size and on a larger
+        // terminal; the footer blanks its status on the confirmation.
         assert!(rendered(&app, MIN_WIDTH, MIN_HEIGHT).contains(&app.status));
         assert!(rendered(&app, 100, 30).contains(&app.status));
         app.handle_key(key(KeyCode::Backspace));
@@ -4127,8 +4126,8 @@ mod tests {
         );
     }
 
-    /// The results footer lists Enter for the details at the minimum width,
-    /// whatever else it has to leave to the `?` reference.
+    /// The results footer lists Enter for the details where every key fits;
+    /// at the minimum width it is the first key left to the `?` reference.
     #[test]
     fn the_results_footer_lists_enter_details() {
         let with_choices = cleanup(vec![trash("first", 1, 2)]);

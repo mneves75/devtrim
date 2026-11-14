@@ -103,9 +103,11 @@ fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
             continue;
         };
         if metadata.dev() != device {
-            // Not reachable while `same_file_system` holds, but a subtree left
-            // unmeasured is a lower bound and must say so rather than vanish
-            // into a confident total.
+            // `same_file_system` ties the walk to the device walkdir reads for
+            // its own root, not to `device`, which the caller read earlier: a
+            // mount made at this child in between would pass walkdir. A
+            // subtree left unmeasured is a lower bound and must say so rather
+            // than vanish into a confident total.
             partial = true;
             continue;
         }
@@ -226,7 +228,11 @@ struct Explorer {
     entries: Vec<Entry>,
     selected: usize,
     scanning: bool,
+    /// Errors about the directory on screen, for the footer.
     errors: Vec<String>,
+    /// Every error and lower bound of the session, each once: the folders
+    /// left behind count toward the exit status as much as the one shown.
+    session: Vec<String>,
     help: bool,
     theme: Theme,
     cancel: Arc<AtomicBool>,
@@ -244,6 +250,7 @@ impl Explorer {
             selected: 0,
             scanning: false,
             errors: Vec::new(),
+            session: Vec::new(),
             help: false,
             theme,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -266,6 +273,7 @@ impl Explorer {
     fn begin_scan(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
         self.cancel = Arc::new(AtomicBool::new(false));
+        self.session = self.exit_report().1;
         self.entries.clear();
         self.errors.clear();
         self.selected = 0;
@@ -412,6 +420,19 @@ impl Explorer {
         self.reselect = left;
     }
 
+    /// Whether the session failed, and the warnings printed when it ends:
+    /// what earlier folders left in the ledger, then the folder on screen.
+    fn exit_report(&self) -> (bool, Vec<String>) {
+        let mut warnings = self.session.clone();
+        let current = lower_bound_errors(&self.entries);
+        for warning in self.errors.iter().chain(&current) {
+            if !warnings.contains(warning) {
+                warnings.push(warning.clone());
+            }
+        }
+        (!warnings.is_empty(), warnings)
+    }
+
     /// Below the supported size nothing is drawn but the resize screen, so
     /// only a quit reaches the explorer; Esc, which goes up a level here,
     /// must not act on a listing nobody can see.
@@ -436,8 +457,6 @@ impl Explorer {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Intent {
-        /// Rows PgUp and PgDn move, as in the TUI.
-        const PAGE_ROWS: usize = 8;
         if key.kind != KeyEventKind::Press {
             return Intent::None;
         }
@@ -459,8 +478,14 @@ impl Explorer {
             KeyCode::Char('q') => return Intent::Quit,
             KeyCode::Up | KeyCode::Char('k') => self.select(self.selected.saturating_sub(1)),
             KeyCode::Down | KeyCode::Char('j') => self.select(self.selected.saturating_add(1)),
-            KeyCode::PageUp => self.select(self.selected.saturating_sub(PAGE_ROWS)),
-            KeyCode::PageDown => self.select(self.selected.saturating_add(PAGE_ROWS)),
+            KeyCode::PageUp => self.select(
+                self.selected
+                    .saturating_sub(usize::from(crate::tui::PAGE_ROWS)),
+            ),
+            KeyCode::PageDown => self.select(
+                self.selected
+                    .saturating_add(usize::from(crate::tui::PAGE_ROWS)),
+            ),
             KeyCode::Home | KeyCode::Char('g') => self.select(0),
             KeyCode::End | KeyCode::Char('G') => self.select(usize::MAX),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.descend(),
@@ -568,8 +593,9 @@ fn render(frame: &mut Frame, explorer: &Explorer) {
         &mut state,
     );
 
-    // Raw: the footer escapes at its sink. Every error is printed when
-    // analyze exits; the count says the first is not the only one.
+    // Raw: the footer escapes at its sink. The footer shows this folder's
+    // errors, the count saying the first is not the only one; every error
+    // and lower bound of the session is printed when analyze exits.
     let status = match explorer.errors.as_slice() {
         [] if partial => "(partial) sizes are lower bounds; part was unreadable.".to_string(),
         [] => "Read-only. This screen never deletes anything.".to_string(),
@@ -636,6 +662,8 @@ fn render_help(frame: &mut Frame, area: Rect, explorer: &Explorer) {
 
 const HELP_KEYS: &[(&str, &str)] = &[
     ("↑/↓, k/j", "move the cursor"),
+    ("PgUp/PgDn", "move a page"),
+    ("g/G, Home/End", "first or last entry"),
     ("Enter, →, l", "open the selected directory"),
     ("Esc, ←, h, b", "go up one level"),
     ("r", "measure this directory again"),
@@ -657,7 +685,6 @@ fn resolve_root(ctx: &Ctx, requested: Option<&str>) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// One-shot machine-readable breakdown of the requested directory.
 /// A lower bound is a partial measurement, and a partial operation is visible
 /// in its status as well as in its entries (`CLAUDE.md § Conventions`).
 fn lower_bound_errors(entries: &[Entry]) -> Vec<String> {
@@ -673,6 +700,7 @@ fn lower_bound_errors(entries: &[Entry]) -> Vec<String> {
         .collect()
 }
 
+/// One-shot machine-readable breakdown of the requested directory.
 fn run_json(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
     let root = resolve_root(ctx, requested)?;
     let cancel = AtomicBool::new(false);
@@ -726,21 +754,28 @@ pub fn run(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
     let interrupts =
         crate::process::forward_interrupts().context("cannot install the interrupt handler")?;
     let mut terminal = ratatui::try_init().context("cannot initialize analyze terminal")?;
-    let result = run_loop(&mut terminal, root, ctx, &interrupts);
+    let result = run_loop(&mut terminal, root, &interrupts);
     let restore = ratatui::try_restore().context("cannot restore terminal after analyze exit");
     match (result, restore) {
         (Err(error), _) => Err(error),
         (Ok(_), Err(error)) => Err(error),
-        (Ok(code), Ok(())) => Ok(code),
+        (Ok((code, warnings)), Ok(())) => {
+            // After the restore: written on the alternate screen, they would
+            // vanish with it.
+            for warning in warnings {
+                ctx.diagnostic("warn", warning);
+            }
+            Ok(code)
+        }
     }
 }
 
+/// The exit status and the warnings to print once the terminal is restored.
 fn run_loop(
     terminal: &mut DefaultTerminal,
     root: PathBuf,
-    ctx: &Ctx,
     interrupts: &crate::process::Interrupts,
-) -> Result<ExitCode> {
+) -> Result<(ExitCode, Vec<String>)> {
     let mut explorer = Explorer::new(root, Theme::from_env());
     explorer.begin_scan();
     let mut redraw = true;
@@ -763,14 +798,7 @@ fn run_loop(
                         .context("cannot inspect terminal size")?
                         .into(),
                 ) {
-                    Intent::Quit => {
-                        let partial = explorer.entries.iter().any(|entry| entry.partial);
-                        break if explorer.errors.is_empty() && !partial {
-                            ExitCode::SUCCESS
-                        } else {
-                            ExitCode::from(1)
-                        };
-                    }
+                    Intent::Quit => break explorer.exit_report(),
                     Intent::Redraw => redraw = true,
                     Intent::None => {}
                 },
@@ -781,10 +809,13 @@ fn run_loop(
     };
     // Leave no worker walking a tree after the interface is gone.
     explorer.cancel.store(true, Ordering::Relaxed);
-    for error in &explorer.errors {
-        ctx.diagnostic("warn", error.clone());
-    }
-    Ok(outcome)
+    let (failed, warnings) = outcome;
+    let code = if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    };
+    Ok((code, warnings))
 }
 
 #[cfg(test)]
@@ -949,6 +980,74 @@ mod tests {
             explorer.handle_visible_key(key(KeyCode::Char('q')), small),
             Intent::Quit
         );
+    }
+
+    /// A folder measured partially stays a failure after the operator moves
+    /// on: the exit status and the warnings printed at exit cover the whole
+    /// session, each folder once however often it was shown.
+    #[test]
+    fn every_partial_folder_of_the_session_is_reported_at_exit() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-analyze-session")
+            .tempdir()
+            .unwrap();
+        write(&root.path().join("bad/data"), 4096);
+        let locked = root.path().join("bad/locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        write(&root.path().join("good/data"), 4096);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut explorer = Explorer::new(root.path().to_path_buf(), Theme::from_env());
+        explorer.begin_scan();
+        finish(&mut explorer);
+        // Shown twice while still unreadable: it must be reported once.
+        explorer.handle_key(key(KeyCode::Char('r')));
+        finish(&mut explorer);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Positive control: the walk did reach the unreadable folder.
+        assert!(
+            explorer
+                .entries
+                .iter()
+                .any(|entry| entry.path.ends_with("bad") && entry.partial),
+            "{:?}",
+            explorer.entries
+        );
+        let good = explorer
+            .entries
+            .iter()
+            .position(|entry| entry.path.ends_with("good"))
+            .unwrap();
+        explorer.select(good);
+        explorer.handle_key(key(KeyCode::Enter));
+        finish(&mut explorer);
+        assert!(explorer.entries.iter().all(|entry| !entry.partial));
+
+        let (failed, warnings) = explorer.exit_report();
+
+        assert!(failed, "{warnings:?}");
+        let bad = root.path().join("bad").display().to_string();
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|warning| warning.contains(&format!("{bad} is a lower bound")))
+                .count(),
+            1,
+            "{warnings:?}"
+        );
+    }
+
+    /// The reference lists every key the explorer takes and still fits whole
+    /// at the minimum size.
+    #[test]
+    fn the_help_lists_every_key_and_fits_at_the_minimum_size() {
+        let mut explorer = sized(1);
+        explorer.handle_key(key(KeyCode::Char('?')));
+        let output = screen(&explorer, 64, 18).concat();
+        for binding in ["PgUp/PgDn", "g/G", "Home/End", "Ctrl+C"] {
+            assert!(output.contains(binding), "{binding}: {output}");
+        }
+        assert!(output.contains("for that."), "{output}");
     }
 
     /// The header and footer match the TUI's: one row, then two.

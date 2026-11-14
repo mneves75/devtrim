@@ -119,7 +119,9 @@ fn volume(root: &Path) -> Volume {
 /// One preorder walk; each measured byte is assigned once, then folded into
 /// retained ancestors in reverse order. Omitting visual detail never omits bytes.
 fn inventory(root: &Path) -> Result<(Node, Coverage)> {
-    let device = fs::metadata(root)?.dev();
+    let device = fs::metadata(root)
+        .with_context(|| format!("cannot inspect {}", root.display()))?
+        .dev();
     let mut nodes = vec![Node::new(root, "directory")];
     let mut usage = crate::safety::DiskUsage::default();
     let mut parents = vec![0];
@@ -209,8 +211,9 @@ fn inventory(root: &Path) -> Result<(Node, Coverage)> {
         }
     }
     coverage.retained_nodes = nodes.len();
-    // `pop` keeps memory bounded by the overview budget, regardless of how much
-    // omitted detail the walk measured.
+    // Preorder puts every node after its parent, so popping from the end folds
+    // each node into its parent only once all its descendants are folded into
+    // it. Memory was already bounded during the walk, by `MAX_NODES`.
     while nodes.len() > 1 {
         if let (Some(mut child), Some(parent)) = (nodes.pop(), parents.pop()) {
             child.children.sort_by(|left, right| {
@@ -314,7 +317,16 @@ fn recommendations(ctx: &Ctx, root: &Path) -> Recommendations {
     let scan = crate::ops::scan_all(ctx);
     let operations = crate::ops::all();
     let mut categories = Vec::new();
-    for section in &scan.sections {
+    // `scan_all` builds one section per category of this same registry that
+    // scanned, in its order; a category that failed has none.
+    for operation in &operations {
+        let Some(section) = scan
+            .sections
+            .iter()
+            .find(|section| section.category == operation.name())
+        else {
+            continue;
+        };
         let findings = scan.findings[section.range.clone()]
             .iter()
             .filter_map(|finding| {
@@ -329,6 +341,9 @@ fn recommendations(ctx: &Ctx, root: &Path) -> Recommendations {
                     label: finding.label.clone(),
                     path: target.display().to_string(),
                     bytes: finding.size_bytes,
+                    // `agents` history and `installers` hold what nothing
+                    // regenerates, offered only past `retain_days`: always
+                    // reviewed, never a plain preview.
                     kind: if matches!(finding.action, Action::Trash | Action::Shred)
                         && !matches!(section.category, "agents" | "installers")
                     {
@@ -341,15 +356,11 @@ fn recommendations(ctx: &Ctx, root: &Path) -> Recommendations {
             })
             .collect::<Vec<_>>();
         if !findings.is_empty() {
-            let command = operations
-                .iter()
-                .find(|operation| operation.name() == section.category)
-                .ok_or("Preview command unavailable: category owner is unavailable.")
-                .and_then(|operation| preview_command(operation.as_ref(), ctx));
-            let (preview_command, preview_unavailable) = match command {
-                Ok(command) => (Some(command), None),
-                Err(reason) => (None, Some(reason)),
-            };
+            let (preview_command, preview_unavailable) =
+                match preview_command(operation.as_ref(), ctx) {
+                    Ok(command) => (Some(command), None),
+                    Err(reason) => (None, Some(reason)),
+                };
             categories.push(Category {
                 category: section.category,
                 preview_command,
@@ -490,7 +501,10 @@ pub(crate) fn run(
         .unwrap_or(&ctx.home)
         .canonicalize()
         .context("cannot resolve dashboard directory")?;
-    if !fs::metadata(&root)?.is_dir() {
+    if !fs::metadata(&root)
+        .with_context(|| format!("cannot inspect {}", root.display()))?
+        .is_dir()
+    {
         bail!("dashboard root is not a directory: {}", root.display());
     }
     let (inventory, coverage) = inventory(&root)?;
@@ -552,13 +566,10 @@ pub(crate) fn run(
             )
             .as_bytes(),
         )?;
+        // The scanners' diagnostics stay in the report; its errors also
+        // reach the terminal, where `ctx` would only capture them.
         for error in &snapshot.errors {
-            ctx.diagnostic("warn", error.clone());
-        }
-        // Dashboard diagnostics normally stay in the report, but open/write
-        // failures must also be useful to someone at the terminal.
-        for message in ctx.take_diagnostics() {
-            eprintln!("{}", report::terminal_safe(&message));
+            eprintln!("warn: {}", report::terminal_safe(error));
         }
     }
     Ok(if snapshot.errors.is_empty() {
