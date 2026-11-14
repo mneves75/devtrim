@@ -27,6 +27,7 @@ Ratatui interface and its shared safety/release boundaries.
 | 014 | Report worktrees and agent scratch; delete neither | P2 | M | 013 | DONE in 0.11.0 (`devtrim worktrees`, `.scratch` rows in `clean leftovers`; repositories found anywhere under the roots, not only one level down) |
 | [015](015-html-dashboard.md) | Complete the offline HTML dashboard and verified release candidate | P1 | M | 014 | DONE in 0.12.0 |
 | [016](016-ux-and-audit-0.13.md) | Redesign the site and terminal UI; fix the whole-project audit | P1 | L | 015 | DONE in 0.13.0 |
+| [017](017-comment-prune-and-audit.md) | Prune comments, plan workaround refactors, fix the audit | P1 | M | 016 | DONE in 0.13.1 |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 

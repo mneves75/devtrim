@@ -875,8 +875,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html"
  },
  {
-  "id": "fc0c73c91",
-  "text": "v0.13.0 Filter sections Theme: Dark",
+  "id": "f84bad1c1",
+  "text": "v0.13.1 Filter sections Theme: Dark",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-contents"
  },
  {
@@ -2232,6 +2232,11 @@
  {
   "id": "ff9e5d5c6",
   "text": "devtrim returns nonzero and includes the error in JSON. Failed actions are never counted as touched or reclaimed; fix the owner tool and preview again.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f7758c07d",
+  "text": "devtrim v0.13.1",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {

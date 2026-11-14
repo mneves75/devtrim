@@ -1,7 +1,6 @@
 # 017 — Comment prune and whole-project audit (0.13.1)
 
-Status: IN PROGRESS. Branch `chore/comment-prune-audit`, from `main` `79d50e4`.
-Working state: `progress.md` and `tests.json` at the repository root until merge.
+Status: DONE in 0.13.1 (2026-11-14). Branch `chore/comment-prune-audit`, from `main` `79d50e4`.
 
 ## Request
 
@@ -75,10 +74,53 @@ into a comment change.
 
 ## Fixed (behaviour), each with a test that failed first
 
-(filled as tracks land; see `progress.md`)
+- Journal rotation ran while building every command's context, so read-only
+  commands renamed journal files and a TUI session never rotated; it now runs
+  only in `journal::check_writable` (CLI and TUI apply start).
+- `leftovers`: an unreadable `.supergoal` failed the category; `installers`:
+  an unreadable folder or archive failed the category; both now withhold only
+  what they could not read.
+- `toolchains` read errors name the folder (S7).
+- `node_modules` lockfile note: searched only the repository root; now the
+  install's folder up to the root, and `unknown` instead of withholding the
+  repository when a folder cannot be inspected.
+- `scan` summary repeated a project's header; `analyze` exit status covered
+  only the last folder shown; `status --watch` had no too-small screen.
+- `trash-empty --confirm` messages named the whole Trash.
+- `release.sh` exited without recovery guidance on a transient `gh` failure
+  after the tag push.
+- Gates: a `PV` tag extending a selected marker could count as another case's
+  proof (now refused by the harness); 33 unselected tags lost their `PV`
+  prefix; `eval/read-only` retargeted after rotation moved; film, CSP and
+  planted-violation controls prove each plant fails for its own reason;
+  fixture Git isolated from the caller's environment; tests restore saved
+  modes; the `validate_path` fuzz oracle has a real home and reads the managed
+  Library lists from the crate; `lsof` open-file parsers are fuzzed.
+
+## Verification
+
+`verify.sh focused` (baseline and after), `verify.sh offline` (MSRV, policy,
+ShellCheck, planted violations 218/218, controls, cached audits, Gitleaks),
+TruffleHog, actionlint, the video gate, fuzz (`validate_path`,
+`probe_parsers`), Codex `gpt-6.1-sol` autoreview at P1 (scoped-clean), the
+`reviewer` agent (PASS; each fix mutated in a scratch copy fails its test),
+and `mneves-verify` before the tag.
+
+## Known limit kept
+
+`MAX_COMPLETE_HISTORY_BYTES` assumes about one record of overshoot per
+generation, but a generation can grow by one apply's records before the next
+rotation. Very heavy history can make `trash-empty --only-devtrim` refuse until
+the next rotation. It refuses rather than guesses, predates this change, and
+nothing has reported it.
 
 ## Rejected, with reason
 
+- Folding the size measurement into the `artifacts` keypair walk and the
+  `xcode` DerivedData age walk (each walks a surviving tree twice): real, but
+  both touch planted anchors and must match `dir_size`'s hard-link and device
+  rules exactly; machine load (~250) made `scripts/perf/ab.sh` timings
+  untrustworthy, so it waits for a measurement.
 - Dropping a missing `--root` from the scan-root list: `dashboard` preview
   commands deliberately carry every named root verbatim, so a folder created
   later is still scanned (`tests/dashboard.rs`
