@@ -204,16 +204,20 @@ if ! git push --no-verify origin "refs/tags/${tag}:refs/tags/${tag}"; then
   exit 1
 fi
 
+# The tag is already pushed, so a failed lookup is retried like an empty one:
+# ending here would leave the release half done with no recovery guidance.
 run_id=""
 for _ in {1..30}; do
-  run_id=$(gh run list --workflow release.yml --event push --commit "$release_commit" --limit 20 \
+  if run_ids=$(gh run list --workflow release.yml --event push --commit "$release_commit" --limit 20 \
     --json databaseId,headBranch \
-    --jq ".[] | select(.headBranch == \"${tag}\") | .databaseId" | head -n 1)
-  [[ -z "$run_id" ]] || break
+    --jq ".[] | select(.headBranch == \"${tag}\") | .databaseId"); then
+    run_id=${run_ids%%$'\n'*}
+    [[ -z "$run_id" ]] || break
+  fi
   sleep 2
 done
 if [[ -z "$run_id" ]]; then
-  echo "ERROR: release workflow did not start for $tag"
+  echo "ERROR: release workflow did not start for $tag, or its runs could not be listed"
   echo "RECOVER: inspect Actions for the pushed tag; never move or reuse it"
   exit 1
 fi
