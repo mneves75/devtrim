@@ -2210,8 +2210,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {
-  "id": "f4b219905",
-  "text": "A root or computed target intersects the denylist: the built-in system paths, ~/Library outside the managed caches, the home folder itself and every folder above it, and your protect entries. Check config roots; --root ~ is accepted with a warning, because its walk enters every folder in the home folder.",
+  "id": "f8244afc1",
+  "text": "A root or computed target intersects the denylist: the built-in system folders, the home folder and every folder above it, ~/.Trash, ~/.ssh, ~/.gnupg, ~/Library outside the managed caches, and your protect entries. Check config roots; --root ~ is accepted with a warning, because its walk enters every folder in the home folder.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {

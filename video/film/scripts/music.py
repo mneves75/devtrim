@@ -9,9 +9,9 @@ where one is named, each placed on its exact frame) and one effects stem per
 cue kind, <out-dir>/sfx-swish.wav, sfx-click.wav and sfx-hit.wav, which
 check_sync.py --sfx reads. All are 48 kHz stereo 16-bit. music.wav and mix.wav
 are scaled so their highest sample sits at -3 dBFS (sample peak, not true
-peak); the stems keep the cues' mixing gains unscaled. loudness.py brings the
-mix to the delivery target. Standard library only, fixed seed, so the same
-timing.json always yields the same bytes.
+peak); the stems keep the cues' mixing gains unscaled. loudness.py brings
+music.wav and mix.wav to the delivery target. Standard library only, fixed
+seed, so the same timing.json always yields the same bytes.
 
 timing.json fields read: fps, bpm, durationFrames, music.chords (one chord per
 bar, each a list of MIDI notes), music.sections (beat ranges and which voices

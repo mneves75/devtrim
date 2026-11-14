@@ -428,7 +428,7 @@ Non-negotiable boundaries:
    job runs format, root and fuzz-lock dependency audits, positive-control
    structural lints for the deletion sink, shell invocation, naming, and
    unbounded subprocesses, the site and video-audit controls, and the video
-   lint, audit and build. The macOS `verify` job runs the release-policy
+   audit, lint, format check and build. The macOS `verify` job runs the release-policy
    tests, ShellCheck, full-history Gitleaks and TruffleHog secret scans,
    strict Clippy (which forbids `unsafe`, `unwrap`/`expect`, and unreasoned
    lint suppression in the crate), tests, a real PTY menu/help/cancel/quit
