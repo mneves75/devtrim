@@ -2803,6 +2803,16 @@ mod tests {
         assert!(trash_gate(&both, Some(0)).is_err());
         assert!(trash_gate(&both, Some(10)).is_ok());
         assert!(trash_gate(&both, None).is_err());
+        // The refusals name what is measured: with `--only-devtrim` the Trash
+        // holds more than the plan, so "the Trash holds" would misstate it.
+        for refusal in [
+            trash_gate(&both, Some(0)).unwrap_err(),
+            trash_gate(&both, None).unwrap_err(),
+        ] {
+            let message = refusal.to_string();
+            assert!(message.contains("previewed items"), "{message}");
+            assert!(!message.contains("Trash holds"), "{message}");
+        }
     }
 
     #[test]

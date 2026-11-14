@@ -240,6 +240,8 @@ pub(crate) fn scan_all(ctx: &Ctx) -> ScanResult {
     let mut findings = Vec::new();
     let mut sections = Vec::new();
     let mut errors = Vec::new();
+    // Scans may run concurrently; apply never does, because the journal
+    // serializes each attempt/result pair.
     std::thread::scope(|scope| {
         let mut scans = Vec::with_capacity(operations.len());
         for operation in &operations {
