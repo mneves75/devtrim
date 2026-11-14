@@ -31,9 +31,6 @@ impl Optimize {
     /// several with repeated `--task` is consent to each of them.
     pub(crate) fn new(names: &[String], apply: bool) -> Result<Self> {
         if names.is_empty() {
-            // Previewing everything is useful; applying everything behind one
-            // prompt is the thing `--task` exists to prevent, so the shortcut
-            // stops at the preview.
             if apply {
                 anyhow::bail!(
                     "optimize --apply needs an explicit --task; one confirmation must not cover \
@@ -187,9 +184,10 @@ mod tests {
             .unwrap()
             .apply(&[forged], &test_ctx())
             .unwrap();
+        assert_eq!(outcome.errors.len(), 1, "{outcome:?}");
         assert!(
-            !outcome.errors.is_empty(),
-            "an altered action must be refused"
+            outcome.errors[0].contains("refusing altered maintenance action"),
+            "an altered action must be refused for that reason: {outcome:?}"
         );
     }
 }
