@@ -17,8 +17,8 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use support::{
-    Allowed, Interactive, Sandbox, Tree, actionable_targets, assert_journaled, json, on_disk, run,
-    write,
+    Allowed, Interactive, ModeGuard, Sandbox, Tree, actionable_targets, assert_journaled, git,
+    json, on_disk, real_git, run, write,
 };
 
 // ---------- oracle controls ----------
@@ -252,7 +252,7 @@ fn eval_clean_caches_removes_every_listed_cache_and_nothing_else() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/caches-preview",
+        "eval/caches-preview",
     );
 
     let apply = run(
@@ -301,7 +301,7 @@ fn eval_apply_json_reports_each_items_result() {
     assert!(!apply.status.success(), "{document}");
     let findings = document["findings"].as_array().unwrap();
     let results = document["results"].as_array().unwrap_or_else(|| {
-        panic!("PV eval/apply-results: the apply document lists no results: {document}")
+        panic!("eval/apply-results: the apply document lists no results: {document}")
     });
     let actionable: Vec<usize> = findings
         .iter()
@@ -533,62 +533,16 @@ fn fixture_home_cannot_follow_the_callers_working_directory() {
         .current_dir(foreign.path())
         .output()
         .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `--exact` with a misspelled name runs nothing and still exits 0.
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
+        output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+        "{stdout}"
     );
     pristine.assert_only(
         &Tree::snapshot(foreign.path()),
         &Allowed::default(),
         "the fixture must not change the caller's directory",
-    );
-}
-
-fn real_git() -> PathBuf {
-    let resolved = std::process::Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .unwrap();
-    assert!(
-        resolved.status.success(),
-        "git is required for the project evals"
-    );
-    PathBuf::from(String::from_utf8(resolved.stdout).unwrap().trim())
-}
-
-/// Run fixture-building Git in `repo` as of `date`, isolated from the
-/// developer's own Git configuration.
-fn git(sandbox: &Sandbox, repo: &Path, date: &str, args: &[&str]) {
-    let output = std::process::Command::new(real_git())
-        .env_clear()
-        .args([
-            "-c",
-            "user.name=devtrim-eval",
-            "-c",
-            "user.email=eval@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-            "-c",
-            "gc.auto=0",
-            "-c",
-            "maintenance.auto=false",
-        ])
-        .args(args)
-        .current_dir(repo)
-        .env("HOME", sandbox.path())
-        .env("PATH", sandbox.bin())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_AUTHOR_DATE", date)
-        .env("GIT_COMMITTER_DATE", date)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -620,10 +574,10 @@ fn fixture_git_cannot_write_into_an_ambient_repository() {
         .env("GIT_DIR", &foreign)
         .output()
         .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        output.status.success(),
-        "fixture isolation failed: {}{}",
-        String::from_utf8_lossy(&output.stdout),
+        output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+        "fixture isolation failed: {stdout}{}",
         String::from_utf8_lossy(&output.stderr)
     );
     pristine.assert_only(
@@ -812,7 +766,7 @@ fn eval_project_category(
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/projects-preview",
+        "eval/projects-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -921,7 +875,7 @@ fn eval_excluded_roots(names: &[&str], tag: &str) {
                 pristine.assert_only(
                     &Tree::snapshot(sandbox.path()),
                     &Allowed::default(),
-                    "PV eval/excluded-roots-preview",
+                    "eval/excluded-roots-preview",
                 );
             }
         }
@@ -964,7 +918,7 @@ fn eval_root_at_top_level_node_modules_still_offers_the_install() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/excluded-roots-install-control",
+        "eval/excluded-roots-install-control",
     );
 }
 
@@ -1156,7 +1110,7 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/xcode-preview",
+        "eval/xcode-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -1171,29 +1125,10 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
             removed: expected.clone(),
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
-        "PV eval/xcode-apply",
+        "eval/xcode-apply",
     );
     assert!(apply.status.success(), "{document}");
     assert_journaled(&sandbox, "xcode", "shred", &expected);
-}
-
-/// Restores a folder's permissions when dropped, so a fixture made unreadable
-/// can still be removed after a failed assertion.
-struct Unreadable(PathBuf);
-
-impl Unreadable {
-    fn new(path: PathBuf) -> Self {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for Unreadable {
-    fn drop(&mut self) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
-    }
 }
 
 /// One DeviceSupport or DerivedData folder that cannot be read or measured
@@ -1215,8 +1150,8 @@ fn eval_an_unreadable_xcode_folder_blocks_only_itself() {
     write(&locked_child.join("file"), "unreadable");
     let locked_folder = developer.join("DerivedData/App-locked");
     write(&locked_folder.join("Build/file"), "unreadable");
-    let _child = Unreadable::new(locked_child);
-    let _folder = Unreadable::new(locked_folder);
+    let _child = ModeGuard::unreadable(locked_child);
+    let _folder = ModeGuard::unreadable(locked_folder);
 
     let preview = run(&sandbox, &["clean", "xcode", "--json"]);
     let document = json(&preview);
@@ -1281,7 +1216,7 @@ fn eval_an_unlistable_xcode_support_folder_is_named() {
         .path()
         .join("Library/Developer/Xcode/iOS DeviceSupport");
     write(&support.join("17.0 (21A329)/Symbols/dyld"), "symbols");
-    let _locked = Unreadable::new(support.clone());
+    let _locked = ModeGuard::unreadable(support.clone());
     let output = run(&sandbox, &["clean", "xcode", "--json"]);
     let document = json(&output);
     assert!(!output.status.success(), "{document}");
@@ -1696,7 +1631,7 @@ fn eval_worktrees_partial_read_keeps_the_row_and_fails_the_run() {
     );
     let feature = dev.join("app-feature");
     write(&feature.join("locked/secret.bin"), &"x".repeat(4096));
-    let locked = Unreadable::new(feature.join("locked"));
+    let locked = ModeGuard::unreadable(feature.join("locked"));
     let output = run(
         &sandbox,
         &["worktrees", "--root", dev.to_str().unwrap(), "--json"],
@@ -1736,7 +1671,7 @@ fn eval_leftovers_partial_read_keeps_the_row_and_fails_the_run() {
     let evidence = kept.join(".scratch/evidence");
     write(&evidence.join("run.log"), &"x".repeat(13));
     write(&evidence.join("locked/secret"), "secret");
-    let locked = Unreadable::new(evidence.join("locked"));
+    let locked = ModeGuard::unreadable(evidence.join("locked"));
     let output = run(
         &sandbox,
         &[
@@ -1782,8 +1717,8 @@ fn eval_leftovers_agent_hints_read_in_part_keep_their_rows() {
         write(&folder.join("locked/secret"), "secret");
     }
     let locked = [
-        Unreadable::new(evidence.join("locked")),
-        Unreadable::new(scratch.join("locked")),
+        ModeGuard::unreadable(evidence.join("locked")),
+        ModeGuard::unreadable(scratch.join("locked")),
     ];
     let output = run(
         &sandbox,

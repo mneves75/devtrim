@@ -9,9 +9,9 @@
 mod support;
 
 use serde_json::Value;
-use std::os::unix::fs::{PermissionsExt as _, symlink};
+use std::os::unix::fs::symlink;
 use std::path::Path;
-use support::{Allowed, Sandbox, Tree, json, on_disk, run, write};
+use support::{Allowed, ModeGuard, Sandbox, Tree, json, on_disk, run, write};
 
 #[cfg(target_os = "macos")]
 #[test]
@@ -251,14 +251,6 @@ fn invalid_search_roots_fail_with_an_operation_named_error() {
     }
 }
 
-struct RestorePermissions<'a>(&'a Path);
-
-impl Drop for RestorePermissions<'_> {
-    fn drop(&mut self) {
-        std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-}
-
 #[test]
 fn an_explicit_child_root_is_measured_when_its_parent_cannot_be_listed() {
     let sandbox = Sandbox::new("app-storage-child-root");
@@ -273,8 +265,7 @@ fn an_explicit_child_root_is_measured_when_its_parent_cannot_be_listed() {
     let canonical_child = child.canonicalize().unwrap();
     let before = Tree::snapshot(sandbox.path());
     let output = {
-        let _restore = RestorePermissions(&parent);
-        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let _restore = ModeGuard::set(&parent, 0o111);
         let positive = run(
             &sandbox,
             &[
@@ -321,8 +312,7 @@ fn unreadable_data_is_partial_and_does_not_hide_other_application_data() {
     write(&database, "visible metadata");
     let before = Tree::snapshot(sandbox.path());
     let output = {
-        let _restore = RestorePermissions(&blocked);
-        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let _restore = ModeGuard::unreadable(&blocked);
         run(&sandbox, &["app-storage", "--json"])
     };
     let document = json(&output);

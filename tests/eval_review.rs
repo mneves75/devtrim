@@ -1,7 +1,7 @@
-//! Reviewer evals for the 0.13 change, written from its stated requirements:
-//! an empty Trash still guarded, categories continuing past a refusal, and a
-//! `.git` file read as Git reads it. Every command runs through the real
-//! binary against a planted fixture in a disposable HOME.
+//! Reviewer evals written from stated requirements: an empty Trash still
+//! guarded, categories continuing past a refusal, and a `.git` file read as
+//! Git reads it. Every command runs through the real binary against a planted
+//! fixture in a disposable HOME.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -16,7 +16,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, SystemTime};
-use support::{Allowed, Interactive, Sandbox, Tree, json, run, write};
+use support::{Allowed, Interactive, ModeGuard, Sandbox, Tree, git, json, real_git, run, write};
 
 fn text(output: &Output) -> String {
     format!(
@@ -49,14 +49,16 @@ fn age(path: &Path, days: u64) {
         .unwrap();
 }
 
-/// A journal path that is a directory: devtrim cannot append to it.
+/// A journal devtrim can read as history but cannot append to, so only the
+/// write check before an apply can refuse it.
 fn break_journal(sandbox: &Sandbox) {
-    std::fs::create_dir_all(sandbox.journal()).unwrap();
+    write(&sandbox.journal(), "");
     std::fs::set_permissions(
         sandbox.journal().parent().unwrap(),
         std::fs::Permissions::from_mode(0o700),
     )
     .unwrap();
+    std::fs::set_permissions(sandbox.journal(), std::fs::Permissions::from_mode(0o400)).unwrap();
 }
 
 /// Run an interactive apply, change the fixture at the typed confirmation,
@@ -71,21 +73,6 @@ fn drift_session(
     drift();
     session.send("0");
     session.finish()
-}
-
-struct Unreadable(PathBuf);
-
-impl Unreadable {
-    fn new(path: PathBuf) -> Self {
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for Unreadable {
-    fn drop(&mut self) {
-        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
-    }
 }
 
 // ---------- trash-empty with nothing to purge ----------
@@ -131,26 +118,40 @@ fn review_trash_empty_nothing_to_purge_human_refuses_an_unwritable_journal() {
 }
 
 /// `--only-devtrim` takes the same empty-plan path and must keep the same
-/// journal check.
+/// journal check. The journal is readable, so the history it selects from is
+/// read in full and only the write check can refuse; the same fixture with a
+/// writable journal is the control.
 #[test]
 fn review_trash_empty_only_devtrim_nothing_to_purge_refuses_an_unwritable_journal() {
-    let sandbox = Sandbox::in_target("review-trash-only-journal");
-    std::fs::create_dir_all(sandbox.path().join(".Trash")).unwrap();
-    write(
-        &sandbox.path().join(".Trash/not-ours.txt"),
-        "not moved by devtrim",
-    );
+    let args = ["trash-empty", "--only-devtrim", "--apply", "--json"];
+    let fixture = |name| {
+        let sandbox = Sandbox::in_target(name);
+        write(
+            &sandbox.path().join(".Trash/not-ours.txt"),
+            "not moved by devtrim",
+        );
+        write(&sandbox.journal(), "");
+        sandbox
+    };
+    let control = fixture("review-trash-only-control");
+    let ok = run(&control, &args);
+    let document = json(&ok);
+    assert!(ok.status.success(), "control: {document}");
+    assert!(control.path().join(".Trash/not-ours.txt").exists());
+
+    let sandbox = fixture("review-trash-only-journal");
     break_journal(&sandbox);
-    let refused = run(
-        &sandbox,
-        &["trash-empty", "--only-devtrim", "--apply", "--json"],
-    );
-    let output = text(&refused);
-    assert!(!refused.status.success(), "{output}");
-    // A journal that is a directory cannot be read as history either; either
-    // refusal is acceptable, a success is not.
+    let refused = run(&sandbox, &args);
     let document = json(&refused);
+    assert!(
+        !refused.status.success(),
+        "review/trash-only-journal: an empty purge with an unwritable journal exited 0: {document}"
+    );
     assert_ne!(document["applied"], true, "{document}");
+    assert!(
+        error_text(&document).contains("journal"),
+        "review/trash-only-journal: refused for another reason: {document}"
+    );
     assert!(sandbox.path().join(".Trash/not-ours.txt").exists());
 }
 
@@ -205,7 +206,7 @@ fn review_trash_empty_unmeasurable_item_human_preview_fails() {
     let sandbox = Sandbox::in_target("review-trash-unmeasurable");
     let locked = sandbox.path().join(".Trash/locked");
     write(&locked.join("inner/secret"), "secret");
-    let sealed = Unreadable::new(locked.join("inner"));
+    let sealed = ModeGuard::unreadable(locked.join("inner"));
     let preview = run(&sandbox, &["trash-empty"]);
     let apply = run(&sandbox, &["trash-empty", "--apply"]);
     drop(sealed);
@@ -401,45 +402,7 @@ esac"#
 
 // ---------- worktrees: partial read, human output ----------
 
-fn real_git() -> PathBuf {
-    let resolved = std::process::Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .unwrap();
-    assert!(resolved.status.success(), "git is required");
-    PathBuf::from(String::from_utf8(resolved.stdout).unwrap().trim())
-}
-
-fn git(sandbox: &Sandbox, repo: &Path, args: &[&str]) {
-    let output = std::process::Command::new(real_git())
-        .env_clear()
-        .args([
-            "-c",
-            "user.name=devtrim-review",
-            "-c",
-            "user.email=review@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-            "-c",
-            "gc.auto=0",
-        ])
-        .args(args)
-        .current_dir(repo)
-        .env("HOME", sandbox.path())
-        .env("PATH", sandbox.bin())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_AUTHOR_DATE", "2020-01-01T00:00:00Z")
-        .env("GIT_COMMITTER_DATE", "2020-01-01T00:00:00Z")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+const FIXTURE_DATE: &str = "2020-01-01T00:00:00Z";
 
 /// One worktree read only in part keeps its row, the readable sibling is
 /// still measured in full, and human output warns and exits 1.
@@ -450,18 +413,24 @@ fn review_worktrees_partial_read_human_keeps_rows_and_exits_one() {
     let dev = sandbox.path().join("dev");
     let app = dev.join("app");
     write(&app.join("README"), "readme");
-    std::fs::create_dir_all(&app).unwrap();
-    git(&sandbox, &app, &["init", "-q"]);
-    git(&sandbox, &app, &["add", "README"]);
-    git(&sandbox, &app, &["commit", "-q", "-m", "fixture"]);
+    git(&sandbox, &app, FIXTURE_DATE, &["init", "-q"]);
+    git(&sandbox, &app, FIXTURE_DATE, &["add", "README"]);
     git(
         &sandbox,
         &app,
+        FIXTURE_DATE,
+        &["commit", "-q", "-m", "fixture"],
+    );
+    git(
+        &sandbox,
+        &app,
+        FIXTURE_DATE,
         &["worktree", "add", "-q", "-b", "locked", "../app-locked"],
     );
     git(
         &sandbox,
         &app,
+        FIXTURE_DATE,
         &["worktree", "add", "-q", "-b", "open", "../app-open"],
     );
     let partial = dev.join("app-locked");
@@ -470,7 +439,7 @@ fn review_worktrees_partial_read_human_keeps_rows_and_exits_one() {
     write(&readable.join("payload.bin"), &"x".repeat(4096));
     let root = dev.to_str().unwrap();
 
-    let sealed = Unreadable::new(partial.join("sealed"));
+    let sealed = ModeGuard::unreadable(partial.join("sealed"));
     let human = run(&sandbox, &["worktrees", "--root", root]);
     let document = run(&sandbox, &["worktrees", "--root", root, "--json"]);
     drop(sealed);
@@ -521,7 +490,7 @@ fn review_worktrees_partial_read_human_keeps_rows_and_exits_one() {
 /// `git` always fails, so a project that is not an orphan is a Git error
 /// (nonzero), while an orphan is a skip note (exit 0): the two outcomes say
 /// how devtrim parsed the file.
-fn gitfile_case(name: &str, marker: impl FnOnce(&Path) -> Vec<u8>) -> (Output, PathBuf) {
+fn gitfile_case(name: &str, marker: impl FnOnce(&Path) -> Vec<u8>) -> Output {
     let sandbox = Sandbox::in_target(name);
     sandbox.script("git", "exit 128");
     let dev = sandbox.path().join("dev");
@@ -530,12 +499,10 @@ fn gitfile_case(name: &str, marker: impl FnOnce(&Path) -> Vec<u8>) -> (Output, P
     write(&project.join("node_modules/pkg/index.js"), "dependency");
     let bytes = marker(sandbox.path());
     std::fs::write(project.join(".git"), bytes).unwrap();
-    let output = run(
+    run(
         &sandbox,
         &["clean", "node-modules", "--root", dev.to_str().unwrap()],
-    );
-    // The sandbox is removed on drop; the output is all the caller needs.
-    (output, project)
+    )
 }
 
 fn assert_orphan(case: &str, output: &Output) {
@@ -558,14 +525,14 @@ fn assert_not_orphan(case: &str, output: &Output) {
 /// an orphan. The same CRLF naming a missing gitdir is the control.
 #[test]
 fn review_gitfile_crlf_is_stripped() {
-    let (output, _) = gitfile_case("review-gitfile-crlf", |home| {
+    let output = gitfile_case("review-gitfile-crlf", |home| {
         let gitdir = home.join("gitdirs/wt");
         std::fs::create_dir_all(&gitdir).unwrap();
         format!("gitdir: {}\r\n", gitdir.display()).into_bytes()
     });
     assert_not_orphan("review/gitfile-crlf", &output);
 
-    let (output, _) = gitfile_case("review-gitfile-crlf-control", |home| {
+    let output = gitfile_case("review-gitfile-crlf-control", |home| {
         format!("gitdir: {}\r\n", home.join("gitdirs/missing").display()).into_bytes()
     });
     assert_orphan("review/gitfile-crlf control", &output);
@@ -576,14 +543,14 @@ fn review_gitfile_crlf_is_stripped() {
 /// that exists only without the space is an orphan.
 #[test]
 fn review_gitfile_trailing_spaces_are_kept() {
-    let (output, _) = gitfile_case("review-gitfile-space", |home| {
+    let output = gitfile_case("review-gitfile-space", |home| {
         let gitdir = home.join("gitdirs/wt ");
         std::fs::create_dir_all(&gitdir).unwrap();
         format!("gitdir: {}\n", gitdir.display()).into_bytes()
     });
     assert_not_orphan("review/gitfile-space", &output);
 
-    let (output, _) = gitfile_case("review-gitfile-space-control", |home| {
+    let output = gitfile_case("review-gitfile-space-control", |home| {
         std::fs::create_dir_all(home.join("gitdirs/wt")).unwrap();
         format!("gitdir: {} \n", home.join("gitdirs/wt").display()).into_bytes()
     });
@@ -594,7 +561,7 @@ fn review_gitfile_trailing_spaces_are_kept() {
 /// to devtrim's working directory: `../gitdirs/wt` exists only from there.
 #[test]
 fn review_gitfile_relative_path_resolves_against_its_folder() {
-    let (output, project) = gitfile_case("review-gitfile-relative", |home| {
+    let output = gitfile_case("review-gitfile-relative", |home| {
         std::fs::create_dir_all(home.join("dev/gitdirs/wt")).unwrap();
         b"gitdir: ../gitdirs/wt\n".to_vec()
     });
@@ -602,10 +569,9 @@ fn review_gitfile_relative_path_resolves_against_its_folder() {
         !Path::new("../gitdirs/wt").exists(),
         "the test's working directory must not hold the relative target"
     );
-    assert!(project.ends_with("dev/wt"));
     assert_not_orphan("review/gitfile-relative", &output);
 
-    let (output, _) = gitfile_case("review-gitfile-relative-control", |_| {
+    let output = gitfile_case("review-gitfile-relative-control", |_| {
         b"gitdir: ../gitdirs/missing\n".to_vec()
     });
     assert_orphan("review/gitfile-relative control", &output);

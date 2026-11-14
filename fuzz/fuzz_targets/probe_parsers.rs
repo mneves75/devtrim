@@ -19,6 +19,18 @@ fuzz_target!(|data: &[u8]| {
         assert!(paths.iter().all(|path| path.is_absolute()));
     }
     let _ = devtrim::fuzz_api::parse_lsof_mappings(output, exit_code);
+    if let Ok(files) = devtrim::fuzz_api::parse_lsof_open_files(output, exit_code) {
+        assert!(!files.is_empty());
+        assert!(files.iter().all(|(_, path)| path.is_absolute()));
+    }
+    if let Ok(decoded) = devtrim::fuzz_api::decode_lsof_name(output) {
+        // Every escape is at least two bytes for one, so decoding never grows
+        // a name, and a name without an escape character decodes to itself.
+        assert!(decoded.len() <= output.len());
+        if !output.iter().any(|byte| matches!(byte, b'\\' | b'^')) {
+            assert_eq!(decoded, output);
+        }
+    }
     if let Ok(version) = std::str::from_utf8(output) {
         let _ = devtrim::fuzz_api::codex_version_core(version);
     }

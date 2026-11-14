@@ -99,7 +99,7 @@ fn eval_trash_owned_identity_beyond_display_limit_across_retained_generations() 
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/trash-retained-preview",
+        "eval/trash-retained-preview",
     );
 }
 
@@ -125,7 +125,7 @@ fn eval_trash_malformed_retained_record_beyond_display_limit_refuses_everything(
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/trash-retained-malformed-preview",
+        "eval/trash-malformed-unchanged",
     );
     // The ordinary display intentionally reads only its newest tail.
     let display = run(&sandbox, &["history", "--limit", "1", "--json"]);

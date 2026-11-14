@@ -8,12 +8,14 @@
 mod support;
 
 use serde_json::Value;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use support::{Sandbox, git_activity, json, run};
+use support::{ModeGuard, Sandbox, git, git_activity, json, real_git, run};
 
 fn docker_script(sandbox: &Sandbox, image_prune_exit: i32) {
+    // The `system df` format argument contains a real tab, so it is matched on
+    // a prefix: an exact pattern would fall through to the catch-all and turn
+    // a prune-failure test into a scan-failure test.
     let body = format!(
         "{}{image_prune_exit}{}",
         "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\t0\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') printf 'prune refused by daemon\\n' >&2; exit ",
@@ -174,28 +176,6 @@ fn purge_fixture(sandbox: &Sandbox) -> (PathBuf, PathBuf, PathBuf) {
     (dev.clone(), dev.join("alpha"), dev.join("beta"))
 }
 
-/// Restores a fixture folder's mode when dropped, so the sandbox can be removed
-/// even when an assertion fails first.
-struct Unreadable(PathBuf);
-
-impl Unreadable {
-    fn new(path: PathBuf) -> Self {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        assert!(
-            std::fs::read_dir(&path).is_err(),
-            "fixture is still readable; run without privileges that ignore modes"
-        );
-        Self(path)
-    }
-}
-
-impl Drop for Unreadable {
-    fn drop(&mut self) {
-        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).ok();
-    }
-}
-
 /// One cache the scan cannot measure must not take the rest of the category
 /// with it. The unreadable cache is named in one error finding, so the run
 /// still exits nonzero, and is never offered; the readable cache listed before
@@ -211,7 +191,8 @@ fn one_unreadable_cache_does_not_fail_the_caches_category() {
     for cache in [&before, &broken, &after] {
         support::write(&cache.join("entry"), "cached");
     }
-    let locked = Unreadable::new(broken.join("v1"));
+    std::fs::create_dir_all(broken.join("v1")).unwrap();
+    let locked = ModeGuard::unreadable(broken.join("v1"));
 
     let output = run(&sandbox, &["clean", "caches", "--json"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -295,13 +276,7 @@ fn finding_paths(value: &Value) -> Vec<String> {
 #[test]
 fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() {
     let sandbox = Sandbox::in_target("tracked-real-git");
-    let resolved = Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .unwrap();
-    assert!(resolved.status.success(), "git is required for this test");
-    let git = String::from_utf8(resolved.stdout).unwrap();
-    sandbox.script("git", &format!("exec '{}' \"$@\"", git.trim()));
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
     let project = sandbox.path().join("dev/app");
     std::fs::create_dir_all(project.join("Pods/Alamofire")).unwrap();
     std::fs::write(project.join("Podfile"), "platform :ios, '17.0'\n").unwrap();
@@ -314,33 +289,11 @@ fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() 
     std::fs::create_dir_all(project.join("target/debug")).unwrap();
     std::fs::write(project.join("target/debug/out"), vec![b'x'; 4096]).unwrap();
     for args in [
-        vec!["init", "-q"],
-        vec!["add", "-f", "--", "Podfile", "Pods", "Cargo.toml"],
-        vec![
-            "-c",
-            "user.name=devtrim-test",
-            "-c",
-            "user.email=devtrim@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-q",
-            "-m",
-            "vendored pods",
-        ],
+        &["init", "-q"][..],
+        &["add", "-f", "--", "Podfile", "Pods", "Cargo.toml"],
+        &["commit", "-q", "-m", "vendored pods"],
     ] {
-        let status = Command::new(git.trim())
-            .args(&args)
-            .current_dir(&project)
-            .env("HOME", sandbox.path())
-            .env_remove("XDG_CONFIG_HOME")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
-            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
-            .status()
-            .unwrap();
-        assert!(status.success(), "git {args:?} failed");
+        git(&sandbox, &project, "2000-01-01T00:00:00Z", args);
     }
     let project = project.canonicalize().unwrap();
 
@@ -349,9 +302,9 @@ fn the_tracked_file_check_uses_real_git_and_ignores_ambient_pathspec_settings() 
     for setting in ["GIT_ICASE_PATHSPECS", "GIT_LITERAL_PATHSPECS"] {
         let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
             .args(["purge", "--root", project.to_str().unwrap(), "--json"])
+            .env_clear()
             .env("HOME", sandbox.path())
             .env("PATH", sandbox.bin())
-            .env_remove("XDG_STATE_HOME")
             .env(setting, "1")
             .output()
             .unwrap();
@@ -398,7 +351,6 @@ fn project_cleanup_probe_failures_are_nonzero_json_errors() {
             .count()
     };
 
-    sandbox.script("pgrep", "exit 1");
     let control = run(&sandbox, &["scan", "--json"]);
     assert_eq!(
         offered(&json(&control)),
@@ -461,6 +413,7 @@ fn status_reads_system_tools_in_the_c_locale() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
         .args(["status", "--json"])
+        .env_clear()
         .env("HOME", sandbox.path())
         .env("PATH", sandbox.bin())
         .env("LC_ALL", "pt_BR.UTF-8")
@@ -527,8 +480,6 @@ fn owner_reported_cache_outside_namespace_is_skipped() {
 #[test]
 fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
     let sandbox = Sandbox::new("docker-failure");
-    // The format argument contains a real tab, so match on a prefix: an exact pattern
-    // would silently fall through to the catch-all and make this a scan-failure test.
     docker_script(&sandbox, 9);
     let output = run(
         &sandbox,
@@ -544,7 +495,6 @@ fn failed_docker_prune_is_nonzero_with_truthful_zero_summary() {
         errors[0].as_str().unwrap().contains("image prune -a -f"),
         "expected prune failure, got {errors:?}"
     );
-    // A failed typed command is diagnosable: its exit status and stderr survive.
     assert!(
         errors[0].as_str().unwrap().contains("exit status: 9")
             && errors[0]
@@ -856,11 +806,19 @@ fn an_interrupt_with_a_full_unread_stderr_still_exits_promptly_and_stops_deletin
         .unwrap();
 
     let journal = sandbox.journal();
-    for _ in 0..6000 {
-        if std::fs::read_to_string(&journal).is_ok_and(|text| text.contains('\n')) {
-            break;
+    let journaled = (0..6000).any(|_| {
+        let written = std::fs::read_to_string(&journal).is_ok_and(|text| text.contains('\n'));
+        if !written {
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        written
+    });
+    if !journaled {
+        devtrim.kill().ok();
+        devtrim.wait().ok();
+        panic!(
+            "the apply wrote no journal record within 30 s, so the signal would not interrupt it"
+        );
     }
     Command::new("/bin/kill")
         .args(["-s", "INT", &devtrim.id().to_string()])
