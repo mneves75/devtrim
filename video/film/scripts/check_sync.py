@@ -6,8 +6,9 @@ usage: check_sync.py <timing.json> <video.mp4> [--sfx <dir>]
 Picture side: every scene boundary must sit on the beat grid and carry a swish
 cue on the same frame; every click and hit cue must sit on the grid's eighth
 notes. Audio side: decodes the MP4's audio (honouring its edit list, so encoder
-priming counts); every kick beat, every click or hit cue and the final chord
-must have its strongest attack within ±50 ms less than one video frame away.
+priming counts); for every kick beat, every click or hit cue and the final
+chord, the strongest attack within ±50 ms of it must clear a fixed onset floor
+and lie less than one video frame away from it.
 A click or hit placed on a kick would pass on the kick alone, so with --sfx
 (the folder holding music.py's sfx-click.wav, sfx-hit.wav and sfx-swish.wav,
 one stem per cue kind, the same samples the mix adds) every click and hit must
