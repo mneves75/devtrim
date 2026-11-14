@@ -308,7 +308,6 @@ fn append_at(location: &JournalLocation, record: &JournalRecord) -> Result<()> {
         }
     }
     file.write_all(&line)?;
-    file.flush()?;
     file.sync_data()?;
     Ok(())
 }

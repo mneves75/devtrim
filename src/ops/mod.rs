@@ -240,7 +240,6 @@ pub(crate) fn scan_all(ctx: &Ctx) -> ScanResult {
     let mut findings = Vec::new();
     let mut sections = Vec::new();
     let mut errors = Vec::new();
-    // Scans may overlap, but apply remains serial so journal attempt/result pairs cannot interleave.
     std::thread::scope(|scope| {
         let mut scans = Vec::with_capacity(operations.len());
         for operation in &operations {
@@ -249,7 +248,6 @@ pub(crate) fn scan_all(ctx: &Ctx) -> ScanResult {
             let observations = &observations;
             scans.push((name, scope.spawn(move || operation.scan(ctx, observations))));
         }
-        // ponytail: diagnostics use arrival order; use per-op buffers merged here if ordered diagnostics become part of the contract.
         for (name, scan_thread) in scans {
             match scan_thread.join() {
                 Ok(Ok(mut operation_findings)) => {
@@ -689,8 +687,9 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
             ));
         }
     } else {
-        // macOS has no fd-relative unlink, so the final single-entry removal is
-        // by the private, unpredictable quarantine name after re-verification.
+        // An unlink names an entry, not an object, so the final single-entry
+        // removal is by the private, unpredictable quarantine name after
+        // re-verification.
         dir.remove_file(&quarantine_name).with_context(|| {
             format!(
                 "cannot delete quarantined entry: {}",
@@ -1675,7 +1674,7 @@ mod tests {
         remove_test_path(home);
     }
 
-    /// The tag is read for every directory deletion, so a tag that cannot be
+    /// The tag is read for every granted directory deletion, so a tag that cannot be
     /// read may only withhold uv's exception — never refuse an ordinary target
     /// that had no reason to consult it.
     #[test]

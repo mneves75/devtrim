@@ -1242,10 +1242,6 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
     // the sibling `local_storage` file backs `localStorage`. Both are documented
     // as persistent across runs and nothing rebuilds them. An exact-name list
     // cannot express a `location_data` exclusion.
-    // Go's own `go help cache` says clearing it should not be necessary in
-    // typical use. The one part that is not a pure rebuild is the fuzz corpus
-    // kept beneath it: those coverage-expanding inputs come back only by
-    // fuzzing again.
     DeletionEntry {
         label: "Go build cache",
         relative: "go-build",
@@ -1436,14 +1432,14 @@ fn warn_data_loss(ctx: &Ctx) {
 /// the acknowledgment unsatisfiable once a large item is excluded from the plan.
 pub(crate) fn trash_gate(findings: &[Finding], confirm_gb: Option<u64>) -> Result<()> {
     let Some(want) = confirm_gb else {
-        bail!("Trash purge requires --confirm=<gb> matching current Trash size");
+        bail!("Trash purge requires --confirm=<gb> matching the previewed items' size");
     };
     let actual_gb = crate::report::actionable_bytes(findings) / (1024 * 1024 * 1024);
     let low = actual_gb.saturating_sub(2);
     let high = actual_gb.saturating_add(2);
     if !(low..=high).contains(&want) {
         bail!(
-            "--confirm={want} but Trash holds ~{actual_gb} GB; pass --confirm={actual_gb} to acknowledge"
+            "--confirm={want} but the previewed items total ~{actual_gb} GB; pass --confirm={actual_gb} to acknowledge"
         );
     }
     Ok(())
@@ -1562,15 +1558,14 @@ pub(crate) fn dir_size(path: &Path) -> Result<u64> {
 /// fresh timestamp.
 ///
 /// The timestamp is `None` when any file's modification time could not be read.
-/// It is deliberately not an error: `dir_size` — which eight of the ten
-/// categories reach for and which needs no timestamp at all — would otherwise
+/// It is deliberately not an error: `dir_size`, which most categories reach
+/// for and which needs no timestamp at all, would otherwise
 /// start failing on a tree it can measure perfectly well. A caller that judges
 /// staleness must treat `None` as a refusal; one that only wants bytes can
 /// ignore it.
 ///
 /// A subtree with no regular files reports `UNIX_EPOCH`, which reads as
-/// maximally stale — harmless, because it also measures zero bytes, and every
-/// caller skips a zero-byte target.
+/// maximally stale; a caller that judges age must handle it, as `xcode` does.
 pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTime>)> {
     let mut bytes = 0u64;
     let mut usage = DiskUsage::default();
@@ -2031,7 +2026,7 @@ fn decode_lsof_name(name: &[u8]) -> Result<Vec<u8>> {
                     .get(index + 2..index + 4)
                     .and_then(|hex| std::str::from_utf8(hex).ok())
                     .and_then(|hex| u8::from_str_radix(hex, 16).ok())
-                    .ok_or_else(|| anyhow::anyhow!("lsof returned an invalid cwd escape"))?;
+                    .ok_or_else(|| anyhow::anyhow!("lsof returned an invalid name escape"))?;
                 decoded.push(value);
                 index += 4;
                 continue;
@@ -2043,11 +2038,11 @@ fn decode_lsof_name(name: &[u8]) -> Result<Vec<u8>> {
                 b'r' => b'\r',
                 b'b' => 0x08,
                 b'f' => 0x0c,
-                _ => bail!("lsof returned an unknown cwd escape"),
+                _ => bail!("lsof returned an unknown name escape"),
             }),
-            (b'\\', None) => bail!("lsof returned a truncated cwd escape"),
+            (b'\\', None) => bail!("lsof returned a truncated name escape"),
             (b'^', Some(b'@'..=b'_' | b'?')) => {
-                bail!("lsof cwd name is ambiguous: `^X` may stand for a control byte")
+                bail!("lsof name is ambiguous: `^X` may stand for a control byte")
             }
             (other, _) => {
                 decoded.push(other);

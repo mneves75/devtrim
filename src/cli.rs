@@ -27,7 +27,7 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub yolo: bool,
 
-    /// Permanently delete instead of moving filesystem targets to Trash (filesystem cleanup only)
+    /// Permanently delete instead of moving filesystem targets to Trash (filesystem cleanup and `scan` previews only)
     #[arg(long, global = true)]
     pub shred: bool,
 
