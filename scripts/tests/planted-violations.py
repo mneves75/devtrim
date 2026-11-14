@@ -2493,6 +2493,16 @@ def run_cases(scratch: Path, prefix: str, jobs: int, test_jobs: int, summary: di
         for longer in markers:
             if longer != shorter and longer.startswith(shorter):
                 fail(f"ERROR: marker {shorter!r} is a prefix of {longer!r}")
+    # The same substring match lets any other `PV` tag that extends a marker
+    # (`PV eval/x-preview` beside `PV eval/x`) pass for that case's proof.
+    for source in sorted([*(REPOSITORY / "src").rglob("*.rs"), *(REPOSITORY / "tests").rglob("*.rs")]):
+        for tag in set(re.findall(r"PV [A-Za-z0-9_./-]+", source.read_text())):
+            for marker in markers:
+                if tag != marker and tag.startswith(marker):
+                    fail(
+                        f"ERROR: tag {tag!r} in {source.relative_to(REPOSITORY)} "
+                        f"extends marker {marker!r}"
+                    )
 
     cases = [case for case in CASES if case.name.startswith(prefix)]
     if not cases:

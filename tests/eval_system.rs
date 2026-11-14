@@ -386,12 +386,12 @@ fn eval_clean_toolchains_removes_only_unreferenced_toolchains() {
     assert_eq!(
         actionable_targets(&document),
         targets,
-        "PV eval/toolchains-plan: the preview must offer exactly the unreferenced toolchains"
+        "eval/toolchains-plan: the preview must offer exactly the unreferenced toolchains"
     );
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/toolchains-preview",
+        "eval/toolchains-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -413,7 +413,7 @@ fn eval_clean_toolchains_removes_only_unreferenced_toolchains() {
             removed: targets.clone(),
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
-        "PV eval/toolchains-apply",
+        "eval/toolchains-apply",
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
@@ -480,11 +480,11 @@ fn eval_clean_toolchains_fails_closed_without_a_verifiable_latest() {
                 scratch: vec![sandbox.path().join(".local/state/devtrim")],
                 ..Allowed::default()
             },
-            "PV eval/toolchains-closed-apply",
+            "eval/toolchains-closed-apply",
         );
         assert!(
             !apply.status.success(),
-            "PV eval/toolchains-closed-apply: {name} must fail the apply"
+            "eval/toolchains-closed-apply: {name} must fail the apply"
         );
     }
 }
@@ -685,12 +685,12 @@ fn eval_clean_installers_removes_only_stale_installer_files() {
     assert_eq!(
         actionable_targets(&document),
         targets,
-        "PV eval/installers-plan: the preview must offer exactly the stale installer files"
+        "eval/installers-plan: the preview must offer exactly the stale installer files"
     );
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/installers-preview",
+        "eval/installers-preview",
     );
     let tool = document["findings"]
         .as_array()
@@ -725,7 +725,7 @@ fn eval_clean_installers_removes_only_stale_installer_files() {
             removed: targets.clone(),
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
-        "PV eval/installers-apply",
+        "eval/installers-apply",
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
@@ -1019,7 +1019,7 @@ fn eval_clean_agents_removes_only_regenerable_caches_and_stale_history() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/agents-preview",
+        "eval/agents-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -1034,7 +1034,7 @@ fn eval_clean_agents_removes_only_regenerable_caches_and_stale_history() {
             removed: targets.clone(),
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
-        "PV eval/agents-apply",
+        "eval/agents-apply",
     );
     // `.local` is scratch above, so OpenCode's persistent state is checked here.
     assert_eq!(
@@ -1042,7 +1042,7 @@ fn eval_clean_agents_removes_only_regenerable_caches_and_stale_history() {
             .ok()
             .as_deref(),
         Some("keep"),
-        "PV eval/agents-apply: OpenCode's persistent state was removed"
+        "eval/agents-apply: OpenCode's persistent state was removed"
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
@@ -1134,7 +1134,7 @@ fn eval_a_malformed_codex_homes_setting_refuses_the_run() {
                 scratch: vec![sandbox.path().join(".local/state/devtrim")],
                 ..Allowed::default()
             },
-            "PV eval/codex-homes-closed-apply",
+            "eval/codex-homes-closed-apply",
         );
     }
 }
@@ -1265,7 +1265,7 @@ fn eval_clean_simulators_deletes_only_unavailable_devices_by_exact_udid() {
             argv(&["xcrun", "simctl", "delete", GONE_ONE]),
             argv(&["xcrun", "simctl", "delete", GONE_TWO]),
         ],
-        "PV eval/simulators-plan: the preview must offer a delete for exactly the unavailable devices"
+        "eval/simulators-plan: the preview must offer a delete for exactly the unavailable devices"
     );
     // The working device appears only as report-only disclosure.
     assert_eq!(
@@ -1277,7 +1277,7 @@ fn eval_clean_simulators_deletes_only_unavailable_devices_by_exact_udid() {
             "Simulator device data (1 available device)".to_string(),
             "none".to_string()
         )],
-        "PV eval/simulators-plan: working simulators must stay report-only"
+        "eval/simulators-plan: working simulators must stay report-only"
     );
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
@@ -1285,12 +1285,12 @@ fn eval_clean_simulators_deletes_only_unavailable_devices_by_exact_udid() {
             scratch: vec![sandbox.path().join("stub")],
             ..Allowed::default()
         },
-        "PV eval/simulators-preview",
+        "eval/simulators-preview",
     );
     assert_eq!(
         calls(&sandbox),
         vec![argv(&["xcrun", "--version"]), list.clone()],
-        "PV eval/simulators-preview: a preview may only probe, never delete"
+        "eval/simulators-preview: a preview may only probe, never delete"
     );
     assert!(preview.status.success(), "{document}");
     let before = calls(&sandbox).len();
@@ -1309,7 +1309,7 @@ fn eval_clean_simulators_deletes_only_unavailable_devices_by_exact_udid() {
                 sandbox.path().join(".local/state/devtrim"),
             ],
         },
-        "PV eval/simulators-apply",
+        "eval/simulators-apply",
     );
     // Scan once, then a fresh recheck before each previewed delete.
     assert_eq!(
@@ -1322,7 +1322,7 @@ fn eval_clean_simulators_deletes_only_unavailable_devices_by_exact_udid() {
             list,
             argv(&["xcrun", "simctl", "delete", GONE_TWO]),
         ],
-        "PV eval/simulators-apply: the exact xcrun sequence"
+        "eval/simulators-apply: the exact xcrun sequence"
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], 2);
@@ -1550,12 +1550,12 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
             scratch: vec![sandbox.path().join("stub")],
             ..Allowed::default()
         },
-        "PV eval/docker-preview",
+        "eval/docker-preview",
     );
     assert_eq!(
         calls(&sandbox),
         probes,
-        "PV eval/docker-preview: a preview may only probe the daemon"
+        "eval/docker-preview: a preview may only probe the daemon"
     );
     assert!(preview.status.success(), "{document}");
     let before = calls(&sandbox).len();
@@ -1574,7 +1574,7 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
             ],
             ..Allowed::default()
         },
-        "PV eval/docker-apply",
+        "eval/docker-apply",
     );
     let mut expected = probes;
     expected.push(image_prune.clone());
@@ -1582,7 +1582,7 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
     assert_eq!(
         calls(&sandbox)[before..],
         expected,
-        "PV eval/docker-apply: probes, then exactly the two previewed prunes"
+        "eval/docker-apply: probes, then exactly the two previewed prunes"
     );
     assert!(
         calls(&sandbox)
@@ -1592,7 +1592,7 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
             && !calls(&sandbox)
                 .iter()
                 .any(|call| call.contains(&"volume".to_string())),
-        "PV eval/docker-apply: a volume or system prune ran"
+        "eval/docker-apply: a volume or system prune ran"
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], 2);
@@ -1739,12 +1739,12 @@ fn eval_optimize_runs_exactly_the_selected_fixed_argv() {
             fonts.clone(),
             argv(&[LSREGISTER, "-gc", "-r", "-f", "-apps", "local,user"]),
         ],
-        "PV eval/optimize-plan: the catalog's fixed argv, with no root-requiring task"
+        "eval/optimize-plan: the catalog's fixed argv, with no root-requiring task"
     );
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/optimize-preview",
+        "eval/optimize-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -1805,12 +1805,12 @@ fn eval_optimize_runs_exactly_the_selected_fixed_argv() {
             ],
             ..Allowed::default()
         },
-        "PV eval/optimize-apply",
+        "eval/optimize-apply",
     );
     assert_eq!(
         calls(&sandbox),
         vec![quicklook.clone(), fonts.clone()],
-        "PV eval/optimize-apply: exactly the two selected commands, each once, in order"
+        "eval/optimize-apply: exactly the two selected commands, each once, in order"
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], 2);
@@ -1922,7 +1922,7 @@ fn eval_trash_empty_purges_exactly_the_previewed_direct_children() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/trash-empty-preview",
+        "eval/trash-empty-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -1949,11 +1949,11 @@ fn eval_trash_empty_purges_exactly_the_previewed_direct_children() {
                 scratch: vec![sandbox.path().join(".local/state/devtrim")],
                 ..Allowed::default()
             },
-            "PV eval/trash-empty-refusals",
+            "eval/trash-empty-refusals",
         );
         assert!(
             !refused.status.success(),
-            "PV eval/trash-empty-refusals: {name} must be refused"
+            "eval/trash-empty-refusals: {name} must be refused"
         );
     }
 
@@ -1968,7 +1968,7 @@ fn eval_trash_empty_purges_exactly_the_previewed_direct_children() {
             removed: targets.clone(),
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
-        "PV eval/trash-empty-apply",
+        "eval/trash-empty-apply",
     );
     assert!(
         String::from_utf8_lossy(&apply.stderr).contains("skipping Git metadata Trash item"),
@@ -2283,7 +2283,7 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
     pristine.assert_only(
         &Tree::snapshot(home),
         &Allowed::default(),
-        "PV eval/trash-only-preview",
+        "eval/trash-only-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -2305,7 +2305,7 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
             removed: targets.clone(),
             scratch: vec![home.join(".local")],
         },
-        "PV eval/trash-only-apply",
+        "eval/trash-only-apply",
     );
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
@@ -2521,7 +2521,7 @@ fn eval_commands_reject_flags_they_cannot_honor_and_change_nothing() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/flags-nothing-changed",
+        "eval/flags-nothing-changed",
     );
 }
 

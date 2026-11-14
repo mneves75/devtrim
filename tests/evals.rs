@@ -252,7 +252,7 @@ fn eval_clean_caches_removes_every_listed_cache_and_nothing_else() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/caches-preview",
+        "eval/caches-preview",
     );
 
     let apply = run(
@@ -301,7 +301,7 @@ fn eval_apply_json_reports_each_items_result() {
     assert!(!apply.status.success(), "{document}");
     let findings = document["findings"].as_array().unwrap();
     let results = document["results"].as_array().unwrap_or_else(|| {
-        panic!("PV eval/apply-results: the apply document lists no results: {document}")
+        panic!("eval/apply-results: the apply document lists no results: {document}")
     });
     let actionable: Vec<usize> = findings
         .iter()
@@ -812,7 +812,7 @@ fn eval_project_category(
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/projects-preview",
+        "eval/projects-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -921,7 +921,7 @@ fn eval_excluded_roots(names: &[&str], tag: &str) {
                 pristine.assert_only(
                     &Tree::snapshot(sandbox.path()),
                     &Allowed::default(),
-                    "PV eval/excluded-roots-preview",
+                    "eval/excluded-roots-preview",
                 );
             }
         }
@@ -964,7 +964,7 @@ fn eval_root_at_top_level_node_modules_still_offers_the_install() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/excluded-roots-install-control",
+        "eval/excluded-roots-install-control",
     );
 }
 
@@ -1156,7 +1156,7 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
         &Allowed::default(),
-        "PV eval/xcode-preview",
+        "eval/xcode-preview",
     );
     assert!(preview.status.success(), "{document}");
 
@@ -1171,7 +1171,7 @@ fn eval_clean_xcode_removes_only_idle_build_trees_while_xcode_runs() {
             removed: expected.clone(),
             scratch: vec![sandbox.path().join(".local/state/devtrim")],
         },
-        "PV eval/xcode-apply",
+        "eval/xcode-apply",
     );
     assert!(apply.status.success(), "{document}");
     assert_journaled(&sandbox, "xcode", "shred", &expected);
