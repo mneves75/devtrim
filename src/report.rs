@@ -471,12 +471,14 @@ pub fn gb(bytes: u64) -> String {
     }
 }
 
+/// The TUI's danger ladder (`theme::danger_token`), in `colored`'s colours.
 fn danger_tag(danger: u8) -> colored::ColoredString {
-    match danger {
-        0..=2 => format!("danger:{danger}").green(),
-        3..=5 => format!("danger:{danger}").yellow(),
-        6..=8 => format!("danger:{danger}").red(),
-        _ => format!("danger:{danger}").red().bold(),
+    let tag = format!("danger:{danger}");
+    match crate::theme::danger_token(danger) {
+        crate::theme::Token::DangerLow => tag.green(),
+        crate::theme::Token::DangerModerate => tag.yellow(),
+        crate::theme::Token::DangerHigh => tag.red(),
+        _ => tag.red().bold(),
     }
 }
 
@@ -620,7 +622,18 @@ fn scan_text(findings: &[Finding], sections: &[ScanSection], failed: &[&str], al
         let mut largest: Vec<Finding> = part.to_vec();
         largest.sort_by_key(|finding| std::cmp::Reverse(finding.size_bytes));
         let rest = largest.split_off(SCAN_LARGEST);
-        output.push_str(&findings_text(&largest));
+        // Project headers come from consecutive runs, so the shown findings
+        // are grouped by project, the project holding the largest first.
+        let mut shown = Vec::with_capacity(largest.len());
+        while let Some(first) = largest.first() {
+            let project = first.project.clone();
+            let (same, other): (Vec<Finding>, Vec<Finding>) = largest
+                .into_iter()
+                .partition(|finding| finding.project == project);
+            shown.extend(same);
+            largest = other;
+        }
+        output.push_str(&findings_text(&shown));
         output.push_str(&format!(
             "           … {} more ({}); `devtrim clean {name}` lists them, `devtrim scan --all` lists everything\n",
             rest.len(),
@@ -937,6 +950,59 @@ mod tests {
         let mixed = summary_headline(&summary(5 * gib, 2 * gib));
         assert!(mixed.contains("~3.0 GB reclaimed"), "{mixed}");
         assert!(mixed.contains("~2.0 GB moved to Trash"), "{mixed}");
+    }
+
+    /// A long category lists its largest findings; when two projects
+    /// interleave by size, each still gets one header counting what it shows.
+    #[test]
+    fn a_summarized_category_names_each_project_once() {
+        let mib = 1024 * 1024;
+        let finding = |project: &str, size: u64, index: usize| {
+            Finding::new(
+                "node_modules",
+                Some(PathBuf::from(format!("/data/item-{index}"))),
+                size * mib,
+                "stale",
+                5,
+                Action::Trash,
+            )
+            .with_project(Path::new(project))
+        };
+        let findings: Vec<Finding> = [90, 80, 70, 60, 50, 4, 3, 2, 1]
+            .into_iter()
+            .enumerate()
+            .map(|(index, size)| {
+                let project = if index % 2 == 0 {
+                    "/work/alpha"
+                } else {
+                    "/work/beta"
+                };
+                finding(project, size, index)
+            })
+            .collect();
+        let sections = [ScanSection {
+            category: "node_modules",
+            range: 0..findings.len(),
+        }];
+
+        let output = scan_text(&findings, &sections, &[], false);
+
+        assert_eq!(output.matches("/work/alpha").count(), 1, "{output}");
+        assert_eq!(output.matches("/work/beta").count(), 1, "{output}");
+        assert!(output.contains("210 MB in 3 item(s)"), "{output}");
+        assert!(output.contains("140 MB in 2 item(s)"), "{output}");
+        assert!(
+            output.find("/work/alpha") < output.find("/work/beta"),
+            "{output}"
+        );
+        // The largest five are still the ones shown.
+        for index in 0..9 {
+            assert_eq!(
+                output.contains(&format!("/data/item-{index}")),
+                index < 5,
+                "{output}"
+            );
+        }
     }
 
     #[test]
