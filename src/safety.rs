@@ -1626,18 +1626,22 @@ pub(crate) fn file_size(metadata: &std::fs::Metadata, path: &Path) -> Result<Siz
     use std::os::unix::fs::MetadataExt;
 
     let allocated = allocated_bytes(metadata, path)?;
-    let private = (metadata.is_file() && private_size_trusted(path, metadata.dev()))
-        .then(|| apfs_size::file_blocks(path, metadata.dev(), metadata.ino()))
-        .flatten()
-        .map(|blocks| blocks.private);
-    Ok(Size::new(allocated, Some(private.unwrap_or(allocated))))
+    let private = if !metadata.is_file() || !private_size_trusted(path, metadata.dev()) {
+        allocated
+    } else if metadata.nlink() > 1 {
+        // A further link outside the target keeps every block.
+        0
+    } else {
+        private_or_nothing(metadata, path)
+    };
+    Ok(Size::new(allocated, Some(private)))
 }
 
 /// Allocated bytes of a walked tree, summed one file at a time, each
 /// hard-linked file once, as `du` counts it: its links share one set of
 /// blocks. An estimating walk (`estimating`) also sums the lower bound
 /// `Size::frees_at_least` reports: each file's APFS private size where that
-/// is true, else its allocated blocks, and nothing for a file with further
+/// is true (nothing where APFS gives none), else its allocated blocks, and nothing for a file with further
 /// hard links, which one outside the tree would keep. Private blocks belong
 /// to one file alone, so the sum never exceeds what deleting the tree frees. Blocks
 /// clones share are left out even when every clone APFS counts is inside the
@@ -1704,7 +1708,7 @@ impl DiskUsage {
 
 impl Estimate {
     /// A file's private bytes where the private size is true; `None` keeps
-    /// its allocated blocks.
+    /// its allocated blocks, since off APFS or under a snapshot it is unknown.
     fn private_bytes(&mut self, metadata: &std::fs::Metadata, path: &Path) -> Option<u64> {
         use std::os::unix::fs::MetadataExt;
 
@@ -1713,11 +1717,17 @@ impl Estimate {
             .trusted
             .entry(dev)
             .or_insert_with(|| private_size_trusted(path, dev));
-        trusted
-            .then(|| apfs_size::file_blocks(path, dev, metadata.ino()))
-            .flatten()
-            .map(|blocks| blocks.private)
+        trusted.then(|| private_or_nothing(metadata, path))
     }
+}
+
+/// A file's APFS private size on a volume where it is true. A file APFS
+/// gives none for (a compressed file, or one replaced since its `lstat`)
+/// adds nothing: its blocks may be a clone's, and the bound must stay low.
+fn private_or_nothing(metadata: &std::fs::Metadata, path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+
+    apfs_size::file_blocks(path, metadata.dev(), metadata.ino()).map_or(0, |blocks| blocks.private)
 }
 
 /// Bytes under a directory (`DiskUsage`) for a report, and how many entries could
@@ -2492,6 +2502,22 @@ mod tests {
         let installed = tree.join("installed");
         let file = file_size(&std::fs::symlink_metadata(&installed).unwrap(), &installed).unwrap();
         assert_eq!(file, size, "one file measures as the tree holding it");
+    }
+
+    /// A single file with a link elsewhere (an installer hard-linked into
+    /// another folder) frees nothing for certain: the other link keeps it.
+    #[test]
+    fn a_hard_linked_file_frees_at_least_nothing() {
+        let fixture = crate::ops::TestFixture::new("devtrim-file-link");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let file = fixture.path().join("installer.dmg");
+        write_incompressible(&file);
+        std::fs::hard_link(&file, fixture.path().join("elsewhere.dmg")).unwrap();
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = file_size(&std::fs::symlink_metadata(&file).unwrap(), &file).unwrap();
+        assert!(about(1).contains(&size.allocated));
+        assert_eq!(size.frees_at_least, Some(0), "{size:?}");
     }
 
     /// A tree holding a file and its clone allocates two copies, a further
