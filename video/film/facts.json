@@ -1220,6 +1220,26 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-largest"
  },
  {
+  "id": "f03194eb6",
+  "text": "explainwhy a path is or is not offeredREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-explain"
+ },
+ {
+  "id": "f0a7fbe10",
+  "text": "devtrim explain <PATH> says whether built-in protection or a protect entry refuses the path, naming the rule, and lists every finding from one fresh scan whose target is the path, holds it, or lies inside it, compared by whole components. When nothing offers it, it says so, and names the scan roots when the path lies outside all of them. PATH is read relative to the current directory; its last component is never followed, so a link is explained as itself. It never applies, refuses --apply, -y, --yolo and --shred, and exits nonzero when the scan had errors. --json emits one {\"operation\":\"explain\",\"path\":…,\"protected\":{\"builtin\":…,\"config\":…},\"findings\":[…],\"errors\":[…]} document.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-explain"
+ },
+ {
+  "id": "f75af3144",
+  "text": "diskfree space on the home volumeREAD-ONLY",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-disk"
+ },
+ {
+  "id": "fc71bd494",
+  "text": "Prints home volume: <free> free of <total>. With --warn-below SIZE (20GiB, 500MB, 1.5T; K/M/G/T and KiB–TiB are powers of 1024, KB–TB powers of 1000) it prints a warning only when free space is below SIZE and nothing otherwise, exiting 0 either way, so it can run as a Claude Code SessionStart hook. A blank, negative, non-numeric, unknown-unit or oversized SIZE is a usage error (exit 2); an unreadable volume exits 1. --json emits one {\"operation\":\"disk\",\"available_bytes\":…,\"total_bytes\":…,\"warn_below_bytes\":…,\"below\":…,\"errors\":[]} document.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-disk"
+ },
+ {
   "id": "ffb61221c",
   "text": "worktreeslinked worktrees and their sizesREAD-ONLY",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-worktrees"
@@ -1320,6 +1340,11 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
  },
  {
+  "id": "ffb5cfddf",
+  "text": "After every apply that changes something, the summary adds the home volume’s free space read just before the first change and after the last: free space on the home volume: <before> → <after> (<±change>), measured; other processes also write. It is an observation beside the estimate, not what devtrim freed: Trash moves, APFS clones, snapshots and other programs move it too. --json carries it as summary.home_volume.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-reclaim"
+ },
+ {
   "id": "fe67d207c",
   "text": "cachespackage, model, and tool download cachesTRASH",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-caches"
@@ -1365,8 +1390,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-xcode"
  },
  {
-  "id": "fbec05ba0",
-  "text": "Clears only direct children of the iOS, watchOS, tvOS and visionOS DeviceSupport folders and of DerivedData — never a file or symlink beside them — and, for a DerivedData folder holding Swift package checkouts that is not itself a Git repository, its directories but SourcePackages; apply reasserts that exact category shape before removal. DerivedData rebuilds on the next build. While Xcode, xcodebuild or its build services run, a folder changed within the activity window (active_days) or holding a file an Xcode process has open is kept, and every other folder is still offered; apply judges each again. A folder holding a project's resolved Swift packages is cleaned around them: each checkout in its SourcePackages is a Git clone, which devtrim never deletes, so the folder's other directories — Build, Index.noindex and the like — are offered one by one and SourcePackages stays. DeviceSupport symbols are copied again only from a connected device running that exact OS build, so a superseded build matters only for symbolicating its crash logs. A folder that cannot be read or measured offers nothing and is named in one error, so the run exits nonzero, while the folders beside it are still offered. Archives exempt by design — they're release artifacts.",
+  "id": "f86e8d36d",
+  "text": "Clears only direct children of the iOS, watchOS, tvOS and visionOS DeviceSupport folders and of DerivedData — never a file or symlink beside them — and, for a DerivedData folder holding Swift package checkouts that is not itself a Git repository, its directories but SourcePackages; apply reasserts that exact category shape before removal. DerivedData rebuilds on the next build. While Xcode, xcodebuild or its build services run, a folder changed within the activity window (active_days) or holding a file an Xcode process has open is kept, and every other folder is still offered; apply judges each again. A folder holding a project's resolved Swift packages is cleaned around them: each checkout in its SourcePackages is a Git clone, which devtrim never deletes, so the folder's other directories — Build, Index.noindex and the like — are offered one by one and SourcePackages stays. DeviceSupport symbols are copied again only from a connected device running that exact OS build, so a superseded build matters only for symbolicating its crash logs. A folder that cannot be read or measured offers nothing and is named in one error, so the run exits nonzero, while the folders beside it are still offered. Archives exempt by design — they're release artifacts. When a DerivedData folder’s info.plist records the workspace it was built from, the finding names it, or says workspace no longer exists when that path is gone, and the preview totals those folders. That is information only: whether a folder is offered still depends on Xcode activity, file age and open files alone.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-xcode"
  },
  {
