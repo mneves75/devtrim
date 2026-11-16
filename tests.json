@@ -1,16 +1,14 @@
 {
   "base": "f9f806d",
-  "branch": "feat/0.14-measured-space",
+  "branch": "main",
   "checks": {
-    "verify-focused": "pass after B+C merge (fmt, clippy, cargo test)",
-    "verify-offline": "FAIL exit 1 on d8c7060: stale facts.json after version bump (film-controls); rest passed",
-    "msrv": "not run",
-    "tui-pty": "not run",
-    "read-only-views": "not run",
-    "planted-violations": "not run",
-    "ci": "not run",
-    "film-controls": "pass after facts regen",
-    "autoreview-codex": "scoped-clean P1 on d8c7060 (diff-only, nothing executed)",
-    "reviewer": "FAIL on d8c7060: P1 private-size undercount shrinks --confirm (repro'd); P2 explain case variant; P2 unmounted workspace claim; fix in progress"
+    "verify-offline": "pass exit 0 on tree 9205907 (ba72f9d)",
+    "reviewer": "PASS re-check on 23568fa after P1 fix; P2 compressed-file bound fixed in 5fcffbc",
+    "autoreview-codex": "scoped-clean P1 on 23568fa",
+    "ci-pr95": "pass (portable checks, verify)",
+    "ci-main-26ed547": "pass on attempt 2 (attempt 1: known tui.py settle-race timeout)",
+    "release-beta1": "hosted workflow success; verify-live 0.14.0-beta1 pass",
+    "release-stable": "release.sh exit 0; verify-live 0.14.0 pass; stable zip == beta; formula == candidate; brew sole 0.14.0",
+    "security-gate": "staging WAIVED; production WAIVED after independent reassessment (SEC-21 receipts, formula)"
   }
 }
