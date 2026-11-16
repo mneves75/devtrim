@@ -3,12 +3,14 @@
   "branch": "feat/0.14-measured-space",
   "checks": {
     "verify-focused": "pass after B+C merge (fmt, clippy, cargo test)",
-    "verify-offline": "failed once: stale facts.json (fixed 77f2cfa); rerun pending",
+    "verify-offline": "FAIL exit 1 on d8c7060: stale facts.json after version bump (film-controls); rest passed",
     "msrv": "not run",
     "tui-pty": "not run",
     "read-only-views": "not run",
     "planted-violations": "not run",
     "ci": "not run",
-    "film-controls": "pass after facts regen"
+    "film-controls": "pass after facts regen",
+    "autoreview-codex": "scoped-clean P1 on d8c7060 (diff-only, nothing executed)",
+    "reviewer": "FAIL on d8c7060: P1 private-size undercount shrinks --confirm (repro'd); P2 explain case variant; P2 unmounted workspace claim; fix in progress"
   }
 }
