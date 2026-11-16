@@ -17,6 +17,7 @@ pub mod app;
 mod app_storage;
 mod cli;
 mod dashboard;
+mod explain;
 mod journal;
 mod largest;
 mod ops;

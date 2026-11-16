@@ -1,7 +1,7 @@
 //! CLI application flow.
 
 use crate::{
-    analyze, cli, dashboard, journal, largest, ops, process, report, safety, status, tui,
+    analyze, cli, dashboard, explain, journal, largest, ops, process, report, safety, status, tui,
     uninstall, volume, worktrees,
 };
 use anyhow::{Context, Result};
@@ -100,6 +100,7 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<(&'static str, String)> {
         Some(cli::Command::Analyze { .. }) => ("analyze", false, false, false, false),
         Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),
         Some(cli::Command::Largest { .. }) => ("largest", false, false, false, false),
+        Some(cli::Command::Explain { .. }) => ("explain", false, false, false, false),
         Some(cli::Command::Worktrees) => ("worktrees", false, false, false, false),
         Some(cli::Command::AppStorage) => ("app-storage", false, false, false, false),
         Some(cli::Command::History { .. }) => ("history", false, false, false, false),
@@ -183,6 +184,7 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
         Some("optimize") => "optimize",
         Some("uninstall") => "uninstall",
         Some("largest") => "largest",
+        Some("explain") => "explain",
         Some("worktrees") => "worktrees",
         Some("app-storage") => "app-storage",
         Some("history") => "history",
@@ -372,6 +374,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             let result = largest::scan(&ctx, top);
             report_tail("largest", &result.findings, &result.errors, &ctx)
         }
+        cli::Command::Explain { ref path } => explain::run(&ctx, path),
         cli::Command::Worktrees => run_worktrees(&ctx),
         cli::Command::AppStorage => {
             let result = crate::app_storage::report(&ctx.home, &cli.roots);

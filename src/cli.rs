@@ -95,6 +95,11 @@ pub(crate) enum Command {
         #[arg(long)]
         top: Option<usize>,
     },
+    /// Say why a path is or is not offered: its protection and every finding that covers it (report-only)
+    Explain {
+        /// Path to explain, relative to the current directory; its last component is not followed
+        path: std::path::PathBuf,
+    },
     /// List each repository's linked worktrees with their sizes (report-only)
     Worktrees,
     /// Measure WhatsApp data and Screen Studio projects; never deletes anything
