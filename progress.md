@@ -1,31 +1,19 @@
 # Progress — 0.14.0 (plans/018)
 
-Branch `feat/0.14-measured-space` from `f9f806d`. Plan: `plans/018-measured-space-and-explain.md`.
-
-## State (2026-11-16)
-
-- [x] T2 measured free space after apply — worker B, merged (bb02fd1)
-- [x] T3 `disk --warn-below` — worker B, merged
-- [x] T4 DerivedData workspace note — worker C, merged
-- [x] T5 `explain <path>` — worker C, merged
-- [ ] T1 clone-aware sizing — worker A branch `worktree-agent-a461409c566741beb`, NOT merged; rework running:
-  snapshot fallback, memory (563 MB peak in `largest`), frames.py clone fixture, page.html sentence
-- [x] T6 docs for T2–T5 (01d1caf), film facts regenerated (77f2cfa); CHANGELOG 0.14.0 drafted, uncommitted
-- [ ] T6 docs for T1, version bump
-- [ ] T7 gates and release
+Shipped 2026-11-16: main 26ed547 (tree 9205907), immutable v0.14.0-beta1 and
+v0.14.0 (zip sha256 e0f01326…), Homebrew tap 20fc13a, `/opt/homebrew/bin/devtrim`
+0.14.0 sole. Security gate: staging and production WAIVED (GHSA-g3hv-75wg-m249,
+expires 2026-11-30); records in `.scratch/security-gate/26ed547…/`.
 
 ## Decisions
 
 - 5b least-regret ordering dropped: no rebuild-cost data; largest-first is a documented convention.
-- Private size is trusted only on APFS (HFS+ reports 0: worker A probe) and only on a volume with no
-  snapshot (`diskutil apfs listSnapshots -plist` returns `<array/>`), else st_blocks. Reason: the
-  private size excludes snapshot-held bytes (getattrlist(2)); with Time Machine local snapshots every
-  old file would read ~0. Snapshot behaviour itself is untested on this Mac (Data volume has none).
-- Kept private size over a clone-family-only rule: probe showed a modified clone leaves its family
-  (new id, refcount 1) yet still shares blocks; only the private size counts it right.
-- Fallback if T1 cannot be finished: ship 0.14.0 without T1 and drop its changelog entry.
+- Consent, danger and totals use allocated blocks; the APFS private size is a displayed lower
+  bound only (`frees_at_least_bytes`), trusted only on APFS volumes with no snapshot.
+- Clone-family credit dropped: an edited clone outside the tree can still hold the shared blocks.
 
-## Next
+## Follow-ups
 
-Review A's rework, merge, docs for T1, `verify.sh offline`, reviewer + autoreview + mneves-verify,
-security gate, bump 0.14.0, release beta then production.
+- Remove the unused clone fields from `crates/apfs-size` (touches the only `unsafe` call).
+- CORE-PARSE-1 (lsof omitted-name hypothesis) stays needs-validation, pre-existing.
+- GHSA-g3hv-75wg-m249 waiver expires 2026-11-30.

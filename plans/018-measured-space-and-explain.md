@@ -1,6 +1,6 @@
 # 018 — Measure what an apply frees, size APFS clones, explain a path
 
-Status: IMPLEMENTED (gates pending). Base `f9f806d` (0.13.1 production). Target release 0.14.0.
+Status: SHIPPED in 0.14.0 (main 26ed547, tag v0.14.0, tap 20fc13a). Base `f9f806d` (0.13.1 production).
 
 Origin: comparison with `morajabi/poo` 1893c39 and `mattt/plonge` faa19c6
 (2026-11-16). Only ideas backed by a measurement on this machine are built.
@@ -49,3 +49,12 @@ Origin: comparison with `morajabi/poo` 1893c39 and `mattt/plonge` faa19c6
 | T5 | `devtrim explain <path>` | worker C | evals: protected path names its rule; a stale node_modules names its category finding; unrelated path says nothing offers it; refuses mutation flags |
 | T6 | Docs, version 0.14.0, changelog, SECURITY.md, manual, site | main | `verify.sh offline`, CSP check, release policy |
 | T7 | Gates: reviewer, autoreview, mneves-verify, mneves-security; release | main | gate records under `.scratch/security-gate/` |
+
+## Outcome
+
+Review found that the private size undercounts what removal frees (an edited
+clone still shares extents; clones trashed side by side read 0), which shrank
+`trash-empty --confirm`. Sizes stayed allocated blocks; the private size ships
+only as the display-only lower bound `frees_at_least_bytes`, with no clone-family
+credit. Follow-up: `crates/apfs-size` still reads clone id, refcount and shared
+bytes that nothing uses.
