@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use super::project::{UnreadFolder, error_finding, unjudged_finding};
 use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, removal_note};
-use crate::safety::{Ctx, escalate};
+use crate::safety::{Ctx, Size, escalate};
 
 pub(crate) struct Installers;
 
@@ -37,8 +37,8 @@ fn has_installer_extension(path: &Path) -> bool {
 
 /// What [`judge`] makes of one path.
 enum Judgement {
-    /// Age in days and the bytes removing it frees (`safety::freed_bytes`).
-    Eligible(u64, u64),
+    /// Age in days and its size (`safety::file_size`).
+    Eligible(u64, Size),
     /// Not a direct child of an installer folder with an installer extension.
     OutsideNamespace,
     /// A symlink, directory or special file at an installer's name.
@@ -90,12 +90,12 @@ fn judge(path: &Path, home: &Path, retain_days: u32) -> Result<Judgement> {
     }
     Ok(Judgement::Eligible(
         age,
-        crate::safety::freed_bytes(&metadata, path)?,
+        crate::safety::file_size(&metadata, path)?,
     ))
 }
 
-/// Age in days and freed size for an eligible installer.
-fn installer_details(path: &Path, home: &Path, retain_days: u32) -> Result<Option<(u64, u64)>> {
+/// Age in days and size for an eligible installer.
+fn installer_details(path: &Path, home: &Path, retain_days: u32) -> Result<Option<(u64, Size)>> {
     Ok(match judge(path, home, retain_days)? {
         Judgement::Eligible(age, size) => Some((age, size)),
         _ => None,
@@ -217,10 +217,10 @@ fn scan_entry(
             return;
         }
     };
-    if size == 0 {
+    if size.allocated == 0 {
         return;
     }
-    findings.push(Finding::new(
+    findings.push(Finding::sized(
         format!(
             "installer archive: {}",
             path.file_name()
@@ -233,7 +233,7 @@ fn scan_entry(
         format!(
             "untouched for {age} days; installers do not re-download automatically, re-obtain from the vendor if needed"
         ),
-        escalate(3, size),
+        escalate(3, size.allocated),
         Action::Trash,
     ));
 }

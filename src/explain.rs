@@ -93,12 +93,15 @@ pub(crate) fn run(ctx: &Ctx, path: &Path) -> Result<ExitCode> {
                 Relation::Holds => "holds this path",
                 Relation::Inside => "inside this path",
             };
+            let size = match finding.frees_at_least_text() {
+                Some(text) => format!("{} ({text})", report::gb(finding.size_bytes)),
+                None => report::gb(finding.size_bytes),
+            };
             report::print_line(&format!(
-                "  {} {}: {} ({relation})\n    {} · {} · danger:{} · {}",
+                "  {} {}: {} ({relation})\n    {size} · {} · danger:{} · {}",
                 "offered by".green(),
                 category,
                 report::terminal_safe(finding.path.as_deref().unwrap_or_default()),
-                report::gb(finding.size_bytes),
                 report::human_action_display(&finding.action),
                 finding.danger,
                 report::terminal_safe(&finding.note)

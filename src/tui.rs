@@ -1992,6 +1992,9 @@ fn detail_entries(app: &App) -> Vec<(String, Style)> {
             ),
             Style::default(),
         ));
+        if let Some(text) = finding.frees_at_least_text() {
+            lines.push((text, Style::default()));
+        }
         if app.excluded.contains(&app.cursor) {
             lines.push((
                 "Left out of this plan; Space adds it back.".to_string(),
@@ -3516,6 +3519,40 @@ mod tests {
             );
         }
         assert!(!pane.contains("moreline(s)"), "{rows:#?}");
+    }
+
+    /// A lower bound beside the size shows in the detail pane only: the row
+    /// keeps the allocated size every total and confirmation uses, and stays
+    /// one line at the minimum width.
+    #[test]
+    fn the_detail_pane_shows_what_a_cloned_target_frees_at_least() {
+        let finding = Finding::sized(
+            "node_modules",
+            Some(std::path::PathBuf::from(
+                "/Users/someone/dev/web/node_modules",
+            )),
+            crate::safety::Size {
+                allocated: 1_470_000_000,
+                frees_at_least: Some(78 << 20),
+            },
+            "repo last active 2020-01-01 UTC",
+            5,
+            Action::Trash,
+        );
+        let app = cleanup(vec![finding]);
+
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let text = rows.join("\n");
+        assert!(
+            text.contains("frees at least 78 MB: APFS clones share the rest"),
+            "{text}"
+        );
+        let row = rows
+            .iter()
+            .find(|row| row.contains("danger-5") && row.contains("node_modules"))
+            .unwrap();
+        assert!(row.contains("1.4 GB"), "{row:?}");
+        assert!(!row.contains("frees at least"), "{row:?}");
     }
 
     /// At the minimum size a long path cannot fit, so the pane says how many

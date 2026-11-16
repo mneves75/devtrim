@@ -203,11 +203,16 @@ pub(crate) enum TargetAuthority {
 pub struct Finding {
     pub label: String,
     pub path: Option<String>,
-    /// Estimated bytes removing the target frees (`safety::DiskUsage`): its
-    /// files' APFS private bytes, or allocated blocks where the volume reports
-    /// none, each hard-linked file counted once and the blocks APFS clones
-    /// share counted once when the target holds every clone.
+    /// Estimated allocated bytes (`safety::DiskUsage`): the blocks the target
+    /// holds on disk, each hard-linked file counted once. An APFS clone counts
+    /// in full though it shares its blocks. Every total, danger level and
+    /// confirmation uses this size.
     pub size_bytes: u64,
+    /// A lower bound on what removal frees, below `size_bytes` because APFS
+    /// clones share blocks (`safety::Size::frees_at_least`). Shown beside the
+    /// size; it grants and gates nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frees_at_least_bytes: Option<u64>,
     pub note: String,
     /// 1-10
     pub danger: u8,
@@ -247,6 +252,7 @@ impl Finding {
             label: label.into(),
             path: display_path,
             size_bytes,
+            frees_at_least_bytes: None,
             note: note.into(),
             danger,
             action,
@@ -257,6 +263,28 @@ impl Finding {
             command_authority: None,
             scan_error: None,
         }
+    }
+
+    /// `new` for a measured target: its allocated size, and the lower bound
+    /// the measurement reported.
+    pub(crate) fn sized(
+        label: impl Into<String>,
+        path: Option<PathBuf>,
+        size: crate::safety::Size,
+        note: impl Into<String>,
+        danger: u8,
+        action: Action,
+    ) -> Self {
+        let mut finding = Self::new(label, path, size.allocated, note, danger, action);
+        finding.frees_at_least_bytes = size.frees_at_least;
+        finding
+    }
+
+    /// What a size display adds when removal may free less than the size:
+    /// `frees at least 78 MB: APFS clones share the rest`.
+    pub(crate) fn frees_at_least_text(&self) -> Option<String> {
+        self.frees_at_least_bytes
+            .map(|bytes| format!("frees at least {}: APFS clones share the rest", gb(bytes)))
     }
 
     pub(crate) fn with_scan_error(mut self, error: String) -> Self {
@@ -544,8 +572,8 @@ pub(crate) fn human_action_display(action: &Action) -> String {
 }
 
 /// Findings without the closing total, for a report whose sizes must not be
-/// added up: each worktree is measured alone, so a file hard-linked into two
-/// counts in both, and blocks clones share across two count in neither.
+/// added up: each worktree is measured alone, so a file hard-linked or
+/// cloned into two counts in both.
 pub fn print_findings(findings: &[Finding]) -> std::io::Result<()> {
     write_stdout(findings_text(findings).as_bytes())
 }
@@ -752,8 +780,12 @@ fn findings_text(findings: &[Finding]) -> String {
             ));
         }
         let path = finding.path.as_deref().unwrap_or("-");
+        let frees = finding
+            .frees_at_least_text()
+            .map(|text| format!("; {text}"))
+            .unwrap_or_default();
         output.push_str(&format!(
-            "{:>9}  {}  {}  {}\n           └─ {}; action: {}\n",
+            "{:>9}  {}  {}  {}\n           └─ {}{frees}; action: {}\n",
             gb(finding.size_bytes),
             danger_tag(finding.danger),
             terminal_safe(&finding.label).bold(),
@@ -993,6 +1025,40 @@ mod tests {
         let mixed = summary_headline(&summary(5 * gib, 2 * gib));
         assert!(mixed.contains("~3.0 GB reclaimed"), "{mixed}");
         assert!(mixed.contains("~2.0 GB moved to Trash"), "{mixed}");
+    }
+
+    /// A finding listed with a lower bound keeps its allocated size in the
+    /// size column and names the lower bound beside its note; one without
+    /// says nothing more.
+    #[test]
+    fn a_listed_finding_names_what_it_frees_at_least() {
+        let sized = |frees_at_least| {
+            Finding::sized(
+                "stale node_modules",
+                Some(PathBuf::from("/dev/web/node_modules")),
+                crate::safety::Size {
+                    allocated: 1_470_000_000,
+                    frees_at_least,
+                },
+                "repo last active 2020-01-01 UTC",
+                5,
+                Action::Trash,
+            )
+        };
+        let text = findings_text(&[sized(Some(78 << 20))]);
+        assert!(text.contains("  1.4 GB  "), "{text}");
+        assert!(
+            text.contains(
+                "repo last active 2020-01-01 UTC; frees at least 78 MB: APFS clones share the rest; action: "
+            ),
+            "{text}"
+        );
+        let plain = findings_text(&[sized(None)]);
+        assert!(!plain.contains("frees at least"), "{plain}");
+        assert!(
+            plain.contains("repo last active 2020-01-01 UTC; action: "),
+            "{plain}"
+        );
     }
 
     /// The measured line reports a loss as a loss, names a failed read, and

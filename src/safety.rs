@@ -1475,8 +1475,8 @@ pub(crate) fn trash_gate(findings: &[Finding], confirm_gb: Option<u64>) -> Resul
 /// Removing a sparse file frees only its allocated blocks, and a small file
 /// holds a whole filesystem block, so this is what removal gives back; the
 /// length overstated a sparse Xcode index and understated a cache of many
-/// small files. Blocks a file shares with its APFS clones count here in full;
-/// `freed_bytes` and `DiskUsage` leave them out.
+/// small files. Blocks a file shares with its APFS clones count here in full,
+/// since no attribute shows which of them deleting it would still leave.
 pub(crate) fn allocated_bytes(metadata: &std::fs::Metadata, path: &Path) -> Result<u64> {
     use std::os::unix::fs::MetadataExt;
 
@@ -1586,193 +1586,133 @@ fn lists_no_snapshot(succeeded: bool, stdout: &[u8]) -> bool {
             .is_some_and(|rest| rest.trim_start().starts_with("<array/>"))
 }
 
-/// Bytes deleting one file frees now: its APFS private size where that is
-/// true (`private_size_trusted`), which leaves out the blocks it shares with a
-/// clone, else its allocated blocks. A clone of a file kept elsewhere frees
-/// almost nothing. A clone written to later leaves its family (a new clone id,
-/// refcount 1) yet still shares its unchanged blocks, which only the private
-/// size leaves out, so it is the private size, not the family, that counts.
-pub(crate) fn freed_bytes(metadata: &std::fs::Metadata, path: &Path) -> Result<u64> {
-    use std::os::unix::fs::MetadataExt;
-
-    if metadata.is_file()
-        && private_size_trusted(path, metadata.dev())
-        && let Some(blocks) = apfs_size::file_blocks(path, metadata.dev(), metadata.ino())
-    {
-        return Ok(blocks.private);
-    }
-    allocated_bytes(metadata, path)
+/// What removing a target frees. `allocated` is its allocated blocks, each
+/// hard-linked file counted once: the size every preview, total, danger
+/// level and confirmation uses, because no attribute reveals the blocks an
+/// APFS clone written to after `cp -c` still shares, so nothing smaller is
+/// known to be freed. `frees_at_least` is the smaller lower bound the APFS
+/// private size gives on a snapshot-free APFS volume (`private_size_trusted`),
+/// reported beside it and never consulted for consent; `None` when it is not
+/// smaller or cannot be read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Size {
+    pub(crate) allocated: u64,
+    pub(crate) frees_at_least: Option<u64>,
 }
 
-/// A folder a view credits the blocks clones share to (`DiskUsage::folder`).
-pub(crate) type Folder = u32;
-
-/// No folder holds every clone: such a family's shared blocks go to no view.
-pub(crate) const NO_FOLDER: Folder = Folder::MAX;
-
-/// The walk's whole tree, the folder `DiskUsage::add` files under.
-const TREE: Folder = 0;
-
-/// Bytes deleting a walked tree frees, summed one file at a time. Each file
-/// adds its `freed_bytes`, and a hard-linked file counts once, as `du` counts
-/// it: its links share one set of blocks. Blocks APFS clones share are freed
-/// only with the last clone, so they count once, and only when the walk found
-/// every clone of the family (`finish`); a clone of a file outside the tree
-/// adds just its private bytes. Where the private size is not true (off APFS,
-/// or a volume holding a snapshot) every file counts its allocated blocks. The
-/// verdict is taken once per device for the walk.
-pub(crate) struct DiskUsage {
-    linked: std::collections::HashSet<(u64, u64)>,
-    trusted: std::collections::HashMap<u64, bool>,
-    /// Per device, per clone id: families not yet found whole. Kept to twelve
-    /// bytes a family, since a pnpm tree makes every file one.
-    families: std::collections::HashMap<u64, std::collections::HashMap<u64, CloneFamily>>,
-    /// Folder and shared bytes of every family found whole, not yet taken.
-    whole: Vec<(Folder, u64)>,
-    /// Each folder's parent, `NO_FOLDER` for a top folder; `TREE` is first.
-    parents: Vec<Folder>,
-}
-
-impl Default for DiskUsage {
-    fn default() -> Self {
+impl From<u64> for Size {
+    /// A size with no lower bound beside it.
+    fn from(allocated: u64) -> Self {
         Self {
-            linked: std::collections::HashSet::new(),
-            trusted: std::collections::HashMap::new(),
-            families: std::collections::HashMap::new(),
-            whole: Vec::new(),
-            parents: vec![NO_FOLDER],
+            allocated,
+            frees_at_least: None,
         }
     }
 }
 
-/// The clones of one data stream the walk has found so far.
-struct CloneFamily {
-    found: u32,
-    /// Clones APFS reports; 0 once two members disagree (a clone made or
-    /// removed during the walk), so the family is never found whole.
-    refcount: u32,
-    /// The deepest folder holding every member found.
-    folder: Folder,
+impl Size {
+    fn new(allocated: u64, estimate: Option<u64>) -> Self {
+        Self {
+            allocated,
+            frees_at_least: estimate.filter(|&estimate| estimate < allocated),
+        }
+    }
+}
+
+/// One file's `Size`: its allocated blocks, and its APFS private size where
+/// that is true. A clone of a file kept elsewhere frees at least its private
+/// bytes, which may be almost none.
+pub(crate) fn file_size(metadata: &std::fs::Metadata, path: &Path) -> Result<Size> {
+    use std::os::unix::fs::MetadataExt;
+
+    let allocated = allocated_bytes(metadata, path)?;
+    let private = (metadata.is_file() && private_size_trusted(path, metadata.dev()))
+        .then(|| apfs_size::file_blocks(path, metadata.dev(), metadata.ino()))
+        .flatten()
+        .map(|blocks| blocks.private);
+    Ok(Size::new(allocated, Some(private.unwrap_or(allocated))))
+}
+
+/// Allocated bytes of a walked tree, summed one file at a time, each
+/// hard-linked file once, as `du` counts it: its links share one set of
+/// blocks. An estimating walk (`estimating`) also sums the lower bound
+/// `Size::frees_at_least` reports: each file's APFS private size where that
+/// is true, else its allocated blocks. Private blocks belong to one file
+/// alone, so the sum never exceeds what deleting the tree frees. Blocks
+/// clones share are left out even when every clone APFS counts is inside the
+/// tree: a clone written to after `cp -c` leaves the family's count yet still
+/// holds the blocks it did not rewrite, wherever it is.
+#[derive(Default)]
+pub(crate) struct DiskUsage {
+    linked: std::collections::HashSet<(u64, u64)>,
+    /// `None` for a report view, which shows allocated blocks and never asks
+    /// APFS or `diskutil`.
+    estimate: Option<Estimate>,
+}
+
+struct Estimate {
+    /// `None` once the sum overflows: no estimate is reported.
+    bytes: Option<u64>,
+    trusted: std::collections::HashMap<u64, bool>,
 }
 
 impl DiskUsage {
-    /// Registers a folder below `parent` (a top folder for `None`) for
-    /// `add_in`.
-    pub(crate) fn folder(&mut self, parent: Option<Folder>) -> Folder {
-        self.parents.push(parent.unwrap_or(NO_FOLDER));
-        Folder::try_from(self.parents.len() - 1).unwrap_or(NO_FOLDER)
-    }
-
-    /// `folder`'s parent, `None` for a top folder.
-    pub(crate) fn parent(&self, folder: Folder) -> Option<Folder> {
-        let parent = *self.parents.get(usize::try_from(folder).ok()?)?;
-        (parent != NO_FOLDER).then_some(parent)
-    }
-
-    /// The deepest folder holding both, `NO_FOLDER` when none does.
-    fn common(&self, left: Folder, right: Folder) -> Folder {
-        let mut candidate = Some(left);
-        while let Some(folder) = candidate {
-            let mut other = Some(right);
-            while let Some(below) = other {
-                if below == folder {
-                    return folder;
-                }
-                other = self.parent(below);
-            }
-            candidate = self.parent(folder);
+    /// A walk that also sums the private-size lower bound.
+    pub(crate) fn estimating() -> Self {
+        Self {
+            linked: std::collections::HashSet::new(),
+            estimate: Some(Estimate {
+                bytes: Some(0),
+                trusted: std::collections::HashMap::new(),
+            }),
         }
-        NO_FOLDER
     }
 
-    /// What `metadata`'s file adds to the walk's total: the bytes deleting it
-    /// alone frees, or nothing for a further link to a file already counted.
+    /// The allocated bytes `metadata`'s file adds to the walk's total, or
+    /// nothing for a further link to a file already counted.
     pub(crate) fn add(&mut self, metadata: &std::fs::Metadata, path: &Path) -> Result<u64> {
-        self.add_in(metadata, path, TREE)
-    }
-
-    /// `add` for a file in `folder`, which a view registered (`folder`) to be
-    /// credited with blocks its clones share; `NO_FOLDER` credits none.
-    pub(crate) fn add_in(
-        &mut self,
-        metadata: &std::fs::Metadata,
-        path: &Path,
-        folder: Folder,
-    ) -> Result<u64> {
         use std::os::unix::fs::MetadataExt;
 
         if metadata.nlink() > 1 && !self.linked.insert((metadata.dev(), metadata.ino())) {
             return Ok(0);
         }
-        if !metadata.is_file() {
-            return allocated_bytes(metadata, path);
+        let allocated = allocated_bytes(metadata, path)?;
+        if let Some(estimate) = &mut self.estimate {
+            let private = if metadata.is_file() {
+                estimate.private_bytes(metadata, path)
+            } else {
+                None
+            };
+            let freed = private.unwrap_or(allocated);
+            estimate.bytes = estimate.bytes.and_then(|total| total.checked_add(freed));
         }
+        Ok(allocated)
+    }
+
+    /// The walk's `Size`, given the allocated bytes `add` returned in total.
+    pub(crate) fn size(&self, allocated: u64) -> Size {
+        Size::new(
+            allocated,
+            self.estimate.as_ref().and_then(|estimate| estimate.bytes),
+        )
+    }
+}
+
+impl Estimate {
+    /// A file's private bytes where the private size is true; `None` keeps
+    /// its allocated blocks.
+    fn private_bytes(&mut self, metadata: &std::fs::Metadata, path: &Path) -> Option<u64> {
+        use std::os::unix::fs::MetadataExt;
+
         let dev = metadata.dev();
         let trusted = *self
             .trusted
             .entry(dev)
             .or_insert_with(|| private_size_trusted(path, dev));
-        if !trusted {
-            return allocated_bytes(metadata, path);
-        }
-        let Some(blocks) = apfs_size::file_blocks(path, dev, metadata.ino()) else {
-            return allocated_bytes(metadata, path);
-        };
-        if let Some(clone) = blocks.clone {
-            self.join_family(dev, clone, folder);
-        }
-        Ok(blocks.private)
-    }
-
-    fn join_family(&mut self, dev: u64, clone: apfs_size::CloneFamily, folder: Folder) {
-        use std::collections::hash_map::Entry;
-
-        let families = self.families.entry(dev).or_default();
-        let family = match families.entry(clone.id) {
-            Entry::Vacant(entry) => entry.insert(CloneFamily {
-                found: 0,
-                refcount: clone.refcount,
-                folder,
-            }),
-            Entry::Occupied(entry) => entry.into_mut(),
-        };
-        family.found = family.found.saturating_add(1);
-        if family.refcount != clone.refcount {
-            family.refcount = 0;
-        }
-        let (found, refcount, held) = (family.found, family.refcount, family.folder);
-        let folder = self.common(held, folder);
-        if found == refcount {
-            // Every clone is in the walk. The last one's shared bytes never
-            // exceed what it holds.
-            if let Some(families) = self.families.get_mut(&dev) {
-                families.remove(&clone.id);
-            }
-            self.whole.push((folder, clone.shared));
-        } else if let Some(family) = self
-            .families
-            .get_mut(&dev)
-            .and_then(|families| families.get_mut(&clone.id))
-        {
-            family.folder = folder;
-        }
-    }
-
-    /// Takes every clone family found whole since the last call: the deepest
-    /// registered folder holding all its clones (`NO_FOLDER` when none does)
-    /// and the bytes they share, what deleting that folder frees beyond its
-    /// files' own bytes.
-    pub(crate) fn take_whole_families(&mut self) -> Vec<(Folder, u64)> {
-        std::mem::take(&mut self.whole)
-    }
-
-    /// The shared bytes of every family found whole in a folder, to add to the
-    /// walk's total once it ends; `None` on overflow.
-    pub(crate) fn finish(&mut self) -> Option<u64> {
-        self.take_whole_families()
-            .into_iter()
-            .filter(|&(folder, _)| folder != NO_FOLDER)
-            .try_fold(0u64, |total, (_, shared)| total.checked_add(shared))
+        trusted
+            .then(|| apfs_size::file_blocks(path, dev, metadata.ino()))
+            .flatten()
+            .map(|blocks| blocks.private)
     }
 }
 
@@ -1835,18 +1775,22 @@ pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured
             }
         }
     }
-    measured.bytes = measured
-        .bytes
-        .saturating_add(usage.finish().unwrap_or(u64::MAX));
     measured
 }
 
+/// Allocated bytes under `path` (`DiskUsage`), for a caller that reports no
+/// lower bound.
 pub(crate) fn dir_size(path: &Path) -> Result<u64> {
-    Ok(dir_stats(path)?.0)
+    Ok(walk_stats(path, DiskUsage::default())?.0.allocated)
 }
 
-/// Size (`DiskUsage`: the bytes deleting the tree frees) and the newest
-/// regular-file modification time under `path`.
+/// `Size` of the tree at `path`, with the lower bound, for a finding.
+pub(crate) fn dir_measure(path: &Path) -> Result<Size> {
+    Ok(walk_stats(path, DiskUsage::estimating())?.0)
+}
+
+/// `Size` (`DiskUsage`, estimating) and the newest regular-file modification
+/// time under `path`.
 ///
 /// One traversal serves both, so a size and the staleness judged from it always
 /// describe the same tree. Only regular files contribute to either: a
@@ -1864,13 +1808,18 @@ pub(crate) fn dir_size(path: &Path) -> Result<u64> {
 ///
 /// A subtree with no regular files reports `UNIX_EPOCH`, which reads as
 /// maximally stale; a caller that judges age must handle it, as `xcode` does.
-pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTime>)> {
+pub(crate) fn dir_stats(path: &Path) -> Result<(Size, Option<std::time::SystemTime>)> {
+    walk_stats(path, DiskUsage::estimating())
+}
+
+fn walk_stats(path: &Path, mut usage: DiskUsage) -> Result<(Size, Option<std::time::SystemTime>)> {
     let mut bytes = 0u64;
-    let mut usage = DiskUsage::default();
     let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
     match std::fs::symlink_metadata(path) {
         Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, newest)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Size::default(), newest));
+        }
         Err(error) => {
             return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
         }
@@ -1898,11 +1847,7 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTim
                 .ok_or_else(|| anyhow::anyhow!("size overflow under {}", path.display()))?;
         }
     }
-    let bytes = usage
-        .finish()
-        .and_then(|shared| bytes.checked_add(shared))
-        .ok_or_else(|| anyhow::anyhow!("size overflow under {}", path.display()))?;
-    Ok((bytes, newest))
+    Ok((usage.size(bytes), newest))
 }
 
 /// Process names that protect the repository holding their working directory, as `pgrep -x` reads
@@ -2504,10 +2449,17 @@ mod tests {
 
     use crate::ops::{CLONED_FILE, clone_file, write_incompressible};
 
-    /// pnpm installs clones of its store: deleting the install frees only
-    /// what the clones do not share with the store outside it.
+    /// Within a tenth of `copies` whole copies of `CLONED_FILE`.
+    fn about(copies: u64) -> std::ops::Range<u64> {
+        CLONED_FILE * copies * 9 / 10..CLONED_FILE * copies * 11 / 10
+    }
+
+    /// pnpm installs clones of its store: the install holds every block in
+    /// its allocation, the size consent reads, while deleting it frees at
+    /// least what the clones do not share with the store outside it, which
+    /// may be almost nothing.
     #[test]
-    fn a_clone_of_a_file_outside_the_tree_frees_almost_nothing() {
+    fn a_clone_of_a_file_outside_the_tree_frees_at_least_its_private_bytes() {
         let fixture = crate::ops::TestFixture::new("devtrim-clone-private");
         let tree = fixture.path().join("tree");
         std::fs::create_dir_all(&tree).unwrap();
@@ -2516,19 +2468,35 @@ mod tests {
         clone_file(&source, &tree.join("installed"));
 
         let _trust = AssumeSnapshotFree::new(true);
-        let size = dir_size(&tree).unwrap();
+        let size = dir_measure(&tree).unwrap();
         assert!(
-            size < CLONED_FILE / 10,
-            "PV size/clone-private: a clone of a file outside the tree measured {size} bytes"
+            about(1).contains(&size.allocated),
+            "a clone of a file outside the tree allocates {} bytes",
+            size.allocated
         );
-        assert_eq!(measure_lenient(&tree, &BTreeSet::new()).bytes, size);
+        assert!(
+            size.frees_at_least
+                .is_some_and(|bytes| bytes < CLONED_FILE / 10),
+            "PV size/clone-private: a clone of a file outside the tree frees at least {:?} bytes",
+            size.frees_at_least
+        );
+        assert_eq!(dir_size(&tree).unwrap(), size.allocated);
+        assert_eq!(
+            measure_lenient(&tree, &BTreeSet::new()).bytes,
+            size.allocated
+        );
+        let installed = tree.join("installed");
+        let file = file_size(&std::fs::symlink_metadata(&installed).unwrap(), &installed).unwrap();
+        assert_eq!(file, size, "one file measures as the tree holding it");
     }
 
-    /// Deleting a tree holding a file and its clone frees one copy, not two
-    /// and not none; a further hard link to the clone adds nothing, and a
-    /// plain copy holds its own blocks.
+    /// A tree holding a file and its clone allocates two copies, a further
+    /// hard link to the clone adding nothing. The lower bound counts private
+    /// blocks only, so it leaves out the copy they share: no attribute says no
+    /// edited clone elsewhere still holds it. Plain copies report no lower
+    /// bound beside their size.
     #[test]
-    fn a_file_and_its_clone_inside_the_tree_count_once() {
+    fn a_file_and_its_clone_inside_the_tree_allocate_two_copies() {
         let fixture = crate::ops::TestFixture::new("devtrim-clone-family");
         let tree = fixture.path().join("tree");
         std::fs::create_dir_all(tree.join("a")).unwrap();
@@ -2538,73 +2506,71 @@ mod tests {
         std::fs::hard_link(tree.join("b/clone"), tree.join("b/link")).unwrap();
 
         let _trust = AssumeSnapshotFree::new(true);
-        let one_copy = CLONED_FILE * 9 / 10..CLONED_FILE * 11 / 10;
-        let size = dir_size(&tree).unwrap();
+        let size = dir_measure(&tree).unwrap();
         assert!(
-            one_copy.contains(&size),
-            "file and clone measured {size} bytes"
+            about(2).contains(&size.allocated),
+            "file and clone allocate {} bytes",
+            size.allocated
         );
-        assert_eq!(measure_lenient(&tree, &BTreeSet::new()).bytes, size);
+        assert_eq!(size.allocated, du_bytes(&tree));
+        assert!(
+            size.frees_at_least
+                .is_some_and(|bytes| bytes < CLONED_FILE / 10),
+            "file and clone free at least {:?} bytes",
+            size.frees_at_least
+        );
 
         let copy = fixture.path().join("copy");
         std::fs::create_dir_all(&copy).unwrap();
         write_incompressible(&copy.join("a"));
         write_incompressible(&copy.join("b"));
-        let copies = dir_size(&copy).unwrap();
+        let copies = dir_measure(&copy).unwrap();
         assert!(
-            (CLONED_FILE * 2 * 9 / 10..CLONED_FILE * 2 * 11 / 10).contains(&copies),
-            "two plain copies measured {copies} bytes"
+            about(2).contains(&copies.allocated),
+            "two plain copies allocate {} bytes",
+            copies.allocated
         );
+        assert_eq!(copies.frees_at_least, None);
     }
 
-    /// A family's shared blocks belong to the deepest folder holding every
-    /// clone, and a family the walk did not find whole is never counted.
+    /// A file and its clone in a tree are the whole family APFS counts, yet a
+    /// clone written to outside the tree left that count and still holds the
+    /// blocks they share: deleting the tree frees almost nothing, so the lower
+    /// bound must not credit the family's shared blocks.
     #[test]
-    fn whole_clone_families_name_the_folder_holding_every_clone() {
-        let fixture = crate::ops::TestFixture::new("devtrim-clone-folder");
-        let root = fixture.path();
-        std::fs::create_dir_all(root.join("p/x/deep")).unwrap();
-        std::fs::create_dir_all(root.join("p/y")).unwrap();
-        write_incompressible(&root.join("p/x/deep/source"));
-        clone_file(&root.join("p/x/deep/source"), &root.join("p/y/clone"));
-        clone_file(&root.join("p/x/deep/source"), &root.join("p/x/other"));
+    fn a_family_found_whole_may_share_its_blocks_with_an_edited_clone() {
+        use std::io::{Seek as _, Write as _};
+
+        let fixture = crate::ops::TestFixture::new("devtrim-clone-whole");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        write_incompressible(&tree.join("a"));
+        clone_file(&tree.join("a"), &tree.join("b"));
+        let outside = fixture.path().join("c");
+        clone_file(&tree.join("a"), &outside);
+        let mut edited = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&outside)
+            .unwrap();
+        edited.seek(std::io::SeekFrom::Start(4096)).unwrap();
+        edited.write_all(b"edit").unwrap();
+        edited.sync_all().unwrap();
 
         let _trust = AssumeSnapshotFree::new(true);
-        let mut usage = DiskUsage::default();
-        let p = usage.folder(None);
-        let x = usage.folder(Some(p));
-        let deep = usage.folder(Some(x));
-        let y = usage.folder(Some(p));
-        let mut private = 0;
-        for (name, folder) in [("p/x/deep/source", deep), ("p/y/clone", y)] {
-            let path = root.join(name);
-            private += usage
-                .add_in(&std::fs::symlink_metadata(&path).unwrap(), &path, folder)
-                .unwrap();
-        }
+        let size = dir_measure(&tree).unwrap();
+        assert!(about(2).contains(&size.allocated), "{size:?}");
         assert!(
-            private < CLONED_FILE / 10,
-            "clones measured {private} private bytes"
+            size.frees_at_least
+                .is_some_and(|bytes| bytes < CLONED_FILE / 10),
+            "a family sharing its blocks with an edited clone outside frees at least {:?} bytes",
+            size.frees_at_least
         );
-        assert!(
-            usage.take_whole_families().is_empty(),
-            "two of three clones found"
-        );
-        let path = root.join("p/x/other");
-        usage
-            .add_in(&std::fs::symlink_metadata(&path).unwrap(), &path, x)
-            .unwrap();
-        let whole = usage.take_whole_families();
-        assert_eq!(whole.len(), 1);
-        assert_eq!(whole[0].0, p);
-        assert!((CLONED_FILE * 9 / 10..=CLONED_FILE).contains(&whole[0].1));
-        assert_eq!(usage.finish(), Some(0), "a family is counted once");
     }
 
-    /// Two clones under different top folders share no registered folder, so
-    /// their family is credited to none.
+    /// Two trees each holding one clone of a family both allocate a copy, so
+    /// a plan removing both counts both; neither frees the shared blocks alone.
     #[test]
-    fn a_family_split_between_top_folders_names_no_folder() {
+    fn a_family_split_between_two_trees_frees_little_in_either() {
         let fixture = crate::ops::TestFixture::new("devtrim-clone-split");
         let root = fixture.path();
         std::fs::create_dir_all(root.join("a")).unwrap();
@@ -2613,25 +2579,21 @@ mod tests {
         clone_file(&root.join("a/source"), &root.join("b/clone"));
 
         let _trust = AssumeSnapshotFree::new(true);
-        let mut usage = DiskUsage::default();
         for name in ["a", "b"] {
-            let folder = usage.folder(None);
-            let path = root
-                .join(name)
-                .join(if name == "a" { "source" } else { "clone" });
-            usage
-                .add_in(&std::fs::symlink_metadata(&path).unwrap(), &path, folder)
-                .unwrap();
+            let size = dir_measure(&root.join(name)).unwrap();
+            assert!(about(1).contains(&size.allocated), "{name}: {size:?}");
+            assert!(
+                size.frees_at_least
+                    .is_some_and(|bytes| bytes < CLONED_FILE / 10),
+                "{name} frees at least {:?} bytes",
+                size.frees_at_least
+            );
         }
-        let whole = usage.take_whole_families();
-        assert_eq!(whole.len(), 1);
-        assert_eq!(whole[0].0, NO_FOLDER);
-        assert_eq!(usage.finish(), Some(0));
     }
 
     /// A snapshot keeps every block older than it, so on a volume holding one
-    /// deleting a clone frees nothing the private size promises: each file
-    /// counts its allocated blocks, as `du` counts them.
+    /// the private size promises nothing: sizes are allocated blocks, as `du`
+    /// counts them, and no lower bound is reported.
     #[test]
     fn a_volume_with_a_snapshot_counts_allocated_blocks() {
         let fixture = crate::ops::TestFixture::new("devtrim-clone-snapshot");
@@ -2642,17 +2604,84 @@ mod tests {
         clone_file(&tree.join("source"), &fixture.path().join("outside"));
 
         let _snapshot = AssumeSnapshotFree::new(false);
-        let size = dir_size(&tree).unwrap();
+        let size = dir_measure(&tree).unwrap();
+        assert_eq!(size.allocated, du_bytes(&tree));
         assert_eq!(
-            size,
-            du_bytes(&tree),
-            "PV size/snapshot-fallback: a tree on a volume with a snapshot measured {size} bytes"
+            size.frees_at_least, None,
+            "PV size/snapshot-fallback: a tree on a volume with a snapshot reported a lower bound {:?}",
+            size.frees_at_least
         );
         let installed = tree.join("clone");
+        let metadata = std::fs::symlink_metadata(&installed).unwrap();
         assert_eq!(
-            freed_bytes(&std::fs::symlink_metadata(&installed).unwrap(), &installed).unwrap(),
-            allocated_bytes(&std::fs::symlink_metadata(&installed).unwrap(), &installed).unwrap()
+            file_size(&metadata, &installed).unwrap(),
+            Size::from(allocated_bytes(&metadata, &installed).unwrap())
         );
+    }
+
+    /// A clone written to after `cp -c` leaves its family yet still shares
+    /// every block it did not rewrite; no attribute says so, so the size
+    /// consent reads must count each file's allocated blocks.
+    #[test]
+    fn an_edited_clone_counts_its_allocated_blocks() {
+        use std::io::{Seek as _, Write as _};
+
+        let fixture = crate::ops::TestFixture::new("devtrim-clone-edited");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        write_incompressible(&tree.join("source"));
+        clone_file(&tree.join("source"), &tree.join("edited"));
+        let mut edited = std::fs::OpenOptions::new()
+            .write(true)
+            .open(tree.join("edited"))
+            .unwrap();
+        edited.seek(std::io::SeekFrom::Start(4096)).unwrap();
+        edited.write_all(b"edit").unwrap();
+        edited.sync_all().unwrap();
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = dir_measure(&tree).unwrap();
+        assert!(
+            size.allocated >= CLONED_FILE,
+            "a file and its edited clone measured {} bytes",
+            size.allocated
+        );
+        assert_eq!(dir_size(&tree).unwrap(), size.allocated);
+    }
+
+    /// The typed confirmation a danger-9 plan asks for is taken from the
+    /// allocated size, so clones the tree holds cannot shrink it to zero.
+    #[test]
+    fn a_typed_confirmation_counts_every_clone_it_removes() {
+        let fixture = crate::ops::TestFixture::new("devtrim-clone-typed");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        write_incompressible(&tree.join("source"));
+        for index in 0..140 {
+            clone_file(&tree.join("source"), &tree.join(format!("clone-{index}")));
+        }
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = dir_measure(&tree).unwrap();
+        assert!(size.frees_at_least.is_some(), "{size:?}");
+        let finding = Finding::sized(
+            "clones",
+            Some(tree),
+            size,
+            "",
+            9,
+            crate::report::Action::Shred,
+        );
+        let ConfirmationRequirement::TypedGigabytes { expected, .. } =
+            confirmation_requirement(9, std::slice::from_ref(&finding))
+        else {
+            panic!("a danger-9 plan asked for no typed size");
+        };
+        assert!(
+            expected >= 1,
+            "141 copies of {CLONED_FILE} bytes asked for {expected} GB"
+        );
+        assert_eq!(expected, size.allocated / (1024 * 1024 * 1024));
     }
 
     #[test]

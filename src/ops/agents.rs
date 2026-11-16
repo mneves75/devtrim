@@ -47,7 +47,9 @@ use std::time::SystemTime;
 
 use super::project::{UnreadFolder, unread_folders_finding};
 
-use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
+use super::{
+    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_measure, removal_note,
+};
 use crate::safety::{Ctx, DeletionEntry, escalate};
 
 pub(crate) struct Agents;
@@ -763,20 +765,20 @@ impl Agents {
         let mut unread = Vec::new();
         for entry in REGENERABLE {
             for (path, suffix) in placements(entry.relative, &ctx.home, &extra) {
-                let size = match dir_size(&path) {
+                let size = match dir_measure(&path) {
                     Ok(size) => size,
                     Err(error) => {
                         unread.push(UnreadFolder::new(&path, &error));
                         continue;
                     }
                 };
-                if size > 0 {
-                    findings.push(Finding::new(
+                if size.allocated > 0 {
+                    findings.push(Finding::sized(
                         format!("{}{suffix}", entry.label),
                         Some(path),
                         size,
                         "rebuilt on demand; cleanup may interrupt an active session, so close agents first",
-                        escalate(REGENERABLE_DANGER, size),
+                        escalate(REGENERABLE_DANGER, size.allocated),
                         Action::Trash,
                     ));
                 }
@@ -801,17 +803,17 @@ impl Agents {
                     }) else {
                         continue;
                     };
-                    if size == 0 {
+                    if size.allocated == 0 {
                         continue;
                     }
-                    findings.push(Finding::new(
+                    findings.push(Finding::sized(
                         format!("{}{suffix}: {}", root.label, relative_display(&path, &base)),
                         Some(path),
                         size,
                         format!(
                             "untouched for {age} days; agent history is not regenerable and cannot be re-downloaded"
                         ),
-                        escalate(6, size),
+                        escalate(6, size.allocated),
                         Action::Trash,
                     ));
                 }
@@ -861,16 +863,16 @@ impl Agents {
                     );
                     continue;
                 }
-                let size = dir_size(&path)?;
-                if size == 0 {
+                let size = dir_measure(&path)?;
+                if size.allocated == 0 {
                     continue;
                 }
-                release_findings.push(Finding::new(
+                release_findings.push(Finding::sized(
                     format!("{}{suffix} {name}", CODEX_RELEASES.label),
                     Some(path),
                     size,
                     "reinstallable previous release; close Codex first; Trash does not free disk space until purged",
-                    escalate(3, size),
+                    escalate(3, size.allocated),
                     Action::Trash,
                 ));
             }
@@ -1085,7 +1087,7 @@ fn history_details(
     home: &Path,
     extra: &[PathBuf],
     retain_days: u32,
-) -> Result<Option<(u64, u64)>> {
+) -> Result<Option<(u64, crate::safety::Size)>> {
     if !is_history_child(path, home, extra) {
         return Ok(None);
     }

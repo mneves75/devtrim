@@ -751,6 +751,79 @@ fn eval_trash_empty_refuses_an_unwritable_journal_before_the_purge() {
     assert!(!item.exists());
 }
 
+/// APFS clones of one file trashed side by side each hold the file's blocks
+/// in their allocation: `--confirm=<gb>` acknowledges what the items occupy,
+/// so clones that share their blocks cannot shrink the acknowledgment to 0.
+/// Sizes here are allocated blocks only; whether the volume also yields a
+/// lower-bound estimate depends on the host's snapshots, which this eval
+/// does not control.
+#[test]
+fn eval_trash_empty_acknowledges_the_allocated_size_of_cloned_items() {
+    const SOURCE: usize = 64 << 20;
+    const CLONES: usize = 64;
+    let sandbox = Sandbox::in_target("eval-trash-clones");
+    let trash = sandbox.path().join(".Trash");
+    std::fs::create_dir_all(&trash).unwrap();
+    let source = trash.join("big.bin");
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let data = (0..SOURCE)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect::<Vec<_>>();
+    std::fs::write(&source, data).unwrap();
+    std::fs::File::open(&source).unwrap().sync_all().unwrap();
+    let mut items = vec![source.clone()];
+    for index in 0..CLONES {
+        let clone = trash.join(format!("big copy {index}.bin"));
+        let status = std::process::Command::new("/bin/cp")
+            .arg("-c")
+            .arg(&source)
+            .arg(&clone)
+            .status()
+            .unwrap();
+        assert!(status.success(), "cp -c failed");
+        items.push(clone);
+    }
+    let allocated = support::on_disk(&items.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+
+    let preview = json(&run(&sandbox, &["trash-empty", "--json"]));
+    let findings = preview["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), items.len(), "{preview}");
+    let previewed = findings
+        .iter()
+        .map(|finding| finding["size_bytes"].as_u64().unwrap())
+        .sum::<u64>();
+    assert_eq!(
+        previewed, allocated,
+        "eval/trash-clones-allocated: {CLONES} clones and their source previewed {previewed} bytes"
+    );
+
+    let refused = run(
+        &sandbox,
+        &["trash-empty", "--apply", "--yolo", "--confirm=0", "--json"],
+    );
+    let document = json(&refused);
+    assert!(
+        !refused.status.success(),
+        "eval/trash-clones-confirm: --confirm=0 purged {allocated} allocated bytes: {document}"
+    );
+    assert!(items.iter().all(|item| item.exists()), "{document}");
+
+    // The size the refusal names is accepted, and the purge removes them all.
+    let gb = (allocated / (1024 * 1024 * 1024)).to_string();
+    let confirm = format!("--confirm={gb}");
+    let accepted = run(
+        &sandbox,
+        &["trash-empty", "--apply", "--yolo", &confirm, "--json"],
+    );
+    assert!(accepted.status.success(), "{}", json(&accepted));
+    assert!(items.iter().all(|item| !item.exists()));
+}
+
 /// An empty Trash asks for no size or consent, but its apply still validates
 /// the Trash root and still refuses an unwritable journal before it starts.
 #[test]

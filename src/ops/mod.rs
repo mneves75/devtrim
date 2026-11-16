@@ -27,8 +27,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{BoundedCommand as _, MUTATION_TIMEOUT};
 pub use crate::report::{Action, Finding, Summary};
-pub(crate) use crate::safety::dir_size;
 use crate::safety::{Ctx, FileIdentity, MarkerGrant, VerifiedTarget, is_git_metadata_name};
+pub(crate) use crate::safety::{dir_measure, dir_size};
 
 static QUARANTINE_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
@@ -1235,14 +1235,14 @@ fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Resul
         }
         // One item that cannot be measured (a folder left unreadable) offers
         // nothing and is named; the other items are unrelated to it.
-        let size = match dir_size(&path) {
+        let size = match dir_measure(&path) {
             Ok(size) => size,
             Err(error) => {
                 unread.push(project::UnreadFolder::new(&path, &error));
                 continue;
             }
         };
-        findings.push(Finding::new(
+        findings.push(Finding::sized(
             format!("Trash item: {}", entry.file_name().to_string_lossy()),
             Some(path),
             size,

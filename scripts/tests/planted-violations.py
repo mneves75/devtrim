@@ -2064,23 +2064,23 @@ CASES = (
         tests=("safety::tests::a_probe_that_cannot_finish_refuses_instead_of_reporting_nothing_running",),
         marker="PV liveness/probe-timeout",
     ),
-    # A pnpm install is APFS clones of a store outside it: counting each
-    # clone's allocated blocks overstated what deleting it frees 17 times.
+    # A pnpm install is APFS clones of a store outside it: its lower bound is
+    # the clones' private bytes, not the allocated blocks the size counts.
     Case(
         name="size/clone-private",
         relative_path="src/safety.rs",
-        before="        Ok(blocks.private)\n    }\n\n    fn join_family",
-        after="        Ok(blocks.allocated)\n    }\n\n    fn join_family",
-        tests=("safety::tests::a_clone_of_a_file_outside_the_tree_frees_almost_nothing",),
+        before="            .map(|blocks| blocks.private)\n    }\n}",
+        after="            .map(|blocks| blocks.allocated)\n    }\n}",
+        tests=("safety::tests::a_clone_of_a_file_outside_the_tree_frees_at_least_its_private_bytes",),
         marker="PV size/clone-private",
     ),
     # A snapshot keeps every block older than it, which the private size
-    # leaves out: trusting it there would report clones as nearly free.
+    # leaves out: trusting it there would report a lower bound that is not one.
     Case(
         name="size/snapshot-fallback",
         relative_path="src/safety.rs",
-        before="        if !trusted {\n            return allocated_bytes(metadata, path);\n        }\n",
-        after="        let _ = trusted;\n",
+        before="        trusted\n            .then(|| apfs_size::file_blocks(path, dev, metadata.ino()))",
+        after="        let _ = trusted;\n        true\n            .then(|| apfs_size::file_blocks(path, dev, metadata.ino()))",
         tests=("safety::tests::a_volume_with_a_snapshot_counts_allocated_blocks",),
         marker="PV size/snapshot-fallback",
     ),

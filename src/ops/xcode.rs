@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 use super::project::{
     UnreadFolder, activity_window, has_git_marker, unjudged_finding, unread_folders_finding,
 };
-use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
+use super::{
+    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_measure, dir_size,
+    removal_note,
+};
 use crate::safety::{Ctx, OpenFile, XcodeActivity, escalate, xcode_activity};
 
 pub(crate) struct Xcode;
@@ -328,8 +331,8 @@ fn support_findings(label: &str, note: &str, path: &Path) -> Result<Vec<Finding>
             format!("{note}. SwiftPM package checkouts here are Git clones and stay");
         let mut findings = Vec::new();
         for child in package_folder_children(path)? {
-            let size = dir_size(&child)?;
-            findings.push(Finding::new(
+            let size = dir_measure(&child)?;
+            findings.push(Finding::sized(
                 format!(
                     "{label}: {folder}/{}",
                     child.file_name().unwrap_or_default().to_string_lossy()
@@ -337,14 +340,14 @@ fn support_findings(label: &str, note: &str, path: &Path) -> Result<Vec<Finding>
                 Some(child),
                 size,
                 package_note.clone(),
-                escalate(4, size),
+                escalate(4, size.allocated),
                 Action::Trash,
             ));
         }
         return Ok(findings);
     }
-    let size = dir_size(path)?;
-    Ok(vec![Finding::new(
+    let size = dir_measure(path)?;
+    Ok(vec![Finding::sized(
         format!(
             "{label}: {}",
             path.file_name().unwrap_or_default().to_string_lossy()
@@ -352,7 +355,7 @@ fn support_findings(label: &str, note: &str, path: &Path) -> Result<Vec<Finding>
         Some(path.to_path_buf()),
         size,
         note,
-        escalate(4, size),
+        escalate(4, size.allocated),
         Action::Trash,
     )])
 }
