@@ -863,6 +863,11 @@ fn eval_installers_apply_continues_past_a_refused_archive() {
         !status.success(),
         "the refusal must fail the run:\n{output}"
     );
+    // The partial summary carries the measured line too.
+    assert!(
+        output.contains("partial") && output.contains("free space on the home volume: "),
+        "the partial summary must report measured free space:\n{output}"
+    );
 }
 
 /// A `Downloads` that is a link to another folder is named in a warning and

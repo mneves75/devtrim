@@ -546,6 +546,38 @@ fn eval_disk_reports_free_space_and_warns_only_below_the_threshold() {
             .contains("disk does not accept flag(s): --apply")
     );
     unchanged(&before, &sandbox);
+
+    // A home folder that does not exist has no volume to read: an error with
+    // a nonzero status, unlike a low reading, and one JSON document under --json.
+    // (The home is refused while resolving it, before `statvfs`; the
+    // `statvfs` failure itself is the unit test in src/volume.rs.)
+    let missing = sandbox.path().join("missing-home");
+    let unreadable = |extra: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+            .arg("disk")
+            .args(extra)
+            .env_clear()
+            .env("HOME", &missing)
+            .env("PATH", sandbox.bin())
+            .output()
+            .unwrap()
+    };
+    let human = unreadable(&[]);
+    assert_eq!(human.status.code(), Some(1), "{human:?}");
+    let message = String::from_utf8(human.stderr).unwrap();
+    assert!(message.contains("missing-home"), "{message}");
+    let document = unreadable(&["--json"]);
+    assert_eq!(document.status.code(), Some(1), "{document:?}");
+    let value = json(&document);
+    assert_eq!(value["operation"], "disk");
+    assert!(
+        value["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("missing-home"),
+        "{value}"
+    );
+    assert!(!missing.exists());
 }
 
 #[test]
