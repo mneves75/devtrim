@@ -2,12 +2,13 @@
   "base": "f9f806d",
   "branch": "feat/0.14-measured-space",
   "checks": {
-    "verify-focused": "not run",
-    "verify-offline": "not run",
+    "verify-focused": "pass after B+C merge (fmt, clippy, cargo test)",
+    "verify-offline": "failed once: stale facts.json (fixed 77f2cfa); rerun pending",
     "msrv": "not run",
     "tui-pty": "not run",
     "read-only-views": "not run",
     "planted-violations": "not run",
-    "ci": "not run"
+    "ci": "not run",
+    "film-controls": "pass after facts regen"
   }
 }

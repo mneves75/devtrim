@@ -2,20 +2,30 @@
 
 Branch `feat/0.14-measured-space` from `f9f806d`. Plan: `plans/018-measured-space-and-explain.md`.
 
-## State
+## State (2026-11-16)
 
-- [ ] T1 clone-aware sizing (worker A, worktree)
-- [ ] T2 measured free space after apply (worker B, worktree)
-- [ ] T3 `disk --warn-below` (worker B)
-- [ ] T4 DerivedData workspace note (worker C, worktree)
-- [ ] T5 `explain <path>` (worker C)
-- [ ] T6 docs/version
+- [x] T2 measured free space after apply — worker B, merged (bb02fd1)
+- [x] T3 `disk --warn-below` — worker B, merged
+- [x] T4 DerivedData workspace note — worker C, merged
+- [x] T5 `explain <path>` — worker C, merged
+- [ ] T1 clone-aware sizing — worker A branch `worktree-agent-a461409c566741beb`, NOT merged; rework running:
+  snapshot fallback, memory (563 MB peak in `largest`), frames.py clone fixture, page.html sentence
+- [x] T6 docs for T2–T5 (01d1caf), film facts regenerated (77f2cfa); CHANGELOG 0.14.0 drafted, uncommitted
+- [ ] T6 docs for T1, version bump
 - [ ] T7 gates and release
 
 ## Decisions
 
-See plans/018 § Decisions.
+- 5b least-regret ordering dropped: no rebuild-cost data; largest-first is a documented convention.
+- Private size is trusted only on APFS (HFS+ reports 0: worker A probe) and only on a volume with no
+  snapshot (`diskutil apfs listSnapshots -plist` returns `<array/>`), else st_blocks. Reason: the
+  private size excludes snapshot-held bytes (getattrlist(2)); with Time Machine local snapshots every
+  old file would read ~0. Snapshot behaviour itself is untested on this Mac (Data volume has none).
+- Kept private size over a clone-family-only rule: probe showed a modified clone leaves its family
+  (new id, refcount 1) yet still shares blocks; only the private size counts it right.
+- Fallback if T1 cannot be finished: ship 0.14.0 without T1 and drop its changelog entry.
 
 ## Next
 
-Dispatch A, B, C in parallel; integrate in order A, B, C; run `verify.sh offline`.
+Review A's rework, merge, docs for T1, `verify.sh offline`, reviewer + autoreview + mneves-verify,
+security gate, bump 0.14.0, release beta then production.
