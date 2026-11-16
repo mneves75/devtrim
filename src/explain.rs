@@ -40,6 +40,7 @@ pub(crate) fn run(ctx: &Ctx, path: &Path) -> Result<ExitCode> {
     let builtin = crate::safety::protection_reason(&path, &ctx.home);
     let config = crate::safety::config_protect_entry(&path, &ctx.protect).map(Path::to_path_buf);
     let scan = ops::scan_all(ctx);
+    let identities = Identities::of(&path);
     let offers = scan
         .sections
         .iter()
@@ -47,7 +48,9 @@ pub(crate) fn run(ctx: &Ctx, path: &Path) -> Result<ExitCode> {
             scan.findings[section.range.clone()]
                 .iter()
                 .filter_map(|finding| {
-                    relation(finding.target()?, &path)
+                    let target = finding.target()?;
+                    relation(target, &path)
+                        .or_else(|| identities.relation(target))
                         .map(|relation| (section.category, finding, relation))
                 })
         })
@@ -163,6 +166,60 @@ fn relation(target: &Path, path: &Path) -> Option<Relation> {
     } else {
         None
     }
+}
+
+/// Device and inode of `path` and of each folder above it, so a target
+/// spelled differently from the path — a case variant on a case-insensitive
+/// volume — still relates to it. The path itself is read without following
+/// a link; a regular file with further hard links is left to its spelling,
+/// since another link is a different name the target's removal keeps.
+struct Identities {
+    path: Option<(u64, u64)>,
+    above: Vec<(u64, u64)>,
+}
+
+impl Identities {
+    fn of(path: &Path) -> Self {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let own = std::fs::symlink_metadata(path)
+            .ok()
+            .filter(|metadata| !(metadata.is_file() && metadata.nlink() > 1))
+            .map(|metadata| (metadata.dev(), metadata.ino()));
+        let above = match own {
+            Some(_) => path.ancestors().skip(1).filter_map(identity).collect(),
+            None => Vec::new(),
+        };
+        Self { path: own, above }
+    }
+
+    fn relation(&self, target: &Path) -> Option<Relation> {
+        let path = self.path?;
+        let held = identity(target)?;
+        if held == path {
+            Some(Relation::Exact)
+        } else if self.above.contains(&held) {
+            Some(Relation::Holds)
+        } else if target
+            .ancestors()
+            .skip(1)
+            .filter_map(identity)
+            .any(|above| above == path)
+        {
+            Some(Relation::Inside)
+        } else {
+            None
+        }
+    }
+}
+
+/// Device and inode of `path` itself, a link not followed.
+fn identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    std::fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
 }
 
 #[cfg(test)]

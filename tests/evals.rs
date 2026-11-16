@@ -1006,6 +1006,21 @@ fn eval_explain_names_the_finding_or_rule_behind_a_path() {
     assert_eq!(paths(&document(&aliased)), std::slice::from_ref(&installed));
     // A project folder holds the install: it is reported as inside the path.
     assert!(human(&dev.join("web")).contains("(inside this path)"));
+    // On a case-insensitive volume another spelling names the same folders,
+    // so it relates to the install as the spelling the scan found does.
+    if std::fs::symlink_metadata(dev.join("WEB/NODE_MODULES")).is_ok() {
+        let variant = dev.join("web/NODE_MODULES");
+        assert_eq!(
+            paths(&document(&variant)),
+            std::slice::from_ref(&installed),
+            "eval/explain-case-variant: {variant:?}"
+        );
+        assert!(human(&variant).contains("(this path)"));
+        let inside = dev.join("WEB/node_modules/PKG/index.js");
+        assert_eq!(paths(&document(&inside)), std::slice::from_ref(&installed));
+        assert!(human(&inside).contains("(holds this path)"));
+        assert!(human(&dev.join("WEB")).contains("(inside this path)"));
+    }
 
     // A built-in protected path names its rule; the install above is the
     // control that the rule is not reported for everything.
