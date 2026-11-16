@@ -478,6 +478,108 @@ fn eval_status_data_failure_never_uses_sealed_root() {
     }
 }
 
+/// `disk` reports the home volume's free space; with `--warn-below` it speaks
+/// only below the threshold, and either answer exits 0. A malformed size is a
+/// usage error; mutation flags are refused.
+#[test]
+fn eval_disk_reports_free_space_and_warns_only_below_the_threshold() {
+    let sandbox = Sandbox::in_target("report-disk");
+    let before = Tree::snapshot(sandbox.path());
+
+    let plain = run(&sandbox, &["disk"]);
+    successful(&plain);
+    let text = String::from_utf8(plain.stdout).unwrap();
+    assert!(
+        text.starts_with("home volume: ") && text.contains(" free of ") && text.contains("% free)"),
+        "{text}"
+    );
+
+    let quiet = run(&sandbox, &["disk", "--warn-below", "1"]);
+    successful(&quiet);
+    assert!(quiet.stdout.is_empty(), "{quiet:?}");
+    assert!(quiet.stderr.is_empty(), "{quiet:?}");
+
+    let low = run(&sandbox, &["disk", "--warn-below", "1000TiB"]);
+    successful(&low);
+    let text = String::from_utf8(low.stdout).unwrap();
+    assert!(
+        text.starts_with("warning: only ")
+            && text.ends_with(" free on the home volume (below 1000TiB)\n"),
+        "{text}"
+    );
+
+    let document = run(&sandbox, &["disk", "--warn-below", "1000TiB", "--json"]);
+    successful(&document);
+    let value = json(&document);
+    assert_eq!(value["operation"], "disk");
+    assert_eq!(value["warn_below_bytes"], 1000_u64 << 40);
+    assert_eq!(value["below"], true);
+    assert_eq!(value["errors"], serde_json::json!([]));
+    let available = value["available_bytes"].as_u64().unwrap();
+    assert!(
+        available <= value["total_bytes"].as_u64().unwrap(),
+        "{value}"
+    );
+    let unbounded = json(&run(&sandbox, &["disk", "--json"]));
+    assert!(unbounded["warn_below_bytes"].is_null(), "{unbounded}");
+    assert_eq!(unbounded["below"], false, "{unbounded}");
+
+    for size in ["12XB", "", "-5G", "nan", "1e3", "99999999999999999999TiB"] {
+        let refused = run(&sandbox, &["disk", "--warn-below", size]);
+        assert_eq!(refused.status.code(), Some(2), "{size:?}: {refused:?}");
+        assert!(refused.stdout.is_empty(), "{size:?}: {refused:?}");
+        let message = String::from_utf8(refused.stderr).unwrap();
+        assert!(
+            message.contains("--warn-below <SIZE>"),
+            "{size:?}: {message}"
+        );
+    }
+    let refused = run(&sandbox, &["disk", "--warn-below", "12XB", "--json"]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert_eq!(json(&refused)["operation"], "disk");
+
+    let refused = run(&sandbox, &["disk", "--apply"]);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(
+        String::from_utf8(refused.stderr)
+            .unwrap()
+            .contains("disk does not accept flag(s): --apply")
+    );
+    unchanged(&before, &sandbox);
+
+    // A home folder that does not exist has no volume to read: an error with
+    // a nonzero status, unlike a low reading, and one JSON document under --json.
+    // (The home is refused while resolving it, before `statvfs`; the
+    // `statvfs` failure itself is the unit test in src/volume.rs.)
+    let missing = sandbox.path().join("missing-home");
+    let unreadable = |extra: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+            .arg("disk")
+            .args(extra)
+            .env_clear()
+            .env("HOME", &missing)
+            .env("PATH", sandbox.bin())
+            .output()
+            .unwrap()
+    };
+    let human = unreadable(&[]);
+    assert_eq!(human.status.code(), Some(1), "{human:?}");
+    let message = String::from_utf8(human.stderr).unwrap();
+    assert!(message.contains("missing-home"), "{message}");
+    let document = unreadable(&["--json"]);
+    assert_eq!(document.status.code(), Some(1), "{document:?}");
+    let value = json(&document);
+    assert_eq!(value["operation"], "disk");
+    assert!(
+        value["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("missing-home"),
+        "{value}"
+    );
+    assert!(!missing.exists());
+}
+
 #[test]
 fn eval_generated_docs_expose_commands_and_refuse_json() {
     let sandbox = Sandbox::in_target("report-generated");
@@ -501,7 +603,14 @@ fn eval_generated_docs_expose_commands_and_refuse_json() {
         let text = String::from_utf8(output.stdout)
             .unwrap()
             .replace("\\-", "-");
-        for command in ["analyze", "trash-empty", "history", "uninstall", "optimize"] {
+        for command in [
+            "analyze",
+            "trash-empty",
+            "history",
+            "uninstall",
+            "optimize",
+            "disk",
+        ] {
             assert!(
                 text.contains(command),
                 "PV eval/generated-commands: {args:?} lacks {command}"

@@ -952,34 +952,49 @@ fn directory_contains_git_metadata_entry(path: &Path) -> Result<bool> {
 }
 
 pub(crate) fn is_config_protected(path: &Path, protect: &[PathBuf]) -> bool {
+    config_protect_entry(path, protect).is_some()
+}
+
+/// The configured `protect` entry that refuses `path`, as configured (`~`
+/// expanded), for `explain`; `None` exactly when [`is_config_protected`] is
+/// false.
+pub(crate) fn config_protect_entry<'a>(path: &Path, protect: &'a [PathBuf]) -> Option<&'a Path> {
     // No entries protect nothing; skip the parent resolution each finding
     // would otherwise pay for.
     if configured_protect_values(protect).is_empty() {
-        return false;
+        return None;
     }
     let literal = abs(path);
-    if is_config_protected_abs(&literal, protect) {
-        return true;
+    if let Some(entry) = config_protect_entry_abs(&literal, protect) {
+        return Some(entry);
     }
-    let Some(parent) = literal.parent() else {
-        return false;
-    };
-    let Some(leaf) = literal.file_name() else {
-        return false;
-    };
-    parent
-        .canonicalize()
-        .map(|resolved_parent| clean(&resolved_parent.join(leaf)))
-        .is_ok_and(|resolved| is_config_protected_abs(&resolved, protect))
+    let parent = literal.parent()?;
+    let leaf = literal.file_name()?;
+    let resolved = clean(&parent.canonicalize().ok()?.join(leaf));
+    config_protect_entry_abs(&resolved, protect)
 }
 
 fn is_config_protected_abs(path: &Path, protect: &[PathBuf]) -> bool {
-    // Intersection in either direction is refused: deleting an ancestor of a
-    // protected entry would remove the protected descendant with it.
-    configured_protect_values(protect).iter().any(|protected| {
-        path_is_or_under_protect_entry(path, protected)
-            || path_is_or_under_protect_entry(protected, path)
-    })
+    config_protect_entry_abs(path, protect).is_some()
+}
+
+fn config_protect_entry_abs<'a>(path: &Path, protect: &'a [PathBuf]) -> Option<&'a Path> {
+    let values = configured_protect_values(protect);
+    // Values loaded from configuration are literal/resolved pairs naming one
+    // entry, reported by its literal spelling.
+    let entry_width = if values.len() == protect.len() { 1 } else { 2 };
+    values
+        .chunks(entry_width)
+        .find(|entry| {
+            // Intersection in either direction is refused: deleting an ancestor
+            // of a protected entry would remove the protected descendant with it.
+            entry.iter().any(|protected| {
+                path_is_or_under_protect_entry(path, protected)
+                    || path_is_or_under_protect_entry(protected, path)
+            })
+        })
+        .and_then(<[PathBuf]>::first)
+        .map(PathBuf::as_path)
 }
 
 // Config strings are typically NFC while macOS directory entries are often NFD,
@@ -1045,34 +1060,43 @@ pub(crate) fn is_protected(path: &Path, home: &Path) -> bool {
     is_protected_abs(&abs(path), home)
 }
 
+/// Why built-in protection refuses `path`, for `explain`; `None` exactly
+/// when [`is_protected`] is false, since that is this answer's presence.
+pub(crate) fn protection_reason(path: &Path, home: &Path) -> Option<String> {
+    protection_reason_abs(&abs(path), home)
+}
+
 fn is_protected_abs(path: &Path, home: &Path) -> bool {
+    protection_reason_abs(path, home).is_some()
+}
+
+fn protection_reason_abs(path: &Path, home: &Path) -> Option<String> {
     // The home folder and every folder above it: removing one removes the
     // home folder, its Trash and every protected folder inside it.
     if path_starts_with_ignore_ascii_case(home, path)
         || path_eq_ignore_ascii_case(path, &home.join(".Trash"))
     {
-        return true;
+        return Some(if path_starts_with_ignore_ascii_case(home, path) {
+            "the home folder and every folder above it are protected".to_owned()
+        } else {
+            "the Trash folder itself is protected".to_owned()
+        });
     }
-    if protected_system_root(path).is_some() {
-        return true;
+    if let Some(root) = protected_system_root(path) {
+        return Some(format!("{root} is a protected system folder"));
     }
-    let Some(relative) = path_relative_to_ignore_ascii_case(path, home) else {
-        return false;
-    };
-    let Some(first) = relative.iter().next() else {
-        return false;
-    };
-    if let Some(protected) = PROTECTED_USER.iter().find(|protected| {
+    let relative = path_relative_to_ignore_ascii_case(path, home)?;
+    let first = relative.iter().next()?;
+    let protected = PROTECTED_USER.iter().find(|protected| {
         first
             .as_encoded_bytes()
             .eq_ignore_ascii_case(protected.as_bytes())
-    }) {
-        if *protected == "Library" {
-            return !is_managed_library_subpath(&relative);
-        }
-        return true;
+    })?;
+    if *protected == "Library" {
+        return (!is_managed_library_subpath(&relative))
+            .then(|| "~/Library is protected outside the caches devtrim manages".to_owned());
     }
-    false
+    Some(format!("~/{protected} is protected"))
 }
 
 fn path_eq_ignore_ascii_case(left: &Path, right: &Path) -> bool {
@@ -1451,7 +1475,8 @@ pub(crate) fn trash_gate(findings: &[Finding], confirm_gb: Option<u64>) -> Resul
 /// Removing a sparse file frees only its allocated blocks, and a small file
 /// holds a whole filesystem block, so this is what removal gives back; the
 /// length overstated a sparse Xcode index and understated a cache of many
-/// small files.
+/// small files. Blocks a file shares with its APFS clones count here in full,
+/// since no attribute shows which of them deleting it would still leave.
 pub(crate) fn allocated_bytes(metadata: &std::fs::Metadata, path: &Path) -> Result<u64> {
     use std::os::unix::fs::MetadataExt;
 
@@ -1461,29 +1486,251 @@ pub(crate) fn allocated_bytes(metadata: &std::fs::Metadata, path: &Path) -> Resu
         .ok_or_else(|| anyhow::anyhow!("allocated size overflow for {}", path.display()))
 }
 
-/// Allocated bytes summed over one walk, counting a hard-linked file once, as
-/// `du` does: its links share one set of blocks. A clone (APFS `clonefile`)
-/// still counts in full each time, because the shared extents are not visible
-/// through `stat`.
+/// How long a device's private-size verdict stands before it is asked again,
+/// so a long session notices a snapshot taken after its first scan while one
+/// scan asks once per device rather than once per finding.
+const PRIVATE_SIZE_VERDICT_TTL: Duration = Duration::from_secs(60);
+
+/// Per device: when its private-size verdict was reached, and the verdict.
+static PRIVATE_SIZE_VERDICTS: Mutex<std::collections::BTreeMap<u64, (std::time::Instant, bool)>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+thread_local! {
+    static PRIVATE_SIZE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// While alive, this thread's sizing takes every APFS volume as snapshot-free
+/// (`true`) or every volume as holding a snapshot (`false`), instead of asking
+/// `diskutil`, so a test does not depend on the snapshots of the machine it
+/// runs on.
+#[cfg(test)]
+pub(crate) struct AssumeSnapshotFree(Option<bool>);
+
+#[cfg(test)]
+impl AssumeSnapshotFree {
+    pub(crate) fn new(free: bool) -> Self {
+        Self(PRIVATE_SIZE_OVERRIDE.replace(Some(free)))
+    }
+}
+
+#[cfg(test)]
+impl Drop for AssumeSnapshotFree {
+    fn drop(&mut self) {
+        PRIVATE_SIZE_OVERRIDE.set(self.0);
+    }
+}
+
+/// Whether the APFS private size tells what deleting a file on `dev` frees:
+/// only on an APFS volume (HFS+ marks it returned yet answers 0) that holds no
+/// snapshot. A snapshot keeps the blocks of every file older than it, which
+/// the private size leaves out, so with a Time Machine local snapshot every
+/// such file would read as nearly free. Anything else, an unidentified volume
+/// or a `diskutil` answer that cannot be read, keeps `st_blocks`: the fallback
+/// is the larger size, never the smaller.
+pub(crate) fn private_size_trusted(path: &Path, dev: u64) -> bool {
+    #[cfg(test)]
+    if let Some(free) = PRIVATE_SIZE_OVERRIDE.get() {
+        return free && apfs_size::volume(path, dev).is_some_and(|volume| volume.apfs);
+    }
+    let verdicts = || {
+        PRIVATE_SIZE_VERDICTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    if let Some(&(reached, trusted)) = verdicts().get(&dev)
+        && reached.elapsed() < PRIVATE_SIZE_VERDICT_TTL
+    {
+        return trusted;
+    }
+    // The lock is not held while `diskutil` runs.
+    let Some(volume) = apfs_size::volume(path, dev) else {
+        return false;
+    };
+    let trusted = volume.apfs && volume_lists_no_snapshot(&volume.mount);
+    verdicts().insert(dev, (std::time::Instant::now(), trusted));
+    trusted
+}
+
+/// Asks `diskutil apfs listSnapshots -plist <mount>`, which needs no root.
+/// `mount` comes from `statfs`; it must be absolute.
+fn volume_lists_no_snapshot(mount: &Path) -> bool {
+    if !mount.is_absolute() {
+        return false;
+    }
+    match Command::new("/usr/sbin/diskutil")
+        .args(["apfs", "listSnapshots", "-plist"])
+        .arg(mount)
+        .output_within(crate::process::QUERY_TIMEOUT)
+    {
+        Ok(output) => lists_no_snapshot(output.status.success(), &output.stdout),
+        Err(_) => false,
+    }
+}
+
+/// True only for a successful answer holding exactly one `Snapshots` key
+/// followed, after whitespace, by an empty array: the shape `diskutil` prints
+/// for a volume without snapshots. Any other answer is a snapshot or unknown.
+fn lists_no_snapshot(succeeded: bool, stdout: &[u8]) -> bool {
+    const KEY: &str = "<key>Snapshots</key>";
+    let Ok(text) = std::str::from_utf8(stdout) else {
+        return false;
+    };
+    let mut keys = text.match_indices(KEY).map(|(at, _)| at);
+    let (Some(at), None) = (keys.next(), keys.next()) else {
+        return false;
+    };
+    succeeded
+        && text
+            .get(at + KEY.len()..)
+            .is_some_and(|rest| rest.trim_start().starts_with("<array/>"))
+}
+
+/// What removing a target frees. `allocated` is its allocated blocks, each
+/// hard-linked file counted once: the size every preview, total, danger
+/// level and confirmation uses, because no attribute reveals the blocks an
+/// APFS clone written to after `cp -c` still shares, so nothing smaller is
+/// known to be freed. `frees_at_least` is the smaller lower bound the APFS
+/// private size gives on a snapshot-free APFS volume (`private_size_trusted`),
+/// reported beside it and never consulted for consent; `None` when it is not
+/// smaller or cannot be read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Size {
+    pub(crate) allocated: u64,
+    pub(crate) frees_at_least: Option<u64>,
+}
+
+impl From<u64> for Size {
+    /// A size with no lower bound beside it.
+    fn from(allocated: u64) -> Self {
+        Self {
+            allocated,
+            frees_at_least: None,
+        }
+    }
+}
+
+impl Size {
+    fn new(allocated: u64, estimate: Option<u64>) -> Self {
+        Self {
+            allocated,
+            frees_at_least: estimate.filter(|&estimate| estimate < allocated),
+        }
+    }
+}
+
+/// One file's `Size`: its allocated blocks, and its APFS private size where
+/// that is true. A clone of a file kept elsewhere frees at least its private
+/// bytes, which may be almost none.
+pub(crate) fn file_size(metadata: &std::fs::Metadata, path: &Path) -> Result<Size> {
+    use std::os::unix::fs::MetadataExt;
+
+    let allocated = allocated_bytes(metadata, path)?;
+    let private = if !metadata.is_file() || !private_size_trusted(path, metadata.dev()) {
+        allocated
+    } else if metadata.nlink() > 1 {
+        // A further link outside the target keeps every block.
+        0
+    } else {
+        private_or_nothing(metadata, path)
+    };
+    Ok(Size::new(allocated, Some(private)))
+}
+
+/// Allocated bytes of a walked tree, summed one file at a time, each
+/// hard-linked file once, as `du` counts it: its links share one set of
+/// blocks. An estimating walk (`estimating`) also sums the lower bound
+/// `Size::frees_at_least` reports: each file's APFS private size where that
+/// is true (nothing where APFS gives none), else its allocated blocks, and nothing for a file with further
+/// hard links, which one outside the tree would keep. Private blocks belong
+/// to one file alone, so the sum never exceeds what deleting the tree frees. Blocks
+/// clones share are left out even when every clone APFS counts is inside the
+/// tree: a clone written to after `cp -c` leaves the family's count yet still
+/// holds the blocks it did not rewrite, wherever it is.
 #[derive(Default)]
 pub(crate) struct DiskUsage {
     linked: std::collections::HashSet<(u64, u64)>,
+    /// `None` for a report view, which shows allocated blocks and never asks
+    /// APFS or `diskutil`.
+    estimate: Option<Estimate>,
+}
+
+struct Estimate {
+    /// `None` once the sum overflows: no estimate is reported.
+    bytes: Option<u64>,
+    trusted: std::collections::HashMap<u64, bool>,
 }
 
 impl DiskUsage {
-    /// What `metadata`'s file adds to the walk's total: its allocated bytes,
-    /// or nothing for a further link to a file already counted.
+    /// A walk that also sums the private-size lower bound.
+    pub(crate) fn estimating() -> Self {
+        Self {
+            linked: std::collections::HashSet::new(),
+            estimate: Some(Estimate {
+                bytes: Some(0),
+                trusted: std::collections::HashMap::new(),
+            }),
+        }
+    }
+
+    /// The allocated bytes `metadata`'s file adds to the walk's total, or
+    /// nothing for a further link to a file already counted.
     pub(crate) fn add(&mut self, metadata: &std::fs::Metadata, path: &Path) -> Result<u64> {
         use std::os::unix::fs::MetadataExt;
 
         if metadata.nlink() > 1 && !self.linked.insert((metadata.dev(), metadata.ino())) {
             return Ok(0);
         }
-        allocated_bytes(metadata, path)
+        let allocated = allocated_bytes(metadata, path)?;
+        if let Some(estimate) = &mut self.estimate {
+            // A further link may lie outside the tree and keep every block.
+            let private = if metadata.is_file() && metadata.nlink() > 1 {
+                Some(0)
+            } else if metadata.is_file() {
+                estimate.private_bytes(metadata, path)
+            } else {
+                None
+            };
+            let freed = private.unwrap_or(allocated);
+            estimate.bytes = estimate.bytes.and_then(|total| total.checked_add(freed));
+        }
+        Ok(allocated)
+    }
+
+    /// The walk's `Size`, given the allocated bytes `add` returned in total.
+    pub(crate) fn size(&self, allocated: u64) -> Size {
+        Size::new(
+            allocated,
+            self.estimate.as_ref().and_then(|estimate| estimate.bytes),
+        )
     }
 }
 
-/// Allocated bytes under a directory for a report, and how many entries could
+impl Estimate {
+    /// A file's private bytes where the private size is true; `None` keeps
+    /// its allocated blocks, since off APFS or under a snapshot it is unknown.
+    fn private_bytes(&mut self, metadata: &std::fs::Metadata, path: &Path) -> Option<u64> {
+        use std::os::unix::fs::MetadataExt;
+
+        let dev = metadata.dev();
+        let trusted = *self
+            .trusted
+            .entry(dev)
+            .or_insert_with(|| private_size_trusted(path, dev));
+        trusted.then(|| private_or_nothing(metadata, path))
+    }
+}
+
+/// A file's APFS private size on a volume where it is true. A file APFS
+/// gives none for (a compressed file, or one replaced since its `lstat`)
+/// adds nothing: its blocks may be a clone's, and the bound must stay low.
+fn private_or_nothing(metadata: &std::fs::Metadata, path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+
+    apfs_size::file_blocks(path, metadata.dev(), metadata.ino()).map_or(0, |blocks| blocks.private)
+}
+
+/// Bytes under a directory (`DiskUsage`) for a report, and how many entries could
 /// not be read. It follows no link, stays on the directory's device, and does
 /// not enter `skip` (other worktrees nested inside this one), so a byte is
 /// counted once.
@@ -1545,12 +1792,19 @@ pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured
     measured
 }
 
+/// Allocated bytes under `path` (`DiskUsage`), for a caller that reports no
+/// lower bound.
 pub(crate) fn dir_size(path: &Path) -> Result<u64> {
-    Ok(dir_stats(path)?.0)
+    Ok(walk_stats(path, DiskUsage::default())?.0.allocated)
 }
 
-/// Allocated size (`DiskUsage`) and the newest regular-file modification time
-/// under `path`.
+/// `Size` of the tree at `path`, with the lower bound, for a finding.
+pub(crate) fn dir_measure(path: &Path) -> Result<Size> {
+    Ok(walk_stats(path, DiskUsage::estimating())?.0)
+}
+
+/// `Size` (`DiskUsage`, estimating) and the newest regular-file modification
+/// time under `path`.
 ///
 /// One traversal serves both, so a size and the staleness judged from it always
 /// describe the same tree. Only regular files contribute to either: a
@@ -1568,13 +1822,18 @@ pub(crate) fn dir_size(path: &Path) -> Result<u64> {
 ///
 /// A subtree with no regular files reports `UNIX_EPOCH`, which reads as
 /// maximally stale; a caller that judges age must handle it, as `xcode` does.
-pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTime>)> {
+pub(crate) fn dir_stats(path: &Path) -> Result<(Size, Option<std::time::SystemTime>)> {
+    walk_stats(path, DiskUsage::estimating())
+}
+
+fn walk_stats(path: &Path, mut usage: DiskUsage) -> Result<(Size, Option<std::time::SystemTime>)> {
     let mut bytes = 0u64;
-    let mut usage = DiskUsage::default();
     let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
     match std::fs::symlink_metadata(path) {
         Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, newest)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Size::default(), newest));
+        }
         Err(error) => {
             return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
         }
@@ -1602,7 +1861,7 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(u64, Option<std::time::SystemTim
                 .ok_or_else(|| anyhow::anyhow!("size overflow under {}", path.display()))?;
         }
     }
-    Ok((bytes, newest))
+    Ok((usage.size(bytes), newest))
 }
 
 /// Process names that protect the repository holding their working directory, as `pgrep -x` reads
@@ -2202,6 +2461,318 @@ mod tests {
         );
     }
 
+    use crate::ops::{CLONED_FILE, clone_file, write_incompressible};
+
+    /// Within a tenth of `copies` whole copies of `CLONED_FILE`.
+    fn about(copies: u64) -> std::ops::Range<u64> {
+        CLONED_FILE * copies * 9 / 10..CLONED_FILE * copies * 11 / 10
+    }
+
+    /// pnpm installs clones of its store: the install holds every block in
+    /// its allocation, the size consent reads, while deleting it frees at
+    /// least what the clones do not share with the store outside it, which
+    /// may be almost nothing.
+    #[test]
+    fn a_clone_of_a_file_outside_the_tree_frees_at_least_its_private_bytes() {
+        let fixture = crate::ops::TestFixture::new("devtrim-clone-private");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let source = fixture.path().join("store-file");
+        write_incompressible(&source);
+        clone_file(&source, &tree.join("installed"));
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = dir_measure(&tree).unwrap();
+        assert!(
+            about(1).contains(&size.allocated),
+            "a clone of a file outside the tree allocates {} bytes",
+            size.allocated
+        );
+        assert!(
+            size.frees_at_least
+                .is_some_and(|bytes| bytes < CLONED_FILE / 10),
+            "PV size/clone-private: a clone of a file outside the tree frees at least {:?} bytes",
+            size.frees_at_least
+        );
+        assert_eq!(dir_size(&tree).unwrap(), size.allocated);
+        assert_eq!(
+            measure_lenient(&tree, &BTreeSet::new()).bytes,
+            size.allocated
+        );
+        let installed = tree.join("installed");
+        let file = file_size(&std::fs::symlink_metadata(&installed).unwrap(), &installed).unwrap();
+        assert_eq!(file, size, "one file measures as the tree holding it");
+    }
+
+    /// A single file with a link elsewhere (an installer hard-linked into
+    /// another folder) frees nothing for certain: the other link keeps it.
+    #[test]
+    fn a_hard_linked_file_frees_at_least_nothing() {
+        let fixture = crate::ops::TestFixture::new("devtrim-file-link");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let file = fixture.path().join("installer.dmg");
+        write_incompressible(&file);
+        std::fs::hard_link(&file, fixture.path().join("elsewhere.dmg")).unwrap();
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = file_size(&std::fs::symlink_metadata(&file).unwrap(), &file).unwrap();
+        assert!(about(1).contains(&size.allocated));
+        assert_eq!(size.frees_at_least, Some(0), "{size:?}");
+    }
+
+    /// A tree holding a file and its clone allocates two copies, a further
+    /// hard link to the clone adding nothing. The lower bound counts private
+    /// blocks only, so it leaves out the copy they share: no attribute says no
+    /// edited clone elsewhere still holds it. Plain copies report no lower
+    /// bound beside their size.
+    #[test]
+    fn a_file_and_its_clone_inside_the_tree_allocate_two_copies() {
+        let fixture = crate::ops::TestFixture::new("devtrim-clone-family");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(tree.join("a")).unwrap();
+        std::fs::create_dir_all(tree.join("b")).unwrap();
+        write_incompressible(&tree.join("a/source"));
+        clone_file(&tree.join("a/source"), &tree.join("b/clone"));
+        std::fs::hard_link(tree.join("b/clone"), tree.join("b/link")).unwrap();
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = dir_measure(&tree).unwrap();
+        assert!(
+            about(2).contains(&size.allocated),
+            "file and clone allocate {} bytes",
+            size.allocated
+        );
+        assert_eq!(size.allocated, du_bytes(&tree));
+        assert!(
+            size.frees_at_least
+                .is_some_and(|bytes| bytes < CLONED_FILE / 10),
+            "file and clone free at least {:?} bytes",
+            size.frees_at_least
+        );
+
+        let copy = fixture.path().join("copy");
+        std::fs::create_dir_all(&copy).unwrap();
+        write_incompressible(&copy.join("a"));
+        write_incompressible(&copy.join("b"));
+        let copies = dir_measure(&copy).unwrap();
+        assert!(
+            about(2).contains(&copies.allocated),
+            "two plain copies allocate {} bytes",
+            copies.allocated
+        );
+        assert_eq!(copies.frees_at_least, None);
+    }
+
+    /// A file and its clone in a tree are the whole family APFS counts, yet a
+    /// clone written to outside the tree left that count and still holds the
+    /// blocks they share: deleting the tree frees almost nothing, so the lower
+    /// bound must not credit the family's shared blocks.
+    #[test]
+    fn a_family_found_whole_may_share_its_blocks_with_an_edited_clone() {
+        use std::io::{Seek as _, Write as _};
+
+        let fixture = crate::ops::TestFixture::new("devtrim-clone-whole");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        write_incompressible(&tree.join("a"));
+        clone_file(&tree.join("a"), &tree.join("b"));
+        let outside = fixture.path().join("c");
+        clone_file(&tree.join("a"), &outside);
+        let mut edited = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&outside)
+            .unwrap();
+        edited.seek(std::io::SeekFrom::Start(4096)).unwrap();
+        edited.write_all(b"edit").unwrap();
+        edited.sync_all().unwrap();
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = dir_measure(&tree).unwrap();
+        assert!(about(2).contains(&size.allocated), "{size:?}");
+        assert!(
+            size.frees_at_least
+                .is_some_and(|bytes| bytes < CLONED_FILE / 10),
+            "a family sharing its blocks with an edited clone outside frees at least {:?} bytes",
+            size.frees_at_least
+        );
+    }
+
+    /// A file hard-linked to a name outside the tree frees nothing when the
+    /// tree goes, so it adds nothing to the lower bound; its allocated blocks
+    /// still count once in the size.
+    #[test]
+    fn a_hard_linked_file_adds_nothing_to_the_lower_bound() {
+        let fixture = crate::ops::TestFixture::new("devtrim-linked-lower-bound");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        write_incompressible(&tree.join("linked"));
+        std::fs::hard_link(tree.join("linked"), fixture.path().join("outside")).unwrap();
+        write_incompressible(&tree.join("own"));
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = dir_measure(&tree).unwrap();
+        assert!(about(2).contains(&size.allocated), "{size:?}");
+        assert!(
+            size.frees_at_least
+                .is_some_and(|bytes| about(1).contains(&bytes)),
+            "a tree holding one file of its own and one linked outside frees at least {:?} bytes",
+            size.frees_at_least
+        );
+    }
+
+    /// Two trees each holding one clone of a family both allocate a copy, so
+    /// a plan removing both counts both; neither frees the shared blocks alone.
+    #[test]
+    fn a_family_split_between_two_trees_frees_little_in_either() {
+        let fixture = crate::ops::TestFixture::new("devtrim-clone-split");
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::create_dir_all(root.join("b")).unwrap();
+        write_incompressible(&root.join("a/source"));
+        clone_file(&root.join("a/source"), &root.join("b/clone"));
+
+        let _trust = AssumeSnapshotFree::new(true);
+        for name in ["a", "b"] {
+            let size = dir_measure(&root.join(name)).unwrap();
+            assert!(about(1).contains(&size.allocated), "{name}: {size:?}");
+            assert!(
+                size.frees_at_least
+                    .is_some_and(|bytes| bytes < CLONED_FILE / 10),
+                "{name} frees at least {:?} bytes",
+                size.frees_at_least
+            );
+        }
+    }
+
+    /// A snapshot keeps every block older than it, so on a volume holding one
+    /// the private size promises nothing: sizes are allocated blocks, as `du`
+    /// counts them, and no lower bound is reported.
+    #[test]
+    fn a_volume_with_a_snapshot_counts_allocated_blocks() {
+        let fixture = crate::ops::TestFixture::new("devtrim-clone-snapshot");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        write_incompressible(&tree.join("source"));
+        clone_file(&tree.join("source"), &tree.join("clone"));
+        clone_file(&tree.join("source"), &fixture.path().join("outside"));
+
+        let _snapshot = AssumeSnapshotFree::new(false);
+        let size = dir_measure(&tree).unwrap();
+        assert_eq!(size.allocated, du_bytes(&tree));
+        assert_eq!(
+            size.frees_at_least, None,
+            "PV size/snapshot-fallback: a tree on a volume with a snapshot reported a lower bound {:?}",
+            size.frees_at_least
+        );
+        let installed = tree.join("clone");
+        let metadata = std::fs::symlink_metadata(&installed).unwrap();
+        assert_eq!(
+            file_size(&metadata, &installed).unwrap(),
+            Size::from(allocated_bytes(&metadata, &installed).unwrap())
+        );
+    }
+
+    /// A clone written to after `cp -c` leaves its family yet still shares
+    /// every block it did not rewrite; no attribute says so, so the size
+    /// consent reads must count each file's allocated blocks.
+    #[test]
+    fn an_edited_clone_counts_its_allocated_blocks() {
+        use std::io::{Seek as _, Write as _};
+
+        let fixture = crate::ops::TestFixture::new("devtrim-clone-edited");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        write_incompressible(&tree.join("source"));
+        clone_file(&tree.join("source"), &tree.join("edited"));
+        let mut edited = std::fs::OpenOptions::new()
+            .write(true)
+            .open(tree.join("edited"))
+            .unwrap();
+        edited.seek(std::io::SeekFrom::Start(4096)).unwrap();
+        edited.write_all(b"edit").unwrap();
+        edited.sync_all().unwrap();
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = dir_measure(&tree).unwrap();
+        assert!(
+            size.allocated >= CLONED_FILE,
+            "a file and its edited clone measured {} bytes",
+            size.allocated
+        );
+        assert_eq!(dir_size(&tree).unwrap(), size.allocated);
+    }
+
+    /// The typed confirmation a danger-9 plan asks for is taken from the
+    /// allocated size, so clones the tree holds cannot shrink it to zero.
+    #[test]
+    fn a_typed_confirmation_counts_every_clone_it_removes() {
+        let fixture = crate::ops::TestFixture::new("devtrim-clone-typed");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        write_incompressible(&tree.join("source"));
+        for index in 0..140 {
+            clone_file(&tree.join("source"), &tree.join(format!("clone-{index}")));
+        }
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = dir_measure(&tree).unwrap();
+        assert!(size.frees_at_least.is_some(), "{size:?}");
+        let finding = Finding::sized(
+            "clones",
+            Some(tree),
+            size,
+            "",
+            9,
+            crate::report::Action::Shred,
+        );
+        let ConfirmationRequirement::TypedGigabytes { expected, .. } =
+            confirmation_requirement(9, std::slice::from_ref(&finding))
+        else {
+            panic!("a danger-9 plan asked for no typed size");
+        };
+        assert!(
+            expected >= 1,
+            "141 copies of {CLONED_FILE} bytes asked for {expected} GB"
+        );
+        assert_eq!(expected, size.allocated / (1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn only_an_empty_snapshot_list_trusts_the_private_size() {
+        let empty = b"<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n\t<key>Snapshots</key>\n\t<array/>\n</dict>\n</plist>\n";
+        assert!(lists_no_snapshot(true, empty));
+        assert!(!lists_no_snapshot(false, empty), "a failed diskutil");
+        let one = b"<plist><dict><key>Snapshots</key><array><dict><key>SnapshotName</key><string>com.apple.TimeMachine.2026-11-16-120000.local</string></dict></array></dict></plist>";
+        assert!(!lists_no_snapshot(true, one));
+        assert!(
+            !lists_no_snapshot(true, b"<plist><dict></dict></plist>"),
+            "missing key"
+        );
+        assert!(
+            !lists_no_snapshot(
+                true,
+                b"<key>Snapshots</key><array/><key>Snapshots</key><array/>"
+            ),
+            "two keys"
+        );
+        assert!(!lists_no_snapshot(true, b"<key>Snapshots</key><string/>"));
+        assert!(
+            !lists_no_snapshot(true, b"<key>Snapshots</key>"),
+            "truncated"
+        );
+        assert!(
+            !lists_no_snapshot(true, b"\xff<key>Snapshots</key><array/>"),
+            "not UTF-8"
+        );
+        assert!(!lists_no_snapshot(true, b""));
+    }
+
+    #[test]
+    fn diskutil_answers_that_are_not_an_empty_list_fall_back() {
+        assert!(!volume_lists_no_snapshot(Path::new("/nonexistent-devtrim")));
+        assert!(!volume_lists_no_snapshot(Path::new("relative")));
+    }
+
     use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt, fs::symlink};
 
     fn temp(name: &str) -> PathBuf {
@@ -2401,6 +2972,61 @@ mod tests {
         for path in ["/Users/other", "/Users/example/dev", "/Users/examples"] {
             assert!(!is_protected(Path::new(path), home), "{path}");
         }
+    }
+
+    /// `explain` names the rule: each built-in reason is given exactly when
+    /// `is_protected` refuses, and a configured entry loaded as a
+    /// literal/resolved pair is named by its literal spelling even when only
+    /// the resolved spelling matched.
+    #[test]
+    fn protection_names_the_rule_that_refuses() {
+        let home = Path::new("/Users/example");
+        let reasons = [
+            ("/Users", "the home folder and every folder above it"),
+            ("/Users/example/.Trash", "the Trash folder itself"),
+            ("/System/Library", "/System is a protected system folder"),
+            ("/Users/example/.ssh/id", "~/.ssh is protected"),
+            ("/Users/example/Library/Keychains", "~/Library is protected"),
+        ];
+        for (path, reason) in reasons {
+            let path = Path::new(path);
+            assert!(
+                is_protected(path, home)
+                    && protection_reason(path, home).is_some_and(|given| given.starts_with(reason)),
+                "{}: {:?}",
+                path.display(),
+                protection_reason(path, home)
+            );
+        }
+        for path in ["/Users/example/dev", "/Users/example/Library/Caches/pip"] {
+            let path = Path::new(path);
+            assert!(!is_protected(path, home) && protection_reason(path, home).is_none());
+        }
+
+        let protect = [
+            PathBuf::from(CONFIG_PROTECT_SNAPSHOT_MARKER),
+            PathBuf::from("/Users/example/keep"),
+            PathBuf::from("/Volumes/Data/keep"),
+            PathBuf::from("/Users/example/also"),
+            PathBuf::from("/Users/example/also"),
+        ];
+        assert_eq!(
+            config_protect_entry(Path::new("/Volumes/Data/keep/file"), &protect),
+            Some(Path::new("/Users/example/keep"))
+        );
+        assert_eq!(
+            config_protect_entry(Path::new("/Users/example"), &protect),
+            Some(Path::new("/Users/example/keep")),
+            "an ancestor of an entry is refused with it"
+        );
+        assert_eq!(
+            config_protect_entry(Path::new("/Users/example/also/x"), &protect),
+            Some(Path::new("/Users/example/also"))
+        );
+        assert_eq!(
+            config_protect_entry(Path::new("/Users/example/dev"), &protect),
+            None
+        );
     }
 
     /// A scan root inside a protected system folder is named in a warning:

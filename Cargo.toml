@@ -1,6 +1,6 @@
 [package]
 name = "devtrim"
-version = "0.13.1"
+version = "0.14.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Marcus Neves"]
@@ -28,12 +28,15 @@ crossterm = "0.29.0"
 clap_complete = "4.5.55"
 clap_mangen = "0.3.3"
 unicode-normalization = "0.1.25"
+apfs-size = { path = "crates/apfs-size" }
 
 [profile.release]
 lto = true
 strip = true
 
 [workspace]
+members = ["crates/apfs-size"]
+default-members = [".", "crates/apfs-size"]
 exclude = ["fuzz"]
 
 [lints.rust]

@@ -13,7 +13,7 @@ use super::project::{
     unborn_branch, unjudged_finding, unread_folders_finding,
 };
 use super::{
-    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size,
+    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_measure,
     has_node_modules_ancestor, is_node_modules_name, removal_note,
 };
 use crate::safety::{Ctx, build_process_cwds, escalate, is_git_metadata_name};
@@ -147,9 +147,9 @@ impl Op for Artifacts {
                         }
                         _ => {}
                     }
-                    let size = dir_size(&candidate.path)?;
+                    let size = dir_measure(&candidate.path)?;
                     judged.push(
-                        Finding::new(
+                        Finding::sized(
                             candidate.evidence.label.clone(),
                             Some(candidate.path.clone()),
                             size,
@@ -157,7 +157,7 @@ impl Op for Artifacts {
                                 "repo last active {last_activity} UTC; corroboration: {}",
                                 candidate.evidence.corroboration
                             ),
-                            escalate(5, size),
+                            escalate(5, size.allocated),
                             Action::Trash,
                         )
                         .with_project(&owner),

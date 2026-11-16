@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.13.1.
+This source tree and its packaged documentation describe devtrim v0.14.0.
 
 ## Install
 
@@ -116,6 +116,9 @@ devtrim uninstall AltTab                  # paths named for an app's bundle id (
 devtrim optimize                          # preview macOS maintenance tasks
 devtrim optimize --task quicklook --apply # run one selected task
 devtrim largest --top 20                  # read-only: biggest directories under scan roots
+devtrim explain ~/dev/app/node_modules    # read-only: why a path is or is not offered
+devtrim disk                              # read-only: free space on the home volume
+devtrim disk --warn-below 20GiB           # warn only below 20 GiB (exit 0 either way)
 devtrim completions zsh                   # shell completion script (bash | zsh | fish)
 devtrim manpage                           # man page in roff format
 ```
@@ -134,6 +137,31 @@ Moving to Trash frees nothing yet: the bytes stay on the same volume until the
 Trash is emptied. Apply summaries say so — "~17.8 GB moved to Trash; it is freed
 once the Trash is emptied (devtrim trash-empty)" — and `devtrim trash-empty`
 previews the exact `--confirm=<gb>` value it needs.
+
+Every apply that changes something also reads the home volume's free space
+just before the first change and after the last, and prints it under the
+estimate: `free space on the home volume: 64.1 GB → 65.3 GB (+1.2 GB), measured;
+other processes also write`. It is an observation, never what devtrim claims to
+have freed: Trash moves, APFS clones, snapshots and other programs move it too.
+A failed read says `not measured (…)` and never changes the exit status.
+
+`devtrim disk` prints that free space on its own. With `--warn-below SIZE`
+(`20GiB`, `500MB`, `1.5T`; K/M/G/T and KiB–TiB are powers of 1024, KB–TB powers
+of 1000) it prints a warning only when free space is below SIZE and exits 0
+either way, so it fits a Claude Code `SessionStart` hook:
+
+```json
+{ "hooks": { "SessionStart": [ { "hooks": [ { "type": "command", "command": "devtrim disk --warn-below 20GiB" } ] } ] } }
+```
+
+An unreadable volume exits 1; a malformed SIZE is a usage error (exit 2).
+
+`devtrim explain <PATH>` answers why a path is or is not offered: whether
+built-in protection or a `protect` entry refuses it (and which rule), and every
+finding from one fresh, read-only scan whose target is the path, holds it or
+lies inside it. When nothing offers it, it says so and names the scan roots if
+the path lies outside all of them. It never applies and exits nonzero when the
+scan had errors.
 
 `purge` is the project view of two existing categories, not a new authority:
 stale `node_modules` and corroborated build artifacts in one plan, ordered by
@@ -351,9 +379,9 @@ Screen Studio discovery and bundle measurement also skip Git metadata, dependenc
 trees, virtual environments, `.cache` and packaged apps/frameworks/photo libraries/
 archives. Its scope row names these exclusions. At most 100 bundles keep individual
 detail; an aggregate retains omitted measured bytes. Errors are bounded, disclosed
-and return nonzero. Allocated bytes count each physical file once across the report,
-including hard links and aliases of overlapping roots;
-APFS clones can still share blocks. It is a live snapshot, never deletion authority.
+and return nonzero. Sizes count each physical file once across the report,
+including hard links and aliases of overlapping roots; APFS clones count in full
+though they share blocks. It is a live snapshot, never deletion authority.
 
 ### HTML disk map
 
@@ -373,7 +401,7 @@ explicit `--output` refuses an existing file or symlink.
 
 Available disk space comes from the selected folder's filesystem. Mapped sizes
 are the blocks files hold on disk, each hard-linked file counted once, as `du`
-counts them; APFS clones share blocks yet count in full. Unreadable content is disclosed as a
+counts them; APFS clones count in full though they share blocks. Unreadable content is disclosed as a
 partial lower bound; the command still saves the useful report and exits nonzero.
 Symlinks are measured at their own size, and other filesystems are not traversed.
 The overview retains up to six levels and 10,000 entries. Detail beyond that
@@ -639,7 +667,7 @@ Cleanup JSON mode returns one envelope, including empty and failed results:
 }
 ```
 
-`applied` is true once the apply phase has started, even when every target is then refused; it is false for a preview and for an apply refused before it starts — a declined confirmation, a missing consent flag, or a journal that cannot be opened for writing, which is checked even when the plan has nothing to apply. Applied commands additionally include `summary` (absent when the apply stopped with an error) and `results`: one entry per actionable finding, in plan order, `{"finding": <index into findings>, "path": …, "status": "ok" | "error" | "not_attempted", "error": …}`. `ok` and `error` repeat the result the journal recorded for that exact target or command; `not_attempted` is a finding the category refused before journaling it — uv busy with its cache, a failed recheck, a preflight that stopped the plan — or never reached, and its reason, when there is one, is in `errors`. If a target fails, the summary still records the work that succeeded, `errors` names each failure, and the process exits nonzero; `caches`, `agents`, `trash-empty`, `xcode`, `installers`, `toolchains`, `simulators`, `artifacts`, and `node-modules` continue past a refused item — `artifacts` and `node-modules` after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and `purge` runs its `node-modules` and `artifacts` halves independently. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string. `summary.bytes_trashed_estimate` is the part of `bytes_freed_estimate` that was moved to Trash and is still on disk until the Trash is emptied. Findings from `node-modules`, `artifacts`, and `purge` carry `project`, the repository that owns the target — for grouping only, never deletion authority.
+`applied` is true once the apply phase has started, even when every target is then refused; it is false for a preview and for an apply refused before it starts — a declined confirmation, a missing consent flag, or a journal that cannot be opened for writing, which is checked even when the plan has nothing to apply. Applied commands additionally include `summary` (absent when the apply stopped with an error) and `results`: one entry per actionable finding, in plan order, `{"finding": <index into findings>, "path": …, "status": "ok" | "error" | "not_attempted", "error": …}`. `ok` and `error` repeat the result the journal recorded for that exact target or command; `not_attempted` is a finding the category refused before journaling it — uv busy with its cache, a failed recheck, a preflight that stopped the plan — or never reached, and its reason, when there is one, is in `errors`. If a target fails, the summary still records the work that succeeded, `errors` names each failure, and the process exits nonzero; `caches`, `agents`, `trash-empty`, `xcode`, `installers`, `toolchains`, `simulators`, `artifacts`, and `node-modules` continue past a refused item — `artifacts` and `node-modules` after a preflight of every finding, which stops the whole plan untouched when a probe or recheck fails — the other categories stop at their first failure, and `purge` runs its `node-modules` and `artifacts` halves independently. Each action is typed (`trash`, `shred`, `command`, `info`, or `none`) rather than encoded as a shell string. `summary.bytes_trashed_estimate` is the part of `bytes_freed_estimate` that was moved to Trash and is still on disk until the Trash is emptied. `summary.home_volume` is the home volume's free space read around the mutation, `{"free_before", "free_after", "gained_bytes"}` (signed), or `{"error"}` when it could not be read; it is absent when nothing was mutated, and is an observation, not devtrim's claim. Findings from `node-modules`, `artifacts`, and `purge` carry `project`, the repository that owns the target — for grouping only, never deletion authority.
 
 `devtrim history --json` emits its own single document —
 `{"operation":"history","entries":[…],"truncated":false,"errors":[…]}` — where
@@ -656,6 +684,12 @@ the standard error envelope when `--json` is passed.
 metric that could not be read. A metric is `null` when unread, never zero, and
 the process exits nonzero whenever `unavailable` is not empty. `status --watch`
 is interactive and rejects `--json`.
+
+`devtrim disk --json` emits
+`{"operation":"disk","available_bytes":…,"total_bytes":…,"warn_below_bytes":…|null,"below":bool,"errors":[]}`;
+an unreadable volume uses the standard error envelope with exit 1.
+`devtrim explain <PATH> --json` emits
+`{"operation":"explain","path":…,"protected":{"builtin":bool,"config":entry|null},"findings":[…],"errors":[…]}`.
 
 `devtrim dashboard --json --no-open` emits its snapshot metadata: `root`,
 `output_file`, `inventory`, `coverage`, `volume`, `recommendations` and `errors`,
@@ -704,8 +738,16 @@ Sizes are estimated bytes on disk: the blocks each file holds, as `du` counts
 them, so a sparse file counts what it occupies rather than its length and a
 small file counts a whole block. A hard-linked file counts once within a
 target, yet removal frees nothing while a link outside it remains (a pnpm
-store). APFS clones count in full though they share blocks, and snapshots, the
-Trash and container-VM compaction can keep space from coming back at once.
+store). APFS clones count in full though they share blocks: no attribute shows
+the blocks a clone edited after `cp -c` still shares, so every total, danger
+level and confirmation uses the blocks a target holds. On an APFS volume holding
+no snapshot a finding also shows what removing it frees at least, the sum of its
+files' APFS private sizes, when that is smaller: a pnpm `node_modules`, made of
+clones of pnpm's store, reads `1.37 GB` and `frees at least 78 MB: APFS clones
+share the rest`. That lower bound grants and gates nothing. Snapshots (`diskutil
+apfs listSnapshots`), the Trash and container-VM compaction can keep space from
+coming back at once; the apply summary's measured free-space line shows what
+actually moved.
 devtrim refuses to invent an estimate when traversal or metadata is incomplete.
 
 ## Build and verify

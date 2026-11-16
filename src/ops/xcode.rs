@@ -2,12 +2,15 @@
 
 use anyhow::{Context, Result};
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::project::{
     UnreadFolder, activity_window, has_git_marker, unjudged_finding, unread_folders_finding,
 };
-use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
+use super::{
+    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_measure, dir_size,
+    removal_note,
+};
 use crate::safety::{Ctx, OpenFile, XcodeActivity, escalate, xcode_activity};
 
 pub(crate) struct Xcode;
@@ -105,6 +108,7 @@ impl Xcode {
             }
         };
         let (mut recent, mut open) = (0usize, 0usize);
+        let (mut gone, mut gone_bytes) = (0usize, 0u64);
         // A folder that cannot be read or measured offers nothing and is named
         // in one error finding (S8); the folders beside it are still judged.
         let mut unread = Vec::new();
@@ -179,7 +183,25 @@ impl Xcode {
                     }
                 }
                 match support_findings(label, note, &path) {
-                    Ok(offered) => findings.extend(offered),
+                    Ok(mut offered) => {
+                        // Evidence for the reader only: the note grants and
+                        // withholds nothing, and every check above stands.
+                        if *label == "DerivedData"
+                            && !offered.is_empty()
+                            && let Some(workspace) = workspace_of(&path)
+                        {
+                            if matches!(workspace, Workspace::Gone(_)) {
+                                gone = gone.saturating_add(1);
+                                gone_bytes = offered.iter().fold(gone_bytes, |total, finding| {
+                                    total.saturating_add(finding.size_bytes)
+                                });
+                            }
+                            for finding in &mut offered {
+                                finding.note = format!("{}; {}", finding.note, workspace.note());
+                            }
+                        }
+                        findings.extend(offered);
+                    }
                     Err(error) => unread.push(UnreadFolder::new(&path, &error)),
                 }
             }
@@ -210,6 +232,15 @@ impl Xcode {
                 format!(
                     "Xcode is running; skipping DerivedData still in use: {recent} DerivedData folder(s) changed in {} and {open} open in Xcode",
                     activity_window(ctx.active_days)
+                ),
+            );
+        }
+        if gone > 0 {
+            ctx.diagnostic(
+                "info",
+                format!(
+                    "{gone} DerivedData folder(s), {}, belong to workspaces that no longer exist",
+                    crate::report::gb(gone_bytes)
                 ),
             );
         }
@@ -300,8 +331,8 @@ fn support_findings(label: &str, note: &str, path: &Path) -> Result<Vec<Finding>
             format!("{note}. SwiftPM package checkouts here are Git clones and stay");
         let mut findings = Vec::new();
         for child in package_folder_children(path)? {
-            let size = dir_size(&child)?;
-            findings.push(Finding::new(
+            let size = dir_measure(&child)?;
+            findings.push(Finding::sized(
                 format!(
                     "{label}: {folder}/{}",
                     child.file_name().unwrap_or_default().to_string_lossy()
@@ -309,14 +340,14 @@ fn support_findings(label: &str, note: &str, path: &Path) -> Result<Vec<Finding>
                 Some(child),
                 size,
                 package_note.clone(),
-                escalate(4, size),
+                escalate(4, size.allocated),
                 Action::Trash,
             ));
         }
         return Ok(findings);
     }
-    let size = dir_size(path)?;
-    Ok(vec![Finding::new(
+    let size = dir_measure(path)?;
+    Ok(vec![Finding::sized(
         format!(
             "{label}: {}",
             path.file_name().unwrap_or_default().to_string_lossy()
@@ -324,9 +355,114 @@ fn support_findings(label: &str, note: &str, path: &Path) -> Result<Vec<Finding>
         Some(path.to_path_buf()),
         size,
         note,
-        escalate(4, size),
+        escalate(4, size.allocated),
         Action::Trash,
     )])
+}
+
+/// The workspace a DerivedData folder was built from, as Xcode records it in
+/// the folder's `info.plist`, and whether that path still exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Workspace {
+    Present(PathBuf),
+    Gone(PathBuf),
+}
+
+impl Workspace {
+    fn note(&self) -> String {
+        match self {
+            Self::Present(path) => format!("workspace: {}", path.display()),
+            Self::Gone(path) => format!("workspace no longer exists: {}", path.display()),
+        }
+    }
+}
+
+/// Far above the few hundred bytes Xcode writes; a larger file is not one.
+const WORKSPACE_PLIST_LIMIT: u64 = 64 * 1024;
+
+/// Optional evidence, so every failure is no claim rather than an error: an
+/// unreadable, oversized, binary or malformed plist, a relative path, or a
+/// workspace whose existence cannot be read (only `NotFound` says it is gone),
+/// or one on a volume that is not mounted (`on_unmounted_volume`).
+fn workspace_of(folder: &Path) -> Option<Workspace> {
+    let path = parse_workspace_path(&read_workspace_plist(folder)?)?;
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => Some(Workspace::Present(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (!on_unmounted_volume(&path)).then_some(Workspace::Gone(path))
+        }
+        Err(_) => None,
+    }
+}
+
+/// Whether `path` lies under `/Volumes/<name>` and that mount point does not
+/// exist: a project on a disk that is unplugged reads `NotFound` as well, and
+/// says nothing about whether the workspace is gone.
+fn on_unmounted_volume(path: &Path) -> bool {
+    let mut components = path.components();
+    let (Some(Component::RootDir), Some(Component::Normal(volumes)), Some(Component::Normal(name))) =
+        (components.next(), components.next(), components.next())
+    else {
+        return false;
+    };
+    volumes == "Volumes" && std::fs::symlink_metadata(Path::new("/Volumes").join(name)).is_err()
+}
+
+/// Opened without following a link and without blocking, as vendor files are
+/// (`agents::codex_regular_file`): a link, FIFO or directory planted at the
+/// name is not the plist, and a FIFO cannot stall the scan.
+fn read_workspace_plist(folder: &Path) -> Option<Vec<u8>> {
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read;
+
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let descriptor = rustix::fs::open(folder.join("info.plist"), flags, Mode::empty()).ok()?;
+    let file = std::fs::File::from(descriptor);
+    if !file.metadata().ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(WORKSPACE_PLIST_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= WORKSPACE_PLIST_LIMIT).then_some(bytes)
+}
+
+/// The absolute path in the first `<key>WorkspacePath</key>` of an XML
+/// property list, read only as Xcode writes it: the key, optional whitespace,
+/// then `<string>…</string>` holding text and the five predefined XML
+/// entities. Anything else — a binary plist, another `&`, markup inside the
+/// string, a relative path — is no claim.
+fn parse_workspace_path(bytes: &[u8]) -> Option<PathBuf> {
+    const KEY: &[u8] = b"<key>WorkspacePath</key>";
+    const ENTITIES: [(&str, char); 5] = [
+        ("&amp;", '&'),
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+        ("&quot;", '"'),
+        ("&apos;", '\''),
+    ];
+    let find = |haystack: &[u8], needle: &[u8]| {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+    };
+    let after_key = &bytes[find(bytes, KEY)? + KEY.len()..];
+    let value = after_key.trim_ascii_start().strip_prefix(b"<string>")?;
+    let text = std::str::from_utf8(&value[..find(value, b"</string>")?]).ok()?;
+    let mut decoded = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(index) = remaining.find(['&', '<']) {
+        decoded.push_str(&remaining[..index]);
+        let (entity, character) = ENTITIES
+            .iter()
+            .find(|(entity, _)| remaining[index..].starts_with(entity))?;
+        decoded.push(*character);
+        remaining = &remaining[index + entity.len()..];
+    }
+    decoded.push_str(remaining);
+    let path = PathBuf::from(decoded);
+    path.is_absolute().then_some(path)
 }
 
 /// Why a DerivedData folder is still in use while Xcode runs.
@@ -1460,5 +1596,242 @@ mod tests {
         assert!(unknown.errors[0].contains("cannot verify Xcode build activity"));
         assert!(sentinel.exists());
         crate::ops::remove_test_path(home);
+    }
+
+    fn workspace_plist(path: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>LastAccessedDate</key>\n\t<date>2026-11-16T01:20:53Z</date>\n\t<key>WorkspacePath</key>\n\t<string>{path}</string>\n</dict>\n</plist>\n"
+        )
+    }
+
+    #[test]
+    fn the_workspace_path_is_read_only_as_xcode_writes_it() {
+        let parse = |text: &str| parse_workspace_path(text.as_bytes());
+        assert_eq!(
+            parse(&workspace_plist("/Users/me/App/ios/App.xcworkspace")),
+            Some(PathBuf::from("/Users/me/App/ios/App.xcworkspace"))
+        );
+        assert_eq!(
+            parse(&workspace_plist(
+                "/w/R&amp;D &lt;1&gt; &quot;a&quot; &apos;b&apos;.xcodeproj"
+            )),
+            Some(PathBuf::from("/w/R&D <1> \"a\" 'b'.xcodeproj"))
+        );
+        assert_eq!(
+            parse("<key>WorkspacePath</key><string>/no/whitespace</string>"),
+            Some(PathBuf::from("/no/whitespace"))
+        );
+        for refused in [
+            workspace_plist("/w/&#47;numeric"),
+            workspace_plist("/w/bare & ampersand"),
+            workspace_plist("/w/&amp"),
+            workspace_plist("/w/<b>markup</b>"),
+            workspace_plist("relative/App.xcworkspace"),
+            workspace_plist(""),
+            "<dict><key>LastAccessedDate</key><date>2026-11-16T01:20:53Z</date></dict>".into(),
+            "<key>WorkspacePath</key>\n<date>2026-11-16T01:20:53Z</date>".into(),
+            "<key>WorkspacePath</key>\n<string>/never/closed".into(),
+        ] {
+            assert_eq!(
+                parse(&refused),
+                None,
+                "claimed a workspace from {refused:?}"
+            );
+        }
+        // A binary plist holds the key's name as raw bytes, never as markup.
+        let mut binary =
+            b"bplist00\xd2\x01\x02\x03\x04_\x10\x0dWorkspacePath_\x10\x0f/w/App.xcodeproj".to_vec();
+        binary.extend_from_slice(&[0x08, 0x0d, 0xff, 0x00]);
+        assert_eq!(parse_workspace_path(&binary), None);
+    }
+
+    #[test]
+    fn the_workspace_plist_is_read_only_as_a_small_regular_file() {
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-workspace-plist");
+        let root = fixture.path().to_path_buf();
+        let read = |name: &str| workspace_of(&root.join(name));
+        std::fs::create_dir_all(root.join("plain")).unwrap();
+        std::fs::write(
+            root.join("plain/info.plist"),
+            workspace_plist("/devtrim-no-such-folder/App.xcworkspace"),
+        )
+        .unwrap();
+        // Positive control: the same plist read as a plain file is a claim.
+        assert_eq!(
+            read("plain"),
+            Some(Workspace::Gone(PathBuf::from(
+                "/devtrim-no-such-folder/App.xcworkspace"
+            )))
+        );
+
+        std::fs::create_dir_all(root.join("linked")).unwrap();
+        std::os::unix::fs::symlink(
+            root.join("plain/info.plist"),
+            root.join("linked/info.plist"),
+        )
+        .unwrap();
+        assert_eq!(read("linked"), None, "a link at info.plist was followed");
+
+        std::fs::create_dir_all(root.join("pipe")).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(root.join("pipe/info.plist"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(read("pipe"), None, "a FIFO at info.plist was read");
+
+        std::fs::create_dir_all(root.join("large")).unwrap();
+        let mut large = workspace_plist("/devtrim-no-such-folder/App.xcworkspace");
+        large.push_str(&" ".repeat(64 * 1024));
+        std::fs::write(root.join("large/info.plist"), large).unwrap();
+        assert_eq!(read("large"), None, "an oversized plist was read");
+
+        std::fs::create_dir_all(root.join("missing")).unwrap();
+        assert_eq!(read("missing"), None);
+
+        // A path that exists, and one whose existence cannot be read: only
+        // `NotFound` says a workspace is gone.
+        std::fs::create_dir_all(root.join("present")).unwrap();
+        std::fs::write(
+            root.join("present/info.plist"),
+            workspace_plist(&root.display().to_string()),
+        )
+        .unwrap();
+        assert_eq!(read("present"), Some(Workspace::Present(root.clone())));
+        std::fs::create_dir_all(root.join("unknowable")).unwrap();
+        std::fs::write(
+            root.join("unknowable/info.plist"),
+            workspace_plist(
+                &root
+                    .join("plain/info.plist/below-a-file")
+                    .display()
+                    .to_string(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(read("unknowable"), None);
+    }
+
+    /// Only a path below a `/Volumes/<name>` that does not exist is on an
+    /// unmounted volume; a missing path anywhere else, or below a mounted
+    /// volume, is not.
+    #[test]
+    fn a_workspace_below_a_missing_mount_point_is_on_an_unmounted_volume() {
+        assert!(on_unmounted_volume(Path::new(
+            "/Volumes/devtrim-no-such-volume/Work/App.xcworkspace"
+        )));
+        assert!(on_unmounted_volume(Path::new(
+            "/Volumes/devtrim-no-such-volume"
+        )));
+        assert!(!on_unmounted_volume(Path::new(
+            "/devtrim-no-such-folder/App.xcworkspace"
+        )));
+        assert!(!on_unmounted_volume(Path::new("/Volumes")));
+        assert!(!on_unmounted_volume(Path::new(
+            "Volumes/devtrim-no-such-volume/App.xcworkspace"
+        )));
+        // A mounted volume (the boot volume's `/Volumes` entry, when there is
+        // one) is not unmounted, whatever is missing below it.
+        if let Some(mounted) = std::fs::read_dir("/Volumes")
+            .ok()
+            .and_then(|mut entries| entries.find_map(Result::ok))
+        {
+            assert!(!on_unmounted_volume(
+                &mounted
+                    .path()
+                    .join("devtrim-no-such-folder/App.xcworkspace")
+            ));
+        }
+    }
+
+    #[test]
+    fn a_derived_data_note_names_its_workspace_and_whether_it_is_gone() {
+        let fixture = crate::ops::TestFixture::new("devtrim-xcode-workspace-note");
+        let root = fixture.path().to_path_buf();
+        let derived_data = root.join("Library/Developer/Xcode/DerivedData");
+        let existing = root.join("work/App.xcworkspace");
+        std::fs::create_dir_all(&existing).unwrap();
+        for folder in ["Gone-abc", "Here-abc", "Plain-abc", "Unplugged-abc"] {
+            std::fs::create_dir_all(derived_data.join(folder).join("Build")).unwrap();
+        }
+        // A workspace on a disk that is not mounted reads `NotFound` too, yet
+        // is no claim that it is gone.
+        std::fs::write(
+            derived_data.join("Unplugged-abc/info.plist"),
+            workspace_plist("/Volumes/devtrim-no-such-volume/Work/App.xcworkspace"),
+        )
+        .unwrap();
+        std::fs::write(
+            derived_data.join("Gone-abc/info.plist"),
+            workspace_plist("/devtrim-no-such-folder/Gone.xcworkspace"),
+        )
+        .unwrap();
+        std::fs::write(
+            derived_data.join("Here-abc/info.plist"),
+            workspace_plist(&existing.display().to_string()),
+        )
+        .unwrap();
+        // A package folder: each offered directory carries its folder's note,
+        // and the folder counts once.
+        package_folder(&derived_data.join("Pkg-abc"));
+        std::fs::write(
+            derived_data.join("Pkg-abc/info.plist"),
+            workspace_plist("/devtrim-no-such-folder/Pkg.xcworkspace"),
+        )
+        .unwrap();
+        let home = root.canonicalize().unwrap();
+        let ctx = test_context(home.clone());
+
+        let findings = Xcode
+            .scan_with_xcode_build_state(&ctx, Ok(XcodeActivity::Idle))
+            .unwrap();
+        let notes = |folder: &str| {
+            findings
+                .iter()
+                .filter(|finding| {
+                    finding.target().is_some_and(|target| {
+                        target.starts_with(
+                            home.join("Library/Developer/Xcode/DerivedData")
+                                .join(folder),
+                        )
+                    })
+                })
+                .map(|finding| finding.note.clone())
+                .collect::<Vec<_>>()
+        };
+        let gone = notes("Gone-abc");
+        assert!(
+            gone.len() == 1
+                && gone[0].starts_with("build output; rebuilt on next build; ")
+                && gone[0].ends_with(
+                    "workspace no longer exists: /devtrim-no-such-folder/Gone.xcworkspace"
+                ),
+            "{gone:?}"
+        );
+        let here = notes("Here-abc");
+        assert!(
+            here.len() == 1 && here[0].ends_with(&format!("; workspace: {}", existing.display())),
+            "{here:?}"
+        );
+        assert_eq!(notes("Plain-abc"), ["build output; rebuilt on next build"]);
+        assert_eq!(
+            notes("Unplugged-abc"),
+            ["build output; rebuilt on next build"]
+        );
+        let package = notes("Pkg-abc");
+        assert!(
+            package.len() == 3
+                && package.iter().all(|note| note.ends_with(
+                    "; workspace no longer exists: /devtrim-no-such-folder/Pkg.xcworkspace"
+                )),
+            "{package:?}"
+        );
+        let diagnostics = ctx.take_diagnostics();
+        assert!(
+            diagnostics.iter().any(|message| message
+                .starts_with("info: 2 DerivedData folder(s), ")
+                && message.ends_with(", belong to workspaces that no longer exist")),
+            "{diagnostics:?}"
+        );
     }
 }

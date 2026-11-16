@@ -80,6 +80,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "apfs-size"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rustix",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -413,9 +421,10 @@ dependencies = [
 
 [[package]]
 name = "devtrim"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
+ "apfs-size",
  "cap-std",
  "clap",
  "clap_complete",

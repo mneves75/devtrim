@@ -56,6 +56,18 @@ pub(crate) enum Command {
         #[arg(long)]
         watch: bool,
     },
+    /// Show free space on the home folder's volume (report-only)
+    Disk {
+        /// Print only a warning, and only when free space is below SIZE
+        /// (e.g. 20GiB, 500MB, 1.5T; K/M/G/T are powers of 1024)
+        #[arg(
+            long,
+            value_name = "SIZE",
+            value_parser = crate::volume::parse_size,
+            allow_hyphen_values = true
+        )]
+        warn_below: Option<crate::volume::ByteSize>,
+    },
     /// List files named for an app's exact bundle identifier (report-only)
     Uninstall {
         /// Application name or bundle path (e.g. AltTab, "Visual Studio Code")
@@ -82,6 +94,11 @@ pub(crate) enum Command {
         /// Number of entries to show (clamped 1..=100)
         #[arg(long)]
         top: Option<usize>,
+    },
+    /// Say why a path is or is not offered: its protection and every finding that covers it (report-only)
+    Explain {
+        /// Path to explain, relative to the current directory; its last component is not followed
+        path: std::path::PathBuf,
     },
     /// List each repository's linked worktrees with their sizes (report-only)
     Worktrees,

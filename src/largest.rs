@@ -107,3 +107,49 @@ fn add_to_shallow_ancestors(
         *total = total.saturating_add(bytes);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::{CLONED_FILE, TestFixture, clone_file, write_incompressible};
+
+    /// A clone holds every block of the file in its allocation, so each
+    /// folder counts every clone it holds in full, where it is, as `du` does.
+    #[test]
+    fn each_folder_counts_the_allocated_blocks_of_the_clones_it_holds() {
+        let fixture = TestFixture::new("devtrim-largest-clones");
+        let root = fixture.path().join("root");
+        for folder in ["whole/x", "whole/y", "split", "other"] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        write_incompressible(&root.join("whole/x/source"));
+        clone_file(&root.join("whole/x/source"), &root.join("whole/y/clone"));
+        write_incompressible(&root.join("split/source"));
+        clone_file(&root.join("split/source"), &root.join("other/clone"));
+
+        let _trust = crate::safety::AssumeSnapshotFree::new(true);
+        let result = scan_roots(std::slice::from_ref(&root), Some(100));
+        let size = |name: &str| {
+            let path = root.join(name);
+            result
+                .findings
+                .iter()
+                .find(|finding| finding.path.as_deref() == path.to_str())
+                .unwrap()
+                .size_bytes
+        };
+        let copies = |count: u64| CLONED_FILE * count..CLONED_FILE * count * 11 / 10;
+        let whole = size("whole");
+        assert!(
+            copies(2).contains(&whole),
+            "a folder holding a file and its clone measured {whole} bytes"
+        );
+        for name in ["whole/x", "whole/y", "split", "other"] {
+            let part = size(name);
+            assert!(
+                copies(1).contains(&part),
+                "{name}, holding one clone of two, measured {part} bytes"
+            );
+        }
+    }
+}

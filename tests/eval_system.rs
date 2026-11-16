@@ -732,6 +732,80 @@ fn eval_clean_installers_removes_only_stale_installer_files() {
     assert_journaled(&sandbox, "installers", "shred", &targets);
 }
 
+/// An apply reports the home volume's free space read before and after it,
+/// beside its estimate; a preview and an apply that mutated nothing do not.
+#[test]
+fn eval_apply_reports_free_space_measured_on_the_home_volume() {
+    let sandbox = Sandbox::in_target("eval-measured-json");
+    let targets = installers_fixture(&sandbox);
+    let preview = run(&sandbox, &["clean", "installers", "--shred", "--json"]);
+    let document = json(&preview);
+    assert!(preview.status.success(), "{document}");
+    assert!(document.get("summary").is_none(), "{document}");
+
+    let apply = run(
+        &sandbox,
+        &[
+            "clean",
+            "installers",
+            "--apply",
+            "--shred",
+            "--yolo",
+            "--json",
+        ],
+    );
+    let document = json(&apply);
+    assert!(apply.status.success(), "{document}");
+    assert_eq!(document["summary"]["items_touched"], targets.len());
+    let volume = &document["summary"]["home_volume"];
+    let before = volume["free_before"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("free_before missing: {document}"));
+    let after = volume["free_after"].as_u64().unwrap();
+    let gained = volume["gained_bytes"].as_i64().unwrap();
+    assert_eq!(i128::from(gained), i128::from(after) - i128::from(before));
+    assert!(volume.get("error").is_none(), "{document}");
+
+    // Nothing left to remove: the apply ran, nothing was mutated, nothing measured.
+    let again = run(
+        &sandbox,
+        &[
+            "clean",
+            "installers",
+            "--apply",
+            "--shred",
+            "--yolo",
+            "--json",
+        ],
+    );
+    let document = json(&again);
+    assert!(again.status.success(), "{document}");
+    assert_eq!(document["summary"]["items_touched"], 0, "{document}");
+    assert!(
+        document["summary"].get("home_volume").is_none(),
+        "{document}"
+    );
+
+    let human = Sandbox::in_target("eval-measured-human");
+    installers_fixture(&human);
+    let output = run(
+        &human,
+        &["clean", "installers", "--apply", "--shred", "--yolo"],
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{stdout}");
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with("free space on the home volume: "))
+        .unwrap_or_else(|| panic!("no measured line: {stdout}"));
+    assert!(
+        line.contains(" → ") && line.ends_with("), measured; other processes also write"),
+        "{line}"
+    );
+    let headline = stdout.find("installers: ").unwrap();
+    assert!(stdout.find(line).unwrap() > headline, "{stdout}");
+}
+
 /// Apply re-reads the age: an archive modified in place after the preview keeps
 /// its inode, so only the age recheck can see it is no longer stale.
 #[test]
@@ -788,6 +862,11 @@ fn eval_installers_apply_continues_past_a_refused_archive() {
     assert!(
         !status.success(),
         "the refusal must fail the run:\n{output}"
+    );
+    // The partial summary carries the measured line too.
+    assert!(
+        output.contains("partial") && output.contains("free space on the home volume: "),
+        "the partial summary must report measured free space:\n{output}"
     );
 }
 
@@ -2411,7 +2490,7 @@ fn eval_commands_reject_flags_they_cannot_honor_and_change_nothing() {
     }
     let pristine = Tree::snapshot(sandbox.path());
 
-    let cases: [(&[&str], &str, &str); 17] = [
+    let cases: [(&[&str], &str, &str); 18] = [
         (
             &[
                 "trash-empty",
@@ -2456,6 +2535,7 @@ fn eval_commands_reject_flags_they_cannot_honor_and_change_nothing() {
         ),
         (&["status", "--apply", "--json"], "status", "--apply"),
         (&["status", "--yolo", "--json"], "status", "--yolo"),
+        (&["disk", "--apply", "--yolo", "--json"], "disk", "--apply"),
         (
             &["uninstall", "Nothing", "--apply", "--json"],
             "uninstall",

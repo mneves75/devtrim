@@ -27,8 +27,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{BoundedCommand as _, MUTATION_TIMEOUT};
 pub use crate::report::{Action, Finding, Summary};
-pub(crate) use crate::safety::dir_size;
 use crate::safety::{Ctx, FileIdentity, MarkerGrant, VerifiedTarget, is_git_metadata_name};
+pub(crate) use crate::safety::{dir_measure, dir_size};
 
 static QUARANTINE_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
@@ -143,6 +143,7 @@ impl ApplyOutcome {
                 bytes_freed_estimate: 0,
                 bytes_trashed_estimate: 0,
                 notes: Vec::new(),
+                home_volume: None,
             },
             errors: Vec::new(),
         }
@@ -1234,14 +1235,14 @@ fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Resul
         }
         // One item that cannot be measured (a folder left unreadable) offers
         // nothing and is named; the other items are unrelated to it.
-        let size = match dir_size(&path) {
+        let size = match dir_measure(&path) {
             Ok(size) => size,
             Err(error) => {
                 unread.push(project::UnreadFolder::new(&path, &error));
                 continue;
             }
         };
-        findings.push(Finding::new(
+        findings.push(Finding::sized(
             format!("Trash item: {}", entry.file_name().to_string_lossy()),
             Some(path),
             size,
@@ -1317,6 +1318,38 @@ impl Drop for TestFixture {
     fn drop(&mut self) {
         remove_test_path(&self.0);
     }
+}
+
+/// Eight MiB that APFS cannot compress, for clone fixtures.
+#[cfg(test)]
+pub(crate) const CLONED_FILE: u64 = 8 << 20;
+
+/// Writes and syncs `CLONED_FILE` pseudo-random bytes at `path`.
+#[cfg(test)]
+pub(crate) fn write_incompressible(path: &Path) {
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let data = (0..CLONED_FILE)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect::<Vec<_>>();
+    std::fs::write(path, data).unwrap();
+    std::fs::File::open(path).unwrap().sync_all().unwrap();
+}
+
+/// An APFS clone of `source` at `clone` (`cp -c`, `clonefile(2)`).
+#[cfg(test)]
+pub(crate) fn clone_file(source: &Path, clone: &Path) {
+    let status = std::process::Command::new("/bin/cp")
+        .arg("-c")
+        .arg(source)
+        .arg(clone)
+        .status()
+        .unwrap();
+    assert!(status.success(), "cp -c failed");
 }
 
 /// A fixture directory this process cannot read, created with `mode` (`0o000`

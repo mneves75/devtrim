@@ -12,9 +12,10 @@ to the interface:
 
 The demo home is the fixed `/private/tmp/devtrim-demo`, so the paths the frames
 show are the same on every run; it must not exist beforehand and is removed on
-exit. devtrim measures allocated blocks, so a sparse file would read 0 B: the
-projects are built from APFS clones of one real 0.1 GiB file, each reporting
-its own blocks as `du` counts them, so 7.8 GB of findings cost about 100 MiB.
+exit. devtrim measures the blocks deleting a file frees, so neither a sparse
+file (no blocks) nor an APFS clone (blocks shared with its source) would show
+its size: the projects are built from plain 0.1 GiB files of real bytes, and
+the 7.8 GB of findings take 7.8 GB in `/private/tmp` until the script exits.
 The real HOME is never read or changed; the script never applies a plan, since
 a Trash move goes to the developer's own Trash whatever HOME says. Each frame's
 column count goes into `styles.css` between the `frames:cols` markers, since the
@@ -165,18 +166,16 @@ def to_html(grid, first_row=0, last_row=None):
 CHUNK = GIB // 10
 
 
-def chunks(home, folder, tenths):
-    """`tenths` APFS clones of the home's one real chunk in `folder`: each clone
-    reports the chunk's blocks, so the folder measures tenths/10 GiB."""
+def chunks(folder, tenths):
+    """`tenths` files of 0.1 GiB of real bytes in `folder`, each holding blocks
+    of its own, so the folder measures tenths/10 GiB."""
     folder.mkdir(parents=True, exist_ok=True)
-    seed = home / ".chunk"
-    if not seed.exists():
-        with open(seed, "wb") as handle:
-            for _ in range(CHUNK // (1 << 20)):
-                handle.write(b"\x01" * (1 << 20))
-            handle.write(b"\x01" * (CHUNK % (1 << 20)))
+    block = b"\x01" * (1 << 20)
     for number in range(tenths):
-        subprocess.run(["/bin/cp", "-c", str(seed), str(folder / f"part-{number:02}")], check=True)
+        with open(folder / f"part-{number:02}", "xb") as handle:
+            for _ in range(CHUNK // len(block)):
+                handle.write(block)
+            handle.write(block[: CHUNK % len(block)])
 
 
 def demo_home(home):
@@ -187,14 +186,14 @@ def demo_home(home):
     api = home / "dev" / "payments-api"
     (api / ".git").mkdir(parents=True)
     (api / "Cargo.toml").write_text('[package]\nname = "payments-api"\n')
-    chunks(home, api / "target" / "debug" / "deps", 46)
-    chunks(home, api / "target" / "release", 13)
+    chunks(api / "target" / "debug" / "deps", 46)
+    chunks(api / "target" / "release", 13)
     shop = home / "dev" / "storefront"
     (shop / ".git").mkdir(parents=True)
     (shop / "package.json").write_text("{}\n")
-    chunks(home, shop / "node_modules" / "next" / "dist", 11)
-    chunks(home, shop / ".next" / "cache" / "webpack", 6)
-    chunks(home, shop / ".turbo" / "cache", 2)
+    chunks(shop / "node_modules" / "next" / "dist", 11)
+    chunks(shop / ".next" / "cache" / "webpack", 6)
+    chunks(shop / ".turbo" / "cache", 2)
 
 
 def capture(binary, home, rows, columns, steps):

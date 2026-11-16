@@ -505,17 +505,33 @@ Non-negotiable boundaries:
   foreign-parent-device refusal using injected observed metadata; that test
   does not mount a volume or perform a real Trash move.
 
-- Directory sizes are measured with one `stat` per file. macOS `getattrlistbulk`
-  would collapse that into roughly one syscall per hundred entries, but it has no
-  safe wrapper in this dependency set and would require `unsafe` FFI. `unsafe_code
-  = "forbid"` is a load-bearing guarantee for a tool that deletes files, so the
-  slower measurement is a deliberate trade, not an oversight.
+- A cleanup category's sizes take one `lstat` and one `getattrlist` per file,
+  plus one `statfs` per device and one `diskutil apfs listSnapshots -plist` per
+  device per minute, for the lower bound beside the size; `getattrlistbulk` would
+  batch them but is not used. Report-only views take the `lstat` alone. The only
+  `unsafe` code is that one read-only `getattrlist` call, isolated in the
+  `crates/apfs-size` workspace crate (`#![deny(unsafe_code)]`, one reasoned
+  `allow`, a bounds-checked safe parser of its reply). The `devtrim` crate, which
+  deletes files, keeps `unsafe_code = "forbid"`.
 
 - Sizes are estimated allocated bytes (the blocks each file holds, each
-  hard-linked file counted once), not guaranteed immediately reclaimable space.
-  Clones, links outside the target, snapshots, Trash, and container VM
-  compaction differ. The estimate is nevertheless complete for the traversed tree: an
-  unreadable entry or overflow is an error, not a partial result.
+  hard-linked file counted once), not guaranteed immediately reclaimable space,
+  and every total, danger level and confirmation reads them. An APFS clone counts
+  in full: no attribute reveals the blocks a clone edited after `cp -c` still
+  shares, so anything smaller could let a confirmation acknowledge less than the
+  plan removes. Beside the size a finding may report a lower bound,
+  `frees_at_least_bytes`: the sum of each file's private size
+  (`ATTR_CMNEXT_PRIVATESIZE`, blocks no other file references; a file with
+  further hard links adds nothing), only on an APFS
+  volume that `diskutil` shows holds no snapshot (a snapshot keeps blocks the
+  private size leaves out); any `diskutil` failure, timeout or unexpected answer
+  reports none. Blocks clones share never join it, since an edited clone outside
+  the target can still hold them. It grants and gates nothing. Clones, links
+  outside the target, snapshots, Trash, and container VM compaction differ from
+  both; the apply summary reports the measured change in free space beside the
+  estimate. The allocated size is complete for the traversed tree: an unreadable
+  entry or overflow is an error, not a partial result; an overflowing lower
+  bound is simply not reported.
 - The typed target prevents unvalidated and lossy-display paths from reaching
   removal. Since 0.6.0 every finding records its target's `(device, inode)`
   identity at preview (including file generation on macOS), and the sink

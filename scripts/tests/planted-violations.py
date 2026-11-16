@@ -56,7 +56,8 @@ TEST_TIMEOUT_SECONDS = 120
 JOBS_CAP = 6
 
 REPOSITORY = Path(__file__).resolve().parents[2]
-SOURCE_INPUTS = ("src", "tests", "Cargo.toml", "Cargo.lock")
+# `crates` holds the workspace member devtrim depends on (`apfs-size`).
+SOURCE_INPUTS = ("src", "tests", "crates", "Cargo.toml", "Cargo.lock")
 
 # One shared journal opener guards both the journal and its lock; each case
 # selects the test for one leaf, so a hardlinked lock and journal stay distinct.
@@ -407,7 +408,7 @@ CASES = (
         name="trash/unmeasurable-item",
         relative_path="src/ops/mod.rs",
         before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",
-        after="            Err(_) => 0,\n",
+        after="            Err(_) => 0.into(),\n",
         tests=("eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item",),
         marker="PV eval/trash-empty-unreadable", target="eval_system",
     ),
@@ -760,7 +761,7 @@ CASES = (
         # also rejects a link, so the test would stay green while the branch was
         # gone. The mutation must make a symlink positively eligible.
         before="    if file_type.is_symlink() {\n        return Ok(None);\n    }",
-        after="    if file_type.is_symlink() {\n        return Ok(Some((400, 4)));\n    }",
+        after="    if file_type.is_symlink() {\n        return Ok(Some((400, 4.into())));\n    }",
         tests=("ops::agents::tests::a_symlinked_history_child_is_refused",),
         marker="PV agents/history-symlink",
     ),
@@ -2063,6 +2064,26 @@ CASES = (
         tests=("safety::tests::a_probe_that_cannot_finish_refuses_instead_of_reporting_nothing_running",),
         marker="PV liveness/probe-timeout",
     ),
+    # A pnpm install is APFS clones of a store outside it: its lower bound is
+    # the clones' private bytes, not the allocated blocks the size counts.
+    Case(
+        name="size/clone-private",
+        relative_path="src/safety.rs",
+        before=".map_or(0, |blocks| blocks.private)\n}",
+        after=".map_or(0, |blocks| blocks.allocated)\n}",
+        tests=("safety::tests::a_clone_of_a_file_outside_the_tree_frees_at_least_its_private_bytes",),
+        marker="PV size/clone-private",
+    ),
+    # A snapshot keeps every block older than it, which the private size
+    # leaves out: trusting it there would report a lower bound that is not one.
+    Case(
+        name="size/snapshot-fallback",
+        relative_path="src/safety.rs",
+        before="        trusted.then(|| private_or_nothing(metadata, path))",
+        after="        let _ = trusted;\n        true.then(|| private_or_nothing(metadata, path))",
+        tests=("safety::tests::a_volume_with_a_snapshot_counts_allocated_blocks",),
+        marker="PV size/snapshot-fallback",
+    ),
 )
 
 
@@ -2197,7 +2218,8 @@ def build_test_binary(
     result = SUPERVISOR.run(
         [
             "rustup", "run", TOOLCHAIN, "cargo", "test",
-            "--locked", "--offline", *selection, "--all-features",
+            # The workspace's other member has a lib test of its own.
+            "--locked", "--offline", "--package", "devtrim", *selection, "--all-features",
             "--no-run", "--message-format=json",
         ],
         workspace,

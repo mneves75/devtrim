@@ -17,6 +17,7 @@ pub mod app;
 mod app_storage;
 mod cli;
 mod dashboard;
+mod explain;
 mod journal;
 mod largest;
 mod ops;
@@ -27,6 +28,7 @@ mod status;
 mod theme;
 mod tui;
 mod uninstall;
+mod volume;
 mod worktrees;
 
 #[cfg(fuzzing)]

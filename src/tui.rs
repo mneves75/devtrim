@@ -1291,12 +1291,12 @@ fn run_apply(ctx: &Ctx, plan: ApprovedPlan) -> Result<ApplyOutcome> {
         return Err(read_only());
     }
     crate::journal::check_writable(ctx)?;
-    let mut outcome = match operation {
+    let mut outcome = crate::volume::measure_apply(&ctx.home, || match operation {
         Operation::Clean(target) => ops::for_target(target).apply(&findings, ctx),
         Operation::Purge => ops::purge::Purge.apply(&findings, ctx),
         Operation::TrashEmpty => apply_trash(ctx, &findings, approval),
         Operation::ScanAll | Operation::Icloud => Err(read_only()),
-    }?;
+    })?;
     outcome.errors.extend(ctx.take_journal_errors());
     Ok(outcome)
 }
@@ -1992,6 +1992,9 @@ fn detail_entries(app: &App) -> Vec<(String, Style)> {
             ),
             Style::default(),
         ));
+        if let Some(text) = finding.frees_at_least_text() {
+            lines.push((text, Style::default()));
+        }
         if app.excluded.contains(&app.cursor) {
             lines.push((
                 "Left out of this plan; Space adds it back.".to_string(),
@@ -2172,6 +2175,9 @@ fn outcome_entries(app: &App) -> Vec<(String, Style)> {
                     (false, _) => Token::Warning,
                 }),
         ));
+        if let Some(line) = report::home_volume_line(summary) {
+            lines.push((report::terminal_safe(&line), Style::default()));
+        }
         if !app.excluded.is_empty() {
             lines.push((
                 format!(
@@ -3008,6 +3014,43 @@ mod tests {
         assert!(rendered(&app, MIN_WIDTH, MIN_HEIGHT).contains("r rescan"));
     }
 
+    /// The measured line wraps inside the outcome at the minimum size, and the
+    /// footer keeps its keys.
+    #[test]
+    fn the_outcome_shows_measured_free_space_at_the_minimum_size() {
+        let mut app = App {
+            operation: Some(Operation::Clean(Target::Caches)),
+            ..App::default()
+        };
+        let mut outcome = ApplyOutcome::new("caches");
+        outcome.summary.items_touched = 1;
+        outcome.summary.home_volume = Some(report::HomeVolume::Measured {
+            free_before: 3 << 30,
+            free_after: 5 << 30,
+            gained_bytes: 2 << 30,
+        });
+        app.finish_apply(Ok(outcome));
+        assert_eq!(app.screen, Screen::Outcome);
+
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let text = rows.join("\n");
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("free space on the home volume: 3.0 GB")),
+            "{text}"
+        );
+        assert!(text.contains("(+2.0 GB)"), "{text}");
+        assert!(text.contains("other processes also write"), "{text}");
+        assert!(!text.contains("freed"), "{text}");
+        for key in ["q quit", "? keys", "b back"] {
+            assert!(
+                rows[16].contains(key),
+                "{key:?} missing from {:?}",
+                rows[16]
+            );
+        }
+    }
+
     #[test]
     fn row_numbers_keep_every_column_aligned_past_999_findings() {
         let mut app = App::default();
@@ -3476,6 +3519,40 @@ mod tests {
             );
         }
         assert!(!pane.contains("moreline(s)"), "{rows:#?}");
+    }
+
+    /// A lower bound beside the size shows in the detail pane only: the row
+    /// keeps the allocated size every total and confirmation uses, and stays
+    /// one line at the minimum width.
+    #[test]
+    fn the_detail_pane_shows_what_a_cloned_target_frees_at_least() {
+        let finding = Finding::sized(
+            "node_modules",
+            Some(std::path::PathBuf::from(
+                "/Users/someone/dev/web/node_modules",
+            )),
+            crate::safety::Size {
+                allocated: 1_470_000_000,
+                frees_at_least: Some(78 << 20),
+            },
+            "repo last active 2020-01-01 UTC",
+            5,
+            Action::Trash,
+        );
+        let app = cleanup(vec![finding]);
+
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let text = rows.join("\n");
+        assert!(
+            text.contains("frees at least 78 MB: APFS clones share the rest"),
+            "{text}"
+        );
+        let row = rows
+            .iter()
+            .find(|row| row.contains("danger-5") && row.contains("node_modules"))
+            .unwrap();
+        assert!(row.contains("1.4 GB"), "{row:?}");
+        assert!(!row.contains("frees at least"), "{row:?}");
     }
 
     /// At the minimum size a long path cannot fit, so the pane says how many

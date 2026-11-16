@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 
 use super::project::{UnreadFolder, error_finding, has_git_marker, unread_folders_finding};
 use super::{
-    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, apply_uv_cache_finding, dir_size,
-    removal_note,
+    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, apply_uv_cache_finding,
+    dir_measure, removal_note,
 };
 use crate::process::{BoundedCommand as _, PROBE_TIMEOUT, QUERY_TIMEOUT};
 use crate::report::TargetAuthority;
-use crate::safety::{Ctx, DeletionEntry, escalate};
+use crate::safety::{Ctx, DeletionEntry, Size, escalate};
 
 pub(crate) struct Caches;
 
@@ -151,13 +151,13 @@ impl Op for Caches {
         for entry in CACHES {
             let path = ctx.home.join(entry.relative);
             let size = measured(&path, &mut unread);
-            if size > 0 {
+            if size.allocated > 0 {
                 findings.push(cache_finding(entry.label, path, size, 3));
             }
         }
         for (label, path) in library_caches(&ctx.home) {
             let size = measured(&path, &mut unread);
-            if size > 0 {
+            if size.allocated > 0 {
                 findings.push(cache_finding(label, path, size, 3));
             }
         }
@@ -166,7 +166,7 @@ impl Op for Caches {
         match owner_cache_path("npm", &["config", "get", "cache"], NPM_QUIET, ctx) {
             Ok(Some(path)) => {
                 let size = measured(&path, &mut unread);
-                if size > 0 {
+                if size.allocated > 0 {
                     let mut finding = cache_finding("npm cache folder", path, size, 2)
                         .with_authority(TargetAuthority::NpmCache);
                     finding.note =
@@ -192,7 +192,7 @@ impl Op for Caches {
         match go_module_cache(ctx, true) {
             Ok(Some(path)) => {
                 let size = measured(&path, &mut unread);
-                if size > 0 {
+                if size.allocated > 0 {
                     let mut finding = cache_finding("Go module cache", path, size, 3);
                     finding.note = "Go downloads modules again on next build; moved to the Trash, \
                                     `devtrim trash-empty` frees it; Go keeps the cache read-only, \
@@ -307,7 +307,7 @@ fn brew_cache_findings(
     // the sink refuses whole while it holds a clone.
     if clones == 0 || !is_standard_brew_cache(cache, home) {
         let size = measured(cache, unread);
-        return Ok((size > 0)
+        return Ok((size.allocated > 0)
             .then(|| {
                 cache_finding(LABEL, cache.to_path_buf(), size, 1)
                     .with_authority(TargetAuthority::BrewCache)
@@ -319,7 +319,7 @@ fn brew_cache_findings(
     let mut findings = Vec::new();
     for child in children {
         let size = measured(&child, unread);
-        if size == 0 {
+        if size.allocated == 0 {
             continue;
         }
         let name = child
@@ -332,12 +332,12 @@ fn brew_cache_findings(
             cache_note(&child)
         );
         findings.push(
-            Finding::new(
+            Finding::sized(
                 format!("{LABEL}: {name}"),
                 Some(child),
                 size,
                 note,
-                escalate(1, size),
+                escalate(1, size.allocated),
                 Action::Trash,
             )
             .with_authority(TargetAuthority::BrewCacheEntry),
@@ -348,22 +348,23 @@ fn brew_cache_findings(
 
 /// A cache's size, or 0 with the cache recorded in `unread` when it cannot be
 /// measured: an unreadable folder, or a size that overflows. Only a cache that
-/// does not exist (`dir_size` yields 0) is an ordinary empty one.
-fn measured(path: &Path, unread: &mut Vec<UnreadFolder>) -> u64 {
-    dir_size(path).unwrap_or_else(|error| {
+/// does not exist (`dir_measure` yields 0) is an ordinary empty one.
+fn measured(path: &Path, unread: &mut Vec<UnreadFolder>) -> Size {
+    dir_measure(path).unwrap_or_else(|error| {
         unread.push(UnreadFolder::new(path, &error));
-        0
+        Size::default()
     })
 }
 
-fn cache_finding(label: &str, path: PathBuf, size: u64, danger: u8) -> Finding {
+fn cache_finding(label: &str, path: PathBuf, size: impl Into<Size>, danger: u8) -> Finding {
+    let size = size.into();
     let note = cache_note(&path);
-    Finding::new(
+    Finding::sized(
         label,
         Some(path),
         size,
         note,
-        escalate(danger, size),
+        escalate(danger, size.allocated),
         Action::Trash,
     )
 }
@@ -594,7 +595,7 @@ fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
         .into_iter()
         .filter_map(|(label, path)| {
             let size = measured(&path, unread);
-            (size > 0).then(|| cache_finding(label, path, size, 3))
+            (size.allocated > 0).then(|| cache_finding(label, path, size, 3))
         })
         .collect()
 }

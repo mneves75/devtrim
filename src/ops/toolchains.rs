@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use super::project::{
     UnreadFolder, is_directory_if_present, unjudged_finding, unread_folders_finding,
 };
-use super::{Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_size, removal_note};
+use super::{
+    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_measure, removal_note,
+};
 use crate::safety::{Ctx, escalate};
 
 pub(crate) struct Toolchains;
@@ -112,9 +114,9 @@ fn toolchain_finding(path: PathBuf, references: &References) -> Result<Option<Fi
     let metadata = std::fs::symlink_metadata(&path)
         .with_context(|| format!("cannot verify toolchain {}", path.display()))?;
     if let Some(owner) = references.swiftly.get(&(metadata.dev(), metadata.ino())) {
-        let size = dir_size(&path)?;
+        let size = dir_measure(&path)?;
         let state = if owner.in_use { " and in use" } else { "" };
-        return Ok(Some(Finding::new(
+        return Ok(Some(Finding::sized(
             format!("Swift toolchain {name} (swiftly)"),
             Some(path),
             size,
@@ -132,13 +134,13 @@ fn toolchain_finding(path: PathBuf, references: &References) -> Result<Option<Fi
     if references.linked.contains(&canonical) {
         return Ok(None);
     }
-    let size = dir_size(&path)?;
-    Ok(Some(Finding::new(
+    let size = dir_measure(&path)?;
+    Ok(Some(Finding::sized(
         format!("Swift toolchain {name}"),
         Some(path),
         size,
         "not referenced by any verified Toolchains symlink or by swiftly; reinstallable from swift.org",
-        escalate(6, size),
+        escalate(6, size.allocated),
         Action::Trash,
     )))
 }
