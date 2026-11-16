@@ -27,6 +27,7 @@ mod status;
 mod theme;
 mod tui;
 mod uninstall;
+mod volume;
 mod worktrees;
 
 #[cfg(fuzzing)]

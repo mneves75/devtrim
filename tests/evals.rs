@@ -965,6 +965,8 @@ fn eval_read_only_commands_and_previews_change_nothing() {
         vec!["history", "--json"],
         vec!["analyze", dev, "--json"],
         vec!["status", "--json"],
+        vec!["disk", "--json"],
+        vec!["disk"],
         vec!["uninstall", "AltTab", "--json"],
         vec!["optimize", "--json"],
         vec!["trash-empty", "--json"],

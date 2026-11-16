@@ -86,26 +86,10 @@ struct Volume {
 }
 
 fn volume(root: &Path) -> Volume {
-    let metrics = (|| -> Result<(u64, u64)> {
-        let stat =
-            rustix::fs::statvfs(root).context("cannot read the selected filesystem's capacity")?;
-        if stat.f_frsize == 0 || stat.f_blocks == 0 || stat.f_bavail > stat.f_blocks {
-            bail!("invalid filesystem capacity metrics");
-        }
-        let capacity = stat
-            .f_blocks
-            .checked_mul(stat.f_frsize)
-            .context("volume capacity overflow")?;
-        let available = stat
-            .f_bavail
-            .checked_mul(stat.f_frsize)
-            .context("available-space overflow")?;
-        Ok((capacity, available))
-    })();
-    match metrics {
-        Ok((capacity, available)) => Volume {
-            capacity_bytes: Some(capacity),
-            available_bytes: Some(available),
+    match crate::volume::free_space(root) {
+        Ok(space) => Volume {
+            capacity_bytes: Some(space.total),
+            available_bytes: Some(space.available),
             error: None,
         },
         Err(error) => Volume {

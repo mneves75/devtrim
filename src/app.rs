@@ -2,7 +2,7 @@
 
 use crate::{
     analyze, cli, dashboard, journal, largest, ops, process, report, safety, status, tui,
-    uninstall, worktrees,
+    uninstall, volume, worktrees,
 };
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, ValueEnum as _, error::ErrorKind};
@@ -95,6 +95,7 @@ fn incompatible_flags(cli: &cli::Cli) -> Option<(&'static str, String)> {
         Some(cli::Command::Optimize { .. }) => ("optimize", true, true, true, false),
         Some(cli::Command::TrashEmpty { .. }) => ("trash-empty", true, true, true, false),
         Some(cli::Command::Status { .. }) => ("status", false, false, false, false),
+        Some(cli::Command::Disk { .. }) => ("disk", false, false, false, false),
         Some(cli::Command::Uninstall { .. }) => ("uninstall", false, false, false, false),
         Some(cli::Command::Analyze { .. }) => ("analyze", false, false, false, false),
         Some(cli::Command::Dashboard { .. }) => ("dashboard", false, false, false, false),
@@ -178,6 +179,7 @@ fn operation_from_args(args: &[OsString]) -> &'static str {
         Some("analyze") => "analyze",
         Some("dashboard") => "dashboard",
         Some("status") => "status",
+        Some("disk") => "disk",
         Some("optimize") => "optimize",
         Some("uninstall") => "uninstall",
         Some("largest") => "largest",
@@ -355,6 +357,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             Ok(exit_status(&scan.errors))
         }
         cli::Command::Status { watch } => status::run(&ctx, watch),
+        cli::Command::Disk { ref warn_below } => volume::run_disk(&ctx, warn_below.as_ref()),
         cli::Command::Uninstall { ref app } => uninstall::run(&ctx, app),
         cli::Command::Analyze { ref path } => analyze::run(&ctx, path.as_deref()),
         cli::Command::Dashboard {
@@ -481,7 +484,7 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
             if let Err(error) = crate::journal::check_writable(&ctx) {
                 return command_error("trash-empty", false, &findings, &ctx, error);
             }
-            match ops::purge_trash(&findings, &ctx) {
+            match volume::measure_apply(&ctx.home, || ops::purge_trash(&findings, &ctx)) {
                 Ok(outcome) => print_outcome("trash-empty", &findings, &outcome, &ctx),
                 Err(error) => command_error("trash-empty", true, &findings, &ctx, error),
             }
@@ -656,7 +659,7 @@ fn run_op(operation: &dyn ops::Op, cli: &cli::Cli, ctx: &safety::Ctx) -> Result<
     if let Err(error) = crate::journal::check_writable(ctx) {
         return command_error(operation.name(), false, &findings, ctx, error);
     }
-    match operation.apply(&findings, ctx) {
+    match volume::measure_apply(&ctx.home, || operation.apply(&findings, ctx)) {
         Ok(outcome) => print_outcome(operation.name(), &findings, &outcome, ctx),
         Err(error) => command_error(operation.name(), true, &findings, ctx, error),
     }
@@ -713,7 +716,11 @@ fn print_non_success_summary(summary: &report::Summary) -> std::io::Result<()> {
         "\n{marker} {} {status}: {}",
         report::terminal_safe(&summary.op),
         report::summary_counts(summary)
-    ))
+    ))?;
+    match report::home_volume_line(summary) {
+        Some(line) => report::print_line(&report::terminal_safe(&line)),
+        None => Ok(()),
+    }
 }
 
 fn command_error(

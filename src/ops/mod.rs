@@ -143,6 +143,7 @@ impl ApplyOutcome {
                 bytes_freed_estimate: 0,
                 bytes_trashed_estimate: 0,
                 notes: Vec::new(),
+                home_volume: None,
             },
             errors: Vec::new(),
         }

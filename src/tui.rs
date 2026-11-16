@@ -1291,12 +1291,12 @@ fn run_apply(ctx: &Ctx, plan: ApprovedPlan) -> Result<ApplyOutcome> {
         return Err(read_only());
     }
     crate::journal::check_writable(ctx)?;
-    let mut outcome = match operation {
+    let mut outcome = crate::volume::measure_apply(&ctx.home, || match operation {
         Operation::Clean(target) => ops::for_target(target).apply(&findings, ctx),
         Operation::Purge => ops::purge::Purge.apply(&findings, ctx),
         Operation::TrashEmpty => apply_trash(ctx, &findings, approval),
         Operation::ScanAll | Operation::Icloud => Err(read_only()),
-    }?;
+    })?;
     outcome.errors.extend(ctx.take_journal_errors());
     Ok(outcome)
 }
@@ -2172,6 +2172,9 @@ fn outcome_entries(app: &App) -> Vec<(String, Style)> {
                     (false, _) => Token::Warning,
                 }),
         ));
+        if let Some(line) = report::home_volume_line(summary) {
+            lines.push((report::terminal_safe(&line), Style::default()));
+        }
         if !app.excluded.is_empty() {
             lines.push((
                 format!(
@@ -3006,6 +3009,43 @@ mod tests {
             "PV tui/outcome-rescan"
         );
         assert!(rendered(&app, MIN_WIDTH, MIN_HEIGHT).contains("r rescan"));
+    }
+
+    /// The measured line wraps inside the outcome at the minimum size, and the
+    /// footer keeps its keys.
+    #[test]
+    fn the_outcome_shows_measured_free_space_at_the_minimum_size() {
+        let mut app = App {
+            operation: Some(Operation::Clean(Target::Caches)),
+            ..App::default()
+        };
+        let mut outcome = ApplyOutcome::new("caches");
+        outcome.summary.items_touched = 1;
+        outcome.summary.home_volume = Some(report::HomeVolume::Measured {
+            free_before: 3 << 30,
+            free_after: 5 << 30,
+            gained_bytes: 2 << 30,
+        });
+        app.finish_apply(Ok(outcome));
+        assert_eq!(app.screen, Screen::Outcome);
+
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let text = rows.join("\n");
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("free space on the home volume: 3.0 GB")),
+            "{text}"
+        );
+        assert!(text.contains("(+2.0 GB)"), "{text}");
+        assert!(text.contains("other processes also write"), "{text}");
+        assert!(!text.contains("freed"), "{text}");
+        for key in ["q quit", "? keys", "b back"] {
+            assert!(
+                rows[16].contains(key),
+                "{key:?} missing from {:?}",
+                rows[16]
+            );
+        }
     }
 
     #[test]

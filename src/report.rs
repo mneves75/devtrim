@@ -357,6 +357,43 @@ pub struct Summary {
     /// the same volume until the Trash is emptied, so it is not free space yet.
     pub bytes_trashed_estimate: u64,
     pub notes: Vec<String>,
+    /// Free space on the home folder's volume read around the mutation; absent
+    /// when nothing was mutated. It is observed, not attributed to devtrim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home_volume: Option<HomeVolume>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum HomeVolume {
+    Measured {
+        free_before: u64,
+        free_after: u64,
+        gained_bytes: i64,
+    },
+    Unmeasured {
+        error: String,
+    },
+}
+
+/// The measured free-space line under an apply headline, unescaped. It never
+/// says devtrim freed the change: other processes and snapshots move it too.
+pub(crate) fn home_volume_line(summary: &Summary) -> Option<String> {
+    let prefix = "free space on the home volume";
+    Some(match summary.home_volume.as_ref()? {
+        HomeVolume::Measured {
+            free_before,
+            free_after,
+            gained_bytes,
+        } => format!(
+            "{prefix}: {} → {} ({}{}), measured; other processes also write",
+            gb(*free_before),
+            gb(*free_after),
+            if *gained_bytes < 0 { "-" } else { "+" },
+            gb(gained_bytes.unsigned_abs())
+        ),
+        HomeVolume::Unmeasured { error } => format!("{prefix}: not measured ({error})"),
+    })
 }
 
 /// What an apply did, in words that never call Trash moves freed space:
@@ -736,6 +773,9 @@ pub fn print_summary(summary: &Summary) -> std::io::Result<()> {
         "✓".green().bold(),
         terminal_safe_text(&summary_headline(summary))
     ));
+    if let Some(line) = home_volume_line(summary) {
+        output.push_str(&format!("{}\n", terminal_safe(&line)));
+    }
     write_stdout(output.as_bytes())
 }
 
@@ -936,6 +976,7 @@ mod tests {
             bytes_freed_estimate: freed,
             bytes_trashed_estimate: trashed,
             notes: Vec::new(),
+            home_volume: None,
         };
 
         let trashed = summary_headline(&summary(5 * gib, 5 * gib));
@@ -950,6 +991,37 @@ mod tests {
         let mixed = summary_headline(&summary(5 * gib, 2 * gib));
         assert!(mixed.contains("~3.0 GB reclaimed"), "{mixed}");
         assert!(mixed.contains("~2.0 GB moved to Trash"), "{mixed}");
+    }
+
+    /// The measured line reports a loss as a loss, names a failed read, and
+    /// is absent when nothing was measured.
+    #[test]
+    fn home_volume_line_reports_the_observed_change_or_why_it_is_missing() {
+        let mib = 1024 * 1024;
+        let mut summary = Summary {
+            op: "caches".into(),
+            items_touched: 1,
+            bytes_freed_estimate: 0,
+            bytes_trashed_estimate: 0,
+            notes: Vec::new(),
+            home_volume: None,
+        };
+        assert_eq!(home_volume_line(&summary), None);
+
+        summary.home_volume = Some(HomeVolume::Measured {
+            free_before: 900 * mib,
+            free_after: 600 * mib,
+            gained_bytes: -300 * 1024 * 1024,
+        });
+        assert_eq!(
+            home_volume_line(&summary).unwrap(),
+            "free space on the home volume: 900 MB → 600 MB (-300 MB), measured; other processes also write"
+        );
+        summary.home_volume = Some(HomeVolume::Unmeasured {
+            error: "after the apply: cannot read free space: /Users/x".into(),
+        });
+        let line = home_volume_line(&summary).unwrap();
+        assert!(line.contains("not measured (after the apply"), "{line}");
     }
 
     /// A long category lists its largest findings; when two projects
