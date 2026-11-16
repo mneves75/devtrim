@@ -2069,8 +2069,8 @@ CASES = (
     Case(
         name="size/clone-private",
         relative_path="src/safety.rs",
-        before="            .map(|blocks| blocks.private)\n    }\n}",
-        after="            .map(|blocks| blocks.allocated)\n    }\n}",
+        before=".map_or(0, |blocks| blocks.private)\n}",
+        after=".map_or(0, |blocks| blocks.allocated)\n}",
         tests=("safety::tests::a_clone_of_a_file_outside_the_tree_frees_at_least_its_private_bytes",),
         marker="PV size/clone-private",
     ),
@@ -2079,8 +2079,8 @@ CASES = (
     Case(
         name="size/snapshot-fallback",
         relative_path="src/safety.rs",
-        before="        trusted\n            .then(|| apfs_size::file_blocks(path, dev, metadata.ino()))",
-        after="        let _ = trusted;\n        true\n            .then(|| apfs_size::file_blocks(path, dev, metadata.ino()))",
+        before="        trusted.then(|| private_or_nothing(metadata, path))",
+        after="        let _ = trusted;\n        true.then(|| private_or_nothing(metadata, path))",
         tests=("safety::tests::a_volume_with_a_snapshot_counts_allocated_blocks",),
         marker="PV size/snapshot-fallback",
     ),
