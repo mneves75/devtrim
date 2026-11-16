@@ -507,7 +507,8 @@ pub(crate) fn human_action_display(action: &Action) -> String {
 }
 
 /// Findings without the closing total, for a report whose sizes must not be
-/// added up (linked worktrees can share blocks through APFS clones).
+/// added up: each worktree is measured alone, so a file hard-linked into two
+/// counts in both, and blocks clones share across two count in neither.
 pub fn print_findings(findings: &[Finding]) -> std::io::Result<()> {
     write_stdout(findings_text(findings).as_bytes())
 }

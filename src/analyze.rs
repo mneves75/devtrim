@@ -733,7 +733,7 @@ fn run_json(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
                 if entry.partial {
                     "report-only; lower bound, some entries below this path were unreadable"
                 } else {
-                    "report-only; estimated bytes deleting it frees"
+                    "report-only; estimated bytes deleting it frees, unless a snapshot keeps them"
                 },
                 1,
                 Action::Info,
