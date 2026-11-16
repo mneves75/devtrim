@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::report::{Action, Finding};
-use crate::safety::Ctx;
+use crate::safety::{Ctx, Folder, NO_FOLDER};
 
 pub(crate) struct LargestResult {
     pub(crate) findings: Vec<Finding>,
@@ -23,7 +23,11 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
     // Overlapping roots (e.g. ~/work and ~/work/project) would count the same
     // files twice; keep only roots not contained in another configured root.
     let roots = crate::ops::project::normalized_roots(roots);
+    // The depth-1 and depth-2 folders each file sits under, registered so a
+    // clone family's shared blocks can be credited to the folders holding it.
+    let mut folders = std::collections::HashMap::<Folder, PathBuf>::new();
     for &root in &roots {
+        let mut shallow = [NO_FOLDER; 2];
         // One device, as every other report walk: a mounted volume below a
         // root is not part of the root's disk usage.
         for result in walkdir::WalkDir::new(root)
@@ -42,15 +46,28 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
             };
             if entry.file_type().is_dir() && (1..=2).contains(&entry.depth()) {
                 totals.entry(entry.path().to_path_buf()).or_default();
+                let folder = if entry.depth() == 1 {
+                    shallow = [usage.folder(None), NO_FOLDER];
+                    shallow[0]
+                } else {
+                    shallow[1] = usage.folder(Some(shallow[0]));
+                    shallow[1]
+                };
+                folders.insert(folder, entry.path().to_path_buf());
                 continue;
             }
             if !entry.file_type().is_file() {
                 continue;
             }
+            let folder = match entry.depth() {
+                1 => NO_FOLDER,
+                2 => shallow[0],
+                _ => shallow[1],
+            };
             let bytes = match entry
                 .metadata()
                 .map_err(anyhow::Error::from)
-                .and_then(|metadata| usage.add(&metadata, entry.path()))
+                .and_then(|metadata| usage.add_in(&metadata, entry.path(), folder))
             {
                 Ok(bytes) => bytes,
                 Err(_) => {
@@ -66,8 +83,12 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
     // Blocks clones share go to the folders holding every clone of the family:
     // only deleting one of those frees them.
     for (folder, shared) in usage.take_whole_families() {
-        if let Some(root) = roots.iter().find(|root| folder.starts_with(root)) {
-            add_to_shallow_ancestors(root, &folder, shared, &mut totals);
+        let mut credited = (folder != NO_FOLDER).then_some(folder);
+        while let Some(folder) = credited {
+            if let Some(total) = folders.get(&folder).and_then(|path| totals.get_mut(path)) {
+                *total = total.saturating_add(shared);
+            }
+            credited = usage.parent(folder);
         }
     }
 
@@ -79,9 +100,9 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
     });
     let limit = top.unwrap_or(20).clamp(1, 100);
     let note = if skipped > 0 {
-        "report-only; sizes are estimated bytes deleting each folder frees, and lower bounds: unreadable entries were skipped"
+        "report-only; sizes are estimated bytes deleting each folder frees, unless a snapshot keeps them, and lower bounds: unreadable entries were skipped"
     } else {
-        "report-only; sizes are estimated bytes deleting each folder frees"
+        "report-only; sizes are estimated bytes deleting each folder frees, unless a snapshot keeps them"
     };
     let findings = ranked
         .into_iter()
@@ -135,6 +156,7 @@ mod tests {
         write_incompressible(&root.join("split/source"));
         clone_file(&root.join("split/source"), &root.join("other/clone"));
 
+        let _trust = crate::safety::AssumeSnapshotFree::new(true);
         let result = scan_roots(std::slice::from_ref(&root), Some(100));
         let size = |name: &str| {
             let path = root.join(name);

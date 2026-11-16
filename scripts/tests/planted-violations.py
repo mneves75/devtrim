@@ -2074,6 +2074,16 @@ CASES = (
         tests=("safety::tests::a_clone_of_a_file_outside_the_tree_frees_almost_nothing",),
         marker="PV size/clone-private",
     ),
+    # A snapshot keeps every block older than it, which the private size
+    # leaves out: trusting it there would report clones as nearly free.
+    Case(
+        name="size/snapshot-fallback",
+        relative_path="src/safety.rs",
+        before="        if !trusted {\n            return allocated_bytes(metadata, path);\n        }\n",
+        after="        let _ = trusted;\n",
+        tests=("safety::tests::a_volume_with_a_snapshot_counts_allocated_blocks",),
+        marker="PV size/snapshot-fallback",
+    ),
 )
 
 

@@ -8,7 +8,8 @@
 //! a clone or snapshot, and which would be freed immediately if the file were
 //! deleted" (getattrlist(2)). This crate reads it, with the file's clone
 //! family, through one `getattrlist(2)` call, the only `unsafe` code in
-//! devtrim, on volumes `statfs(2)` names `apfs`.
+//! devtrim, and names the volume holding a file (`statfs(2)`), so the caller
+//! uses the private size only where it is true.
 
 #![deny(unsafe_code)]
 #![cfg_attr(
@@ -46,67 +47,64 @@ pub struct CloneFamily {
     pub shared: u64,
 }
 
-/// The devices a walk has found to be APFS volumes, asked once per device.
+/// Reads the blocks of the regular file at `path` without following a link.
+/// `dev` and `ino` are what the caller's `lstat` returned for it; a different
+/// answer means the path changed in between, and the caller keeps its
+/// `st_blocks` measure.
 ///
-/// Only APFS knows the private size. Another file system can still mark it
-/// returned: an HFS+ volume answers 0 for every file, which would make
-/// everything on it look free to delete, so the answer is used only on APFS.
-#[derive(Debug, Default)]
-pub struct Volumes {
-    apfs: std::collections::HashMap<u64, bool>,
-}
-
-impl Volumes {
-    /// Reads the blocks of the regular file at `path` without following a
-    /// link. `dev` and `ino` are what the caller's `lstat` returned for it; a
-    /// different answer means the path changed in between, and the caller
-    /// keeps its `st_blocks` measure.
-    ///
-    /// `None` also when the volume is not APFS or cannot be identified, the
-    /// call fails, the object is not a regular file, or the file is compressed
-    /// (APFS leaves compressed data out of the private size), and always off
-    /// macOS.
-    pub fn file_blocks(&mut self, path: &Path, dev: u64, ino: u64) -> Option<FileBlocks> {
-        #[cfg(target_os = "macos")]
-        {
-            if !self.is_apfs(path, dev) {
-                return None;
-            }
-            let parsed = parse(&read_attributes(path)?)?;
-            (parsed.dev == dev && parsed.ino == ino).then_some(parsed.blocks)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (&self.apfs, path, dev, ino);
-            None
-        }
-    }
-
+/// The private size is true only on APFS and only on a volume without
+/// snapshots: another file system can still mark it returned (HFS+ answers 0
+/// for every file), and a snapshot holds blocks the private size leaves out.
+/// The caller checks both first (`volume`).
+///
+/// `None` when the call fails, the object is not a regular file, or the file
+/// is compressed (APFS leaves compressed data out of the private size), and
+/// always off macOS.
+pub fn file_blocks(path: &Path, dev: u64, ino: u64) -> Option<FileBlocks> {
     #[cfg(target_os = "macos")]
-    fn is_apfs(&mut self, path: &Path, dev: u64) -> bool {
-        if let Some(&apfs) = self.apfs.get(&dev) {
-            return apfs;
-        }
-        // An unidentified volume is not remembered: the next file may answer.
-        volume_is_apfs(path, dev).inspect(|&apfs| {
-            self.apfs.insert(dev, apfs);
-        }) == Some(true)
+    {
+        let parsed = parse(&read_attributes(path)?)?;
+        (parsed.dev == dev && parsed.ino == ino).then_some(parsed.blocks)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (path, dev, ino);
+        None
     }
 }
 
-/// Whether the volume holding `path`, which must be on device `dev`, is APFS.
-/// `statfs` follows a link, so its answer counts only when the mount point it
-/// names is itself on `dev`; otherwise `None`.
-#[cfg(target_os = "macos")]
-fn volume_is_apfs(path: &Path, dev: u64) -> Option<bool> {
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
+/// The mounted volume holding a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Volume {
+    /// `statfs(2)` names its file system `apfs`.
+    pub apfs: bool,
+    /// Its mount point (`f_mntonname`), an absolute path.
+    pub mount: std::path::PathBuf,
+}
 
-    let volume = rustix::fs::statfs(path).ok()?;
-    let mount = c_string(&volume.f_mntonname)?;
-    let mount = Path::new(std::ffi::OsStr::from_bytes(&mount));
-    (std::fs::symlink_metadata(mount).ok()?.dev() == dev)
-        .then(|| c_string(&volume.f_fstypename).is_some_and(|name| name == b"apfs"))
+/// The volume holding `path`, which must be on device `dev`. `statfs` follows
+/// a link, so its answer counts only when the mount point it names is itself
+/// on `dev`; otherwise, and off macOS, `None`.
+pub fn volume(path: &Path, dev: u64) -> Option<Volume> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
+
+        let statfs = rustix::fs::statfs(path).ok()?;
+        let mount = c_string(&statfs.f_mntonname)?;
+        let mount = Path::new(std::ffi::OsStr::from_bytes(&mount));
+        let on_device = mount.is_absolute() && std::fs::symlink_metadata(mount).ok()?.dev() == dev;
+        on_device.then(|| Volume {
+            apfs: c_string(&statfs.f_fstypename).is_some_and(|name| name == b"apfs"),
+            mount: mount.to_path_buf(),
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (path, dev);
+        None
+    }
 }
 
 /// The bytes of a NUL-terminated `c_char` array, `None` without the NUL.
@@ -473,11 +471,14 @@ mod tests {
 
         let dir = std::env::temp_dir();
         let dev = std::fs::symlink_metadata(&dir).unwrap().dev();
-        assert_eq!(volume_is_apfs(&dir, dev), Some(true));
-        assert_eq!(volume_is_apfs(&dir, dev + 1), None);
-        assert_eq!(volume_is_apfs(Path::new("/dev/null"), dev), None);
+        let found = volume(&dir, dev).unwrap();
+        assert!(found.apfs);
+        assert!(found.mount.is_absolute());
+        assert_eq!(std::fs::symlink_metadata(&found.mount).unwrap().dev(), dev);
+        assert_eq!(volume(&dir, dev + 1), None);
+        assert_eq!(volume(Path::new("/dev/null"), dev), None);
         let devfs = std::fs::symlink_metadata("/dev/null").unwrap().dev();
-        assert_eq!(volume_is_apfs(Path::new("/dev/null"), devfs), Some(false));
+        assert!(!volume(Path::new("/dev/null"), devfs).unwrap().apfs);
         assert_eq!(c_string(&[97, 98, 0, 99]), Some(b"ab".to_vec()));
         assert_eq!(c_string(&[97, 98]), None);
     }
@@ -505,7 +506,6 @@ mod tests {
             .collect::<Vec<_>>();
         std::fs::write(&source, &data).unwrap();
         std::fs::File::open(&source).unwrap().sync_all().unwrap();
-        let file_blocks = |path: &Path, dev, ino| Volumes::default().file_blocks(path, dev, ino);
         let measure = |path: &Path| {
             let metadata = std::fs::symlink_metadata(path).unwrap();
             (

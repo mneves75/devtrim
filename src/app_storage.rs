@@ -6,7 +6,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 
 use crate::report::{Action, Finding};
-use crate::safety::DiskUsage;
+use crate::safety::{DiskUsage, Folder};
 
 const WHATSAPP_CONTAINERS: &[&str] = &[
     "group.net.whatsapp.WhatsApp.shared",
@@ -112,6 +112,15 @@ impl Inventory {
         let mut totals = [0u64; 5];
         let mut present = [false; 5];
         present[4] = true;
+        // The folder each bucket credits with blocks its clones share; the
+        // databases share one folder no bucket is credited from.
+        let whole = self.usage.folder(None);
+        let (media, databases, other) = (
+            self.usage.folder(Some(whole)),
+            self.usage.folder(Some(whole)),
+            self.usage.folder(Some(whole)),
+        );
+        let folders = [media, databases, databases, databases, other];
         let mut entries = walkdir::WalkDir::new(container)
             .follow_links(false)
             .follow_root_links(false)
@@ -179,21 +188,25 @@ impl Inventory {
             } else {
                 database.map_or(4, |index| index + 1)
             };
-            self.add_file(&mut totals[bucket], &metadata, entry.path());
+            self.add_file(
+                &mut totals[bucket],
+                &metadata,
+                entry.path(),
+                folders[bucket],
+            );
         }
-        // Blocks clones share count in the bucket whose folder holds every
-        // clone: media, or other data when no clone is media. A family across
-        // both buckets frees its blocks with neither alone and is left out.
-        let media = container.join("Message/Media");
+        // Blocks clones share count in the bucket holding every clone, media
+        // or other data. A family across buckets frees its blocks with no
+        // bucket alone and is left out.
         for (folder, shared) in self.usage.take_whole_families() {
-            let bucket = if folder.starts_with(&media) {
+            let bucket = if folder == media {
                 0
-            } else if folder.starts_with(container) && !media.starts_with(&folder) {
+            } else if folder == other {
                 4
             } else {
                 continue;
             };
-            self.add_bytes(&mut totals[bucket], shared, &folder);
+            self.add_bytes(&mut totals[bucket], shared, container);
         }
         for (index, (bytes, present)) in totals.into_iter().zip(present).enumerate() {
             if !present {
@@ -301,6 +314,7 @@ impl Inventory {
 
     fn bundle_size(&mut self, root: &Path, device: u64) -> u64 {
         let mut bytes = 0;
+        let bundle = self.usage.folder(None);
         let mut entries = walkdir::WalkDir::new(root)
             .follow_links(false)
             .follow_root_links(false)
@@ -322,7 +336,7 @@ impl Inventory {
                 self.skipped_directories = self.skipped_directories.saturating_add(1);
                 entries.skip_current_dir();
             } else if metadata.is_file() {
-                self.add_file(&mut bytes, &metadata, entry.path());
+                self.add_file(&mut bytes, &metadata, entry.path(), bundle);
             } else if !metadata.is_dir() {
                 self.error(format!(
                     "unsupported Screen Studio storage entry: {}",
@@ -333,8 +347,8 @@ impl Inventory {
         // A bundle frees the blocks its clones share only when it holds every
         // clone; a family across bundles is left out of each.
         for (folder, shared) in self.usage.take_whole_families() {
-            if folder.starts_with(root) {
-                self.add_bytes(&mut bytes, shared, &folder);
+            if folder == bundle {
+                self.add_bytes(&mut bytes, shared, root);
             }
         }
         bytes
@@ -383,12 +397,18 @@ impl Inventory {
         }
     }
 
-    fn add_file(&mut self, total: &mut u64, metadata: &std::fs::Metadata, path: &Path) {
+    fn add_file(
+        &mut self,
+        total: &mut u64,
+        metadata: &std::fs::Metadata,
+        path: &Path,
+        folder: Folder,
+    ) {
         // A firmlink can expose a single-link file through several root spellings.
         if !self.measured_files.insert((metadata.dev(), metadata.ino())) {
             return;
         }
-        match self.usage.add(metadata, path) {
+        match self.usage.add_in(metadata, path, folder) {
             Ok(bytes) => self.add_bytes(total, bytes, path),
             Err(error) => self.error(format!("{error:#}")),
         }
