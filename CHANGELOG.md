@@ -5,17 +5,19 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ## [0.14.0] - 2026-11-16
 
 ### Added
-- Sizes on APFS count what deleting a tree frees: each file's private size
-  (`ATTR_CMNEXT_PRIVATESIZE`), which leaves out blocks shared with an APFS
-  clone, and a clone family's shared blocks once when every clone is inside
-  the tree. pnpm installs `node_modules` as clones of its store: one measured
-  install previewed at 1.37 GB now previews at 78 MB, which is what deleting
-  it frees (a 3 GB clone, deleted, freed 1 MB of free space). The private size
-  is used only on an APFS volume that `diskutil` shows holds no snapshot: a
-  snapshot keeps every older file's blocks, which the private size leaves out,
-  so with a Time Machine local snapshot, or any doubt, sizes stay allocated
-  blocks as before. The one `getattrlist(2)` call lives in a separate
-  `crates/apfs-size` crate; devtrim itself still forbids `unsafe`.
+- Previews also show what a cloned tree frees at least: the sum of its files'
+  APFS private sizes (`ATTR_CMNEXT_PRIVATESIZE`), which leave out blocks shared
+  with a clone, as `frees at least …: APFS clones share the rest` and
+  `frees_at_least_bytes` in JSON. pnpm installs `node_modules` as clones of its
+  store: one measured install reads 1.37 GB allocated and frees at least 78 MB
+  (a 3 GB clone, deleted, freed 1 MB of free space). Sizes, totals, danger
+  scores and every confirmation, `trash-empty --confirm=<gb>` included, keep the
+  allocated size: no attribute reveals the blocks a clone edited after `cp -c`
+  still shares, so a smaller number could acknowledge less than a plan removes.
+  The lower bound appears only on an APFS volume that `diskutil` shows holds no
+  snapshot, which keeps blocks the private size leaves out. The one
+  `getattrlist(2)` call lives in a separate `crates/apfs-size` crate; devtrim
+  itself still forbids `unsafe`.
 - Every apply that changes something reports the home volume's free space
   before and after (`summary.home_volume` in JSON), labelled as measured, not
   as freed by devtrim.
@@ -23,10 +25,13 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   `--warn-below` a warning only below SIZE, exit 0 either way, for agent
   `SessionStart` hooks.
 - `devtrim explain <PATH>`: why a path is or is not offered — built-in or
-  configured protection, and every finding that is, holds or lies inside it.
+  configured protection, and every finding that is, holds or lies inside it,
+  matched by identity too, so another case spelling of the same folder names
+  the same finding.
 - DerivedData findings name the workspace their `info.plist` records and say
   `workspace no longer exists` when it is gone; the preview totals those
-  folders. Information only: no check changed.
+  folders. A workspace on a `/Volumes` disk that is not mounted makes no claim.
+  Information only: no check changed.
 
 ### Changed
 - This release's local gates ran TruffleHog 3.99.9, Gitleaks 8.30.1, actionlint 1.7.12, ShellCheck 0.11.0, Node 26.13.0 and npm 12.2.2; the hosted run on the pinned versions is the authoritative one.

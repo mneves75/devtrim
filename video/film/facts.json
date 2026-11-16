@@ -875,8 +875,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html"
  },
  {
-  "id": "f84bad1c1",
-  "text": "v0.13.1 Filter sections Theme: Dark",
+  "id": "f27d8e6de",
+  "text": "v0.14.0 Filter sections Theme: Dark",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-contents"
  },
  {
@@ -940,8 +940,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
  },
  {
-  "id": "f838e2659",
-  "text": "Measure before cutting. scan is read-only and always free to run. Sizes are estimated bytes deleting frees: a sparse file counts what it occupies, not its length. On an APFS volume holding no snapshot a file counts only the blocks it does not share with an APFS clone, and blocks a clone family shares count once when the whole family is inside; with a snapshot, or off APFS, every file counts all its blocks, as du does. Hard links outside the target, snapshots, Trash, and container VMs can still differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.",
+  "id": "ff28bd664",
+  "text": "Measure before cutting. scan is read-only and always free to run. Sizes are estimated bytes on disk, as du counts them: a sparse file counts what it occupies, not its length, and an APFS clone counts in full though it shares its blocks, since no attribute shows the blocks a clone edited after copying still shares. Every total, danger score and confirmation uses that size. On an APFS volume holding no snapshot a finding also shows what removing it frees at least, the sum of its files’ private sizes, when that is smaller; it grants and gates nothing. Hard links outside the target, snapshots, Trash, and container VMs can still differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
  },
  {
@@ -1125,8 +1125,13 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
  },
  {
-  "id": "fc5b7f8bb",
-  "text": "size — estimated bytes deleting frees (allocated blocks less what APFS clones share, on a volume without snapshots; each hard-linked file counted once); actual immediately reclaimable space can differ.",
+  "id": "f5259944c",
+  "text": "size — estimated bytes on disk (allocated blocks, each hard-linked file counted once); actual immediately reclaimable space can differ.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
+ },
+ {
+  "id": "fffcd53ad",
+  "text": "frees at least — shown beside the size when APFS clones share blocks: the sum of the target’s private sizes on a volume without snapshots, a lower bound that grants and gates nothing (frees_at_least_bytes in JSON, absent otherwise).",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
  },
  {
@@ -1390,8 +1395,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-xcode"
  },
  {
-  "id": "f86e8d36d",
-  "text": "Clears only direct children of the iOS, watchOS, tvOS and visionOS DeviceSupport folders and of DerivedData — never a file or symlink beside them — and, for a DerivedData folder holding Swift package checkouts that is not itself a Git repository, its directories but SourcePackages; apply reasserts that exact category shape before removal. DerivedData rebuilds on the next build. While Xcode, xcodebuild or its build services run, a folder changed within the activity window (active_days) or holding a file an Xcode process has open is kept, and every other folder is still offered; apply judges each again. A folder holding a project's resolved Swift packages is cleaned around them: each checkout in its SourcePackages is a Git clone, which devtrim never deletes, so the folder's other directories — Build, Index.noindex and the like — are offered one by one and SourcePackages stays. DeviceSupport symbols are copied again only from a connected device running that exact OS build, so a superseded build matters only for symbolicating its crash logs. A folder that cannot be read or measured offers nothing and is named in one error, so the run exits nonzero, while the folders beside it are still offered. Archives exempt by design — they're release artifacts. When a DerivedData folder’s info.plist records the workspace it was built from, the finding names it, or says workspace no longer exists when that path is gone, and the preview totals those folders. That is information only: whether a folder is offered still depends on Xcode activity, file age and open files alone.",
+  "id": "f1e22db42",
+  "text": "Clears only direct children of the iOS, watchOS, tvOS and visionOS DeviceSupport folders and of DerivedData — never a file or symlink beside them — and, for a DerivedData folder holding Swift package checkouts that is not itself a Git repository, its directories but SourcePackages; apply reasserts that exact category shape before removal. DerivedData rebuilds on the next build. While Xcode, xcodebuild or its build services run, a folder changed within the activity window (active_days) or holding a file an Xcode process has open is kept, and every other folder is still offered; apply judges each again. A folder holding a project's resolved Swift packages is cleaned around them: each checkout in its SourcePackages is a Git clone, which devtrim never deletes, so the folder's other directories — Build, Index.noindex and the like — are offered one by one and SourcePackages stays. DeviceSupport symbols are copied again only from a connected device running that exact OS build, so a superseded build matters only for symbolicating its crash logs. A folder that cannot be read or measured offers nothing and is named in one error, so the run exits nonzero, while the folders beside it are still offered. Archives exempt by design — they're release artifacts. When a DerivedData folder’s info.plist records the workspace it was built from, the finding names it, or says workspace no longer exists when that path is gone (a path on a disk that is not mounted makes no claim), and the preview totals those folders. That is information only: whether a folder is offered still depends on Xcode activity, file age and open files alone.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-xcode"
  },
  {
@@ -2175,8 +2180,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
  },
  {
-  "id": "fd44b8a48",
-  "text": "On a volume without snapshots, devtrim counts a clone only for the blocks it does not share, so a cloned tree reports what deleting it frees. With a snapshot it counts every block, and cloned trees look larger than the space they hold. Trash is your audit log. Everything cleaned today is restorable from Finder until you empty it.",
+  "id": "f744cbed5",
+  "text": "devtrim reports estimated bytes on disk. APFS clones share their blocks, so cloned trees look larger in every devtrim report than the space they hold. On a volume without snapshots a cleanup finding adds what removing it frees at least: a pnpm install reads 1.37 GB and frees at least 78 MB. Trash is your audit log. Everything cleaned today is restorable from Finder until you empty it.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {
@@ -2257,6 +2262,11 @@
  {
   "id": "ff9e5d5c6",
   "text": "devtrim returns nonzero and includes the error in JSON. Failed actions are never counted as touched or reclaimed; fix the owner tool and preview again.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "fc3b47f0b",
+  "text": "devtrim v0.14.0",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {
