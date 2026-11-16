@@ -194,6 +194,23 @@ fn inventory(root: &Path) -> Result<(Node, Coverage)> {
             ancestors.push(current);
         }
     }
+    // Blocks clones share are freed only with every clone; credited to the
+    // root, which holds them all, never to a folder holding one. Before the
+    // fold the root's own bytes are all summarized, so the map shows them in
+    // its aggregate tile.
+    match usage
+        .finish()
+        .and_then(|shared| nodes[0].bytes.checked_add(shared))
+    {
+        Some(bytes) => {
+            nodes[0].bytes = bytes;
+            nodes[0].summarized_bytes = bytes;
+        }
+        None => {
+            nodes[0].partial = true;
+            coverage.issue(format!("size overflow at {}", nodes[0].path));
+        }
+    }
     coverage.retained_nodes = nodes.len();
     // Preorder puts every node after its parent, so popping from the end folds
     // each node into its parent only once all its descendants are folded into

@@ -56,7 +56,8 @@ TEST_TIMEOUT_SECONDS = 120
 JOBS_CAP = 6
 
 REPOSITORY = Path(__file__).resolve().parents[2]
-SOURCE_INPUTS = ("src", "tests", "Cargo.toml", "Cargo.lock")
+# `crates` holds the workspace member devtrim depends on (`apfs-size`).
+SOURCE_INPUTS = ("src", "tests", "crates", "Cargo.toml", "Cargo.lock")
 
 # One shared journal opener guards both the journal and its lock; each case
 # selects the test for one leaf, so a hardlinked lock and journal stay distinct.
@@ -2063,6 +2064,26 @@ CASES = (
         tests=("safety::tests::a_probe_that_cannot_finish_refuses_instead_of_reporting_nothing_running",),
         marker="PV liveness/probe-timeout",
     ),
+    # A pnpm install is APFS clones of a store outside it: counting each
+    # clone's allocated blocks overstated what deleting it frees 17 times.
+    Case(
+        name="size/clone-private",
+        relative_path="src/safety.rs",
+        before="        Ok(blocks.private)\n    }\n\n    fn join_family",
+        after="        Ok(blocks.allocated)\n    }\n\n    fn join_family",
+        tests=("safety::tests::a_clone_of_a_file_outside_the_tree_frees_almost_nothing",),
+        marker="PV size/clone-private",
+    ),
+    # A snapshot keeps every block older than it, which the private size
+    # leaves out: trusting it there would report clones as nearly free.
+    Case(
+        name="size/snapshot-fallback",
+        relative_path="src/safety.rs",
+        before="        if !trusted {\n            return allocated_bytes(metadata, path);\n        }\n",
+        after="        let _ = trusted;\n",
+        tests=("safety::tests::a_volume_with_a_snapshot_counts_allocated_blocks",),
+        marker="PV size/snapshot-fallback",
+    ),
 )
 
 
@@ -2197,7 +2218,8 @@ def build_test_binary(
     result = SUPERVISOR.run(
         [
             "rustup", "run", TOOLCHAIN, "cargo", "test",
-            "--locked", "--offline", *selection, "--all-features",
+            # The workspace's other member has a lib test of its own.
+            "--locked", "--offline", "--package", "devtrim", *selection, "--all-features",
             "--no-run", "--message-format=json",
         ],
         workspace,

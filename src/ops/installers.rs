@@ -37,7 +37,7 @@ fn has_installer_extension(path: &Path) -> bool {
 
 /// What [`judge`] makes of one path.
 enum Judgement {
-    /// Age in days and allocated size.
+    /// Age in days and the bytes removing it frees (`safety::freed_bytes`).
     Eligible(u64, u64),
     /// Not a direct child of an installer folder with an installer extension.
     OutsideNamespace,
@@ -90,11 +90,11 @@ fn judge(path: &Path, home: &Path, retain_days: u32) -> Result<Judgement> {
     }
     Ok(Judgement::Eligible(
         age,
-        crate::safety::allocated_bytes(&metadata, path)?,
+        crate::safety::freed_bytes(&metadata, path)?,
     ))
 }
 
-/// Age in days and allocated size for an eligible installer.
+/// Age in days and freed size for an eligible installer.
 fn installer_details(path: &Path, home: &Path, retain_days: u32) -> Result<Option<(u64, u64)>> {
     Ok(match judge(path, home, retain_days)? {
         Judgement::Eligible(age, size) => Some((age, size)),

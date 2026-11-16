@@ -1320,6 +1320,38 @@ impl Drop for TestFixture {
     }
 }
 
+/// Eight MiB that APFS cannot compress, for clone fixtures.
+#[cfg(test)]
+pub(crate) const CLONED_FILE: u64 = 8 << 20;
+
+/// Writes and syncs `CLONED_FILE` pseudo-random bytes at `path`.
+#[cfg(test)]
+pub(crate) fn write_incompressible(path: &Path) {
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let data = (0..CLONED_FILE)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect::<Vec<_>>();
+    std::fs::write(path, data).unwrap();
+    std::fs::File::open(path).unwrap().sync_all().unwrap();
+}
+
+/// An APFS clone of `source` at `clone` (`cp -c`, `clonefile(2)`).
+#[cfg(test)]
+pub(crate) fn clone_file(source: &Path, clone: &Path) {
+    let status = std::process::Command::new("/bin/cp")
+        .arg("-c")
+        .arg(source)
+        .arg(clone)
+        .status()
+        .unwrap();
+    assert!(status.success(), "cp -c failed");
+}
+
 /// A fixture directory this process cannot read, created with `mode` (`0o000`
 /// refuses even a lookup inside it; `0o100` allows one but not a listing). It
 /// asserts the denial took effect, so a test run with privileges that ignore

@@ -203,9 +203,10 @@ pub(crate) enum TargetAuthority {
 pub struct Finding {
     pub label: String,
     pub path: Option<String>,
-    /// Estimated allocated bytes (`safety::DiskUsage`): the blocks the target
-    /// holds on disk, each hard-linked file counted once. An APFS clone counts
-    /// in full though it shares its blocks.
+    /// Estimated bytes removing the target frees (`safety::DiskUsage`): its
+    /// files' APFS private bytes, or allocated blocks where the volume reports
+    /// none, each hard-linked file counted once and the blocks APFS clones
+    /// share counted once when the target holds every clone.
     pub size_bytes: u64,
     pub note: String,
     /// 1-10
@@ -543,7 +544,8 @@ pub(crate) fn human_action_display(action: &Action) -> String {
 }
 
 /// Findings without the closing total, for a report whose sizes must not be
-/// added up (linked worktrees can share blocks through APFS clones).
+/// added up: each worktree is measured alone, so a file hard-linked into two
+/// counts in both, and blocks clones share across two count in neither.
 pub fn print_findings(findings: &[Finding]) -> std::io::Result<()> {
     write_stdout(findings_text(findings).as_bytes())
 }
