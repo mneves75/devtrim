@@ -408,7 +408,7 @@ CASES = (
         name="trash/unmeasurable-item",
         relative_path="src/ops/mod.rs",
         before="            Err(error) => {\n                unread.push(project::UnreadFolder::new(&path, &error));\n                continue;\n            }\n",
-        after="            Err(_) => 0,\n",
+        after="            Err(_) => 0.into(),\n",
         tests=("eval_trash_empty_purges_what_it_can_measure_past_an_unreadable_item",),
         marker="PV eval/trash-empty-unreadable", target="eval_system",
     ),
@@ -761,7 +761,7 @@ CASES = (
         # also rejects a link, so the test would stay green while the branch was
         # gone. The mutation must make a symlink positively eligible.
         before="    if file_type.is_symlink() {\n        return Ok(None);\n    }",
-        after="    if file_type.is_symlink() {\n        return Ok(Some((400, 4)));\n    }",
+        after="    if file_type.is_symlink() {\n        return Ok(Some((400, 4.into())));\n    }",
         tests=("ops::agents::tests::a_symlinked_history_child_is_refused",),
         marker="PV agents/history-symlink",
     ),
