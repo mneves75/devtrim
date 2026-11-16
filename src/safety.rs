@@ -1637,8 +1637,9 @@ pub(crate) fn file_size(metadata: &std::fs::Metadata, path: &Path) -> Result<Siz
 /// hard-linked file once, as `du` counts it: its links share one set of
 /// blocks. An estimating walk (`estimating`) also sums the lower bound
 /// `Size::frees_at_least` reports: each file's APFS private size where that
-/// is true, else its allocated blocks. Private blocks belong to one file
-/// alone, so the sum never exceeds what deleting the tree frees. Blocks
+/// is true, else its allocated blocks, and nothing for a file with further
+/// hard links, which one outside the tree would keep. Private blocks belong
+/// to one file alone, so the sum never exceeds what deleting the tree frees. Blocks
 /// clones share are left out even when every clone APFS counts is inside the
 /// tree: a clone written to after `cp -c` leaves the family's count yet still
 /// holds the blocks it did not rewrite, wherever it is.
@@ -1678,7 +1679,10 @@ impl DiskUsage {
         }
         let allocated = allocated_bytes(metadata, path)?;
         if let Some(estimate) = &mut self.estimate {
-            let private = if metadata.is_file() {
+            // A further link may lie outside the tree and keep every block.
+            let private = if metadata.is_file() && metadata.nlink() > 1 {
+                Some(0)
+            } else if metadata.is_file() {
                 estimate.private_bytes(metadata, path)
             } else {
                 None
@@ -2563,6 +2567,29 @@ mod tests {
             size.frees_at_least
                 .is_some_and(|bytes| bytes < CLONED_FILE / 10),
             "a family sharing its blocks with an edited clone outside frees at least {:?} bytes",
+            size.frees_at_least
+        );
+    }
+
+    /// A file hard-linked to a name outside the tree frees nothing when the
+    /// tree goes, so it adds nothing to the lower bound; its allocated blocks
+    /// still count once in the size.
+    #[test]
+    fn a_hard_linked_file_adds_nothing_to_the_lower_bound() {
+        let fixture = crate::ops::TestFixture::new("devtrim-linked-lower-bound");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        write_incompressible(&tree.join("linked"));
+        std::fs::hard_link(tree.join("linked"), fixture.path().join("outside")).unwrap();
+        write_incompressible(&tree.join("own"));
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let size = dir_measure(&tree).unwrap();
+        assert!(about(2).contains(&size.allocated), "{size:?}");
+        assert!(
+            size.frees_at_least
+                .is_some_and(|bytes| about(1).contains(&bytes)),
+            "a tree holding one file of its own and one linked outside frees at least {:?} bytes",
             size.frees_at_least
         );
     }

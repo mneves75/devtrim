@@ -521,7 +521,8 @@ Non-negotiable boundaries:
   shares, so anything smaller could let a confirmation acknowledge less than the
   plan removes. Beside the size a finding may report a lower bound,
   `frees_at_least_bytes`: the sum of each file's private size
-  (`ATTR_CMNEXT_PRIVATESIZE`, blocks no other file references), only on an APFS
+  (`ATTR_CMNEXT_PRIVATESIZE`, blocks no other file references; a file with
+  further hard links adds nothing), only on an APFS
   volume that `diskutil` shows holds no snapshot (a snapshot keeps blocks the
   private size leaves out); any `diskutil` failure, timeout or unexpected answer
   reports none. Blocks clones share never join it, since an edited clone outside
