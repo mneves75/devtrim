@@ -1166,6 +1166,94 @@ fn eval_an_unreadable_xcode_folder_blocks_only_itself() {
     );
 }
 
+/// The workspace a DerivedData folder names in its `info.plist` is evidence
+/// for the reader: a note, a diagnostic when it is gone, and nothing else —
+/// both folders are offered and removed exactly as they would be without it.
+/// A control character in the recorded path reaches the terminal escaped.
+#[test]
+fn eval_derived_data_notes_name_their_workspace() {
+    let sandbox = Sandbox::in_target("eval-xcode-workspace");
+    let derived = sandbox.path().join("Library/Developer/Xcode/DerivedData");
+    let existing = sandbox.path().join("work/App.xcworkspace");
+    std::fs::create_dir_all(&existing).unwrap();
+    let existing = existing.canonicalize().unwrap();
+    let gone = format!(
+        "{}/gone/App\u{1b}[31m.xcworkspace",
+        sandbox.path().display()
+    );
+    let plist = |path: &str| {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n\t<key>WorkspacePath</key>\n\t<string>{path}</string>\n</dict>\n</plist>\n"
+        )
+    };
+    write(&derived.join("Gone-abc/Build/out"), "built");
+    write(&derived.join("Gone-abc/info.plist"), &plist(&gone));
+    write(&derived.join("Here-abc/Build/out"), "built");
+    write(
+        &derived.join("Here-abc/info.plist"),
+        &plist(&existing.display().to_string()),
+    );
+    let derived = derived.canonicalize().unwrap();
+    let offered = vec![derived.join("Gone-abc"), derived.join("Here-abc")];
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let preview = run(&sandbox, &["clean", "xcode", "--json"]);
+    let document = json(&preview);
+    assert!(preview.status.success(), "{document}");
+    assert_eq!(actionable_targets(&document), offered, "{document}");
+    let note = |folder: &str| {
+        document["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["path"].as_str().unwrap().ends_with(folder))
+            .map(|finding| finding["note"].as_str().unwrap().to_owned())
+            .unwrap()
+    };
+    assert!(
+        note("Gone-abc").ends_with(&format!("workspace no longer exists: {gone}")),
+        "{document}"
+    );
+    assert!(
+        note("Here-abc").ends_with(&format!("workspace: {}", existing.display())),
+        "{document}"
+    );
+
+    let human = run(&sandbox, &["clean", "xcode"]);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stdout.contains("App\\u{1b}[31m.xcworkspace") && !stdout.contains('\u{1b}'),
+        "the workspace path reached the terminal raw: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("1 DerivedData folder(s), ")
+            && stderr.contains("belong to workspaces that no longer exist"),
+        "{stderr}"
+    );
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "eval/xcode-workspace-preview",
+    );
+
+    let apply = run(
+        &sandbox,
+        &["clean", "xcode", "--apply", "--shred", "--yolo", "--json"],
+    );
+    let document = json(&apply);
+    assert!(apply.status.success(), "{document}");
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed {
+            removed: offered.clone(),
+            scratch: vec![sandbox.path().join(".local/state/devtrim")],
+        },
+        "eval/xcode-workspace-apply",
+    );
+    assert_journaled(&sandbox, "xcode", "shred", &offered);
+}
+
 /// The Xcode liveness probe asks for this user's processes only: another
 /// user's Xcode, whose open files `lsof` cannot read, must not refuse
 /// DerivedData. The control is this user's Xcode with the same unreadable
