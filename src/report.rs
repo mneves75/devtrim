@@ -203,9 +203,10 @@ pub(crate) enum TargetAuthority {
 pub struct Finding {
     pub label: String,
     pub path: Option<String>,
-    /// Estimated allocated bytes (`safety::DiskUsage`): the blocks the target
-    /// holds on disk, each hard-linked file counted once. An APFS clone counts
-    /// in full though it shares its blocks.
+    /// Estimated bytes removing the target frees (`safety::DiskUsage`): its
+    /// files' APFS private bytes, or allocated blocks where the volume reports
+    /// none, each hard-linked file counted once and the blocks APFS clones
+    /// share counted once when the target holds every clone.
     pub size_bytes: u64,
     pub note: String,
     /// 1-10

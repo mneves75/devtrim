@@ -69,7 +69,7 @@ enum Progress {
     Failed(String),
 }
 
-/// Recursively sums regular-file sizes below `path`.
+/// Recursively sums what deleting `path` frees (`DiskUsage`).
 ///
 /// Symbolic links are never followed and a different device is never entered:
 /// an explorer that wandered onto a network mount would appear to hang, and one
@@ -126,6 +126,12 @@ fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
                 break;
             }
         }
+    }
+    // Blocks clones share count when every clone is inside this child, since
+    // only then does deleting the child free them.
+    match usage.finish().and_then(|shared| total.checked_add(shared)) {
+        Some(sum) => total = sum,
+        None => partial = true,
     }
     (total, partial)
 }
@@ -200,7 +206,7 @@ fn measure_children(
             });
         } else {
             // A file that cannot be sized is a lower bound, never a guess.
-            let (size, partial) = match crate::safety::allocated_bytes(&metadata, &path) {
+            let (size, partial) = match crate::safety::freed_bytes(&metadata, &path) {
                 Ok(size) => (size, false),
                 Err(_) => (0, true),
             };
@@ -727,7 +733,7 @@ fn run_json(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
                 if entry.partial {
                     "report-only; lower bound, some entries below this path were unreadable"
                 } else {
-                    "report-only; estimated allocated bytes"
+                    "report-only; estimated bytes deleting it frees"
                 },
                 1,
                 Action::Info,

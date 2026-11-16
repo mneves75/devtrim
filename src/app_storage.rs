@@ -81,7 +81,7 @@ pub(crate) fn report(home: &Path, roots: &[String]) -> AppStorageReport {
         None,
         0,
         format!(
-            "Metadata only, live snapshot: files may change during measurement; no message, media or database contents opened. WhatsApp: four known Group Containers only. Screen Studio: saved .screenstudio bundles under explicit --root paths only ({} root(s)); no implicit home or configured-root search. Estimated allocated regular-file bytes; hard links counted once across the report, APFS clones may share blocks. Symlinks and foreign devices are not followed ({} links, {} device boundaries skipped). Screen Studio excludes .git, node_modules, target, .build, .next, .turbo, .venv, venv, .cache and .app/.framework/.photoslibrary/.xcarchive packages ({} directories skipped). Errors make totals lower bounds; not deletion authority",
+            "Metadata only, live snapshot: files may change during measurement; no message, media or database contents opened. WhatsApp: four known Group Containers only. Screen Studio: saved .screenstudio bundles under explicit --root paths only ({} root(s)); no implicit home or configured-root search. Estimated bytes deleting each regular file frees; hard links counted once across the report, and blocks APFS clones share counted only in the finding holding every clone. Symlinks and foreign devices are not followed ({} links, {} device boundaries skipped). Screen Studio excludes .git, node_modules, target, .build, .next, .turbo, .venv, venv, .cache and .app/.framework/.photoslibrary/.xcarchive packages ({} directories skipped). Errors make totals lower bounds; not deletion authority",
             resolved_roots.len(), inventory.skipped_links, inventory.skipped_devices, inventory.skipped_directories
         ),
         1,
@@ -180,6 +180,20 @@ impl Inventory {
                 database.map_or(4, |index| index + 1)
             };
             self.add_file(&mut totals[bucket], &metadata, entry.path());
+        }
+        // Blocks clones share count in the bucket whose folder holds every
+        // clone: media, or other data when no clone is media. A family across
+        // both buckets frees its blocks with neither alone and is left out.
+        let media = container.join("Message/Media");
+        for (folder, shared) in self.usage.take_whole_families() {
+            let bucket = if folder.starts_with(&media) {
+                0
+            } else if folder.starts_with(container) && !media.starts_with(&folder) {
+                4
+            } else {
+                continue;
+            };
+            self.add_bytes(&mut totals[bucket], shared, &folder);
         }
         for (index, (bytes, present)) in totals.into_iter().zip(present).enumerate() {
             if !present {
@@ -316,6 +330,13 @@ impl Inventory {
                 ));
             }
         }
+        // A bundle frees the blocks its clones share only when it holds every
+        // clone; a family across bundles is left out of each.
+        for (folder, shared) in self.usage.take_whole_families() {
+            if folder.starts_with(root) {
+                self.add_bytes(&mut bytes, shared, &folder);
+            }
+        }
         bytes
     }
 
@@ -376,7 +397,7 @@ impl Inventory {
     fn add_bytes(&mut self, total: &mut u64, bytes: u64, path: &Path) {
         match total.checked_add(bytes) {
             Some(sum) => *total = sum,
-            None => self.error(format!("allocated size overflow under {}", path.display())),
+            None => self.error(format!("size overflow under {}", path.display())),
         }
     }
 }

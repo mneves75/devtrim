@@ -22,7 +22,8 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
 
     // Overlapping roots (e.g. ~/work and ~/work/project) would count the same
     // files twice; keep only roots not contained in another configured root.
-    for root in crate::ops::project::normalized_roots(roots) {
+    let roots = crate::ops::project::normalized_roots(roots);
+    for &root in &roots {
         // One device, as every other report walk: a mounted volume below a
         // root is not part of the root's disk usage.
         for result in walkdir::WalkDir::new(root)
@@ -57,7 +58,16 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
                     continue;
                 }
             };
-            add_to_shallow_ancestors(root, entry.path(), bytes, &mut totals);
+            if let Some(folder) = entry.path().parent() {
+                add_to_shallow_ancestors(root, folder, bytes, &mut totals);
+            }
+        }
+    }
+    // Blocks clones share go to the folders holding every clone of the family:
+    // only deleting one of those frees them.
+    for (folder, shared) in usage.take_whole_families() {
+        if let Some(root) = roots.iter().find(|root| folder.starts_with(root)) {
+            add_to_shallow_ancestors(root, &folder, shared, &mut totals);
         }
     }
 
@@ -69,9 +79,9 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
     });
     let limit = top.unwrap_or(20).clamp(1, 100);
     let note = if skipped > 0 {
-        "report-only; sizes are estimated allocated bytes and lower bounds: unreadable entries were skipped"
+        "report-only; sizes are estimated bytes deleting each folder frees, and lower bounds: unreadable entries were skipped"
     } else {
-        "report-only; sizes are estimated allocated bytes"
+        "report-only; sizes are estimated bytes deleting each folder frees"
     };
     let findings = ranked
         .into_iter()
@@ -88,22 +98,64 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
     LargestResult { findings, errors }
 }
 
+/// Adds `bytes` to `folder` and its ancestors at depth one and two below `root`.
 fn add_to_shallow_ancestors(
     root: &Path,
-    file: &Path,
+    folder: &Path,
     bytes: u64,
     totals: &mut BTreeMap<PathBuf, u64>,
 ) {
-    let Ok(relative) = file.strip_prefix(root) else {
-        return;
-    };
-    let Some(parent) = relative.parent() else {
+    let Ok(relative) = folder.strip_prefix(root) else {
         return;
     };
     let mut directory = root.to_path_buf();
-    for component in parent.components().take(2) {
+    for component in relative.components().take(2) {
         directory.push(component.as_os_str());
         let total = totals.entry(directory.clone()).or_default();
         *total = total.saturating_add(bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::{CLONED_FILE, TestFixture, clone_file, write_incompressible};
+
+    /// Deleting a folder frees the blocks clones share only when it holds
+    /// every clone, so only that folder is credited with them.
+    #[test]
+    fn shared_clone_blocks_count_for_the_folder_holding_every_clone() {
+        let fixture = TestFixture::new("devtrim-largest-clones");
+        let root = fixture.path().join("root");
+        for folder in ["whole/x", "whole/y", "split", "other"] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        write_incompressible(&root.join("whole/x/source"));
+        clone_file(&root.join("whole/x/source"), &root.join("whole/y/clone"));
+        write_incompressible(&root.join("split/source"));
+        clone_file(&root.join("split/source"), &root.join("other/clone"));
+
+        let result = scan_roots(std::slice::from_ref(&root), Some(100));
+        let size = |name: &str| {
+            let path = root.join(name);
+            result
+                .findings
+                .iter()
+                .find(|finding| finding.path.as_deref() == path.to_str())
+                .unwrap()
+                .size_bytes
+        };
+        let whole = size("whole");
+        assert!(
+            (CLONED_FILE * 9 / 10..CLONED_FILE * 11 / 10).contains(&whole),
+            "a folder holding a file and its clone measured {whole} bytes"
+        );
+        for name in ["whole/x", "whole/y", "split", "other"] {
+            let part = size(name);
+            assert!(
+                part < CLONED_FILE / 10,
+                "{name}, holding one clone of two, measured {part} bytes"
+            );
+        }
     }
 }
