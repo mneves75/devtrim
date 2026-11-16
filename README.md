@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.13.1.
+This source tree and its packaged documentation describe devtrim v0.14.0.
 
 ## Install
 
@@ -379,9 +379,9 @@ Screen Studio discovery and bundle measurement also skip Git metadata, dependenc
 trees, virtual environments, `.cache` and packaged apps/frameworks/photo libraries/
 archives. Its scope row names these exclusions. At most 100 bundles keep individual
 detail; an aggregate retains omitted measured bytes. Errors are bounded, disclosed
-and return nonzero. Allocated bytes count each physical file once across the report,
-including hard links and aliases of overlapping roots;
-APFS clones can still share blocks. It is a live snapshot, never deletion authority.
+and return nonzero. Sizes count each physical file once across the report,
+including hard links and aliases of overlapping roots; APFS clones are counted as
+described under the safety model. It is a live snapshot, never deletion authority.
 
 ### HTML disk map
 
@@ -401,7 +401,7 @@ explicit `--output` refuses an existing file or symlink.
 
 Available disk space comes from the selected folder's filesystem. Mapped sizes
 are the blocks files hold on disk, each hard-linked file counted once, as `du`
-counts them; APFS clones share blocks yet count in full. Unreadable content is disclosed as a
+counts them, with APFS clones counted as the safety model describes. Unreadable content is disclosed as a
 partial lower bound; the command still saves the useful report and exits nonzero.
 Symlinks are measured at their own size, and other filesystems are not traversed.
 The overview retains up to six levels and 10,000 entries. Detail beyond that
@@ -738,8 +738,11 @@ Sizes are estimated bytes on disk: the blocks each file holds, as `du` counts
 them, so a sparse file counts what it occupies rather than its length and a
 small file counts a whole block. A hard-linked file counts once within a
 target, yet removal frees nothing while a link outside it remains (a pnpm
-store). APFS clones count in full though they share blocks, and snapshots, the
-Trash and container-VM compaction can keep space from coming back at once.
+store). On an APFS volume holding no snapshot, a file counts its APFS private size (the blocks it does not share with a clone), and blocks a clone family shares count once when the whole family is inside; elsewhere, and whenever a snapshot exists, a file counts all its blocks. A pnpm `node_modules`, made of clones of
+pnpm's store, therefore counts only what deleting it frees (one install: 1.37 GB
+by blocks, 78 MB freed). Snapshots (`diskutil apfs listSnapshots`), the Trash and
+container-VM compaction can keep space from coming back at once; the apply
+summary's measured free-space line shows what actually moved.
 devtrim refuses to invent an estimate when traversal or metadata is incomplete.
 
 ## Build and verify

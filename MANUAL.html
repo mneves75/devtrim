@@ -386,7 +386,7 @@ pre code { background: none; padding: 0; font-size: 1em; }
 <div class="wrap manual">
 <header class="manual-title">
   <h1>devtrim manual</h1>
-    <span class="chip g">v0.13.1</span>
+    <span class="chip g">v0.14.0</span>
 </header>
 <nav class="toc" aria-label="Table of contents">
   <div class="toc-tools">
@@ -419,7 +419,7 @@ pre code { background: none; padding: 0; font-size: 1em; }
   <h2 id="h-philosophy">Philosophy</h2>
   <p class="lead">devtrim exists because cleaning a 900&nbsp;GB Mac by hand is how good data dies. Three rules govern everything it does.</p>
   <ul class="flow">
-    <li><strong>Measure before cutting.</strong> <code>scan</code> is read-only and always free to run. Sizes are estimated bytes on disk, as <code>du</code> counts them: a sparse file counts what it occupies, not its length. APFS clones, hard links outside the target, snapshots, Trash, and container VMs can still differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.</li>
+    <li><strong>Measure before cutting.</strong> <code>scan</code> is read-only and always free to run. Sizes are estimated bytes deleting frees: a sparse file counts what it occupies, not its length. On an APFS volume holding no snapshot a file counts only the blocks it does not share with an APFS clone, and blocks a clone family shares count once when the whole family is inside; with a snapshot, or off APFS, every file counts all its blocks, as <code>du</code> does. Hard links outside the target, snapshots, Trash, and container VMs can still differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.</li>
     <li><strong>Classify by risk.</strong> Every finding carries a danger score from 1 to 10 that decides how hard you must confirm (see <a href="#danger">Danger scoring</a>).</li>
     <li><strong>Trim with a net.</strong> Filesystem deletions go to macOS Trash by default — recoverable from the Trash (Finder&rsquo;s &ldquo;Put Back&rdquo; may not remember where an item came from). Permanent deletion requires an explicit <code>--shred</code>.</li>
   </ul>
@@ -480,7 +480,7 @@ devtrim clean caches</code></pre>
   <pre data-copy="none" tabindex="0"><code>   3.4 GB  danger:5  DerivedData: MyApp-abcdef  /Users/you/Library/Developer/Xcode/DerivedData/MyApp-abcdef
            └─ build output; rebuilt on next build; action: move to Trash</code></pre>
   <ul class="flow">
-    <li><strong>size</strong> — estimated bytes on disk (allocated blocks, each hard-linked file counted once); actual immediately reclaimable space can differ.</li>
+    <li><strong>size</strong> — estimated bytes deleting frees (allocated blocks less what APFS clones share, on a volume without snapshots; each hard-linked file counted once); actual immediately reclaimable space can differ.</li>
     <li><strong>danger:N</strong> — confirmation weight; colors go green → amber → red.</li>
     <li><strong>path</strong> — exactly what would be affected.</li>
     <li><strong>└─ note</strong> — why removal is safe and how it comes back.</li>
@@ -758,7 +758,7 @@ codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by agents like ~/.c
     <li><strong>Clone data a task changes.</strong> <code>cp -cR &lt;source&gt; &lt;new-path&gt;</code> makes an APFS clone that shares blocks until a file changes; it works only on the same volume, and it copies links as links.</li>
     <li><strong>Share read-only data once.</strong> Keep one copy and reach it through an absolute symlink.</li>
   </ul>
-  <div class="note">devtrim reports estimated bytes on disk. APFS clones share their blocks, so cloned trees look larger in every devtrim report than the space they hold.</div>
+  <div class="note">On a volume without snapshots, devtrim counts a clone only for the blocks it does not share, so a cloned tree reports what deleting it frees. With a snapshot it counts every block, and cloned trees look larger than the space they hold.</div>
 
   <div class="note"><strong>Trash is your audit log.</strong> Everything cleaned today is restorable from Finder until you empty it.</div>
 </section>
@@ -807,11 +807,11 @@ codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by agents like ~/.c
   <div class="wrap">
     <ul>
       <li class="foot-name">
-  <span>devtrim <b>v0.13.1</b></span>
+  <span>devtrim <b>v0.14.0</b></span>
       </li>
       <li><a href="index.html">Home</a></li>
       <li><a href="https://github.com/mneves75/devtrim">GitHub</a></li>
-      <li><a href="https://github.com/mneves75/devtrim/releases/tag/v0.13.1">Releases</a></li>
+      <li><a href="https://github.com/mneves75/devtrim/releases/tag/v0.14.0">Releases</a></li>
       <li><a href="https://github.com/mneves75/devtrim/blob/main/SECURITY.md">Security</a></li>
       <li>Apache-2.0</li>
     </ul>

@@ -505,16 +505,27 @@ Non-negotiable boundaries:
   foreign-parent-device refusal using injected observed metadata; that test
   does not mount a volume or perform a real Trash move.
 
-- Directory sizes are measured with one `stat` per file. macOS `getattrlistbulk`
-  would collapse that into roughly one syscall per hundred entries, but it has no
-  safe wrapper in this dependency set and would require `unsafe` FFI. `unsafe_code
-  = "forbid"` is a load-bearing guarantee for a tool that deletes files, so the
-  slower measurement is a deliberate trade, not an oversight.
+- Directory sizes take one `lstat` and one `getattrlist` per file, plus one
+  `statfs` per device and one `diskutil apfs listSnapshots -plist` per device per
+  minute; `getattrlistbulk` would batch them but is not used. The only `unsafe`
+  code is that one read-only `getattrlist` call, isolated in the
+  `crates/apfs-size` workspace crate (`#![deny(unsafe_code)]`, one reasoned
+  `allow`, a bounds-checked safe parser of its reply). The `devtrim` crate, which
+  deletes files, keeps `unsafe_code = "forbid"`. A walk keeps 12 bytes per
+  partly found clone family until it ends (56 MB peak for `largest` over a
+  pnpm-heavy `~/dev`).
 
-- Sizes are estimated allocated bytes (the blocks each file holds, each
-  hard-linked file counted once), not guaranteed immediately reclaimable space.
-  Clones, links outside the target, snapshots, Trash, and container VM
-  compaction differ. The estimate is nevertheless complete for the traversed tree: an
+- Sizes estimate what removal frees: on an APFS volume that `diskutil` shows
+  holds no snapshot, each file's private size (`ATTR_CMNEXT_PRIVATESIZE`, which
+  leaves out blocks shared with a clone) and a clone family's shared blocks once
+  when the walk finds the whole family; elsewhere, and on any volume holding a
+  snapshot (the private size also leaves out snapshot-held blocks, so with a Time
+  Machine local snapshot every older file would read as nearly free), the blocks
+  each file holds, as before. Any `diskutil` failure, timeout or unexpected answer
+  keeps the larger allocated size. A snapshot or a clone created after the
+  measurement, links outside the target, Trash, and container VM compaction
+  differ; the apply summary reports the measured change in free space beside the
+  estimate. The estimate is nevertheless complete for the traversed tree: an
   unreadable entry or overflow is an error, not a partial result.
 - The typed target prevents unvalidated and lossy-display paths from reaching
   removal. Since 0.6.0 every finding records its target's `(device, inode)`

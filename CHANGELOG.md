@@ -2,11 +2,41 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.14.0] - 2026-11-16
+
+### Added
+- Sizes on APFS count what deleting a tree frees: each file's private size
+  (`ATTR_CMNEXT_PRIVATESIZE`), which leaves out blocks shared with an APFS
+  clone, and a clone family's shared blocks once when every clone is inside
+  the tree. pnpm installs `node_modules` as clones of its store: one measured
+  install previewed at 1.37 GB now previews at 78 MB, which is what deleting
+  it frees (a 3 GB clone, deleted, freed 1 MB of free space). The private size
+  is used only on an APFS volume that `diskutil` shows holds no snapshot: a
+  snapshot keeps every older file's blocks, which the private size leaves out,
+  so with a Time Machine local snapshot, or any doubt, sizes stay allocated
+  blocks as before. The one `getattrlist(2)` call lives in a separate
+  `crates/apfs-size` crate; devtrim itself still forbids `unsafe`.
+- Every apply that changes something reports the home volume's free space
+  before and after (`summary.home_volume` in JSON), labelled as measured, not
+  as freed by devtrim.
+- `devtrim disk [--warn-below SIZE]`: free space on the home volume; with
+  `--warn-below` a warning only below SIZE, exit 0 either way, for agent
+  `SessionStart` hooks.
+- `devtrim explain <PATH>`: why a path is or is not offered — built-in or
+  configured protection, and every finding that is, holds or lies inside it.
+- DerivedData findings name the workspace their `info.plist` records and say
+  `workspace no longer exists` when it is gone; the preview totals those
+  folders. Information only: no check changed.
 
 ### Changed
+- This release's local gates ran TruffleHog 3.99.9, Gitleaks 8.30.1, actionlint 1.7.12, ShellCheck 0.11.0, Node 26.13.0 and npm 12.2.2; the hosted run on the pinned versions is the authoritative one.
 - The landing page links the verified immutable 0.13.1 release after production
   promotion, with regenerated film facts.
+
+### Fixed
+- `scripts/tests/read-only-views.py` waits for the blocking probe's PID rather
+  than its file, which the stub creates before writing; under heavy load the
+  test read the empty file and failed.
 
 ## [0.13.1] - 2026-11-14
 

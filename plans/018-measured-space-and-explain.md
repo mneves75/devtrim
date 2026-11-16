@@ -1,6 +1,6 @@
 # 018 — Measure what an apply frees, size APFS clones, explain a path
 
-Status: IN PROGRESS. Base `f9f806d` (0.13.1 production). Target release 0.14.0.
+Status: IMPLEMENTED (gates pending). Base `f9f806d` (0.13.1 production). Target release 0.14.0.
 
 Origin: comparison with `morajabi/poo` 1893c39 and `mattt/plonge` faa19c6
 (2026-11-16). Only ideas backed by a measurement on this machine are built.

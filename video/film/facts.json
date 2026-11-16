@@ -940,8 +940,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
  },
  {
-  "id": "f70368bfe",
-  "text": "Measure before cutting. scan is read-only and always free to run. Sizes are estimated bytes on disk, as du counts them: a sparse file counts what it occupies, not its length. APFS clones, hard links outside the target, snapshots, Trash, and container VMs can still differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.",
+  "id": "f838e2659",
+  "text": "Measure before cutting. scan is read-only and always free to run. Sizes are estimated bytes deleting frees: a sparse file counts what it occupies, not its length. On an APFS volume holding no snapshot a file counts only the blocks it does not share with an APFS clone, and blocks a clone family shares count once when the whole family is inside; with a snapshot, or off APFS, every file counts all its blocks, as du does. Hard links outside the target, snapshots, Trash, and container VMs can still differ. Incomplete traversal or metadata is an error, never a partial actionable estimate.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-philosophy"
  },
  {
@@ -1125,8 +1125,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
  },
  {
-  "id": "f5259944c",
-  "text": "size — estimated bytes on disk (allocated blocks, each hard-linked file counted once); actual immediately reclaimable space can differ.",
+  "id": "fc5b7f8bb",
+  "text": "size — estimated bytes deleting frees (allocated blocks less what APFS clones share, on a volume without snapshots; each hard-linked file counted once); actual immediately reclaimable space can differ.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
  },
  {
@@ -2175,8 +2175,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-recipes"
  },
  {
-  "id": "f8804552c",
-  "text": "devtrim reports estimated bytes on disk. APFS clones share their blocks, so cloned trees look larger in every devtrim report than the space they hold. Trash is your audit log. Everything cleaned today is restorable from Finder until you empty it.",
+  "id": "fd44b8a48",
+  "text": "On a volume without snapshots, devtrim counts a clone only for the blocks it does not share, so a cloned tree reports what deleting it frees. With a snapshot it counts every block, and cloned trees look larger than the space they hold. Trash is your audit log. Everything cleaned today is restorable from Finder until you empty it.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {
