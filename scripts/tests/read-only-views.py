@@ -147,6 +147,15 @@ def cpu_seconds(process):
     return total
 
 
+def probe_pid(home):
+    """The blocking stub's PID once it has written one whole line, else None."""
+    try:
+        text = (home / "probe-pid").read_text()
+    except FileNotFoundError:
+        return None
+    return int(text) if text.endswith("\n") and text.strip().isdigit() else None
+
+
 def exercise(binary, home):
     corpus = home / "navigation"
     corpus.mkdir()
@@ -215,15 +224,18 @@ def exercise(binary, home):
     try:
         view.wait("sampling")
         deadline = time.monotonic() + 5
-        while not (home / "probe-pid").exists():
+        # The stub's `>` creates the file before printf writes the PID, so
+        # wait for the PID itself: under load the empty file was read.
+        while not probe_pid(home):
             assert time.monotonic() < deadline, "blocking probe never started"
             view.hold(0.05)
         stalled_latency = view.quit()
     finally:
         view.close()
-        if (home / "probe-pid").exists():
+        pid = probe_pid(home)
+        if pid:
             try:
-                os.kill(int((home / "probe-pid").read_text()), signal.SIGTERM)
+                os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
         stub.unlink()
