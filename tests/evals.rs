@@ -922,6 +922,209 @@ fn eval_root_at_top_level_node_modules_still_offers_the_install() {
     );
 }
 
+// ---------- explain ----------
+
+/// `explain` answers from one fresh scan and the protection rules: the
+/// finding that offers a path, or holds it, names its category; a protected
+/// path names its rule; anything else says nothing offers it, and whether it
+/// lies outside the scan roots. It changes nothing and refuses mutation flags.
+#[test]
+fn eval_explain_names_the_finding_or_rule_behind_a_path() {
+    let sandbox = Sandbox::in_target("eval-explain");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let web = sandbox.path().join("dev/web");
+    write(&web.join("package.json"), "{}");
+    write(&web.join("node_modules/pkg/index.js"), "dependency");
+    repo(&sandbox, &web, STALE, &["package.json"]);
+    write(
+        &sandbox.path().join("Library/Keychains/login.keychain-db"),
+        "keys",
+    );
+    write(&sandbox.path().join("elsewhere/file"), "unrelated");
+    std::os::unix::fs::symlink("dev", sandbox.path().join("alias")).unwrap();
+    let home = sandbox.path().canonicalize().unwrap();
+    let dev = home.join("dev");
+    let installed = dev.join("web/node_modules");
+    let config = sandbox.path().join(".config/devtrim.toml");
+    write(&config, "");
+
+    let explain = |path: &Path, extra: &[&str]| {
+        let mut args = vec![
+            "explain",
+            path.to_str().unwrap(),
+            "--root",
+            dev.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let pristine = Tree::snapshot(sandbox.path());
+        let output = run(&sandbox, &args);
+        pristine.assert_only(
+            &Tree::snapshot(sandbox.path()),
+            &Allowed::default(),
+            "eval/explain-read-only",
+        );
+        output
+    };
+    let document = |path: &Path| {
+        let output = explain(path, &["--json"]);
+        let document = json(&output);
+        assert_eq!(document["operation"], "explain", "{document}");
+        assert_eq!(
+            output.status.success(),
+            document["errors"].as_array().unwrap().is_empty(),
+            "{document}"
+        );
+        document
+    };
+    let paths = |document: &serde_json::Value| -> Vec<PathBuf> {
+        document["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|finding| PathBuf::from(finding["path"].as_str().unwrap()))
+            .collect()
+    };
+    let human = |path: &Path| String::from_utf8(explain(path, &[]).stdout).unwrap();
+
+    // The stale install itself, a file inside it, and the same install named
+    // through a linked folder all name the one node-modules finding.
+    let exact = document(&installed);
+    assert_eq!(paths(&exact), std::slice::from_ref(&installed), "{exact}");
+    assert_eq!(exact["path"], installed.to_str().unwrap());
+    assert_eq!(exact["protected"]["builtin"], false);
+    assert!(exact["protected"]["config"].is_null());
+    assert!(exact["errors"].as_array().unwrap().is_empty(), "{exact}");
+    let text = human(&installed);
+    assert!(
+        text.contains("offered by node-modules: ") && text.contains("(this path)"),
+        "{text}"
+    );
+    let inside = installed.join("pkg/index.js");
+    assert_eq!(paths(&document(&inside)), std::slice::from_ref(&installed));
+    assert!(human(&inside).contains("(holds this path)"));
+    let aliased = sandbox.path().join("alias/web/node_modules");
+    assert_eq!(paths(&document(&aliased)), std::slice::from_ref(&installed));
+    // A project folder holds the install: it is reported as inside the path.
+    assert!(human(&dev.join("web")).contains("(inside this path)"));
+
+    // A built-in protected path names its rule; the install above is the
+    // control that the rule is not reported for everything.
+    let keychains = home.join("Library/Keychains");
+    let protected = document(&keychains);
+    assert_eq!(protected["protected"]["builtin"], true, "{protected}");
+    assert!(paths(&protected).is_empty());
+    let text = human(&keychains);
+    assert!(
+        text.contains("built-in protection: refuses it (~/Library"),
+        "{text}"
+    );
+
+    // A configured entry is named; without it (above) the same install was
+    // offered, and with it the scan withholds it.
+    write(&config, "protect = [\"~/dev/web\"]\n");
+    let configured = document(&installed);
+    assert_eq!(
+        configured["protected"]["config"],
+        dev.join("web").to_str().unwrap(),
+        "{configured}"
+    );
+    assert!(paths(&configured).is_empty(), "{configured}");
+    let text = human(&installed);
+    assert!(
+        text.contains(&format!(
+            "configured protect: refuses it (entry {})",
+            dev.join("web").display()
+        )),
+        "{text}"
+    );
+    write(&config, "");
+
+    // Nothing offers an unrelated path outside the roots; a path inside a root
+    // that nothing offers is the control for the outside note.
+    let elsewhere = home.join("elsewhere");
+    assert!(paths(&document(&elsewhere)).is_empty());
+    let text = human(&elsewhere);
+    assert!(
+        text.contains(&format!("no category offers {}", elsewhere.display()))
+            && text.contains("is outside every scan root; scan roots: ")
+            && text.contains("(from --root)"),
+        "{text}"
+    );
+    let manifest = dev.join("web/package.json");
+    let text = human(&manifest);
+    assert!(
+        text.contains("no category offers") && !text.contains("outside every scan root"),
+        "{text}"
+    );
+
+    // Report-only: every mutation flag is refused before anything runs.
+    for flag in ["--apply", "--yes", "--yolo", "--shred"] {
+        let refused = explain(&installed, &[flag, "--json"]);
+        assert_eq!(refused.status.code(), Some(2), "{flag}");
+        let refusal = json(&refused);
+        assert_eq!(refusal["operation"], "explain");
+        assert!(
+            refusal["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("explain does not accept flag"),
+            "{refusal}"
+        );
+    }
+}
+
+/// A relative path is read against the current directory, and a scan error
+/// is reported and makes the run exit nonzero.
+#[test]
+fn eval_explain_reads_relative_paths_and_reports_scan_errors() {
+    let sandbox = Sandbox::in_target("eval-explain-relative");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let web = sandbox.path().join("dev/web");
+    write(&web.join("package.json"), "{}");
+    write(&web.join("node_modules/pkg/index.js"), "dependency");
+    repo(&sandbox, &web, STALE, &["package.json"]);
+    let installed = web.join("node_modules").canonicalize().unwrap();
+    let dev = sandbox.path().join("dev").canonicalize().unwrap();
+    let explain = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+            .args([
+                "explain",
+                "./node_modules/../node_modules",
+                "--root",
+                dev.to_str().unwrap(),
+                "--json",
+            ])
+            .current_dir(&web)
+            .env_clear()
+            .env("HOME", sandbox.path())
+            .env("PATH", sandbox.bin())
+            .output()
+            .unwrap()
+    };
+    let output = explain();
+    let document = json(&output);
+    assert!(output.status.success(), "{document}");
+    assert_eq!(document["path"], installed.to_str().unwrap());
+    assert_eq!(
+        document["findings"][0]["path"],
+        installed.to_str().unwrap(),
+        "{document}"
+    );
+
+    let locked = sandbox
+        .path()
+        .join("Library/Developer/Xcode/DerivedData/App-locked");
+    write(&locked.join("Build/file"), "unreadable");
+    let _locked = ModeGuard::unreadable(locked.join("Build"));
+    let output = explain();
+    let document = json(&output);
+    assert!(
+        !output.status.success() && !document["errors"].as_array().unwrap().is_empty(),
+        "a scan error must be reported with a nonzero status: {document}"
+    );
+    assert_eq!(document["findings"][0]["path"], installed.to_str().unwrap());
+}
+
 // ---------- read-only commands and previews change nothing ----------
 
 /// Every report-only command and every preview, run against a fixture holding
@@ -961,6 +1164,8 @@ fn eval_read_only_commands_and_previews_change_nothing() {
         vec!["clean", "agents", "--json"],
         vec!["clean", "leftovers", "--root", dev, "--json"],
         vec!["largest", "--root", dev, "--json"],
+        vec!["explain", dev, "--root", dev, "--json"],
+        vec!["explain", dev, "--root", dev],
         vec!["icloud", "--json"],
         vec!["history", "--json"],
         vec!["analyze", dev, "--json"],

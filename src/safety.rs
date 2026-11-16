@@ -952,34 +952,49 @@ fn directory_contains_git_metadata_entry(path: &Path) -> Result<bool> {
 }
 
 pub(crate) fn is_config_protected(path: &Path, protect: &[PathBuf]) -> bool {
+    config_protect_entry(path, protect).is_some()
+}
+
+/// The configured `protect` entry that refuses `path`, as configured (`~`
+/// expanded), for `explain`; `None` exactly when [`is_config_protected`] is
+/// false.
+pub(crate) fn config_protect_entry<'a>(path: &Path, protect: &'a [PathBuf]) -> Option<&'a Path> {
     // No entries protect nothing; skip the parent resolution each finding
     // would otherwise pay for.
     if configured_protect_values(protect).is_empty() {
-        return false;
+        return None;
     }
     let literal = abs(path);
-    if is_config_protected_abs(&literal, protect) {
-        return true;
+    if let Some(entry) = config_protect_entry_abs(&literal, protect) {
+        return Some(entry);
     }
-    let Some(parent) = literal.parent() else {
-        return false;
-    };
-    let Some(leaf) = literal.file_name() else {
-        return false;
-    };
-    parent
-        .canonicalize()
-        .map(|resolved_parent| clean(&resolved_parent.join(leaf)))
-        .is_ok_and(|resolved| is_config_protected_abs(&resolved, protect))
+    let parent = literal.parent()?;
+    let leaf = literal.file_name()?;
+    let resolved = clean(&parent.canonicalize().ok()?.join(leaf));
+    config_protect_entry_abs(&resolved, protect)
 }
 
 fn is_config_protected_abs(path: &Path, protect: &[PathBuf]) -> bool {
-    // Intersection in either direction is refused: deleting an ancestor of a
-    // protected entry would remove the protected descendant with it.
-    configured_protect_values(protect).iter().any(|protected| {
-        path_is_or_under_protect_entry(path, protected)
-            || path_is_or_under_protect_entry(protected, path)
-    })
+    config_protect_entry_abs(path, protect).is_some()
+}
+
+fn config_protect_entry_abs<'a>(path: &Path, protect: &'a [PathBuf]) -> Option<&'a Path> {
+    let values = configured_protect_values(protect);
+    // Values loaded from configuration are literal/resolved pairs naming one
+    // entry, reported by its literal spelling.
+    let entry_width = if values.len() == protect.len() { 1 } else { 2 };
+    values
+        .chunks(entry_width)
+        .find(|entry| {
+            // Intersection in either direction is refused: deleting an ancestor
+            // of a protected entry would remove the protected descendant with it.
+            entry.iter().any(|protected| {
+                path_is_or_under_protect_entry(path, protected)
+                    || path_is_or_under_protect_entry(protected, path)
+            })
+        })
+        .and_then(<[PathBuf]>::first)
+        .map(PathBuf::as_path)
 }
 
 // Config strings are typically NFC while macOS directory entries are often NFD,
@@ -1045,34 +1060,43 @@ pub(crate) fn is_protected(path: &Path, home: &Path) -> bool {
     is_protected_abs(&abs(path), home)
 }
 
+/// Why built-in protection refuses `path`, for `explain`; `None` exactly
+/// when [`is_protected`] is false, since that is this answer's presence.
+pub(crate) fn protection_reason(path: &Path, home: &Path) -> Option<String> {
+    protection_reason_abs(&abs(path), home)
+}
+
 fn is_protected_abs(path: &Path, home: &Path) -> bool {
+    protection_reason_abs(path, home).is_some()
+}
+
+fn protection_reason_abs(path: &Path, home: &Path) -> Option<String> {
     // The home folder and every folder above it: removing one removes the
     // home folder, its Trash and every protected folder inside it.
     if path_starts_with_ignore_ascii_case(home, path)
         || path_eq_ignore_ascii_case(path, &home.join(".Trash"))
     {
-        return true;
+        return Some(if path_starts_with_ignore_ascii_case(home, path) {
+            "the home folder and every folder above it are protected".to_owned()
+        } else {
+            "the Trash folder itself is protected".to_owned()
+        });
     }
-    if protected_system_root(path).is_some() {
-        return true;
+    if let Some(root) = protected_system_root(path) {
+        return Some(format!("{root} is a protected system folder"));
     }
-    let Some(relative) = path_relative_to_ignore_ascii_case(path, home) else {
-        return false;
-    };
-    let Some(first) = relative.iter().next() else {
-        return false;
-    };
-    if let Some(protected) = PROTECTED_USER.iter().find(|protected| {
+    let relative = path_relative_to_ignore_ascii_case(path, home)?;
+    let first = relative.iter().next()?;
+    let protected = PROTECTED_USER.iter().find(|protected| {
         first
             .as_encoded_bytes()
             .eq_ignore_ascii_case(protected.as_bytes())
-    }) {
-        if *protected == "Library" {
-            return !is_managed_library_subpath(&relative);
-        }
-        return true;
+    })?;
+    if *protected == "Library" {
+        return (!is_managed_library_subpath(&relative))
+            .then(|| "~/Library is protected outside the caches devtrim manages".to_owned());
     }
-    false
+    Some(format!("~/{protected} is protected"))
 }
 
 fn path_eq_ignore_ascii_case(left: &Path, right: &Path) -> bool {
@@ -2401,6 +2425,61 @@ mod tests {
         for path in ["/Users/other", "/Users/example/dev", "/Users/examples"] {
             assert!(!is_protected(Path::new(path), home), "{path}");
         }
+    }
+
+    /// `explain` names the rule: each built-in reason is given exactly when
+    /// `is_protected` refuses, and a configured entry loaded as a
+    /// literal/resolved pair is named by its literal spelling even when only
+    /// the resolved spelling matched.
+    #[test]
+    fn protection_names_the_rule_that_refuses() {
+        let home = Path::new("/Users/example");
+        let reasons = [
+            ("/Users", "the home folder and every folder above it"),
+            ("/Users/example/.Trash", "the Trash folder itself"),
+            ("/System/Library", "/System is a protected system folder"),
+            ("/Users/example/.ssh/id", "~/.ssh is protected"),
+            ("/Users/example/Library/Keychains", "~/Library is protected"),
+        ];
+        for (path, reason) in reasons {
+            let path = Path::new(path);
+            assert!(
+                is_protected(path, home)
+                    && protection_reason(path, home).is_some_and(|given| given.starts_with(reason)),
+                "{}: {:?}",
+                path.display(),
+                protection_reason(path, home)
+            );
+        }
+        for path in ["/Users/example/dev", "/Users/example/Library/Caches/pip"] {
+            let path = Path::new(path);
+            assert!(!is_protected(path, home) && protection_reason(path, home).is_none());
+        }
+
+        let protect = [
+            PathBuf::from(CONFIG_PROTECT_SNAPSHOT_MARKER),
+            PathBuf::from("/Users/example/keep"),
+            PathBuf::from("/Volumes/Data/keep"),
+            PathBuf::from("/Users/example/also"),
+            PathBuf::from("/Users/example/also"),
+        ];
+        assert_eq!(
+            config_protect_entry(Path::new("/Volumes/Data/keep/file"), &protect),
+            Some(Path::new("/Users/example/keep"))
+        );
+        assert_eq!(
+            config_protect_entry(Path::new("/Users/example"), &protect),
+            Some(Path::new("/Users/example/keep")),
+            "an ancestor of an entry is refused with it"
+        );
+        assert_eq!(
+            config_protect_entry(Path::new("/Users/example/also/x"), &protect),
+            Some(Path::new("/Users/example/also"))
+        );
+        assert_eq!(
+            config_protect_entry(Path::new("/Users/example/dev"), &protect),
+            None
+        );
     }
 
     /// A scan root inside a protected system folder is named in a warning:
