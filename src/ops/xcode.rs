@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::project::{
     UnreadFolder, activity_window, has_git_marker, unjudged_finding, unread_folders_finding,
@@ -382,14 +382,30 @@ const WORKSPACE_PLIST_LIMIT: u64 = 64 * 1024;
 
 /// Optional evidence, so every failure is no claim rather than an error: an
 /// unreadable, oversized, binary or malformed plist, a relative path, or a
-/// workspace whose existence cannot be read (only `NotFound` says it is gone).
+/// workspace whose existence cannot be read (only `NotFound` says it is gone),
+/// or one on a volume that is not mounted (`on_unmounted_volume`).
 fn workspace_of(folder: &Path) -> Option<Workspace> {
     let path = parse_workspace_path(&read_workspace_plist(folder)?)?;
     match std::fs::symlink_metadata(&path) {
         Ok(_) => Some(Workspace::Present(path)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(Workspace::Gone(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (!on_unmounted_volume(&path)).then_some(Workspace::Gone(path))
+        }
         Err(_) => None,
     }
+}
+
+/// Whether `path` lies under `/Volumes/<name>` and that mount point does not
+/// exist: a project on a disk that is unplugged reads `NotFound` as well, and
+/// says nothing about whether the workspace is gone.
+fn on_unmounted_volume(path: &Path) -> bool {
+    let mut components = path.components();
+    let (Some(Component::RootDir), Some(Component::Normal(volumes)), Some(Component::Normal(name))) =
+        (components.next(), components.next(), components.next())
+    else {
+        return false;
+    };
+    volumes == "Volumes" && std::fs::symlink_metadata(Path::new("/Volumes").join(name)).is_err()
 }
 
 /// Opened without following a link and without blocking, as vendor files are
@@ -1696,6 +1712,38 @@ mod tests {
         assert_eq!(read("unknowable"), None);
     }
 
+    /// Only a path below a `/Volumes/<name>` that does not exist is on an
+    /// unmounted volume; a missing path anywhere else, or below a mounted
+    /// volume, is not.
+    #[test]
+    fn a_workspace_below_a_missing_mount_point_is_on_an_unmounted_volume() {
+        assert!(on_unmounted_volume(Path::new(
+            "/Volumes/devtrim-no-such-volume/Work/App.xcworkspace"
+        )));
+        assert!(on_unmounted_volume(Path::new(
+            "/Volumes/devtrim-no-such-volume"
+        )));
+        assert!(!on_unmounted_volume(Path::new(
+            "/devtrim-no-such-folder/App.xcworkspace"
+        )));
+        assert!(!on_unmounted_volume(Path::new("/Volumes")));
+        assert!(!on_unmounted_volume(Path::new(
+            "Volumes/devtrim-no-such-volume/App.xcworkspace"
+        )));
+        // A mounted volume (the boot volume's `/Volumes` entry, when there is
+        // one) is not unmounted, whatever is missing below it.
+        if let Some(mounted) = std::fs::read_dir("/Volumes")
+            .ok()
+            .and_then(|mut entries| entries.find_map(Result::ok))
+        {
+            assert!(!on_unmounted_volume(
+                &mounted
+                    .path()
+                    .join("devtrim-no-such-folder/App.xcworkspace")
+            ));
+        }
+    }
+
     #[test]
     fn a_derived_data_note_names_its_workspace_and_whether_it_is_gone() {
         let fixture = crate::ops::TestFixture::new("devtrim-xcode-workspace-note");
@@ -1703,9 +1751,16 @@ mod tests {
         let derived_data = root.join("Library/Developer/Xcode/DerivedData");
         let existing = root.join("work/App.xcworkspace");
         std::fs::create_dir_all(&existing).unwrap();
-        for folder in ["Gone-abc", "Here-abc", "Plain-abc"] {
+        for folder in ["Gone-abc", "Here-abc", "Plain-abc", "Unplugged-abc"] {
             std::fs::create_dir_all(derived_data.join(folder).join("Build")).unwrap();
         }
+        // A workspace on a disk that is not mounted reads `NotFound` too, yet
+        // is no claim that it is gone.
+        std::fs::write(
+            derived_data.join("Unplugged-abc/info.plist"),
+            workspace_plist("/Volumes/devtrim-no-such-volume/Work/App.xcworkspace"),
+        )
+        .unwrap();
         std::fs::write(
             derived_data.join("Gone-abc/info.plist"),
             workspace_plist("/devtrim-no-such-folder/Gone.xcworkspace"),
@@ -1759,6 +1814,10 @@ mod tests {
             "{here:?}"
         );
         assert_eq!(notes("Plain-abc"), ["build output; rebuilt on next build"]);
+        assert_eq!(
+            notes("Unplugged-abc"),
+            ["build output; rebuilt on next build"]
+        );
         let package = notes("Pkg-abc");
         assert!(
             package.len() == 3
