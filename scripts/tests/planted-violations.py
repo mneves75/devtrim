@@ -276,8 +276,8 @@ CASES = (
         relative_path="src/ops/mod.rs",
         # The preview filter checks configured entries only, so a target in a
         # built-in protected folder is offered and then refused at apply.
-        before="                crate::safety::is_protected(target, &ctx.home)\n                    || crate::safety::is_config_protected(target, &ctx.protect)\n",
-        after="                crate::safety::is_config_protected(target, &ctx.protect)\n",
+        before="            crate::safety::is_protected(target, &ctx.home)\n                || crate::safety::is_config_protected(target, &ctx.protect)\n",
+        after="            crate::safety::is_config_protected(target, &ctx.protect)\n",
         tests=("ops::tests::a_built_in_protected_target_is_never_previewed",),
         marker="PV protect/built-in-preview",
     ),
@@ -1964,8 +1964,8 @@ CASES = (
         name="eval/write-ahead",
         relative_path="src/journal.rs",
         # A failed attempt record no longer stops the mutation it precedes.
-        before="    append_at(&location, &record)\n        .with_context(|| format!(\"cannot write apply journal: {}\", ctx.journal_path.display()))?;\n    Ok(JournalAttempt {",
-        after="    let _ = append_at(&location, &record);\n    Ok(JournalAttempt {",
+        before="    append_at(&location, &record)\n        .with_context(|| format!(\"cannot write apply journal: {}\", ctx.journal_path.display()))?;\n    if let Some(monitor) = monitor {",
+        after="    let _ = append_at(&location, &record);\n    if let Some(monitor) = monitor {",
         # The apply's journal preflight refuses an unwritable journal first,
         # so the attempt record's own refusal is reached by its unit test.
         tests=("journal::tests::an_attempt_that_cannot_be_journaled_is_an_error",),
@@ -2101,6 +2101,14 @@ CASES = (
         after="        && false\n    {\n        monitor.stopped",
         tests=("ops::tests::a_stop_between_typed_commands_runs_only_the_finished_one",),
         marker="PV journal-stop/command",
+    ),
+    Case(
+        name="journal-stop/before-open",
+        relative_path="src/journal.rs",
+        before="        && monitor.stop_requested()\n    {\n        monitor.stopped",
+        after="        && false\n    {\n        monitor.stopped",
+        tests=("journal::tests::a_stopped_apply_refuses_an_attempt_before_touching_the_journal",),
+        marker="PV journal-stop/before-open",
     ),
 )
 

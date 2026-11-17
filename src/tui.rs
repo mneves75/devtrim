@@ -1195,7 +1195,8 @@ fn run_loop(
 /// is acted on at once.
 ///
 /// Every key typed meanwhile is read and dropped, since it was aimed at a
-/// screen that does not exist yet, except a quit. During a scan, `q` or
+/// screen that does not exist yet, except a quit and, during an apply, `x`,
+/// which asks the journal to refuse every attempt after the current one. During a scan, `q` or
 /// Ctrl+C ends the run the way SIGINT does: the terminal is restored, every
 /// command the scan started is killed and devtrim exits 130. A scan changes
 /// nothing, so nothing is left half done.

@@ -711,6 +711,100 @@ def verify_stop_between_targets(binary):
                 os.kill(probe, signal.SIGKILL)
 
 
+def verify_scan_board(binary):
+    """A Scan everything lists every category as it finishes. The stubbed
+    `pgrep` never answers, so the categories that probe for builds stay
+    waiting while the rest finish; the screen must show both kinds of row and
+    the done count beside the clock, then q stops the scan as before. The
+    stub running is the positive control that the scan was still blocked."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        marker = home / "pgrep.pid"
+        stale_project(home, pgrep=f"echo $$ > '{marker}'\nexec /bin/sleep 120")
+        probe = None
+        try:
+            with Session(binary, home, rows=18, columns=64) as session:
+                session.deadline = time.monotonic() + 90
+                session.wait_for("Scan everything")
+                session.send(b"1")
+                session.wait_for_screen("Scanning everything", "of 10 categories done")
+                session.wait_for_screen("installers   0 B · 0 findings", "node-modules waiting")
+                while not marker.exists() or not marker.read_text().endswith("\n"):
+                    session.read_output()
+                probe = int(marker.read_text())
+                if not alive(probe):
+                    raise AssertionError("positive control: the stubbed probe is not running")
+                session.send(b"q")
+                while session.process.poll() is None:
+                    session.read_output()
+                if session.process.returncode != 130:
+                    raise AssertionError(f"q during a scan exited {session.process.returncode}")
+        finally:
+            if probe is not None and alive(probe):
+                os.kill(probe, signal.SIGKILL)
+
+
+def verify_stop_during_a_command(binary):
+    """A typed command can run for minutes, so `x` during one says it waits
+    for the command, which then finishes; the next command never starts. The
+    stubbed `docker` blocks its image prune until released, logging every
+    call; the builder prune must never be called and the journal must hold
+    only the image prune."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        (home / "bin").mkdir()
+        calls = home / "docker.calls"
+        marker = home / "docker.pid"
+        release = home / "docker.release"
+        host = "unix:///var/run/docker.sock"
+        write_script(
+            home / "bin" / "docker",
+            f"echo \"$*\" >> '{calls}'\n"
+            "case \"$*\" in\n"
+            f"  'context inspect') printf '%s\\n' '[{{\"Endpoints\":{{\"docker\":{{\"Host\":\"{host}\"}}}}}}]' ;;\n"
+            f"  '--host {host} version') printf 'Docker version 28.0.0\\n' ;;\n"
+            f"  '--host {host} system df'*)\n"
+            "    printf 'Images\\t2GB\\t1GB (50%%)\\t0\\n'\n"
+            "    printf 'Build Cache\\t3GB\\t1GB\\t0\\n' ;;\n"
+            f"  '--host {host} image prune -a -f')\n"
+            f"    echo $$ > '{marker}'\n"
+            f"    while [ ! -e '{release}' ]; do /bin/sleep 0.1; done\n"
+            "    printf 'Total reclaimed space: 1GB\\n' ;;\n"
+            f"  '--host {host} builder prune -a -f') printf 'Total:\\t3GB\\n' ;;\n"
+            "  *) exit 1 ;;\n"
+            "esac",
+        )
+        probe = None
+        try:
+            with Session(binary, home, rows=18, columns=64) as session:
+                session.deadline = time.monotonic() + 90
+                session.wait_for("Scan everything")
+                session.send(b"7")
+                session.wait_for_screen("Review every finding")
+                session.send(b"a")
+                session.wait_for_screen("Esc cancel")
+                visible = screen_text(render_screen(session.output, session.rows, session.columns))
+                session.send(b"y" if "y apply" in visible else b"4\r")
+                while not marker.exists() or not marker.read_text().endswith("\n"):
+                    session.read_output()
+                probe = int(marker.read_text())
+                session.wait_for_screen("0 of 2 ·", "x stops after this command")
+                session.send(b"x")
+                session.wait_for_screen("Stopping after the current command")
+                release.write_text("")
+                session.wait_for_screen("Stopped by you: 1 done, 1 not attempted.")
+                session.quit(expected_status=1)
+            if any("builder prune" in line for line in calls.read_text().splitlines()):
+                raise AssertionError("the command after the stop was run")
+            journal = home / "state" / "devtrim" / "journal.jsonl"
+            records = [json.loads(line) for line in journal.read_text().splitlines()]
+            if [record["phase"] for record in records] != ["attempt", "result"] or "image" not in records[0]["argv"]:
+                raise AssertionError(f"the journal holds more than the finished command: {records}")
+        finally:
+            if probe is not None and alive(probe):
+                os.kill(probe, signal.SIGKILL)
+
+
 def uv_cache_home(directory):
     home = Path(directory).resolve()
     cache = home / ".cache" / "uv"
@@ -836,7 +930,9 @@ def main():
         verify_scan_error_exit(binary)
         stop_seconds = verify_slow_scan_stops(binary)
         verify_blocked_apply_refuses_quit(binary)
+        verify_scan_board(binary)
         verify_stop_between_targets(binary)
+        verify_stop_during_a_command(binary)
     except (AssertionError, OSError, termios.error) as error:
         print(f"tui: {error}", file=sys.stderr)
         return 1
@@ -845,7 +941,8 @@ def main():
         " pasted and Alt-modified answers refused, selection, action-key explanations, project purge, the minimum-size"
         " detail pane and view, confirmation feedback and answer limit at 64×18, Esc on the too-small"
         " screen, rescanning from the outcome, row numbers past 999, stopping a scan blocked on its probe, and refusing to"
-        " quit an apply blocked on its probe, and stopping an apply between targets with x passed"
+        " quit an apply blocked on its probe, the Scan everything category list, and stopping an apply"
+        " with x between targets and during a typed command passed"
     )
     print(f"tui: seconds from stop to exit during a blocked scan: {stop_seconds}")
     return 0

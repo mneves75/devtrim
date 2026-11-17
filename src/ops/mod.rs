@@ -195,9 +195,12 @@ impl ApplyOutcome {
     /// partial. Counted from the plan rather than from the refusals alone,
     /// because a category that stops at its first failure (Docker) never asks
     /// the journal about the findings after it; every attempt with a result and
-    /// every other failure is taken off first.
+    /// every other failure is taken off first. Only a stop that refused
+    /// something says so: one asked during the last attempt, or a plan whose
+    /// rest was skipped for its own reasons (a target that vanished), stopped
+    /// nothing.
     pub(crate) fn settle_stop(&mut self, monitor: &crate::journal::ApplyMonitor) {
-        if !monitor.stop_requested() {
+        if !monitor.stop_requested() || self.stopped.max(monitor.stopped()) == 0 {
             return;
         }
         let unaccounted = monitor
@@ -2789,18 +2792,31 @@ mod tests {
         total.merge(outcome);
         assert_eq!(total.stopped, 1);
 
-        // Five findings, one finished, one refused for its own reason, one
-        // refused by the stop, and two its loop never offered the journal.
+        // Five findings, none finished, one refused for its own reason, one
+        // refused by the stop, and three its loop never offered the journal.
         let monitor = crate::journal::ApplyMonitor::new(5, 0);
         monitor.request_stop();
-        let mut finished = ApplyOutcome::new("docker");
-        finished.stopped = 1;
-        finished.errors.push("an unrelated refusal".into());
-        finished.settle_stop(&monitor);
-        assert_eq!(finished.stopped, 4);
+        let mut broke = ApplyOutcome::new("docker");
+        broke.stopped = 1;
+        broke.errors.push("an unrelated refusal".into());
+        broke.settle_stop(&monitor);
+        assert_eq!(broke.stopped, 4);
+        assert_eq!(
+            broke.errors.last().unwrap(),
+            "stopped by you: 4 not attempted"
+        );
         let mut unasked = ApplyOutcome::new("docker");
         unasked.settle_stop(&crate::journal::ApplyMonitor::new(5, 0));
         assert!(unasked.errors.is_empty(), "no stop, no line");
+        // Asked during the last attempt while an earlier finding was skipped
+        // for its own reason: the stop refused nothing and says nothing.
+        let mut late = ApplyOutcome::new("node_modules");
+        late.summary
+            .notes
+            .push("skipped vanished /x/node_modules".into());
+        late.settle_stop(&monitor);
+        assert_eq!(late.stopped, 0);
+        assert!(late.errors.is_empty(), "{:?}", late.errors);
     }
 
     #[derive(Clone, Copy)]
@@ -2920,7 +2936,7 @@ mod tests {
                 .map(|section| section.category)
                 .collect::<Vec<_>>(),
             ["waits", "protected", "last"],
-            "PV scan/registry-order: the result followed completion order"
+            "the result followed completion order"
         );
         assert_eq!(errors[0], "waits: synthetic");
         assert_eq!(errors[1], "fails: synthetic scan failure");
