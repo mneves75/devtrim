@@ -1516,7 +1516,9 @@ pub fn run(ctx: &Ctx, requested: Option<&str>) -> Result<ExitCode> {
             if loading {
                 // A verdict scan still running started commands of its own
                 // process groups; end them as an interrupted scan does, and
-                // say so in the exit status.
+                // say so in the exit status. The exit skips the terminal's
+                // drop, which is what shows the cursor again.
+                crossterm::execute!(io::stdout(), crossterm::cursor::Show).ok();
                 crate::process::kill_and_exit(signal_hook::consts::SIGINT);
             }
             Ok(code)
