@@ -1558,13 +1558,125 @@ fn volume_lists_no_snapshot(mount: &Path) -> bool {
     if !mount.is_absolute() {
         return false;
     }
-    match Command::new("/usr/sbin/diskutil")
+    match list_snapshots(mount) {
+        Ok(output) => lists_no_snapshot(output.status.success(), &output.stdout),
+        Err(_) => false,
+    }
+}
+
+/// The one `diskutil apfs listSnapshots -plist <mount>` query, shared by the
+/// private-size verdict and the TUI's snapshot count.
+fn list_snapshots(mount: &Path) -> std::io::Result<std::process::Output> {
+    Command::new("/usr/sbin/diskutil")
         .args(["apfs", "listSnapshots", "-plist"])
         .arg(mount)
         .output_within(crate::process::QUERY_TIMEOUT)
-    {
-        Ok(output) => lists_no_snapshot(output.status.success(), &output.stdout),
-        Err(_) => false,
+}
+
+/// How many local APFS snapshots the volume holding `path` keeps: space no
+/// scan can see, since a snapshot holds blocks no file names any more.
+/// Display only; [`private_size_trusted`] keeps its own stricter reading.
+pub(crate) fn local_snapshot_count(path: &Path) -> Result<usize> {
+    use std::os::unix::fs::MetadataExt;
+    let dev = std::fs::metadata(path)
+        .with_context(|| format!("cannot inspect {}", path.display()))?
+        .dev();
+    let volume = apfs_size::volume(path, dev)
+        .with_context(|| format!("cannot identify the volume holding {}", path.display()))?;
+    if !volume.apfs {
+        bail!("not an APFS volume");
+    }
+    if !volume.mount.is_absolute() {
+        bail!("the volume's mount point is not absolute");
+    }
+    let output = list_snapshots(&volume.mount).context("diskutil did not answer")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.lines().next().unwrap_or("").trim();
+        bail!(
+            "diskutil exited {}{}",
+            output.status,
+            if reason.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", truncate_chars(reason, 120))
+            }
+        );
+    }
+    snapshot_count(&output.stdout)
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let mut kept: String = text.chars().take(limit).collect();
+    kept.push('…');
+    kept
+}
+
+/// The entries of the one `Snapshots` array in a `listSnapshots -plist`
+/// answer: each snapshot is a `<dict>` directly inside it. Anything else —
+/// no key or two, a value that is not an array, an array left open, a tag
+/// that does not close — is an error, never a count.
+fn snapshot_count(stdout: &[u8]) -> Result<usize> {
+    const KEY: &str = "<key>Snapshots</key>";
+    let text = std::str::from_utf8(stdout).context("diskutil answered in something not UTF-8")?;
+    let mut keys = text.match_indices(KEY).map(|(at, _)| at);
+    let (Some(at), None) = (keys.next(), keys.next()) else {
+        bail!("diskutil's answer does not hold exactly one Snapshots list");
+    };
+    let rest = text[at + KEY.len()..].trim_start();
+    if rest.starts_with("<array/>") {
+        return Ok(0);
+    }
+    let Some(mut rest) = rest.strip_prefix("<array>") else {
+        bail!("diskutil's Snapshots value is not a list");
+    };
+    // Depth below the array: 0 between entries, 1 inside a snapshot's dict.
+    let mut depth = 0usize;
+    let mut count = 0usize;
+    loop {
+        let Some(open) = rest.find('<') else {
+            bail!("diskutil's Snapshots list does not close");
+        };
+        let Some(close) = rest[open..].find('>') else {
+            bail!("diskutil's answer holds a tag that does not close");
+        };
+        let tag = &rest[open + 1..open + close];
+        rest = &rest[open + close + 1..];
+        let self_closing = tag.ends_with('/');
+        let name = tag
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        let container = matches!(name, "dict" | "array");
+        if tag.starts_with('/') {
+            if !container {
+                continue;
+            }
+            if depth == 0 {
+                if name == "array" {
+                    return Ok(count);
+                }
+                bail!("diskutil's Snapshots list is malformed");
+            }
+            depth -= 1;
+        } else if container {
+            if depth == 0 {
+                if name != "dict" {
+                    bail!("diskutil's Snapshots list holds something other than snapshots");
+                }
+                count += 1;
+            }
+            if !self_closing {
+                depth += 1;
+            }
+        } else if depth == 0 {
+            bail!("diskutil's Snapshots list holds something other than snapshots");
+        }
     }
 }
 
@@ -2765,6 +2877,42 @@ mod tests {
             "not UTF-8"
         );
         assert!(!lists_no_snapshot(true, b""));
+    }
+
+    #[test]
+    fn snapshot_count_reads_the_entries_of_the_one_snapshots_list() {
+        let empty = b"<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n\t<key>Snapshots</key>\n\t<array/>\n</dict>\n</plist>\n";
+        assert_eq!(snapshot_count(empty).unwrap(), 0);
+        assert_eq!(
+            snapshot_count(b"<dict><key>Snapshots</key><array></array></dict>").unwrap(),
+            0
+        );
+        let two = b"<plist><dict><key>Snapshots</key><array>\n\
+            <dict><key>SnapshotName</key><string>com.apple.TimeMachine.2026-11-16-120000.local</string>\
+            <key>Purgeable</key><true/></dict>\n\
+            <dict><key>SnapshotName</key><string>b</string><key>Nested</key><dict><key>x</key><array><dict/></array></dict></dict>\n\
+            </array></dict></plist>";
+        assert_eq!(snapshot_count(two).unwrap(), 2);
+        for malformed in [
+            b"<plist><dict></dict></plist>".as_slice(),
+            b"<key>Snapshots</key><array/><key>Snapshots</key><array/>",
+            b"<key>Snapshots</key><string/>",
+            b"<key>Snapshots</key>",
+            b"<key>Snapshots</key><array><dict>",
+            b"<key>Snapshots</key><array><dict></dict>",
+            b"<key>Snapshots</key><array><string>x</string></array>",
+            b"<key>Snapshots</key><array><true/></array>",
+            b"<key>Snapshots</key><array><dict></array>",
+            b"<key>Snapshots</key><array><dict",
+            b"\xff<key>Snapshots</key><array/>",
+            b"",
+        ] {
+            assert!(
+                snapshot_count(malformed).is_err(),
+                "{}",
+                String::from_utf8_lossy(malformed)
+            );
+        }
     }
 
     #[test]
