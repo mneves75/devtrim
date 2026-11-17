@@ -250,6 +250,9 @@ def verify_scan_error_exit(binary):
 def verify_menu(binary):
     with tempfile.TemporaryDirectory(prefix="devtrim-tui-") as directory:
         with Session(binary, Path(directory).resolve()) as session:
+            # `wait_for` first: a binary that never renders must fail with the
+            # explanation release-policy.sh requires.
+            session.wait_for("Scan everything")
             # The volume's free space is on the first screen, before any key:
             # statvfs reads the real disk even under the disposable home.
             session.wait_for_screen("Scan everything", " free of ", "% used")

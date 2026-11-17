@@ -1,14 +1,21 @@
 {
-  "base": "f9f806d",
-  "branch": "main",
-  "checks": {
-    "verify-offline": "pass exit 0 on tree 9205907 (ba72f9d)",
-    "reviewer": "PASS re-check on 23568fa after P1 fix; P2 compressed-file bound fixed in 5fcffbc",
-    "autoreview-codex": "scoped-clean P1 on 23568fa",
-    "ci-pr95": "pass (portable checks, verify)",
-    "ci-main-26ed547": "pass on attempt 2 (attempt 1: known tui.py settle-race timeout)",
-    "release-beta1": "hosted workflow success; verify-live 0.14.0-beta1 pass",
-    "release-stable": "release.sh exit 0; verify-live 0.14.0 pass; stable zip == beta; formula == candidate; brew sole 0.14.0",
-    "security-gate": "staging WAIVED; production WAIVED after independent reassessment (SEC-21 receipts, formula)"
-  }
+  "plan": "plans/019-overview-and-explorer.md",
+  "base": "9ce4edc",
+  "branch": "plan/019-overview-explorer",
+  "target_version": "0.15.0",
+  "tasks": {
+    "T0-experiments": "done: scan 110-261 s, apply p90 338 s, xattr last-used falsified, R1 clone gap confirmed (node_modules 21.77 vs 1.88 GB)",
+    "T1-volume-line": "done: merged 59c8878 (worker proofs: fmt, clippy, 321 lib tests, evals, ast-grep, tui.py, read-only-views pass on edc7463)",
+    "T2-scan-progress": "in progress (worker, wip/019-progress)",
+    "T3-menu-sizes": "done: merged 59c8878 (worker proofs: fmt, clippy, 321 lib tests, evals, ast-grep, tui.py, read-only-views pass on edc7463); row-sum eval replaced by shared CategoryTotal used by scan_text (same code path)",
+    "T4a-apply-progress": "in progress (worker, wip/019-progress)",
+    "T4b-stop-between-targets": "in progress (worker, wip/019-progress)",
+    "T5-comes-back-with": "done: merged 59c8878 (worker proofs: fmt, clippy, 321 lib tests, evals, ast-grep, tui.py, read-only-views pass on edc7463)",
+    "T6-culprit": "in progress (worker, wip/019-analyze)",
+    "T7-verdicts": "in progress (worker, wip/019-analyze)",
+    "site-redesign": "in progress (worker, wip/019-site)",
+    "T8-docs": "todo",
+    "T9-gates-release": "todo"
+  },
+  "checks": {}
 }
