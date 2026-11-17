@@ -55,8 +55,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-scan"
  },
  {
-  "id": "f06abe20d",
-  "text": " devtrim v0.14.0 · Scan everything",
+  "id": "f5a824368",
+  "text": " devtrim v0.15.0 · Scan everything",
   "link": "https://mneves75.github.io/devtrim/#step-scan"
  },
  {
@@ -150,8 +150,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f0f88c4ff",
-  "text": " devtrim v0.14.0 · Menu",
+  "id": "fdbe85b20",
+  "text": " devtrim v0.15.0 · Menu",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
@@ -290,6 +290,11 @@
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
+  "id": "ff0bcead1",
+  "text": "│frees at least 5.9 GB: APFS clones share the rest                                                 │",
+  "link": "https://mneves75.github.io/devtrim/#step-preview"
+ },
+ {
   "id": "fbafea5ab",
   "text": "│/private/tmp/devtrim-demo/dev/payments-api/target                                                 │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
@@ -415,8 +420,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "f1307895b",
-  "text": " devtrim v0.14.0 · Project purge",
+  "id": "f22caac4e",
+  "text": " devtrim v0.15.0 · Project purge",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
@@ -430,8 +435,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "f7106c2ac",
-  "text": "│free space on the home volume: 12.2 GB → 12.2 GB (-4 MB), measured; other processes also write    │",
+  "id": "f6dab2dff",
+  "text": "│free space on the home volume: 34.2 GB → 34.2 GB (+24 MB), measured; other processes also write   │",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
@@ -500,8 +505,8 @@
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
-  "id": "f903e28de",
-  "text": " devtrim v0.14.0 · analyze · /private/tmp/devtrim-demo/dev · 7.8 GB",
+  "id": "f581914a6",
+  "text": " devtrim v0.15.0 · analyze · /private/tmp/devtrim-demo/dev · 7.8 GB",
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
@@ -935,8 +940,8 @@
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
-  "id": "fd0e596b8",
-  "text": "           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build; action: move to Trash",
+  "id": "f3a3043e1",
+  "text": "           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build; frees at least 5.9 GB: APFS clones share the rest; action: move to Trash",
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
@@ -1205,8 +1210,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html"
  },
  {
-  "id": "f27d8e6de",
-  "text": "v0.14.0 Filter sections Theme: Dark",
+  "id": "fe2ef1133",
+  "text": "v0.15.0 Filter sections Theme: Dark",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-contents"
  },
  {
@@ -1520,6 +1525,11 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-tui"
  },
  {
+  "id": "f60e50556",
+  "text": "The menu shows the home volume's free space and how many local APFS snapshots it keeps, which hold space no scan can see; after a scan each operation names what its last scan offered, as a range such as 1.9–21.8 GB where APFS clones share blocks, and asks for a rescan once an apply has changed it. Scan everything lists the ten categories as each finishes. An apply shows the item it is on and how many items and bytes are done; x stops after the current item or command, and nothing later is attempted or journaled.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-tui"
+ },
+ {
   "id": "f5d497412",
   "text": "Report only",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#g-inspect"
@@ -1647,6 +1657,11 @@
  {
   "id": "fd09ed5fd",
   "text": "Drill into disk usage largest-first with ↑/↓, Enter to open and Esc to go up; at the top level Esc does nothing and q quits. Measurement runs on a worker thread and streams in, so a directory that takes minutes to size never freezes the screen, and leaving a directory cancels its walk. Symlinks are reported at their own size rather than followed, a different device is never measured or entered, and unreadable subtrees are disclosed as (partial) lower bounds. A lower bound is a partial result: --json lists each one in errors and exits nonzero. Never deletes — deletion in devtrim is always bound to a corroborated category, so use devtrim clean <category> for that.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-analyze"
+ },
+ {
+  "id": "f5587a19a",
+  "text": "Each folder names the chain below it that holds most of its space, each step at least half of the one above, stopping at a Git repository, a node_modules install or a bundle; m goes to its end. v runs one fresh read-only scan and marks entries OFFERED, HOLDS n, IN OFFER, PROTECTED or NOT OFFERED, as devtrim explain would; f then hides what nothing offers. A verdict names a command and grants nothing.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-analyze"
  },
  {
@@ -2592,6 +2607,11 @@
  {
   "id": "ff9e5d5c6",
   "text": "devtrim returns nonzero and includes the error in JSON. Failed actions are never counted as touched or reclaimed; fix the owner tool and preview again.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f64cbf080",
+  "text": "devtrim v0.15.0",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {

@@ -2,11 +2,40 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.15.0] - 2026-11-17
+
+### Added
+- The TUI menu shows the home volume's free space with a bar and how many local
+  APFS snapshots the volume keeps, since a snapshot holds space no scan can
+  see. After a scan each operation names what its last scan offered, from the
+  same totals `scan` prints; where APFS clones share blocks the size is a range
+  from what it frees at least to what it holds (`1.9–21.8 GB`), and a category
+  an apply changed asks for a rescan instead of showing a stale size.
+- Scan everything lists the ten categories as each finishes — its size and
+  finding count, or why it failed — beside the clock.
+- An apply shows the item it is on and how many items and bytes are done. `x`
+  stops it after the current item or command: the stop is checked in
+  `journal::begin` before anything is opened or written, so nothing later is
+  attempted, journaled or touched, and the outcome counts what was not
+  attempted (`stopped by you: K not attempted`, nonzero exit). `q`, Ctrl-C and
+  the signals keep their apply behaviour.
+- Findings name what brings a target back when the category has evidence for
+  it: `comes back with: cargo build`, the lockfile's install command, or the
+  command a cache needs (`REBUILT_BY_COMMAND`). Display only.
+- `analyze` names the chain below each folder that holds most of its space
+  (`mostly in app/node_modules/ · 77%`, each step at least half of the one
+  above, stopping at a Git repository, an install or a bundle); `m` goes to its
+  end. `v` marks each entry `OFFERED`, `HOLDS n`, `IN OFFER`, `PROTECTED` or
+  `NOT OFFERED` from one fresh read-only scan matched as `devtrim explain`
+  matches, and `f` hides what nothing offers. Neither grants deletion.
 
 ### Changed
-- The landing page links the verified immutable 0.14.0 release after production
-  promotion, with regenerated film facts.
+- The landing page and manual describe these screens with frames rendered from
+  the built binary (scan board, menu after a scan, an apply stopped with `x`,
+  analyze with verdicts), and a step rail through the preview flow. The film
+  facts are regenerated from the pages.
+- `scripts/tests/tui.py` waits for the menu to render before reading it, so a
+  binary that never draws fails with the reason `release-policy.sh` requires.
 
 ## [0.14.0] - 2026-11-16
 
