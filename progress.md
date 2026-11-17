@@ -6,8 +6,11 @@ Plan [plans/019-overview-and-explorer.md](plans/019-overview-and-explorer.md), b
 branch (59c8878, fcac80d, d019dc0, 8927c1c, b360a20) with docs and the 0.15.0 bump
 (2968e7d) and real frames (f45d7bb, 9c099a0). Status per task: `tests.json`.
 
-Remaining: offline gate on the final commit, reviewer, mneves-verify, security gate on the
-merged tree before the merge (Pages deploys on merge), then beta, production and Homebrew.
+Merged to main as 92b384f (PR #97). The release autoreview of 92b384f found one P1: a stop
+arriving between caches' pre-lock check and `journal::begin` left uv's `.lock` unjournaled.
+Fixed in 5daf86a (`journal::admit`, one decision per uv attempt) on `fix/uv-stop-admission`.
+Remaining: offline gate, CI, a new security gate on the fixed tree, autoreview of the release
+commit, then beta, production and Homebrew.
 Open owner decision: free-space history (new state file) as plan 020, yes or no.
 
 Decisions: `init.sh` not added, since `scripts/verify.sh` already sets up and runs every
