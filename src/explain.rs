@@ -26,8 +26,8 @@ struct Protected {
 }
 
 /// How an offered target relates to the explained path.
-#[derive(Clone, Copy)]
-enum Relation {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Relation {
     Exact,
     /// The target holds the path, so removing it would remove the path.
     Holds,
@@ -40,7 +40,7 @@ pub(crate) fn run(ctx: &Ctx, path: &Path) -> Result<ExitCode> {
     let builtin = crate::safety::protection_reason(&path, &ctx.home);
     let config = crate::safety::config_protect_entry(&path, &ctx.protect).map(Path::to_path_buf);
     let scan = ops::scan_all(ctx);
-    let identities = Identities::of(&path);
+    let subject = Subject::of(&path);
     let offers = scan
         .sections
         .iter()
@@ -49,8 +49,8 @@ pub(crate) fn run(ctx: &Ctx, path: &Path) -> Result<ExitCode> {
                 .iter()
                 .filter_map(|finding| {
                     let target = finding.target()?;
-                    relation(target, &path)
-                        .or_else(|| identities.relation(target))
+                    subject
+                        .relation(&Target::of(target))
                         .map(|relation| (section.category, finding, relation))
                 })
         })
@@ -138,7 +138,7 @@ pub(crate) fn run(ctx: &Ctx, path: &Path) -> Result<ExitCode> {
 /// resolved as the scanners resolve theirs so it compares with their
 /// canonical targets. The last component is never followed: a link is
 /// explained as itself, as the deletion sink would judge it.
-fn resolve(path: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve(path: &Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -168,18 +168,20 @@ fn relation(target: &Path, path: &Path) -> Option<Relation> {
     }
 }
 
-/// Device and inode of `path` and of each folder above it, so a target
-/// spelled differently from the path — a case variant on a case-insensitive
-/// volume — still relates to it. The path itself is read without following
-/// a link; a regular file with further hard links is left to its spelling,
-/// since another link is a different name the target's removal keeps.
-struct Identities {
-    path: Option<(u64, u64)>,
+/// A path compared with offered targets: its spelling, and the device and
+/// inode of the path and of each folder above it, so a target spelled
+/// differently from the path — a case variant on a case-insensitive volume —
+/// still relates to it. The path itself is read without following a link; a
+/// regular file with further hard links is left to its spelling, since
+/// another link is a different name the target's removal keeps.
+pub(crate) struct Subject {
+    path: PathBuf,
+    own: Option<(u64, u64)>,
     above: Vec<(u64, u64)>,
 }
 
-impl Identities {
-    fn of(path: &Path) -> Self {
+impl Subject {
+    pub(crate) fn of(path: &Path) -> Self {
         use std::os::unix::fs::MetadataExt as _;
 
         let own = std::fs::symlink_metadata(path)
@@ -190,25 +192,50 @@ impl Identities {
             Some(_) => path.ancestors().skip(1).filter_map(identity).collect(),
             None => Vec::new(),
         };
-        Self { path: own, above }
+        Self {
+            path: path.to_path_buf(),
+            own,
+            above,
+        }
     }
 
-    fn relation(&self, target: &Path) -> Option<Relation> {
-        let path = self.path?;
-        let held = identity(target)?;
-        if held == path {
-            Some(Relation::Exact)
-        } else if self.above.contains(&held) {
-            Some(Relation::Holds)
-        } else if target
-            .ancestors()
-            .skip(1)
-            .filter_map(identity)
-            .any(|above| above == path)
-        {
-            Some(Relation::Inside)
-        } else {
-            None
+    /// By whole components first, then by identity.
+    pub(crate) fn relation(&self, target: &Target) -> Option<Relation> {
+        relation(&target.path, &self.path).or_else(|| {
+            let path = self.own?;
+            let held = target.own?;
+            if held == path {
+                Some(Relation::Exact)
+            } else if self.above.contains(&held) {
+                Some(Relation::Holds)
+            } else if target.above.contains(&path) {
+                Some(Relation::Inside)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+/// An offered target with its identities read once, so one target can be
+/// compared with many paths without reading the volume again.
+pub(crate) struct Target {
+    path: PathBuf,
+    own: Option<(u64, u64)>,
+    above: Vec<(u64, u64)>,
+}
+
+impl Target {
+    pub(crate) fn of(path: &Path) -> Self {
+        let own = identity(path);
+        let above = match own {
+            Some(_) => path.ancestors().skip(1).filter_map(identity).collect(),
+            None => Vec::new(),
+        };
+        Self {
+            path: path.to_path_buf(),
+            own,
+            above,
         }
     }
 }

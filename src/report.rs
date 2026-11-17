@@ -620,6 +620,105 @@ pub struct ScanSection {
     pub range: std::ops::Range<usize>,
 }
 
+/// One category's share of a scan, as its summary row counts it: what it
+/// offers (`actionable_bytes`), the lower bound on what that frees once APFS
+/// clones are set aside, and how many entries are findings or errors. A
+/// category that scanned and found nothing still has a total, unlike one
+/// whose scan failed, which has no section at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CategoryTotal {
+    pub(crate) category: &'static str,
+    pub(crate) entries: usize,
+    /// Whether anything in it can be applied, even a zero-byte target.
+    pub(crate) offers: bool,
+    pub(crate) actionable_bytes: u64,
+    /// Each actionable finding's `frees_at_least_bytes`, or its size when it
+    /// has none; never above `actionable_bytes`.
+    pub(crate) frees_at_least_bytes: u64,
+    pub(crate) findings: usize,
+    pub(crate) errors: usize,
+}
+
+impl CategoryTotal {
+    pub(crate) fn of(category: &'static str, part: &[Finding]) -> Self {
+        let (findings, errors) = finding_and_error_counts(part);
+        let frees_at_least_bytes = part
+            .iter()
+            .filter(|finding| finding.action.is_actionable())
+            .fold(0u64, |total, finding| {
+                total.saturating_add(
+                    finding
+                        .frees_at_least_bytes
+                        .unwrap_or(finding.size_bytes)
+                        .min(finding.size_bytes),
+                )
+            });
+        Self {
+            category,
+            entries: part.len(),
+            offers: part.iter().any(|finding| finding.action.is_actionable()),
+            actionable_bytes: actionable_bytes(part),
+            frees_at_least_bytes,
+            findings,
+            errors,
+        }
+    }
+}
+
+/// Every section's total, in section order, empty sections included.
+pub(crate) fn category_totals(
+    findings: &[Finding],
+    sections: &[ScanSection],
+) -> Vec<CategoryTotal> {
+    sections
+        .iter()
+        .filter_map(|section| {
+            findings
+                .get(section.range.clone())
+                .map(|part| CategoryTotal::of(section.category, part))
+        })
+        .collect()
+}
+
+/// The note suffix naming what brings a removed target back, or nothing
+/// without evidence: `; comes back with: cargo build`. Display only.
+pub(crate) fn comes_back_note(command: Option<&str>) -> String {
+    command.map_or_else(String::new, |command| {
+        format!("; comes back with: {command}")
+    })
+}
+
+/// A size that may free less than it holds: `1.9–21.8 GB`, the lower bound
+/// first in the unit of the size, or one size when both read the same.
+pub(crate) fn size_range(at_least: u64, size: u64) -> String {
+    let upper = gb(size);
+    let (divisor, decimals, unit) = gb_unit(size);
+    let lower = if divisor == 1 {
+        at_least.to_string()
+    } else {
+        format!("{:.*}", decimals, at_least as f64 / divisor as f64)
+    };
+    let upper_number = upper.trim_end_matches(unit).trim_end();
+    if lower == upper_number {
+        upper
+    } else {
+        format!("{lower}–{upper}")
+    }
+}
+
+/// The divisor, decimals and unit [`gb`] uses for `bytes`.
+fn gb_unit(bytes: u64) -> (u64, usize, &'static str) {
+    if bytes >= 1 << 30 {
+        (1 << 30, 1, "GB")
+    } else if bytes >= 1 << 20 {
+        (1 << 20, 0, "MB")
+    } else if bytes >= 1 << 10 {
+        (1 << 10, 0, "KB")
+    } else {
+        (1, 0, "B")
+    }
+}
+
 /// The scan report: one line per category with its size and the command that
 /// acts on it, largest first, then each category's largest findings.
 /// `failed` names the categories whose scan returned an error: they keep a
@@ -643,14 +742,17 @@ fn scan_text(findings: &[Finding], sections: &[ScanSection], failed: &[&str], al
         })
         .filter(|(_, part)| !part.is_empty())
         .collect();
-    ordered.sort_by_key(|(_, part)| std::cmp::Reverse(actionable_bytes(part)));
+    ordered.sort_by_key(|(name, part)| {
+        std::cmp::Reverse(CategoryTotal::of(name, part).actionable_bytes)
+    });
 
     let mut output = String::new();
     if !ordered.is_empty() || !failed.is_empty() {
         output.push_str(&format!("{}\n", "Categories".bold()));
     }
     for (name, part) in &ordered {
-        let next = if part.iter().any(|finding| finding.action.is_actionable()) {
+        let total = CategoryTotal::of(name, part);
+        let next = if total.offers {
             // Under `scan --shred` the rows show SHRED; the command that
             // performs what they show must say so too.
             let permanent = if part.iter().any(|finding| finding.action == Action::Shred) {
@@ -662,7 +764,7 @@ fn scan_text(findings: &[Finding], sections: &[ScanSection], failed: &[&str], al
         } else {
             "report only".dimmed()
         };
-        let (counted, errors) = finding_and_error_counts(part);
+        let (counted, errors) = (total.findings, total.errors);
         let errors = if errors == 0 {
             String::new()
         } else {
@@ -670,7 +772,7 @@ fn scan_text(findings: &[Finding], sections: &[ScanSection], failed: &[&str], al
         };
         output.push_str(&format!(
             "  {name:<13} {:>9}  {counted:>5} finding(s){errors}   {next}\n",
-            gb(actionable_bytes(part)),
+            gb(total.actionable_bytes),
         ));
     }
     for name in failed {
@@ -1143,6 +1245,53 @@ mod tests {
                 "{output}"
             );
         }
+    }
+
+    #[test]
+    fn a_size_range_puts_the_lower_bound_first_in_the_size_unit() {
+        const GIB: u64 = 1 << 30;
+        assert_eq!(
+            size_range(1_880 * (1 << 20), 21_770 * (1 << 20)),
+            "1.8–21.3 GB"
+        );
+        assert_eq!(size_range(54 * GIB, 80 * GIB), "54.0–80.0 GB");
+        assert_eq!(size_range(5 * GIB, 5 * GIB), "5.0 GB", "equal is one size");
+        assert_eq!(
+            size_range(5 * GIB - 1, 5 * GIB),
+            "5.0 GB",
+            "a difference the unit cannot show is one size"
+        );
+        assert_eq!(size_range(20 << 20, 3 * GIB), "0.0–3.0 GB");
+        assert_eq!(size_range(1 << 20, 300 << 20), "1–300 MB");
+        assert_eq!(size_range(10, 900), "10–900 B");
+    }
+
+    #[test]
+    fn category_totals_keep_empty_sections_and_bound_each_lower_bound_by_its_size() {
+        let mut cloned = Finding::new("a", None, 100, "", 1, Action::Trash);
+        cloned.frees_at_least_bytes = Some(10);
+        let plain = Finding::new("b", None, 50, "", 1, Action::Trash);
+        let report = Finding::new("c", None, 999, "", 1, Action::Info);
+        let error = Finding::new("d", None, 0, "", 0, Action::Info).with_scan_error("x".into());
+        let findings = vec![cloned, plain, report, error];
+        let sections = [
+            ScanSection {
+                category: "node_modules",
+                range: 0..4,
+            },
+            ScanSection {
+                category: "docker",
+                range: 4..4,
+            },
+        ];
+        let totals = category_totals(&findings, &sections);
+        assert_eq!(totals.len(), 2);
+        assert_eq!(totals[0].actionable_bytes, 150);
+        assert_eq!(totals[0].frees_at_least_bytes, 60);
+        assert_eq!((totals[0].findings, totals[0].errors), (3, 1));
+        assert!(totals[0].offers);
+        assert_eq!(totals[1].entries, 0);
+        assert!(!totals[1].offers);
     }
 
     #[test]

@@ -195,6 +195,140 @@ pub(crate) struct History {
     pub truncated: bool,
 }
 
+/// The refusal [`begin`] returns once the operator asked an apply to stop:
+/// raised before anything is opened, created or written, so the finding it
+/// refuses leaves no journal record and its target is never touched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ApplyStopped;
+
+impl std::fmt::Display for ApplyStopped {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("stopped by you before this item was attempted")
+    }
+}
+
+impl std::error::Error for ApplyStopped {}
+
+/// The attempt in progress, as the working screen names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CurrentItem {
+    pub op: String,
+    /// The target path, or the command line of a typed command.
+    pub subject: String,
+    pub command: bool,
+}
+
+/// How far one apply has gone, shared between the apply worker and the
+/// screen. Every attempt passes [`begin`] and [`JournalAttempt::finish`], so
+/// those two update it and nothing else needs to; it also carries the stop
+/// request `begin` honours. It changes no journal record.
+#[derive(Debug, Default)]
+pub(crate) struct ApplyMonitor {
+    pub total_findings: usize,
+    pub total_bytes: u64,
+    finished: std::sync::atomic::AtomicUsize,
+    bytes_finished: AtomicU64,
+    stop: std::sync::atomic::AtomicBool,
+    stopped: std::sync::atomic::AtomicUsize,
+    current: std::sync::Mutex<Option<CurrentItem>>,
+    /// Bumped on every change, so the screen redraws only when there is news.
+    version: AtomicU64,
+    /// Tests only: request a stop once this many attempts have finished, from
+    /// inside the finish itself.
+    #[cfg(test)]
+    stop_after: Option<usize>,
+}
+
+impl ApplyMonitor {
+    pub(crate) fn new(total_findings: usize, total_bytes: u64) -> Self {
+        Self {
+            total_findings,
+            total_bytes,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stopping_after(total_findings: usize, total_bytes: u64, finished: usize) -> Self {
+        Self {
+            stop_after: Some(finished),
+            ..Self::new(total_findings, total_bytes)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_current_for_test(&self, item: CurrentItem) {
+        *self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(item);
+    }
+
+    pub(crate) fn request_stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.version.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn stop_requested(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    /// Attempts with a result, whatever it was.
+    pub(crate) fn finished(&self) -> usize {
+        self.finished.load(Ordering::SeqCst)
+    }
+
+    /// Bytes of the attempts that succeeded.
+    pub(crate) fn bytes_finished(&self) -> u64 {
+        self.bytes_finished.load(Ordering::SeqCst)
+    }
+
+    /// Attempts `begin` refused because a stop was requested.
+    pub(crate) fn stopped(&self) -> usize {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn current(&self) -> Option<CurrentItem> {
+        self.current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn version(&self) -> u64 {
+        self.version.load(Ordering::SeqCst)
+    }
+
+    fn began(&self, record: &JournalRecord) {
+        let item = CurrentItem {
+            op: record.op.clone(),
+            subject: record
+                .target
+                .clone()
+                .or_else(|| record.argv.as_ref().map(|argv| argv.join(" ")))
+                .unwrap_or_default(),
+            command: record.argv.is_some(),
+        };
+        *self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(item);
+        self.version.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn ended(&self, size_bytes: u64, succeeded: bool) {
+        if succeeded {
+            self.bytes_finished.fetch_add(size_bytes, Ordering::SeqCst);
+        }
+        let _finished = self.finished.fetch_add(1, Ordering::SeqCst) + 1;
+        #[cfg(test)]
+        if self.stop_after == Some(_finished) {
+            self.stop.store(true, Ordering::SeqCst);
+        }
+        self.version.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 #[must_use = "dropping a journal attempt leaves it recorded as interrupted"]
 pub(crate) struct JournalAttempt {
     record: JournalRecord,
@@ -202,7 +336,25 @@ pub(crate) struct JournalAttempt {
     rotation_lock: File,
 }
 
+/// Refuses with [`ApplyStopped`] once a stop was requested, counting the
+/// refusal. A category that must write before its attempt (uv's cache lock)
+/// asks first, so a stopped apply touches nothing at all.
+pub(crate) fn refuse_if_stopped(ctx: &Ctx) -> Result<()> {
+    if let Some(monitor) = ctx.apply_monitor()
+        && monitor.stop_requested()
+    {
+        monitor.stopped.fetch_add(1, Ordering::SeqCst);
+        monitor.version.fetch_add(1, Ordering::SeqCst);
+        return Err(ApplyStopped.into());
+    }
+    Ok(())
+}
+
 pub(crate) fn begin(ctx: &Ctx, record: JournalRecord) -> Result<JournalAttempt> {
+    // First, before the journal folder, its lock or its file is opened or
+    // created: a stopped apply refuses every later attempt with nothing
+    // written and nothing touched, whichever category loop asked.
+    refuse_if_stopped(ctx)?;
     if record.phase != "attempt" || !valid_record(&record) {
         anyhow::bail!("refusing invalid apply journal attempt");
     }
@@ -211,6 +363,9 @@ pub(crate) fn begin(ctx: &Ctx, record: JournalRecord) -> Result<JournalAttempt> 
     let rotation_lock = acquire_apply_lock(&location)?;
     append_at(&location, &record)
         .with_context(|| format!("cannot write apply journal: {}", ctx.journal_path.display()))?;
+    if let Some(monitor) = ctx.apply_monitor() {
+        monitor.began(&record);
+    }
     Ok(JournalAttempt {
         record,
         location,
@@ -250,6 +405,11 @@ fn finish_record_at<T>(
 ) -> Result<T> {
     let record = JournalRecord::result(attempt, &result);
     let appended = append_at(location, &record);
+    // Counted before the early return below: the operation's own result is
+    // what finished, whether or not its record could be written.
+    if let Some(monitor) = ctx.apply_monitor() {
+        monitor.ended(attempt.size_bytes, result.is_ok());
+    }
     ctx.record_apply_result(record);
     if let Err(journal_error) = appended {
         return preserve_operation_result(ctx, result, journal_error);
@@ -1573,5 +1733,99 @@ mod tests {
                 .iter()
                 .all(|record| record.status.as_deref() == Some("ok"))
         );
+    }
+
+    /// A stop request refuses the attempt before anything is opened, created
+    /// or written: the journal's folder does not even come into being.
+    #[test]
+    fn a_stopped_apply_refuses_an_attempt_before_touching_the_journal() {
+        let root = temp("stop-before-anything");
+        let folder = root.join("state");
+        let ctx = Ctx {
+            journal_path: folder.join("journal.jsonl"),
+            ..Ctx::for_test(root.clone())
+        };
+        let monitor = std::sync::Arc::new(ApplyMonitor::new(2, 8));
+        monitor.request_stop();
+        ctx.with_apply_monitor(monitor.clone(), || {
+            for record in [
+                JournalRecord::filesystem_attempt("caches", "shred", Path::new("/tmp/a"), 4),
+                JournalRecord::command_attempt("docker", "docker", &["image".into()], 4),
+            ] {
+                let error = begin(&ctx, record)
+                    .err()
+                    .expect("PV journal-stop/before-open: a stopped apply journaled an attempt");
+                assert!(error.downcast_ref::<ApplyStopped>().is_some(), "{error:#}");
+            }
+        });
+        assert!(
+            !folder.exists(),
+            "PV journal-stop/before-open: the refusal created the journal folder"
+        );
+        assert_eq!(monitor.stopped(), 2);
+        assert_eq!(monitor.finished(), 0);
+        // Cleared on the way out, so the next apply is never refused by it.
+        assert!(ctx.apply_monitor().is_none());
+        assert!(
+            begin(
+                &ctx,
+                JournalRecord::filesystem_attempt("caches", "shred", Path::new("/tmp/a"), 4)
+            )
+            .is_ok()
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    /// Watching an apply changes no byte it journals; only the result's own
+    /// timestamp, taken when it finishes, may differ between the two runs.
+    #[test]
+    fn a_monitor_leaves_the_journal_unchanged() {
+        let attempt =
+            JournalRecord::filesystem_attempt("caches", "shred", Path::new("/tmp/cache"), 4096);
+        let command = JournalRecord::command_attempt(
+            "docker",
+            "docker",
+            &["image".into(), "prune".into()],
+            9,
+        );
+        let journal = |watched: bool| {
+            let root = temp(if watched { "monitor-on" } else { "monitor-off" });
+            let ctx = Ctx::for_test(root.clone());
+            let monitor = std::sync::Arc::new(ApplyMonitor::new(2, 4105));
+            let run = || {
+                begin(&ctx, attempt.clone())
+                    .unwrap()
+                    .finish(&ctx, Ok(()))
+                    .unwrap();
+                let failed: Result<()> = Err(anyhow::anyhow!("docker failed"));
+                begin(&ctx, command.clone())
+                    .unwrap()
+                    .finish(&ctx, failed)
+                    .unwrap_err();
+            };
+            if watched {
+                ctx.with_apply_monitor(monitor.clone(), run);
+                assert_eq!(monitor.finished(), 2);
+                assert_eq!(
+                    monitor.bytes_finished(),
+                    4096,
+                    "only the success counts its bytes"
+                );
+            } else {
+                run();
+            }
+            let text = std::fs::read_to_string(&ctx.journal_path).unwrap();
+            crate::ops::remove_test_path(root);
+            text.lines()
+                .map(|line| {
+                    let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+                    value["ts"] = serde_json::Value::Null;
+                    value.to_string()
+                })
+                .collect::<Vec<_>>()
+        };
+        let without = journal(false);
+        assert_eq!(without.len(), 4);
+        assert_eq!(journal(true), without);
     }
 }

@@ -81,11 +81,11 @@
  },
  "details.evidence.when": {
   "text": "repo last active 2020-01-01 UTC",
-  "fact": "fda6b1f04"
+  "fact": "f9ed6fa4b"
  },
  "details.evidence.why": {
   "text": "corroboration: sibling Cargo.toml",
-  "fact": "fda6b1f04"
+  "fact": "f9ed6fa4b"
  },
  "footer.status": {
   "text": "Space leaves one out; a applies the rest",

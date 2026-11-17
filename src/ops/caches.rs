@@ -242,7 +242,9 @@ impl Op for Caches {
                 if finding.target() == Some(uv_cache.as_path()) {
                     // Held until the cache has moved, then released on drop;
                     // holding it is also what lets the sink tolerate uv's
-                    // source-distribution marker.
+                    // source-distribution marker. Taking it creates the lock
+                    // file, so a stopped apply refuses before it.
+                    crate::journal::refuse_if_stopped(ctx)?;
                     let lock = crate::safety::lock_uv_cache(&uv_cache)?;
                     return apply_uv_cache_finding(self.name(), finding, ctx, &lock);
                 }
@@ -379,7 +381,8 @@ fn cache_note(path: &Path) -> String {
         .find(|(relative, _)| path.ends_with(Path::new("Library/Caches").join(relative)))
     {
         Some((_, command)) => format!(
-            "not rebuilt by its next use: `{command}` downloads it again; a large cache costs bandwidth"
+            "not rebuilt by its next use; a large cache costs bandwidth{}",
+            crate::report::comes_back_note(Some(command))
         ),
         None => {
             "regenerated automatically on next use; a large cache costs bandwidth or rebuild time"
@@ -990,6 +993,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_command_rebuilt_cache_says_what_brings_it_back_and_others_do_not() {
+        let home = Path::new("/Users/example");
+        let playwright = cache_note(&home.join("Library/Caches/ms-playwright"));
+        assert!(
+            playwright.ends_with("; comes back with: npx playwright install"),
+            "{playwright}"
+        );
+        let pods = cache_note(&home.join("Library/Caches/CocoaPods"));
+        assert!(pods.ends_with("; comes back with: pod install"), "{pods}");
+        let other = cache_note(&home.join("Library/Caches/pip"));
+        assert!(!other.contains("comes back with"), "{other}");
+    }
+
     /// The command table can never name a cache the carve-out does not list.
     #[test]
     fn every_command_rebuilt_cache_is_a_managed_library_cache() {
@@ -1124,5 +1141,38 @@ mod tests {
         assert_eq!(outcome.errors.len(), 1);
         assert!(sentinel.exists());
         crate::ops::remove_test_path(home);
+    }
+
+    /// REVIEW: once a stop is asked, a later uv finding must leave its target
+    /// untouched (CLAUDE.md: "every later attempt ... leaves no record and its
+    /// target untouched"). The uv lock is created before `journal::begin`.
+    #[test]
+    fn a_stopped_apply_creates_nothing_in_the_uv_cache() {
+        let fixture = crate::ops::TestFixture::new("devtrim-uv-stop");
+        let home = fixture.path().to_path_buf();
+        std::fs::create_dir_all(home.join(".cache/uv/sdists-v9")).unwrap();
+        let home = home.canonicalize().unwrap();
+        let uv = home.join(".cache/uv");
+        std::fs::write(
+            uv.join("CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n",
+        )
+        .unwrap();
+        std::fs::write(uv.join("entry"), "cached").unwrap();
+        assert!(!uv.join(".lock").exists());
+        let ctx = Ctx::for_test(home.clone());
+        let findings = vec![cache_finding("uv package cache", uv.clone(), 6, 3)];
+        let monitor = std::sync::Arc::new(crate::journal::ApplyMonitor::new(1, 6));
+        monitor.request_stop();
+        let outcome =
+            ctx.with_apply_monitor(monitor.clone(), || Caches.apply(&findings, &ctx).unwrap());
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.stopped, 1, "{:?}", outcome.errors);
+        let created = uv.join(".lock").exists();
+        crate::ops::remove_test_path(home);
+        assert!(
+            !created,
+            "PV journal-stop/uv-lock: a stopped apply created <uv cache>/.lock before begin refused it"
+        );
     }
 }

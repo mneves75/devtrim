@@ -19,6 +19,7 @@ use crate::process::{self, Interrupts};
 use crate::report::{self, Summary};
 use crate::safety::{self, ConfirmationRequirement, Ctx};
 use crate::theme::{Theme, Token, danger_token};
+use crate::volume::FreeSpace;
 
 const MIN_WIDTH: u16 = 64;
 const MIN_HEIGHT: u16 = 18;
@@ -275,9 +276,208 @@ struct App {
     /// The scan or apply running on the worker thread, and when it started,
     /// for the working screen's clock.
     working: Option<(Work, Instant)>,
+    /// How far the apply on the worker thread has gone, read from the journal
+    /// as each attempt begins and finishes; it also carries the stop request.
+    apply_monitor: Option<std::sync::Arc<crate::journal::ApplyMonitor>>,
+    /// Each category of a Scan everything in progress, as it finishes.
+    scan_board: Option<std::sync::Arc<ScanBoard>>,
     /// The home folder, shown as `~` in the path column; `None` shows paths
     /// as they are.
     home: Option<std::path::PathBuf>,
+    /// The home volume's free space as last read for the menu, or why it
+    /// could not be; `None` before any read, as in a test.
+    disk: Option<Result<FreeSpace, String>>,
+    /// The home volume's local snapshots, answered on a worker thread.
+    snapshots: Snapshots,
+    /// What the last Scan everything found per category, for the menu.
+    overview: Option<Overview>,
+}
+
+/// The local-snapshot count as the menu shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Snapshots {
+    /// Never asked, as in a test: the menu says nothing about snapshots.
+    NotAsked,
+    Checking,
+    Counted(usize),
+    Unavailable(String),
+}
+
+/// The last Scan everything of this session, as the menu rows show it. A
+/// category applied since then no longer has a size worth showing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Overview {
+    totals: Vec<report::CategoryTotal>,
+    failed: Vec<&'static str>,
+    applied: std::collections::BTreeSet<&'static str>,
+}
+
+/// What a menu row says about the last Scan everything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RowSize {
+    /// Not a scanned category, or nothing scanned yet: the row is as before.
+    Blank,
+    Failed,
+    /// Applied after the scan, so its size is stale.
+    Rescan,
+    /// Scanned and offering nothing.
+    Nothing,
+    /// Scanned, reporting findings no apply acts on.
+    Report {
+        findings: usize,
+    },
+    /// What it offers: the size, or the range from the lower bound, and how
+    /// many findings.
+    Offers {
+        size: String,
+        findings: usize,
+        at_least: Option<u64>,
+        bytes: u64,
+    },
+}
+
+impl Overview {
+    fn of(result: &ops::ScanResult) -> Self {
+        Self {
+            totals: report::category_totals(&result.findings, &result.sections),
+            failed: ops::failed_categories(&result.sections),
+            applied: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Marks the categories an apply of `operation` may have changed.
+    fn mark_applied(&mut self, operation: Operation) {
+        let names = match operation {
+            Operation::Clean(target) => vec![target.as_str()],
+            Operation::Purge => vec![Target::NodeModules.as_str(), Target::Artifacts.as_str()],
+            Operation::ScanAll | Operation::Icloud | Operation::TrashEmpty => Vec::new(),
+        };
+        for name in &names {
+            if let Some(total) = self.totals.iter().find(|total| total.category == *name) {
+                self.applied.insert(total.category);
+            }
+        }
+    }
+
+    fn offers(at_least: u64, bytes: u64, findings: usize) -> RowSize {
+        let lower = (at_least < bytes).then_some(at_least);
+        RowSize::Offers {
+            size: lower.map_or_else(
+                || report::gb(bytes),
+                |at_least| report::size_range(at_least, bytes),
+            ),
+            findings,
+            at_least: lower,
+            bytes,
+        }
+    }
+
+    fn row(&self, operation: Operation) -> RowSize {
+        if operation == Operation::ScanAll {
+            if !self.applied.is_empty() {
+                return RowSize::Rescan;
+            }
+            let (bytes, at_least, findings) = self.totals.iter().fold(
+                (0u64, 0u64, 0usize),
+                |(bytes, at_least, findings), total| {
+                    (
+                        bytes.saturating_add(total.actionable_bytes),
+                        at_least.saturating_add(total.frees_at_least_bytes),
+                        findings + total.findings,
+                    )
+                },
+            );
+            return Self::offers(at_least, bytes, findings);
+        }
+        let Operation::Clean(target) = operation else {
+            return RowSize::Blank;
+        };
+        let name = target.as_str();
+        if self.failed.contains(&name) {
+            return RowSize::Failed;
+        }
+        if self.applied.contains(name) {
+            return RowSize::Rescan;
+        }
+        match self.totals.iter().find(|total| total.category == name) {
+            None => RowSize::Blank,
+            Some(total) if !total.offers && total.errors > 0 => RowSize::Failed,
+            Some(total) if !total.offers && total.findings > 0 => RowSize::Report {
+                findings: total.findings,
+            },
+            Some(total) if !total.offers => RowSize::Nothing,
+            Some(total) => Self::offers(
+                total.frees_at_least_bytes,
+                total.actionable_bytes,
+                total.findings,
+            ),
+        }
+    }
+}
+
+impl RowSize {
+    /// The row's text in at most `width` columns: the size and count, then
+    /// the size alone, then a range's lower bound, then nothing. A range is
+    /// never cut to its upper end.
+    fn text(&self, width: usize) -> Option<String> {
+        let candidates: Vec<String> = match self {
+            Self::Blank => Vec::new(),
+            Self::Failed => vec!["failed".into()],
+            Self::Rescan => vec!["rescan".into()],
+            Self::Nothing => vec!["none".into()],
+            Self::Report { findings } => vec![format!("report · {findings}"), "report".into()],
+            Self::Offers {
+                size,
+                findings,
+                at_least,
+                ..
+            } => {
+                let mut candidates = vec![format!("{size} · {findings}"), size.clone()];
+                // Too narrow for the range: its lower bound, never its upper.
+                if let Some(at_least) = at_least {
+                    candidates.push(format!("≥{}", report::gb(*at_least)));
+                }
+                candidates
+            }
+        };
+        candidates
+            .into_iter()
+            .find(|candidate| candidate.chars().count() <= width)
+    }
+
+    /// What the Selected pane says about the last scan of this row; the
+    /// size line only when the row itself could not show it (`shown`).
+    fn detail(&self, shown: bool) -> Vec<String> {
+        match self {
+            Self::Blank => Vec::new(),
+            Self::Failed => vec!["Last scan: failed; open it to see why and retry.".into()],
+            Self::Rescan => {
+                vec!["Changed since the last scan; rescan for its size.".into()]
+            }
+            Self::Nothing => vec!["Last scan: nothing to give back.".into()],
+            Self::Report { findings } => {
+                vec![format!("Last scan: {findings} finding(s), report only.")]
+            }
+            Self::Offers {
+                size,
+                findings,
+                at_least,
+                ..
+            } => {
+                let mut lines = Vec::new();
+                if !shown {
+                    lines.push(format!("Last scan: {size} in {findings} finding(s)."));
+                }
+                if let Some(at_least) = at_least {
+                    lines.push(format!(
+                        "at least {} comes back; APFS clones share the rest",
+                        report::gb(*at_least)
+                    ));
+                }
+                lines
+            }
+        }
+    }
 }
 
 impl Default for App {
@@ -305,7 +505,12 @@ impl Default for App {
             help: false,
             scroll_limit: std::cell::Cell::new(0),
             working: None,
+            apply_monitor: None,
+            scan_board: None,
             home: None,
+            disk: None,
+            snapshots: Snapshots::NotAsked,
+            overview: None,
         }
     }
 }
@@ -432,12 +637,65 @@ impl App {
         self.input.clear();
         self.say(Token::Muted, format!("Scanning {}…", operation.subject()));
         self.working = Some((Work::Scan, Instant::now()));
+        self.scan_board =
+            (operation == Operation::ScanAll).then(|| std::sync::Arc::new(ScanBoard::new()));
     }
 
-    fn begin_apply(&mut self) {
+    fn begin_apply(&mut self, monitor: std::sync::Arc<crate::journal::ApplyMonitor>) {
+        // Whatever the apply ends with, the last scan's size for what it
+        // touched is no longer what is on disk.
+        if let (Some(overview), Some(operation)) = (self.overview.as_mut(), self.operation) {
+            overview.mark_applied(operation);
+        }
         self.screen = Screen::Loading;
         self.say(Token::Muted, "Applying only the exact previewed findings…");
         self.working = Some((Work::Apply, Instant::now()));
+        self.apply_monitor = Some(monitor);
+    }
+
+    /// `x` during an apply: the journal refuses every attempt after the one
+    /// in progress, which always runs to its end. Asked once; a second press
+    /// changes nothing.
+    fn request_stop(&mut self) {
+        let Some(monitor) = self.apply_monitor.as_ref().filter(|_| applying(self)) else {
+            return;
+        };
+        if monitor.stop_requested() {
+            return;
+        }
+        monitor.request_stop();
+        let subject = if monitor.current().is_some_and(|item| item.command) {
+            "command"
+        } else {
+            "item"
+        };
+        self.say(
+            Token::Warning,
+            format!("Stopping after the current {subject}…"),
+        );
+    }
+
+    /// What `x` would wait for, as the footer names it.
+    fn stop_key_label(&self) -> Option<&'static str> {
+        let monitor = self.apply_monitor.as_ref().filter(|_| applying(self))?;
+        if monitor.stop_requested() {
+            return None;
+        }
+        Some(if monitor.current().is_some_and(|item| item.command) {
+            "stops after this command"
+        } else {
+            "stop after this item"
+        })
+    }
+
+    /// Changes when the working screen has something new to show.
+    fn progress_version(&self) -> u64 {
+        let applied = self
+            .apply_monitor
+            .as_ref()
+            .map_or(0, |monitor| monitor.version());
+        let scanned = self.scan_board.as_ref().map_or(0, |board| board.version());
+        applied.wrapping_add(scanned)
     }
 
     /// Whole seconds the scan or apply on the worker thread has run.
@@ -464,9 +722,17 @@ impl App {
                 if !outcome.errors.is_empty() {
                     self.failed = true;
                 }
-                let (token, status) =
-                    outcome_status(!outcome.errors.is_empty(), outcome.summary.items_touched);
-                self.say(token, status);
+                if outcome.stopped > 0 {
+                    let status = format!(
+                        "Stopped by you: {} done, {} not attempted.",
+                        outcome.summary.items_touched, outcome.stopped
+                    );
+                    self.say(Token::Warning, status);
+                } else {
+                    let (token, status) =
+                        outcome_status(!outcome.errors.is_empty(), outcome.summary.items_touched);
+                    self.say(token, status);
+                }
                 self.summary = Some(outcome.summary);
                 self.errors = outcome.errors;
                 self.scroll = 0;
@@ -491,6 +757,7 @@ impl App {
 
     /// A Scan everything result, keeping each category's slice for routing.
     fn finish_scan(&mut self, result: ops::ScanResult, warnings: Vec<String>) {
+        self.overview = Some(Overview::of(&result));
         self.show_results(
             Operation::ScanAll,
             result.findings,
@@ -704,7 +971,18 @@ impl App {
         self.screen = Screen::Confirm;
     }
 
+    /// Reads the home volume's free space again; `statvfs` is instant.
+    fn refresh_disk(&mut self) {
+        if let Some(home) = &self.home {
+            self.disk = Some(
+                crate::volume::free_space(home)
+                    .map_err(|error| report::terminal_safe(&format!("{error:#}"))),
+            );
+        }
+    }
+
     fn back_to_menu(&mut self) {
+        self.refresh_disk();
         self.screen = Screen::Menu;
         self.operation = None;
         self.reset_selection();
@@ -1062,12 +1340,26 @@ fn run_loop(
 ) -> Result<ExitCode> {
     let mut app = App {
         home: Some(ctx.home.clone()),
+        snapshots: Snapshots::Checking,
         ..App::default()
     };
+    app.refresh_disk();
+    // `diskutil` can take a while; the menu draws without waiting for it.
+    let (answer, snapshots) = std::sync::mpsc::channel();
+    let home = ctx.home.clone();
+    thread::spawn(move || {
+        let counted = safety::local_snapshot_count(&home)
+            .map_err(|error| report::terminal_safe(&format!("{error:#}")));
+        answer.send(counted).ok();
+    });
     let mut redraw = true;
     loop {
         if let Some(signal) = interrupts.received() {
             restore_and_exit(signal);
+        }
+        if let Ok(counted) = snapshots.try_recv() {
+            app.snapshots = counted.map_or_else(Snapshots::Unavailable, Snapshots::Counted);
+            redraw = true;
         }
         if redraw {
             terminal.draw(|frame| render(frame, &app))?;
@@ -1092,16 +1384,26 @@ fn run_loop(
             }
             Intent::Load(operation) => {
                 app.begin_load(operation);
-                let loaded =
-                    in_background(terminal, &mut app, interrupts, || run_scan(ctx, operation))?;
+                let board = app.scan_board.clone();
+                let loaded = in_background(terminal, &mut app, interrupts, || {
+                    run_scan(ctx, operation, board.as_deref())
+                })?;
                 app.finish_load(operation, loaded);
                 settle(terminal, &app)?;
             }
             Intent::Apply(plan) => {
                 if approved_plan_matches(&app, &plan) {
-                    app.begin_apply();
-                    let result =
-                        in_background(terminal, &mut app, interrupts, || run_apply(ctx, plan))?;
+                    let monitor = std::sync::Arc::new(crate::journal::ApplyMonitor::new(
+                        plan.findings
+                            .iter()
+                            .filter(|finding| finding.action.is_actionable())
+                            .count(),
+                        report::actionable_bytes(&plan.findings),
+                    ));
+                    app.begin_apply(monitor.clone());
+                    let result = in_background(terminal, &mut app, interrupts, || {
+                        run_apply(ctx, plan, &monitor)
+                    })?;
                     app.finish_apply(result);
                     // What the apply reported on the way, shown with its
                     // outcome rather than left for the next scan to carry.
@@ -1122,7 +1424,8 @@ fn run_loop(
 /// is acted on at once.
 ///
 /// Every key typed meanwhile is read and dropped, since it was aimed at a
-/// screen that does not exist yet, except a quit. During a scan, `q` or
+/// screen that does not exist yet, except a quit and, during an apply, `x`,
+/// which asks the journal to refuse every attempt after the current one. During a scan, `q` or
 /// Ctrl+C ends the run the way SIGINT does: the terminal is restored, every
 /// command the scan started is killed and devtrim exits 130. A scan changes
 /// nothing, so nothing is left half done.
@@ -1144,6 +1447,7 @@ fn in_background<T: Send>(
     job: impl FnOnce() -> T + Send,
 ) -> Result<T> {
     let scanning = matches!(app.working, Some((Work::Scan, _)));
+    let applying = matches!(app.working, Some((Work::Apply, _)));
     let finished = thread::scope(|scope| -> Result<thread::Result<T>> {
         let worker = scope.spawn(job);
         let mut shown = None;
@@ -1151,10 +1455,10 @@ fn in_background<T: Send>(
             if let Some(signal) = interrupts.received() {
                 restore_and_exit(signal);
             }
-            let elapsed = app.elapsed_seconds();
-            if shown != Some(elapsed) {
+            let now = (app.elapsed_seconds(), app.progress_version());
+            if shown != Some(now) {
                 terminal.draw(|frame| render(frame, app))?;
-                shown = Some(elapsed);
+                shown = Some(now);
             }
             if !event::poll(TICK).context("cannot poll terminal input")? {
                 continue;
@@ -1163,6 +1467,10 @@ fn in_background<T: Send>(
                 Event::Key(key) if scanning && is_quit_key(key) => {
                     restore_and_exit(signal_hook::consts::SIGINT)
                 }
+                Event::Key(key) if applying && is_stop_key(key) => {
+                    app.request_stop();
+                    shown = None;
+                }
                 Event::Resize(..) => shown = None,
                 _ => {}
             }
@@ -1170,12 +1478,25 @@ fn in_background<T: Send>(
         Ok(worker.join())
     })?;
     app.working = None;
+    app.apply_monitor = None;
+    app.scan_board = None;
     match finished {
         Ok(value) => Ok(value),
         // The panic already restored the terminal through Ratatui's hook; end
         // the run as a panic on this thread always did.
         Err(panic) => std::panic::resume_unwind(panic),
     }
+}
+
+/// `x` alone, which asks an apply to stop between attempts; Alt+x and the
+/// like are not it.
+fn is_stop_key(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && key.code == KeyCode::Char('x')
+        && key
+            .modifiers
+            .difference(event::KeyModifiers::SHIFT)
+            .is_empty()
 }
 
 fn is_quit_key(key: KeyEvent) -> bool {
@@ -1194,6 +1515,54 @@ fn settle(terminal: &mut DefaultTerminal, app: &App) -> Result<()> {
     Ok(())
 }
 
+/// One category and how its scan ended, once it has.
+type BoardRow = (&'static str, Option<Result<ops::CategoryTally, String>>);
+
+/// Every category of a Scan everything, in registry order, with how it
+/// ended once its scan thread returns; filled from those threads while the
+/// working screen reads it.
+struct ScanBoard {
+    rows: std::sync::Mutex<Vec<BoardRow>>,
+    version: std::sync::atomic::AtomicU64,
+}
+
+impl ScanBoard {
+    fn new() -> Self {
+        Self {
+            rows: std::sync::Mutex::new(
+                ops::all()
+                    .iter()
+                    .map(|operation| (operation.name(), None))
+                    .collect(),
+            ),
+            version: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn record(&self, done: ops::CategoryDone) {
+        let mut rows = self
+            .rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(row) = rows.iter_mut().find(|(name, _)| *name == done.category) {
+            row.1 = Some(done.tally);
+        }
+        self.version
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn rows(&self) -> Vec<BoardRow> {
+        self.rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn version(&self) -> u64 {
+        self.version.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// What a scan produced, carried from the worker thread to the screen.
 enum Loaded {
     Scan(ops::ScanResult, Vec<String>),
@@ -1205,7 +1574,7 @@ enum Loaded {
 /// diagnostics it captured travel with the result, together with any still
 /// queued from before it, such as the root, protect and journal warnings
 /// `Ctx::from_cli` raises before the first scan.
-fn run_scan(ctx: &Ctx, operation: Operation) -> Loaded {
+fn run_scan(ctx: &Ctx, operation: Operation, board: Option<&ScanBoard>) -> Loaded {
     let walks_roots = match operation {
         Operation::ScanAll | Operation::Purge => true,
         Operation::Clean(target) => ops::for_target(target).scans_roots(),
@@ -1216,7 +1585,12 @@ fn run_scan(ctx: &Ctx, operation: Operation) -> Loaded {
     }
     let scanned = match operation {
         Operation::ScanAll => {
-            let result = ops::scan_all(ctx);
+            let record = |done: ops::CategoryDone| {
+                if let Some(board) = board {
+                    board.record(done);
+                }
+            };
+            let result = ops::scan_all_observed(ctx, Some(&record));
             return Loaded::Scan(result, ctx.take_diagnostics());
         }
         Operation::Clean(target) => {
@@ -1278,8 +1652,13 @@ fn approved_plan_matches(app: &App, plan: &ApprovedPlan) -> bool {
 }
 
 /// Applies a plan on the worker thread. The loop matched its approval against
-/// the displayed preview before it started.
-fn run_apply(ctx: &Ctx, plan: ApprovedPlan) -> Result<ApplyOutcome> {
+/// the displayed preview before it started. `monitor` watches it from the
+/// journal, which also honours its stop request between attempts.
+fn run_apply(
+    ctx: &Ctx,
+    plan: ApprovedPlan,
+    monitor: &std::sync::Arc<crate::journal::ApplyMonitor>,
+) -> Result<ApplyOutcome> {
     let ApprovedPlan {
         operation,
         findings,
@@ -1291,12 +1670,16 @@ fn run_apply(ctx: &Ctx, plan: ApprovedPlan) -> Result<ApplyOutcome> {
         return Err(read_only());
     }
     crate::journal::check_writable(ctx)?;
-    let mut outcome = crate::volume::measure_apply(&ctx.home, || match operation {
-        Operation::Clean(target) => ops::for_target(target).apply(&findings, ctx),
-        Operation::Purge => ops::purge::Purge.apply(&findings, ctx),
-        Operation::TrashEmpty => apply_trash(ctx, &findings, approval),
-        Operation::ScanAll | Operation::Icloud => Err(read_only()),
+    let mut outcome = ctx.with_apply_monitor(monitor.clone(), || {
+        crate::volume::measure_apply(&ctx.home, || match operation {
+            Operation::Clean(target) => ops::for_target(target).apply(&findings, ctx),
+            Operation::Purge => ops::purge::Purge.apply(&findings, ctx),
+            Operation::TrashEmpty => apply_trash(ctx, &findings, approval),
+            Operation::ScanAll | Operation::Icloud => Err(read_only()),
+        })
     })?;
+    // Before the journal's own errors join, which belong to finished items.
+    outcome.settle_stop(monitor);
     outcome.errors.extend(ctx.take_journal_errors());
     Ok(outcome)
 }
@@ -1511,8 +1894,7 @@ const HELP_KEYS: &[HelpGroup] = &[
             ("↑/↓, k/j", "navigate lists and scroll output"),
             ("PgUp/PgDn", "move a page; g/G the first or last row"),
             ("Enter", "open the operation, or the item in full"),
-            ("b, Esc", "back a screen; on the menu, Esc quits"),
-            ("?", "open or close this reference"),
+            ("b, Esc, ?", "back; Esc quits the menu; ? this reference"),
             ("q, Ctrl+C", "quit, stopping a scan; not during an apply"),
         ],
     ),
@@ -1524,6 +1906,7 @@ const HELP_KEYS: &[HelpGroup] = &[
             ("a", "apply the selected items of the plan"),
             ("s", "toggle Trash-first and permanent deletion"),
             ("r", "rescan, or retry after a failure"),
+            ("x", "during an apply, stop after the current item"),
         ],
     ),
 ];
@@ -1580,9 +1963,22 @@ fn badge(operation: Operation) -> (&'static str, Token, &'static str) {
 /// and the longest label, so no badge is ever clipped.
 const MENU_WIDTH: u16 = 2 + 2 + 10 + 22;
 
+/// Columns the menu grows by once a scan has sizes to show, and the width the
+/// Selected pane keeps however narrow the terminal.
+const MENU_SIZE_COLUMNS: u16 = 16;
+const SELECTED_MIN_WIDTH: u16 = 21;
+
 fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
+    let grown = if app.overview.is_some() {
+        MENU_SIZE_COLUMNS.min(
+            area.width
+                .saturating_sub(MENU_WIDTH + 1 + SELECTED_MIN_WIDTH),
+        )
+    } else {
+        0
+    };
     let [menu_area, _, detail_area] = Layout::horizontal([
-        Constraint::Length(MENU_WIDTH),
+        Constraint::Length(MENU_WIDTH + grown),
         Constraint::Length(1),
         Constraint::Min(0),
     ])
@@ -1599,13 +1995,33 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(Line::styled(title, app.theme.style(Token::Muted))),
         title_area,
     );
+    // The label and the size share what is left after the highlight mark,
+    // the key and the badge.
+    let room = usize::from(menu_area.width.saturating_sub(2 + 2 + 10));
+    let row_room = |item: &MenuItem| room.saturating_sub(item.label.chars().count() + 1);
     let items = MENU.iter().map(|item| {
         let (marker, token, _) = badge(item.operation);
-        ListItem::new(Line::from(vec![
+        let mut spans = vec![
             Span::styled(format!("{} ", item.key), app.theme.style(Token::Muted)),
             Span::styled(format!("{marker:<9} "), app.theme.style(token)),
             Span::raw(item.label),
-        ]))
+        ];
+        let label = item.label.chars().count();
+        let size = app.overview.as_ref().and_then(|overview| {
+            let row = overview.row(item.operation);
+            row.text(row_room(item)).map(|text| (text, row))
+        });
+        if let Some((text, row)) = size {
+            let token = match row {
+                RowSize::Failed => Token::Critical,
+                RowSize::Rescan | RowSize::Nothing | RowSize::Report { .. } => Token::Muted,
+                _ => Token::Accent,
+            };
+            let gap = room.saturating_sub(label + text.chars().count());
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.push(Span::styled(text, app.theme.style(token)));
+        }
+        ListItem::new(Line::from(spans))
     });
     // The mark and weight show the selection; a color over the whole row
     // would hide the badge's own.
@@ -1616,31 +2032,175 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     state.select(Some(app.selected));
     frame.render_stateful_widget(list, list_area, &mut state);
 
-    let selected = &MENU[app.selected];
-    let (_, _, meaning) = badge(selected.operation);
-    let detail = Text::from(vec![
-        Line::styled(selected.label, app.theme.bold(Token::Accent)),
-        Line::raw(""),
-        Line::raw(selected.description),
-        Line::raw(""),
-        Line::styled(meaning, app.theme.style(Token::Warning)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(detail)
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Selected ")),
-        detail_area,
-    );
+    let block = Block::bordered().title(" Selected ");
+    let inner = block.inner(detail_area);
+    let width = usize::from(inner.width);
+    let height = usize::from(inner.height);
+    // The badge's meaning is a safety signal and the last scan's size is what
+    // the row abbreviates, so both come before the description, which is the
+    // first thing a short pane cuts.
+    let selected_lines = |item: &MenuItem, spaced: bool| -> Vec<Line<'static>> {
+        let (_, _, meaning) = badge(item.operation);
+        let mut lines = wrapped(item.label, width, app.theme.bold(Token::Accent));
+        if let Some(overview) = &app.overview {
+            let row = overview.row(item.operation);
+            // A size the row already shows is not repeated; what it cannot
+            // show is said here.
+            let shown = row.text(row_room(item)).is_some();
+            for text in row.detail(shown) {
+                lines.extend(wrapped(&text, width, Style::default()));
+            }
+        }
+        if spaced {
+            lines.push(Line::raw(""));
+        }
+        lines.extend(wrapped(meaning, width, app.theme.style(Token::Warning)));
+        if spaced {
+            lines.push(Line::raw(""));
+        }
+        lines.extend(wrapped(item.description, width, Style::default()));
+        lines
+    };
+    // The form is chosen for the tallest entry, so the pane does not reflow
+    // as the highlight moves: the fullest disk block that fits, with blank
+    // rows between the parts and then without them, before a sparer block.
+    let tallest = |spaced: bool| {
+        MENU.iter()
+            .map(|item| selected_lines(item, spaced).len())
+            .max()
+            .unwrap_or(0)
+    };
+    let forms = disk_forms(app, width);
+    let fits = |disk: &[Line<'static>], spaced: bool| {
+        let separator = usize::from(spaced && !disk.is_empty());
+        disk.len() + separator + tallest(spaced) <= height
+    };
+    let sparest = forms.len() - 1;
+    let (chosen, spaced) = (0..forms.len())
+        .flat_map(|index| [(index, true), (index, false)])
+        .find(|(index, spaced)| fits(&forms[*index], *spaced))
+        .unwrap_or((sparest, false));
+    let mut lines = forms[chosen].clone();
+    if spaced && !lines.is_empty() {
+        lines.push(Line::raw(""));
+    }
+    lines.extend(selected_lines(&MENU[app.selected], spaced));
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), detail_area);
+}
+
+/// The disk block from fullest to sparest: free space, bar and snapshot
+/// line; without the bar; free space alone, each with the free-space line
+/// whole and then in its one-row form. Always at least one form, empty when
+/// nothing was read.
+fn disk_forms(app: &App, width: usize) -> Vec<Vec<Line<'static>>> {
+    let (first, short, bar) = match &app.disk {
+        None => return vec![Vec::new()],
+        Some(Ok(space)) => {
+            let used = space.total.saturating_sub(space.available);
+            let percent = u128::from(used) * 100 / u128::from(space.total.max(1));
+            let free = report::gb(space.available);
+            let first = wrapped(
+                &format!(
+                    "{free} free of {} · {percent}% used",
+                    report::gb(space.total)
+                ),
+                width,
+                Style::default(),
+            );
+            // The one-row form, as short as the pane needs.
+            let short = [
+                format!("{free} free · {percent}% used"),
+                format!("{free} free · {percent}%"),
+            ]
+            .iter()
+            .map(|text| wrapped(text, width, Style::default()))
+            .min_by_key(|rows| (rows.len() > 1, rows.len()))
+            .unwrap_or_default();
+            let filled = crate::analyze::bar(used, space.total, width);
+            let rest = width.saturating_sub(filled.chars().count());
+            let bar = Line::from(vec![
+                Span::styled(filled, app.theme.style(Token::Accent)),
+                Span::styled("·".repeat(rest), app.theme.style(Token::Muted)),
+            ]);
+            (first, short, vec![bar])
+        }
+        Some(Err(reason)) => {
+            let line = wrapped(
+                &format!("disk: unavailable ({reason})"),
+                width,
+                app.theme.style(Token::Warning),
+            );
+            (line.clone(), line, Vec::new())
+        }
+    };
+    let snapshots = match &app.snapshots {
+        Snapshots::NotAsked => None,
+        Snapshots::Checking => Some(("checking snapshots…".to_string(), Token::Muted)),
+        Snapshots::Counted(0) => Some(("no local snapshots".to_string(), Token::Muted)),
+        Snapshots::Counted(1) => Some((
+            "1 local snapshot holds space no scan can see".to_string(),
+            Token::Warning,
+        )),
+        Snapshots::Counted(count) => Some((
+            format!("{count} local snapshots hold space no scan can see"),
+            Token::Warning,
+        )),
+        Snapshots::Unavailable(reason) => {
+            Some((format!("snapshots: unavailable ({reason})"), Token::Muted))
+        }
+    };
+    let snapshots: Vec<Line<'static>> = snapshots
+        .map(|(text, token)| wrapped(&text, width, app.theme.style(token)))
+        .unwrap_or_default();
+    let shortest = if short.len() < first.len() {
+        short
+    } else {
+        first.clone()
+    };
+    vec![
+        [first.clone(), bar.clone(), snapshots.clone()].concat(),
+        [shortest.clone(), bar, snapshots.clone()].concat(),
+        [first.clone(), snapshots.clone()].concat(),
+        [shortest.clone(), snapshots].concat(),
+        first,
+        shortest,
+    ]
+}
+
+/// Prose rows for the Selected pane, through [`wrap_words`] so the pane
+/// knows how tall it is before it draws.
+fn wrapped(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
+    wrap_words(text, width.max(1))
+        .into_iter()
+        .map(|row| Line::styled(row, style))
+        .collect()
 }
 
 fn render_loading(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![Line::raw(app.status.as_str())];
+    if let Some(monitor) = app.apply_monitor.as_ref().filter(|_| applying(app)) {
+        let inner = usize::from(area.width.saturating_sub(2));
+        lines.push(Line::raw(apply_progress_line(app, monitor, inner)));
+    }
     // The clock moving is what says the scan is still alive; a probe can take
     // minutes on a loaded machine.
+    let board = app.scan_board.as_ref().map(|board| board.rows());
     if let Some(elapsed) = app.elapsed_seconds() {
-        lines.push(Line::styled(
-            format!("{elapsed} s elapsed"),
-            app.theme.style(Token::Muted),
+        let clock = match &board {
+            Some(rows) => format!(
+                "{elapsed} s elapsed · {} of {} categories done",
+                rows.iter().filter(|(_, state)| state.is_some()).count(),
+                rows.len()
+            ),
+            None => format!("{elapsed} s elapsed"),
+        };
+        lines.push(Line::styled(clock, app.theme.style(Token::Muted)));
+    }
+    if let Some(rows) = board {
+        lines.extend(scan_board_lines(
+            app,
+            &rows,
+            usize::from(area.width.saturating_sub(2)),
         ));
     }
     frame.render_widget(
@@ -1649,6 +2209,83 @@ fn render_loading(frame: &mut Frame, area: Rect, app: &App) {
             .block(Block::bordered().title(" Working ")),
         area,
     );
+}
+
+/// One row per category in registry order, each saying in words whether it
+/// is done (what it offers), failed (why) or still waiting, so the state reads
+/// without color. Padded to one width so the centered rows line up.
+fn scan_board_lines(app: &App, rows: &[BoardRow], width: usize) -> Vec<Line<'static>> {
+    let texts: Vec<(String, Token)> = rows
+        .iter()
+        .map(|(name, state)| {
+            let (state, token) = match state {
+                None => ("waiting".to_string(), Token::Muted),
+                Some(Ok(tally)) => {
+                    let mut text = format!(
+                        "{} · {} finding{}",
+                        report::gb(tally.actionable_bytes),
+                        tally.findings,
+                        if tally.findings == 1 { "" } else { "s" }
+                    );
+                    if tally.unjudged > 0 {
+                        text.push_str(&format!(" · {} not judged", tally.unjudged));
+                    }
+                    (text, Token::Success)
+                }
+                Some(Err(reason)) => {
+                    let reason = reason.lines().next().unwrap_or_default();
+                    (
+                        format!("failed: {}", report::terminal_safe(reason)),
+                        Token::Critical,
+                    )
+                }
+            };
+            (truncate_right(&format!("{name:<12} {state}"), width), token)
+        })
+        .collect();
+    let widest = texts
+        .iter()
+        .map(|(text, _)| Span::raw(text.as_str()).width())
+        .max()
+        .unwrap_or(0);
+    texts
+        .into_iter()
+        .map(|(text, token)| {
+            let pad = widest.saturating_sub(Span::raw(text.as_str()).width());
+            Line::styled(format!("{text}{}", " ".repeat(pad)), app.theme.style(token))
+        })
+        .collect()
+}
+
+/// `n of N · X of Y · <category> <item>` within `width` columns: the counts
+/// whole, then the item in progress keeping its end, where a path names it.
+fn apply_progress_line(app: &App, monitor: &crate::journal::ApplyMonitor, width: usize) -> String {
+    let counts = format!(
+        "{} of {} · {} of {}",
+        monitor.finished(),
+        monitor.total_findings,
+        report::gb(monitor.bytes_finished()),
+        report::gb(monitor.total_bytes)
+    );
+    let Some(item) = monitor.current() else {
+        return truncate_right(&counts, width);
+    };
+    let subject = match (&app.home, item.command) {
+        (Some(home), false) => match std::path::Path::new(&item.subject).strip_prefix(home) {
+            Ok(below) => format!("~/{}", below.display()),
+            Err(_) => item.subject.clone(),
+        },
+        _ => item.subject.clone(),
+    };
+    let head = format!("{counts} · {} ", report::terminal_safe(&item.op));
+    let room = width.saturating_sub(Span::raw(head.as_str()).width());
+    if room < 8 {
+        return truncate_right(&counts, width);
+    }
+    format!(
+        "{head}{}",
+        truncate_left(&report::terminal_safe(&subject), room)
+    )
 }
 
 /// The plan as the current mode would apply it, computed once per frame: the
@@ -2292,7 +2929,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             typed = format!("Type PURGE {expected_gb}, then Enter");
             vec![(typed.as_str(), ""), ("Esc", "cancel")]
         }
-        (Screen::Loading, _) if applying(app) => Vec::new(),
+        (Screen::Loading, _) if applying(app) => app
+            .stop_key_label()
+            .map(|label| vec![("x", label)])
+            .unwrap_or_default(),
         (Screen::Loading, _) => vec![("q", "quit")],
         _ => footer_keys(app),
     };
@@ -2810,7 +3450,7 @@ mod tests {
             approval: Approval::Yes,
         };
 
-        run_apply(&ctx, plan).unwrap();
+        run_apply(&ctx, plan, &Default::default()).unwrap();
 
         assert!(ctx.journal_path.with_extension("jsonl.1").exists());
     }
@@ -2851,9 +3491,10 @@ mod tests {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
             apply_results: Default::default(),
+            apply_monitor: Default::default(),
         };
 
-        app.finish_apply(run_apply(&ctx, plan));
+        app.finish_apply(run_apply(&ctx, plan, &Default::default()));
 
         assert_eq!(app.screen, Screen::Error);
         assert!(app.summary.is_none());
@@ -3229,6 +3870,392 @@ mod tests {
 
     fn section(category: &'static str, range: std::ops::Range<usize>) -> report::ScanSection {
         report::ScanSection { category, range }
+    }
+
+    const GIB: u64 = 1 << 30;
+
+    fn sized(label: &str, bytes: u64, at_least: Option<u64>) -> Finding {
+        let mut finding = Finding::new(
+            label,
+            Some(std::path::PathBuf::from(format!("/tmp/{label}"))),
+            bytes,
+            "stale",
+            3,
+            Action::Trash,
+        );
+        finding.frees_at_least_bytes = at_least;
+        finding
+    }
+
+    /// The menu after a Scan everything like the owner's: node_modules held
+    /// mostly in clones, caches without, docker failed, toolchains empty.
+    fn overview_menu() -> App {
+        let findings = vec![
+            sized("caches", 12 * GIB, None),
+            sized("nm-a", 20 * GIB, Some(GIB)),
+            sized("nm-b", 1_820 * (1 << 20), Some(900 << 20)),
+            sized("target", 5 * GIB, None),
+        ];
+        let sections = vec![
+            section("caches", 0..1),
+            section("node-modules", 1..3),
+            section("artifacts", 3..4),
+            section("simulators", 4..4),
+            section("xcode", 4..4),
+            section("toolchains", 4..4),
+            section("installers", 4..4),
+            section("agents", 4..4),
+            section("leftovers", 4..4),
+        ];
+        let mut app = scan_everything(findings, sections);
+        app.back_to_menu();
+        app.disk = Some(Ok(FreeSpace {
+            available: 123 * GIB,
+            total: 994 * GIB,
+        }));
+        app.snapshots = Snapshots::Counted(2);
+        app
+    }
+
+    fn disk_menu() -> App {
+        App {
+            disk: Some(Ok(FreeSpace {
+                available: 123 * GIB,
+                total: 994 * GIB,
+            })),
+            snapshots: Snapshots::Counted(2),
+            ..App::default()
+        }
+    }
+
+    fn menu_with(app: &App, selected: usize) -> App {
+        App {
+            selected,
+            disk: app.disk.clone(),
+            snapshots: app.snapshots.clone(),
+            overview: app.overview.clone(),
+            theme: app.theme,
+            ..App::default()
+        }
+    }
+
+    /// The Selected pane's rows, each trimmed, joined by spaces.
+    fn selected_pane_text(rows: &[String]) -> String {
+        rows.iter()
+            .filter_map(|row| {
+                let (_, pane) = row.split_once('│')?;
+                Some(pane.trim_end_matches(['│', ' ']).trim().to_string())
+            })
+            .filter(|row| !row.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The menu row of `label`, trimmed, from a rendered screen.
+    fn menu_row<'a>(rows: &'a [String], label: &str) -> &'a str {
+        rows.iter()
+            .map(|row| row.split(['│', '└', '┌']).next().unwrap_or("").trim_end())
+            .find(|row| row.ends_with(label) || row.contains(&format!(" {label} ")))
+            .unwrap_or("")
+    }
+
+    #[test]
+    fn the_menu_opens_on_the_disk_and_keeps_every_entry_and_meaning_whole() {
+        let app = disk_menu();
+        for (selected, entry) in MENU.iter().enumerate() {
+            let app = menu_with(&app, selected);
+            let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+            let pane = selected_pane_text(&rows);
+            assert!(pane.contains("123.0 GB free · 87% used"), "{rows:#?}");
+            let (_, _, meaning) = badge(entry.operation);
+            // The pane rewraps words, so compare without the breaks.
+            let squeeze = |text: &str| text.split_whitespace().collect::<String>();
+            assert!(squeeze(&pane).contains(&squeeze(meaning)), "{rows:#?}");
+            assert!(
+                squeeze(&pane).contains(&squeeze(entry.description)),
+                "{rows:#?}"
+            );
+            for item in MENU {
+                assert_eq!(
+                    menu_row(&rows, item.label).trim_start_matches('▶').trim(),
+                    format!("{} {:<9} {}", item.key, badge(item.operation).0, item.label),
+                    "before any scan a row is as it always was"
+                );
+            }
+            assert!(
+                rows.concat()
+                    .contains("↑↓ move · Enter open · q quit · ? keys")
+            );
+        }
+        let rows = screen_rows(&menu_with(&app, 0), 120, 40).concat();
+        assert!(
+            rows.contains("123.0 GB free of 994.0 GB · 87% used"),
+            "{rows}"
+        );
+        assert!(rows.contains('█') && rows.contains('·'), "{rows}");
+        assert!(
+            rows.contains("2 local snapshots hold space no scan can see"),
+            "{rows}"
+        );
+    }
+
+    #[test]
+    fn the_disk_block_says_what_it_could_not_read() {
+        let mut app = App {
+            disk: Some(Err("cannot read free space: /x".into())),
+            snapshots: Snapshots::Checking,
+            ..App::default()
+        };
+        let rows = screen_rows(&app, 120, 40).concat();
+        assert!(
+            rows.contains("disk: unavailable (cannot read free space: /x)"),
+            "{rows}"
+        );
+        assert!(rows.contains("checking snapshots…"), "{rows}");
+        assert!(!rows.contains('█'), "no bar without a measurement: {rows}");
+        assert!(!app.failed, "an unreadable volume never fails the run");
+        app.snapshots = Snapshots::Unavailable("not an APFS volume".into());
+        let rows = screen_rows(&app, 120, 40).concat();
+        assert!(
+            rows.contains("snapshots: unavailable (not an APFS volume)"),
+            "{rows}"
+        );
+        app.snapshots = Snapshots::Counted(0);
+        assert!(
+            screen_rows(&app, 120, 40)
+                .concat()
+                .contains("no local snapshots")
+        );
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        assert!(
+            selected_pane_text(&rows).contains("disk: unavailable"),
+            "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn the_menu_reads_the_volume_again_when_it_is_shown() {
+        let home = std::env::temp_dir();
+        let mut app = App {
+            home: Some(home),
+            ..App::default()
+        };
+        assert_eq!(app.disk, None);
+        app.back_to_menu();
+        let Some(Ok(space)) = app.disk else {
+            panic!("statvfs of the temporary folder: {:?}", app.disk);
+        };
+        assert!(space.total > 0 && space.available <= space.total);
+    }
+
+    #[test]
+    fn after_scan_everything_each_row_carries_its_size_or_range() {
+        let app = overview_menu();
+        let narrow = screen_rows(&menu_with(&app, 0), MIN_WIDTH, MIN_HEIGHT);
+        let wide = screen_rows(&menu_with(&app, 0), 120, 40);
+        for rows in [&narrow, &wide] {
+            assert!(
+                menu_row(rows, "Caches").ends_with("12.0 GB · 1"),
+                "{rows:#?}"
+            );
+            assert!(
+                menu_row(rows, "node_modules").ends_with("1.9–21.8 GB · 2"),
+                "{rows:#?}"
+            );
+            assert!(menu_row(rows, "Docker").ends_with("failed"), "{rows:#?}");
+            assert!(menu_row(rows, "Xcode").ends_with("none"), "{rows:#?}");
+            assert!(menu_row(rows, "Project purge").ends_with("Project purge"));
+            assert!(menu_row(rows, "iCloud status").ends_with("iCloud status"));
+            assert!(
+                rows.concat()
+                    .contains("↑↓ move · Enter open · q quit · ? keys")
+            );
+            for item in MENU {
+                assert!(menu_row(rows, item.label).contains(badge(item.operation).0));
+            }
+        }
+        // At 64 columns the total's range fits only without its count.
+        assert!(
+            menu_row(&narrow, "Scan everything").ends_with("Scan everything 18.9–38.8 GB"),
+            "{narrow:#?}"
+        );
+        assert!(
+            menu_row(&wide, "Scan everything").ends_with("18.9–38.8 GB · 4"),
+            "{wide:#?}"
+        );
+        let selected = screen_rows(&menu_with(&app, 2), 120, 40);
+        let pane = selected_pane_text(&selected);
+        assert!(
+            pane.contains("at least 1.9 GB comes back; APFS clones share the rest"),
+            "{pane}"
+        );
+        assert!(
+            !pane.contains("Last scan:"),
+            "the row already shows it: {pane}"
+        );
+        let caches = selected_pane_text(&screen_rows(&menu_with(&app, 1), 120, 40));
+        assert!(!caches.contains("at least"), "{caches}");
+    }
+
+    /// A row whose label leaves no room at 64 columns says in the pane what
+    /// the row cannot; every other row shows its state at 64 columns, and
+    /// every entry's badge meaning stays whole.
+    #[test]
+    fn at_the_minimum_size_every_row_states_its_scan_and_every_meaning_is_whole() {
+        let findings = vec![
+            sized("caches", 12 * GIB, None),
+            sized("nm", 100 * GIB, Some(54 * GIB)),
+            sized("target", 5 * GIB, Some(GIB)),
+            sized("agents", 3 * GIB, None),
+            sized("toolchain", 2 * GIB, None),
+        ];
+        let sections = vec![
+            section("caches", 0..1),
+            section("node-modules", 1..2),
+            section("artifacts", 2..3),
+            section("simulators", 3..3),
+            section("xcode", 3..3),
+            section("toolchains", 4..5),
+            section("installers", 5..5),
+            section("agents", 3..4),
+            section("leftovers", 5..5),
+        ];
+        let mut app = scan_everything(findings, sections);
+        app.back_to_menu();
+        app.disk = disk_menu().disk;
+        app.snapshots = Snapshots::Counted(2);
+        let squeeze = |text: &str| text.split_whitespace().collect::<String>();
+        let rows = screen_rows(&menu_with(&app, 0), MIN_WIDTH, MIN_HEIGHT);
+        // 72.0–122.0 GB is too wide beside its label: its lower bound.
+        assert!(
+            menu_row(&rows, "Scan everything").ends_with("everything     ≥72.0 GB"),
+            "{rows:#?}"
+        );
+        assert!(
+            menu_row(&rows, "node_modules").ends_with("54.0–100.0 GB"),
+            "{rows:#?}"
+        );
+        assert!(
+            menu_row(&rows, "Build artifacts").ends_with("1.0–5.0 GB"),
+            "{rows:#?}"
+        );
+        assert!(
+            menu_row(&rows, "Swift toolchains").ends_with("2.0 GB · 1"),
+            "{rows:#?}"
+        );
+        assert!(menu_row(&rows, "Docker").ends_with("failed"), "{rows:#?}");
+        // The one label too long for any size at 64 columns.
+        assert!(
+            menu_row(&rows, "Agent caches & history").ends_with("history"),
+            "{rows:#?}"
+        );
+        let agents = selected_pane_text(&screen_rows(&menu_with(&app, 10), MIN_WIDTH, MIN_HEIGHT));
+        assert!(
+            squeeze(&agents).contains(&squeeze("Last scan: 3.0 GB in 1 finding(s).")),
+            "{agents}"
+        );
+        let overview = app.overview.as_mut().unwrap();
+        overview.applied.insert("agents");
+        overview.failed.push("caches");
+        for (selected, entry) in MENU.iter().enumerate() {
+            let rows = screen_rows(&menu_with(&app, selected), MIN_WIDTH, MIN_HEIGHT);
+            let pane = selected_pane_text(&rows);
+            let (_, _, meaning) = badge(entry.operation);
+            assert!(squeeze(&pane).contains(&squeeze(meaning)), "{rows:#?}");
+            assert!(pane.contains("GB free"), "the disk line stays: {rows:#?}");
+            assert!(
+                rows.concat()
+                    .contains("↑↓ move · Enter open · q quit · ? keys")
+            );
+        }
+        let rows = screen_rows(&menu_with(&app, 0), MIN_WIDTH, MIN_HEIGHT);
+        assert!(menu_row(&rows, "Caches").ends_with("failed"), "{rows:#?}");
+        let agents = selected_pane_text(&screen_rows(&menu_with(&app, 10), MIN_WIDTH, MIN_HEIGHT));
+        assert!(
+            squeeze(&agents).contains(&squeeze("Changed since the last scan")),
+            "{agents}"
+        );
+    }
+
+    #[test]
+    fn an_applied_category_asks_for_a_rescan_instead_of_a_stale_size() {
+        let mut app = overview_menu();
+        app.operation = Some(Operation::Purge);
+        app.begin_apply(std::sync::Arc::new(crate::journal::ApplyMonitor::new(0, 0)));
+        app.back_to_menu();
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (120, 40)] {
+            let rows = screen_rows(&menu_with(&app, 0), width, height);
+            for label in ["node_modules", "Build artifacts", "Scan everything"] {
+                assert!(menu_row(&rows, label).ends_with("rescan"), "{rows:#?}");
+            }
+            assert!(
+                menu_row(&rows, "Caches").ends_with("12.0 GB · 1"),
+                "{rows:#?}"
+            );
+        }
+        let pane = selected_pane_text(&screen_rows(&menu_with(&app, 2), 120, 40));
+        assert!(pane.contains("Changed since the last scan"), "{pane}");
+        // A new Scan everything replaces the overview, and with it every rescan.
+        app.finish_scan(
+            ops::ScanResult {
+                findings: vec![sized("nm", GIB, None)],
+                sections: vec![section("node-modules", 0..1)],
+                errors: Vec::new(),
+            },
+            Vec::new(),
+        );
+        app.back_to_menu();
+        let rows = screen_rows(&menu_with(&app, 0), 120, 40);
+        assert!(
+            menu_row(&rows, "node_modules").ends_with("1.0 GB · 1"),
+            "{rows:#?}"
+        );
+        assert!(menu_row(&rows, "Caches").ends_with("failed"), "{rows:#?}");
+    }
+
+    #[test]
+    fn a_row_drops_its_count_before_its_size_and_never_cuts_a_range() {
+        let row = Overview::offers(GIB, 20 * GIB, 7);
+        assert_eq!(row.text(20).as_deref(), Some("1.0–20.0 GB · 7"));
+        assert_eq!(row.text(12).as_deref(), Some("1.0–20.0 GB"));
+        assert_eq!(
+            row.text(10).as_deref(),
+            Some("≥1.0 GB"),
+            "the lower bound, never the upper"
+        );
+        assert_eq!(row.text(6), None);
+        let single = Overview::offers(5 * GIB, 5 * GIB, 1);
+        assert_eq!(single.text(20).as_deref(), Some("5.0 GB · 1"));
+        assert_eq!(RowSize::Blank.text(40), None);
+    }
+
+    #[test]
+    fn the_disk_block_and_the_overview_paint_no_color_under_no_color() {
+        use crate::theme::ColorSupport;
+        use ratatui::style::Color;
+
+        for colors in [ColorSupport::None, ColorSupport::Named] {
+            let mut app = overview_menu();
+            app.theme = Theme::new(colors);
+            let backend = TestBackend::new(120, 40);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let painted = buffer
+                .content()
+                .iter()
+                .filter(|cell| cell.symbol() == "█")
+                .any(|cell| cell.fg != Color::Reset);
+            let any = buffer
+                .content()
+                .iter()
+                .any(|cell| cell.fg != Color::Reset || cell.bg != Color::Reset);
+            if colors == ColorSupport::None {
+                assert!(!any, "the menu painted a color under NO_COLOR");
+            } else {
+                assert!(painted, "control: the colored theme paints the bar");
+            }
+        }
     }
 
     /// Every category a scan reports routes to its own menu entry, and the
@@ -4242,12 +5269,13 @@ mod tests {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
             apply_results: Default::default(),
+            apply_monitor: Default::default(),
         };
         ctx.diagnostic("warn", "skipping a scan root: synthetic");
 
         let operation = Operation::Clean(Target::Installers);
         let mut app = App::default();
-        app.finish_load(operation, run_scan(&ctx, operation));
+        app.finish_load(operation, run_scan(&ctx, operation, None));
 
         assert!(
             app.warnings
@@ -4288,5 +5316,213 @@ mod tests {
         assert!(output.contains("┌ Error"), "{output}");
         assert!(!output.contains("Failed closed"), "{output}");
         assert!(output.contains("Nothing was changed."), "{output}");
+    }
+
+    fn applying_app(command: bool) -> (App, std::sync::Arc<crate::journal::ApplyMonitor>) {
+        let monitor = std::sync::Arc::new(crate::journal::ApplyMonitor::new(3, 3 << 30));
+        monitor.set_current_for_test(crate::journal::CurrentItem {
+            op: "node_modules".into(),
+            subject: if command {
+                "docker --host unix:///var/run/docker.sock image prune -a -f".into()
+            } else {
+                "/Users/example/dev/a-very-long-project-name/packages/web/node_modules".into()
+            },
+            command,
+        });
+        let mut app = App {
+            home: Some(std::path::PathBuf::from("/Users/example")),
+            ..App::default()
+        };
+        app.begin_apply(monitor.clone());
+        (app, monitor)
+    }
+
+    /// The working screen of an apply says how far it has gone and what it is
+    /// doing, whole at the minimum size, and offers the stop key; asking it
+    /// changes the screen at once and the key is no longer offered.
+    #[test]
+    fn the_apply_screen_shows_progress_and_offers_a_stop_at_the_minimum_size() {
+        let (mut app, monitor) = applying_app(false);
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let frame = rows.concat();
+        assert!(
+            frame.contains("Applying only the exact previewed findings"),
+            "{rows:#?}"
+        );
+        assert!(
+            frame.contains("0 of 3 · 0 B of 3.0 GB · node_modules …"),
+            "{rows:#?}"
+        );
+        assert!(
+            frame.contains("/web/node_modules"),
+            "the item keeps its end: {rows:#?}"
+        );
+        assert!(frame.contains("x stop after this item"), "{rows:#?}");
+        assert!(frame.contains("Quitting is refused until this apply returns."));
+
+        app.request_stop();
+        assert!(monitor.stop_requested());
+        let frame = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT).concat();
+        assert!(
+            frame.contains("Stopping after the current item…"),
+            "{frame}"
+        );
+        assert!(!frame.contains("x stop"), "{frame}");
+        assert!(frame.contains("Quitting is refused until this apply returns."));
+    }
+
+    /// A typed command can run for minutes, so the key says it waits for the
+    /// command, and so does the screen once it is pressed.
+    #[test]
+    fn a_stop_during_a_typed_command_says_it_waits_for_the_command() {
+        let (mut app, _monitor) = applying_app(true);
+        let frame = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT).concat();
+        assert!(frame.contains("x stops after this command"), "{frame}");
+        app.request_stop();
+        let frame = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT).concat();
+        assert!(
+            frame.contains("Stopping after the current command…"),
+            "{frame}"
+        );
+    }
+
+    /// Only a bare `x` asks for a stop, and never outside an apply.
+    #[test]
+    fn only_a_bare_x_during_an_apply_stops_it() {
+        assert!(is_stop_key(key(KeyCode::Char('x'))));
+        let mut alt = key(KeyCode::Char('x'));
+        alt.modifiers = event::KeyModifiers::ALT;
+        assert!(!is_stop_key(alt));
+        assert!(!is_stop_key(key(KeyCode::Char('q'))));
+        let (mut app, monitor) = applying_app(false);
+        app.working = Some((Work::Scan, Instant::now()));
+        app.request_stop();
+        assert!(
+            !monitor.stop_requested(),
+            "a scan has nothing to stop between"
+        );
+    }
+
+    /// The outcome of a stopped apply says what finished and what was never
+    /// attempted, and the run still counts as failed.
+    #[test]
+    fn a_stopped_apply_reports_what_was_not_attempted() {
+        let mut app = App::default();
+        let mut outcome = ApplyOutcome::new("caches");
+        outcome.summary.items_touched = 1;
+        outcome.stopped = 2;
+        outcome
+            .errors
+            .push("stopped by you: 2 not attempted".into());
+        app.finish_apply(Ok(outcome));
+        assert_eq!(app.screen, Screen::Outcome);
+        assert!(app.failed);
+        assert_eq!(app.status, "Stopped by you: 1 done, 2 not attempted.");
+        let frame = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT).concat();
+        assert!(frame.contains("stopped by you: 2 not attempted"), "{frame}");
+    }
+
+    /// The working screens' new lines paint nothing under `NO_COLOR`, and they
+    /// say in words what color would add.
+    #[test]
+    fn progress_screens_paint_no_color_under_no_color() {
+        use crate::theme::ColorSupport;
+        use ratatui::style::Color;
+        let (mut stopping, _monitor) = applying_app(false);
+        stopping.request_stop();
+        let screens = vec![applying_app(false).0, applying_app(true).0, stopping]
+            .into_iter()
+            .chain(progress_apps());
+        for mut app in screens {
+            app.theme = Theme::new(ColorSupport::None);
+            let backend = TestBackend::new(MIN_WIDTH, MIN_HEIGHT);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            for cell in terminal.backend().buffer().content() {
+                assert_eq!(cell.fg, Color::Reset, "a working screen painted a color");
+                assert_eq!(
+                    cell.bg,
+                    Color::Reset,
+                    "a working screen painted a background"
+                );
+            }
+        }
+    }
+
+    /// Scan screens for the test above.
+    fn progress_apps() -> Vec<App> {
+        vec![scanning_app()]
+    }
+
+    /// A Scan everything in progress: one category done, one failed with a
+    /// long reason, one done with an unjudged finding, the rest waiting.
+    fn scanning_app() -> App {
+        let mut app = App::default();
+        app.begin_load(Operation::ScanAll);
+        let board = app.scan_board.clone().unwrap();
+        board.record(ops::CategoryDone {
+            category: "caches",
+            tally: Ok(ops::CategoryTally {
+                actionable_bytes: 3 << 30,
+                findings: 12,
+                unjudged: 0,
+            }),
+        });
+        board.record(ops::CategoryDone {
+            category: "docker",
+            tally: Err(format!("cannot reach the daemon {}", "x".repeat(200))),
+        });
+        board.record(ops::CategoryDone {
+            category: "artifacts",
+            tally: Ok(ops::CategoryTally {
+                actionable_bytes: 4096,
+                findings: 1,
+                unjudged: 1,
+            }),
+        });
+        app
+    }
+
+    /// A Scan everything lists every category with its state, whole at the
+    /// minimum size, below the status and the clock; a single-category scan
+    /// keeps the screen it had.
+    #[test]
+    fn the_scan_screen_lists_every_category_at_the_minimum_size() {
+        let app = scanning_app();
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let frame = rows.concat();
+        assert!(frame.contains("Scanning everything"), "{rows:#?}");
+        assert!(
+            frame.contains("0 s elapsed · 3 of 10 categories done"),
+            "{rows:#?}"
+        );
+        for operation in ops::all() {
+            assert!(
+                frame.contains(operation.name()),
+                "{} missing: {rows:#?}",
+                operation.name()
+            );
+        }
+        assert!(
+            frame.contains("caches       3.0 GB · 12 findings"),
+            "{rows:#?}"
+        );
+        assert!(
+            frame.contains("artifacts    4 KB · 1 finding · 1 not judged"),
+            "{rows:#?}"
+        );
+        assert!(
+            frame.contains("docker       failed: cannot reach the daemon"),
+            "{rows:#?}"
+        );
+        assert!(frame.contains("toolchains   waiting"), "{rows:#?}");
+        assert!(frame.contains("q quit"), "the footer survives: {rows:#?}");
+
+        let mut single = App::default();
+        single.begin_load(Operation::Clean(Target::Caches));
+        assert!(single.scan_board.is_none());
+        let frame = screen_rows(&single, MIN_WIDTH, MIN_HEIGHT).concat();
+        assert!(frame.contains("0 s elapsed"));
+        assert!(!frame.contains("waiting"));
     }
 }

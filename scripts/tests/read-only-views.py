@@ -18,7 +18,7 @@ import tempfile
 import termios
 import time
 
-from tui import render_screen
+from tui import render_screen, stale_project, write_script
 
 
 class View:
@@ -156,6 +156,97 @@ def probe_pid(home):
     return int(text) if text.endswith("\n") and text.strip().isdigit() else None
 
 
+def culprit(binary, home):
+    """The culprit line names where a folder's space is, and `m` descends
+    straight there, one level per `b` back."""
+    corpus = home / "culprit"
+    (corpus / "big" / "a" / "b").mkdir(parents=True)
+    (corpus / "big" / "a" / "b" / "movie.mov").write_bytes(b"x" * 300_000)
+    (corpus / "big" / "a" / "b" / "note").write_bytes(b"x")
+    (corpus / "small").mkdir()
+    (corpus / "small" / "data").write_bytes(b"x" * 4096)
+    view = View(binary, home, ["analyze", str(corpus)])
+    try:
+        view.wait("Contents")
+        # The cursor stays on whichever entry arrived first; start at the top.
+        view.send(b"g")
+        view.wait_screen(40, 120, "mostly in a/b/movie.mov", gone="Measuring")
+        start = view.send(b"m")
+        view.wait("movie.mov", start)
+        view.wait_screen(40, 120, "/culprit/big/a/b", gone="mostly in a/b/movie.mov")
+        view.send(b"b")
+        view.wait_screen(40, 120, "/culprit/big/a ", gone="/culprit/big/a/b")
+        view.quit()
+    finally:
+        view.close()
+
+
+def verdicts(binary):
+    """`v` loads devtrim's own verdicts from one scan, in a home outside the
+    protected system temporary folder: a stale project's `target` and
+    `node_modules` read OFFERED, the projects folder HOLDS 2, and `f` keeps
+    only those. A quit while the scan is still running kills the command it
+    is waiting on and exits as an interrupted scan does."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-readonly-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        project = stale_project(home)
+        (home / "elsewhere").mkdir()
+        view = View(binary, home, ["analyze", str(project)])
+        try:
+            view.wait("Contents")
+            # Home first: the cursor stays on whichever entry arrived first.
+            start = view.send(b"gv")
+            view.wait("OFFERED · TRASH · devtrim clean artifacts", start)
+            view.wait_screen(40, 120, "OFFERED     node_modules/", gone="loading devtrim's verdicts")
+            view.quit(expected=0)
+        finally:
+            view.close()
+        view = View(binary, home, ["analyze", str(home)])
+        try:
+            view.wait("Contents")
+            start = view.send(b"v")
+            view.wait("NOT OFFERED", start)
+            view.send(b"f")
+            # Ratatui redraws only changed cells: read the rebuilt screen.
+            view.wait_screen(40, 120, "Contents · filtered", gone="NOT OFFERED")
+            view.wait_screen(40, 120, "HOLDS 2", gone="NOT OFFERED")
+            view.quit(expected=0)
+        finally:
+            view.close()
+        write_script(home / "bin" / "pgrep", 'printf "%s\\n" "$$" > "$HOME/probe-pid"\nexec /bin/sleep 60')
+        view = View(binary, home, ["analyze", str(project)])
+        try:
+            view.wait("Contents")
+            view.send(b"gv")
+            view.wait_screen(40, 120, "loading devtrim's verdicts", gone="Read-only.")
+            deadline = time.monotonic() + 10
+            while not probe_pid(home):
+                assert time.monotonic() < deadline, "the verdict scan never started its probe"
+                view.hold(0.05)
+            pid = probe_pid(home)
+            # Navigation keeps working while the scan runs.
+            view.send(b"j")
+            view.wait_screen(40, 120, "▶      4 KB", gone="Read-only.")
+            view.wait_screen(40, 120, "loading devtrim's verdicts", gone="Read-only.")
+            view.quit(expected=130)
+            deadline = time.monotonic() + 2
+            while True:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                assert time.monotonic() < deadline, "quit left the verdict scan's probe running"
+                time.sleep(0.05)
+        finally:
+            view.close()
+            pid = probe_pid(home)
+            if pid:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+
 def exercise(binary, home):
     corpus = home / "navigation"
     corpus.mkdir()
@@ -285,7 +376,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="devtrim-readonly-") as directory:
         home = Path(directory)
         (home / "bin").mkdir()
-        result = benchmark(binary, home, args.seconds, args.children) if args.benchmark else exercise(binary, home)
+        if args.benchmark:
+            result = benchmark(binary, home, args.seconds, args.children)
+        else:
+            result = exercise(binary, home)
+            culprit(binary, home)
+            verdicts(binary)
         print(json.dumps(result))
 
 

@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.14.0.
+This source tree and its packaged documentation describe devtrim v0.15.0.
 
 ## Install
 
@@ -358,6 +358,19 @@ is never measured or entered, and anything unreadable is disclosed as a
 `(partial)` lower bound. A lower bound is a partial result, so `analyze --json`
 lists each one in `errors` and exits nonzero, as quitting the explorer does.
 
+Each folder in the explorer names the chain below it that holds most of its
+space — `mostly in app/node_modules/ · 77%`, where each step holds at least half
+of the one above — and `m` goes straight to its end. The chain stops at a
+Git repository, a `node_modules` install or a bundle such as an `.app` rather
+than splitting it, and reads as a lower bound when part of it was unreadable. `v`
+runs one fresh read-only scan with your roots and marks each entry by the
+findings `devtrim explain` uses: `OFFERED` (the command and whether it moves to
+the Trash), `HOLDS n` (a folder holding n offered entries), `IN OFFER` (inside an
+offered target), `PROTECTED` (with the rule) or `NOT OFFERED` (outside the scan
+roots and every finding); an entry inside the roots that nothing offers has no
+tag. `f` then hides the entries no offer reaches, and quitting while the
+verdicts still load exits 130. None of it grants deletion: the command a verdict names is the way to act on it.
+
 `status` reads machine vitals through fixed-argv system tools and reports a
 health score that **names every input it could not read** rather than scoring
 over the gap. Memory used is stated as `active + wired + compressed`: counting
@@ -534,11 +547,22 @@ in Trash instead of blocking the other exact items.
 The TUI offers the same scanners and apply owners behind a keyboard interface:
 arrow keys or `j`/`k` navigate, `Enter` previews, `a` starts confirmation, `s`
 switches an already-previewed Trash action to permanent mode and back, and `r`
-rescans. `Esc` goes back one screen: a confirmation or the full detail view
+rescans. The menu shows the home volume's free space with a bar and how many
+local APFS snapshots the volume keeps, since a snapshot holds space no scan can
+see; after a scan each operation names what its last scan offered. Where APFS
+clones share blocks, the size is a range from what it frees at least to what it
+holds, such as `1.9–21.8 GB`, and a category changed by an apply asks for a
+rescan instead of showing a stale size. Findings name what brings a target back
+when there is evidence for it (`comes back with: cargo build`). `Esc` goes back one screen: a confirmation or the full detail view
 returns to the results, the results, an apply outcome or a failure return to
 the menu, and on the menu `Esc` quits.
 A scan or apply runs while the screen stays live and counts the seconds it has
-taken, since a process probe can take minutes on a loaded machine. During a
+taken, since a process probe can take minutes on a loaded machine. Scan
+everything lists the ten categories as each finishes, with its size, or why it
+failed; an apply shows the item it is on and how many items and bytes are done.
+During an apply `x` stops after the current item or command: what is in progress
+finishes, nothing later is attempted or journaled, and the outcome counts what
+was not attempted. During a
 scan `q` or Ctrl-C stops it and quits, killing every command it started; during
 an apply no key quits until it returns, because quitting could leave a target
 half removed. A SIGINT, SIGTERM or SIGHUP, whenever it arrives, restores the terminal

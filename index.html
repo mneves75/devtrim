@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="devtrim is a local-first disk cleaner for macOS developer machines. It measures, classifies and trims caches and build output, previews every action, scores its danger and moves files to the Trash first.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-RrHEe71mHfhz81pdvgtPcBu6R63BRSekcxKs1QqSAqo='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-exiWuf/iUtsQUPowOYlYjIeh8AZk44rplzwAuK2BJkg='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>devtrim — measure · classify · trim</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -47,12 +47,70 @@
     </div>
 
     <div class="walk" data-walk>
-      <div class="walk-tabs" role="tablist" aria-label="Walk through one cleanup" hidden>
-        <button type="button" role="tab" id="tab-preview" aria-controls="step-preview" aria-selected="true">Preview</button>
-        <button type="button" role="tab" id="tab-select" aria-controls="step-select" aria-selected="false" tabindex="-1">Leave one out</button>
-        <button type="button" role="tab" id="tab-confirm" aria-controls="step-confirm" aria-selected="false" tabindex="-1">Confirm</button>
-      </div>
+      <div class="walk-tabs" role="tablist" aria-label="Walk through one cleanup" hidden></div>
       <ol class="walk-steps">
+        <li id="step-scan">
+          <figure>
+            <figcaption><strong>Scan.</strong> Each category is listed as it finishes, with its size and count; the rest show as waiting.</figcaption>
+<!-- tui:scanning -->
+<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: scan in progress"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · Scan everything                                                                  </span>
+┌ Working ─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                       Scanning everything…                                       │
+│                               <span class="k">0 s elapsed · 7 of 10 categories done</span>                              │
+│                                   <span class="g">caches       0 B · 0 findings</span>                                  │
+│                                   <span class="k">node-modules waiting         </span>                                  │
+│                                   <span class="k">artifacts    waiting         </span>                                  │
+│                                   <span class="g">simulators   0 B · 0 findings</span>                                  │
+│                                   <span class="k">xcode        waiting         </span>                                  │
+│                                   <span class="g">docker       0 B · 0 findings</span>                                  │
+│                                   <span class="g">toolchains   0 B · 0 findings</span>                                  │
+│                                   <span class="g">installers   0 B · 0 findings</span>                                  │
+│                                   <span class="g">agents       0 B · 0 findings</span>                                  │
+│                                   <span class="g">leftovers    0 B · 0 findings</span>                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ <span class="c">q</span> quit
+ <span class="k">q stops the scan and quits; other keys wait for the results.</span></code></pre></div>
+<!-- /tui:scanning -->
+          </figure>
+        </li>
+        <li id="step-overview">
+          <figure>
+            <figcaption><strong>Overview.</strong> The menu opens on the volume&rsquo;s free space, and after a scan each category shows what it can give back.</figcaption>
+<!-- tui:overview -->
+<div class="term-frame" data-cols="38" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: menu after a scan"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · Menu               </span>
+<span class="k"> Operations</span>
+<span class="b">▶ </span><span class="k b">1 </span><span class="u b">READ-ONLY </span><span class="b">Scan everything         </span>
+  <span class="k">2 </span><span class="g">TRASH     </span>Caches
+  <span class="k">3 </span><span class="g">TRASH     </span>node_modules
+  <span class="k">4 </span><span class="g">TRASH     </span>Build artifacts
+  <span class="k">p </span><span class="g">TRASH     </span>Project purge
+  <span class="k">5 </span><span class="r">PERMANENT </span>Simulators
+  <span class="k">6 </span><span class="g">TRASH     </span>Xcode
+  <span class="k">7 </span><span class="r">PERMANENT </span>Docker
+  <span class="k">8 </span><span class="g">TRASH     </span>Swift toolchains
+  <span class="k">d </span><span class="g">TRASH     </span>Installers
+  <span class="k">a </span><span class="g">TRASH     </span>Agent caches &amp; history
+  <span class="k">9 </span><span class="u">READ-ONLY </span>Agent leftovers
+  <span class="k">i </span><span class="u">READ-ONLY </span>iCloud status
+  <span class="k">0 </span><span class="r">PERMANENT </span>Empty Trash
+
+
+
+
+
+
+ <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">Enter</span> open<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> key
+ <span class="k">Preview first. Nothing changes until </span></code></pre></div>
+<!-- /tui:overview -->
+          </figure>
+        </li>
         <li id="step-preview">
           <figure>
             <figcaption><strong>Preview.</strong> Two stale demo projects: every finding with its danger, size and path, before anything changes.</figcaption>
@@ -69,13 +127,13 @@
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ Details ─────────────────────────────────────────────────────────────────────────────────────────┐
 │<span class="g b">stale target artifacts</span>                                                                            │
 │5.9 GB · danger-5 · move to Trash                                                                 │
+│frees at least 5.9 GB: APFS clones share the rest                                                 │
 │/private/tmp/devtrim-demo/dev/payments-api/target                                                 │
-│<span class="k">repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml</span>                                │
+│<span class="k">repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build</span>  │
 │project: /private/tmp/devtrim-demo/dev/payments-api                                               │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
  <span class="c">Space</span> pick<span class="k"> · </span><span class="c">A</span> none<span class="k"> · </span><span class="c">a</span> apply<span class="k"> · </span><span class="c">Enter</span> details<span class="k"> · </span><span class="c">s</span> permanent<span class="k"> · </span><span class="c">r</span> rescan<span class="k"> · </span><span class="c">b</span> back<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
@@ -93,7 +151,6 @@
 │<span class="g b">› </span>[ ] <span class="y">  3. danger-5 </span><span class="c">  614 MB  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>    │
 │  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>  │
 │  <span class="k">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.confi…</span>│
-│                                                                                  │
 │                                                                                  │
 │                                                                                  │
 │                                                                                  │
@@ -126,12 +183,43 @@
 <!-- /tui:confirm -->
           </figure>
         </li>
+        <li id="step-progress">
+          <figure>
+            <figcaption><strong>Apply.</strong> The plan runs one finding at a time with its count and size, and a stop key ends it after the current item, never inside one.</figcaption>
+<!-- tui:progress -->
+<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: apply stopping after this item"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · Project purge                                                                    </span>
+┌ Apply outcome ───────────────────────────────────────────────────────────────────────────────────┐
+│<span class="r b">purge: 0 item(s), ~0 B reclaimed estimate</span>                                                         │
+│free space on the home volume: 33.5 GB → 33.5 GB (+88 MB), measured; other processes also write   │
+│                                                                                                  │
+│                                                                                                  │
+│<span class="r b">Errors</span>                                                                                            │
+│• stopped by you: 4 not attempted                                                                 │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">r</span> rescan<span class="k"> · </span><span class="c">b</span> back<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
+ <span class="y">Stopped by you: 0 done, 4 not attempted.</span></code></pre></div>
+<!-- /tui:progress -->
+          </figure>
+        </li>
       </ol>
     </div>
   </div>
 </section>
 
-<section class="demo" aria-labelledby="demo-h">
+<section class="demo band" aria-labelledby="demo-h">
   <div class="wrap">
     <h2 id="demo-h">Preview first. Approve once.</h2>
     <div class="video-card">
@@ -148,6 +236,47 @@
           <li>Install with <code>brew install mneves75/devtrim/devtrim</code>.</li>
         </ol>
         <p><a class="text-link" href="media/demo.mp4">Download the demo</a></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band slot" id="analyze" aria-labelledby="analyze-h">
+  <div class="wrap">
+    <h2 id="analyze-h">Find where the space went.</h2>
+    <div class="analyze-split">
+      <figure>
+<!-- tui:analyze -->
+<div class="term-frame" data-cols="80" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: analyze with verdicts"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB                 </span>
+┌ Contents ────────────────────────────────────────────────────────────────────┐
+│<span class="g b">▶    7.8 GB ████████████████████████ HOLDS 4     dev/                         </span>│
+│  <span class="c">    28 KB </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>unused-a-project-whose-direct│
+│  <span class="c">     8 KB </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>bin/                         │
+│  <span class="c">      0 B </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>cache/                       │
+│  <span class="c">      0 B </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>config/                      │
+│  <span class="c">      0 B </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>state/                       │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└<span class="u"> mostly in payments-api/ · 5.9 GB · 75% </span>──────────────────────────────────────┘
+ <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">Esc</span> back<span class="k"> · </span><span class="c">m</span> culprit<span class="k"> · </span><span class="c">v</span> verdicts<span class="k"> · </span><span class="c">f</span> filter<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
+ <span class="c">HOLDS 4 offers · 7.8 GB · devtrim scan</span></code></pre></div>
+<!-- /tui:analyze -->
+      </figure>
+      <div class="analyze-body">
+        <p><code>devtrim analyze</code> names the folder that holds most of the space below the one you are on, with its size and share, and one key goes straight to it. It reads and never deletes.</p>
+        <p>On request it marks each entry by the same findings <code>devtrim explain</code> uses:</p>
+        <dl class="verdicts">
+          <div><dt><span class="lbl">OFFERED</span></dt><dd>A category offers it; the line names the command and whether it moves to the Trash or goes for good.</dd></div>
+          <div><dt><span class="lbl">HOLDS</span></dt><dd>A folder with entries a category offers, and how many.</dd></div>
+          <div><dt><span class="lbl">PROTECTED</span></dt><dd>devtrim refuses to touch it, and says why.</dd></div>
+          <div><dt><span class="lbl">IN OFFER</span></dt><dd>It lies inside a folder a category already offers, so it goes with that folder.</dd></div>
+          <div><dt><span class="lbl">NOT OFFERED</span></dt><dd>It lies outside the scan roots, so nothing reports on it.</dd></div>
+        </dl>
       </div>
     </div>
   </div>
@@ -196,7 +325,7 @@
 
     <figure class="scan-fig">
 <!-- cli:scan -->
-<div class="term-frame" data-cols="105" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
+<div class="term-frame" data-cols="184" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
 Categories
   artifacts        6.7 GB      3 finding(s)   devtrim clean artifacts --apply
   node-modules     1.1 GB      1 finding(s)   devtrim clean node-modules --apply
@@ -205,13 +334,13 @@ artifacts
 
 ~/dev/payments-api · 5.9 GB in 1 item(s)
    5.9 GB  danger:5  stale target artifacts  ~/dev/payments-api/target
-           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; action: move to Trash
+           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build; frees at least 5.9 GB: APFS clones share the rest; action: move to Trash
 
 ~/dev/storefront · 819 MB in 2 item(s)
    614 MB  danger:5  stale .next artifacts  ~/dev/storefront/.next
-           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; action: move to Trash
+           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; comes back with: the project&#x27;s build; action: move to Trash
    205 MB  danger:5  stale .turbo artifacts  ~/dev/storefront/.turbo
-           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; action: move to Trash
+           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; comes back with: the project&#x27;s build; action: move to Trash
 
 node-modules
 
@@ -227,7 +356,7 @@ Pick items one by one in the interactive view: devtrim. Project build output tog
   </div>
 </section>
 
-<section id="safety" aria-labelledby="safety-h">
+<section class="band" id="safety" aria-labelledby="safety-h">
   <div class="wrap">
     <h2 id="safety-h">Local scans. Guardrails by default.</h2>
     <div class="split">
@@ -314,34 +443,65 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
 {
   const walk = document.querySelector("[data-walk]");
   const tablist = walk.querySelector("[role=tablist]");
-  const tabs = [...tablist.querySelectorAll("[role=tab]")];
-  const panels = tabs.map(tab => document.getElementById(tab.getAttribute("aria-controls")));
-  walk.querySelector(".walk-steps").setAttribute("role", "none");
-  panels.forEach((panel, i) => {
+  // A step joins the rail only once frames.py has rendered its screen.
+  const panels = [...walk.querySelectorAll(".walk-steps > li")].filter(li => li.querySelector(".term-frame"));
+  const tabs = panels.map(panel => {
+    const caption = panel.querySelector("figcaption");
+    const lead = caption.querySelector("strong").textContent;
+    const id = "tab-" + panel.id.replace(/^step-/, "");
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.id = id;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", panel.id);
+    const name = document.createElement("span");
+    name.className = "tab-name";
+    name.id = id + "-name";
+    name.textContent = lead.replace(/\.$/, "");
+    const note = document.createElement("span");
+    note.className = "tab-note";
+    note.id = id + "-note";
+    note.textContent = caption.textContent.slice(lead.length).trim();
+    tab.append(name, note);
+    tab.setAttribute("aria-labelledby", name.id);
+    tab.setAttribute("aria-describedby", note.id);
+    tablist.append(tab);
     panel.setAttribute("role", "tabpanel");
-    panel.setAttribute("aria-labelledby", tabs[i].id);
+    panel.setAttribute("aria-labelledby", id);
+    return tab;
   });
-  const show = (index, focus) => {
-    tabs.forEach((tab, i) => {
-      const on = i === index;
-      tab.setAttribute("aria-selected", String(on));
-      tab.tabIndex = on ? 0 : -1;
-      panels[i].hidden = !on;
+  if (tabs.length > 1) {
+    walk.querySelector(".walk-steps").setAttribute("role", "none");
+    // The rail stands beside the screen on wide viewports and above it otherwise.
+    const wide = matchMedia("(width >= 72rem)");
+    const orient = () => tablist.setAttribute("aria-orientation", wide.matches ? "vertical" : "horizontal");
+    const show = (index, focus) => {
+      tabs.forEach((tab, i) => {
+        const on = i === index;
+        tab.setAttribute("aria-selected", String(on));
+        tab.tabIndex = on ? 0 : -1;
+        panels[i].inert = !on;
+        panels[i].classList.toggle("is-off", !on);
+      });
+      if (focus) tabs[index].focus();
+    };
+    tabs.forEach((tab, i) => tab.addEventListener("click", () => show(i, false)));
+    tablist.addEventListener("keydown", event => {
+      const at = tabs.indexOf(document.activeElement);
+      const last = tabs.length - 1;
+      // Arrows follow the rail's axis, as the APG tabs pattern and vercel-labs/ui do.
+      const keys = wide.matches ? { ArrowDown: at + 1, ArrowUp: at - 1 } : { ArrowRight: at + 1, ArrowLeft: at - 1 };
+      const next = { ...keys, Home: 0, End: last }[event.key];
+      if (next === undefined || at < 0) return;
+      event.preventDefault();
+      show(next < 0 ? last : next > last ? 0 : next, true);
     });
-    if (focus) tabs[index].focus();
-  };
-  tabs.forEach((tab, i) => tab.addEventListener("click", () => show(i, false)));
-  tablist.addEventListener("keydown", event => {
-    const at = tabs.indexOf(document.activeElement);
-    const last = tabs.length - 1;
-    const next = { ArrowRight: at + 1, ArrowDown: at + 1, ArrowLeft: at - 1, ArrowUp: at - 1, Home: 0, End: last }[event.key];
-    if (next === undefined || at < 0) return;
-    event.preventDefault();
-    show(next < 0 ? last : next > last ? 0 : next, true);
-  });
-  tablist.hidden = false;
-  walk.classList.add("is-tabs");
-  show(0, false);
+    wide.addEventListener("change", orient);
+    orient();
+    tablist.hidden = false;
+    walk.classList.add("is-tabs");
+    show(0, false);
+  }
 
   const status = document.getElementById("copy-status");
   for (const button of document.querySelectorAll("button[data-copy]")) {

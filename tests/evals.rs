@@ -808,6 +808,74 @@ fn eval_clean_artifacts_removes_only_corroborated_stale_output() {
     );
 }
 
+/// `scan` names what brings a target back only from the evidence that let it
+/// be offered: a `Cargo.toml` beside `target`, a lockfile beside
+/// `node_modules`. A `CACHEDIR.TAG` cache and an install with no lockfile
+/// are offered with no such claim.
+#[test]
+fn eval_scan_says_what_brings_a_target_back_only_with_evidence() {
+    let sandbox = Sandbox::in_target("eval-comes-back");
+    let projects = projects_fixture(&sandbox);
+    let tagged = projects.dev.join("tagged");
+    write(&tagged.join("README"), "");
+    write(
+        &tagged.join("cache/CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    );
+    write(&tagged.join("cache/blob"), "cached");
+    repo(&sandbox, &tagged, STALE, &["README"]);
+    let locked = projects.dev.join("locked");
+    write(&locked.join("package.json"), "{}");
+    write(&locked.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    write(&locked.join("node_modules/pkg/index.js"), "dependency");
+    repo(
+        &sandbox,
+        &locked,
+        STALE,
+        &["package.json", "pnpm-lock.yaml"],
+    );
+    let root = projects.dev.to_str().unwrap().to_owned();
+    let pristine = Tree::snapshot(sandbox.path());
+
+    let scan = run(&sandbox, &["scan", "--all", "--root", &root]);
+    let output = String::from_utf8_lossy(&scan.stdout);
+    pristine.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "eval/comes-back-preview",
+    );
+    assert!(scan.status.success(), "{output}");
+    // Each finding prints its path, then its note on the next line.
+    let note = |target: &Path| -> String {
+        let path = target.display().to_string();
+        let mut lines = output.lines();
+        lines
+            .by_ref()
+            .find(|line| line.ends_with(&path))
+            .unwrap_or_else(|| panic!("no finding for {path}: {output}"));
+        lines.next().unwrap_or_default().to_owned()
+    };
+    let rust = note(&projects.dev.join("rust/target"));
+    assert!(
+        rust.contains("corroboration: sibling Cargo.toml; comes back with: cargo build"),
+        "{rust}"
+    );
+    let pnpm = note(&projects.dev.join("locked/node_modules"));
+    assert!(
+        pnpm.contains("lockfile: pnpm-lock.yaml; comes back with: pnpm install"),
+        "{pnpm}"
+    );
+    let cache = note(&projects.dev.join("tagged/cache"));
+    assert!(
+        cache.contains("corroboration: CACHEDIR.TAG signature"),
+        "{cache}"
+    );
+    assert!(!cache.contains("comes back with"), "{cache}");
+    let unlocked = note(&projects.dev.join("web/node_modules"));
+    assert!(unlocked.contains("lockfile: none"), "{unlocked}");
+    assert!(!unlocked.contains("comes back with"), "{unlocked}");
+}
+
 #[test]
 fn eval_purge_is_exactly_node_modules_plus_artifacts() {
     eval_project_category("eval-purge", &["purge"], None, |p| {
