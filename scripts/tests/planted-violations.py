@@ -1964,8 +1964,8 @@ CASES = (
         name="eval/write-ahead",
         relative_path="src/journal.rs",
         # A failed attempt record no longer stops the mutation it precedes.
-        before="    append_at(&location, &record)\n        .with_context(|| format!(\"cannot write apply journal: {}\", ctx.journal_path.display()))?;\n    if let Some(monitor) = monitor {",
-        after="    let _ = append_at(&location, &record);\n    if let Some(monitor) = monitor {",
+        before="    append_at(&location, &record)\n        .with_context(|| format!(\"cannot write apply journal: {}\", ctx.journal_path.display()))?;\n    if let Some(monitor) = ctx.apply_monitor() {",
+        after="    let _ = append_at(&location, &record);\n    if let Some(monitor) = ctx.apply_monitor() {",
         # The apply's journal preflight refuses an unwritable journal first,
         # so the attempt record's own refusal is reached by its unit test.
         tests=("journal::tests::an_attempt_that_cannot_be_journaled_is_an_error",),
@@ -2109,6 +2109,16 @@ CASES = (
         after="        && false\n    {\n        monitor.stopped",
         tests=("journal::tests::a_stopped_apply_refuses_an_attempt_before_touching_the_journal",),
         marker="PV journal-stop/before-open",
+    ),
+    # uv's cache lock creates <cache>/.lock, so a stopped apply must refuse
+    # before taking it, not only at journal::begin.
+    Case(
+        name="journal-stop/uv-lock",
+        relative_path="src/ops/caches.rs",
+        before="                    crate::journal::refuse_if_stopped(ctx)?;\n",
+        after="",
+        tests=("ops::caches::tests::a_stopped_apply_creates_nothing_in_the_uv_cache",),
+        marker="PV journal-stop/uv-lock",
     ),
 )
 

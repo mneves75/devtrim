@@ -1148,7 +1148,7 @@ mod tests {
     /// target untouched"). The uv lock is created before `journal::begin`.
     #[test]
     fn a_stopped_apply_creates_nothing_in_the_uv_cache() {
-        let fixture = crate::ops::TestFixture::new("devtrim-review-uv-stop");
+        let fixture = crate::ops::TestFixture::new("devtrim-uv-stop");
         let home = fixture.path().to_path_buf();
         std::fs::create_dir_all(home.join(".cache/uv/sdists-v9")).unwrap();
         let home = home.canonicalize().unwrap();
@@ -1172,7 +1172,7 @@ mod tests {
         crate::ops::remove_test_path(home);
         assert!(
             !created,
-            "REVIEW: a stopped apply created <uv cache>/.lock before begin refused it"
+            "PV journal-stop/uv-lock: a stopped apply created <uv cache>/.lock before begin refused it"
         );
     }
 }
