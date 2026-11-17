@@ -76,7 +76,10 @@ the 64×18 render tests and `NO_COLOR` tests passing for every new line.
   which needs CoreFoundation FFI (`unsafe`).
 - The TUI outcome screen already prints the measured free-space line
   (`report::home_volume_line`, `src/tui.rs:2178`) since 0.14.0.
-- CLONE_GAP (R1 experiment below).
+- R1 experiment (one release scan, 511 findings): actionable 80.05 GB by allocated
+  blocks, at least 54.94 GB by APFS private size. Stale `node_modules`: 21.77 GB
+  shown, at least 1.88 GB (ratio 0.09, pnpm clones); `uv` 1.76 vs 0.25 GB;
+  DeviceSupport, DerivedData, Docker, Gradle equal.
 - devtrim has no issues and two stars; a contribution template has no audience yet.
 
 ## Decisions
@@ -139,9 +142,9 @@ APFS clones overstate it (018) and Trash moves free nothing until
 `trash-empty`. Trigger: pnpm-heavy trees, Trash-first applies. Cost: the
 overview becomes the place users learn to distrust devtrim. Falsify early: from
 one `scan --json`, compare per-category `size_bytes` against
-`frees_at_least_bytes`. Result: CLONE_GAP. Rule
-adopted either way: a row whose lower bound is smaller says "up to X" and the
-detail says "at least Y"; a Trash row never says "freed".
+`frees_at_least_bytes`. Result: confirmed — 21.77 GB shown for
+`node_modules` against 1.88 GB guaranteed. Rule adopted: a row whose lower bound is smaller shows the range
+`1.9–21.8 GB` and the detail says what the lower bound means; a Trash row never says "freed".
 
 **R2 — Stop leaves the journal or a target half done.** Failure case nobody
 considered: categories that preflight every finding first (`artifacts`,
@@ -180,7 +183,7 @@ read-only exploration.
 | T0 | — | R1 experiment and release-binary timing recorded here | this file | numbers filled in |
 | T1 | 1 | Volume line in the menu's right pane: free of total, percent used, eighths bar, snapshot count; snapshot query on a worker with "checking…"; failure shows "unavailable" with its reason | `src/tui.rs`, `src/volume.rs` | render test at 64×18 and 120×40; `NO_COLOR` test; PTY test that the line appears before any key; unreadable volume stub shows reason, exit status unchanged |
 | T2 | 1 | Streaming scan progress: `scan_all` takes an optional completion sender used from each scoped thread; loading screen lists done/failed/waiting categories with size and count | `src/ops/mod.rs`, `src/tui.rs` | unit test: `scan_all` with and without sender returns byte-identical `ScanResult`; PTY test with one stubbed probe that never answers shows nine done and one waiting; planted violation: result order follows completion → fails |
-| T3 | 1 | Menu rows carry the last Scan-everything size and count; "up to X" when a lower bound exists; a category applied since then says "rescan"; scan failure says "failed" | `src/tui.rs`, `src/report.rs` | eval: row sums equal `scan --json` per-category actionable sums on a planted fixture; render tests at 64×18 keep every key line whole |
+| T3 | 1 | Menu rows carry the last Scan-everything size and count; a `low–high` range when the APFS lower bound is smaller; a category applied since then says "rescan"; scan failure says "failed" | `src/tui.rs`, `src/report.rs` | eval: row sums equal `scan --json` per-category actionable sums on a planted fixture; render tests at 64×18 keep every key line whole |
 | T4a | 2 | Apply progress line: findings done of total, bytes done of total, current category and shortened path, from a progress callback the shared sink and `run_command_authority` call after each result is journaled | `src/ops/mod.rs`, `src/tui.rs` | PTY test with a slow stub shows advancing counts; journal unchanged byte for byte against a run without the callback |
 | T4b | 2 | Stop between findings: a key on the apply screen sets a flag read before each attempt is journaled; remaining findings become "not attempted: stopped" in the summary; the screen says "stops after this item/command"; SIGINT/SIGTERM behavior unchanged | `src/ops/*.rs` apply loops, `src/tui.rs`, `CLAUDE.md` | planted-violations case (stop ignored → test fails); R2 tests; `tui.py` proves `q` and Ctrl-C still refused during apply, and stop returns to the outcome screen with nothing after the current target touched |
 | T5 | 1 | "Comes back with" line from existing corroboration; none without evidence | `src/ops/artifacts.rs`, `node_modules.rs`, `caches.rs`, `report.rs` | unit tests per evidence kind; eval: `scan` human output shows `cargo build` beside a planted `target`, nothing beside an uncorroborated one |
