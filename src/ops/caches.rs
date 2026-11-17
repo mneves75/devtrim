@@ -243,8 +243,10 @@ impl Op for Caches {
                     // Held until the cache has moved, then released on drop;
                     // holding it is also what lets the sink tolerate uv's
                     // source-distribution marker. Taking it creates the lock
-                    // file, so a stopped apply refuses before it.
-                    crate::journal::refuse_if_stopped(ctx)?;
+                    // file, so the stop is decided once, before it, for the
+                    // whole attempt: refused here with nothing created, or
+                    // admitted through `journal::begin` once the lock exists.
+                    let _admission = crate::journal::admit(ctx)?;
                     let lock = crate::safety::lock_uv_cache(&uv_cache)?;
                     return apply_uv_cache_finding(self.name(), finding, ctx, &lock);
                 }

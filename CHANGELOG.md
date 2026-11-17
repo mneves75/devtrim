@@ -17,8 +17,11 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   stops it after the current item or command: the stop is checked in
   `journal::begin` before anything is opened or written, so nothing later is
   attempted, journaled or touched, and the outcome counts what was not
-  attempted (`stopped by you: K not attempted`, nonzero exit). `q`, Ctrl-C and
-  the signals keep their apply behaviour.
+  attempted (`stopped by you: K not attempted`, nonzero exit). The uv cache,
+  whose lock file is created before its journal record, decides the stop once
+  before taking the lock, so a stop arriving in between still journals the
+  attempt rather than leaving the lock behind. `q`, Ctrl-C and the signals
+  keep their apply behaviour.
 - Findings name what brings a target back when the category has evidence for
   it: `comes back with: cargo build`, the lockfile's install command, or the
   command a cache needs (`REBUILT_BY_COMMAND`). Display only.
