@@ -15,7 +15,12 @@
     "T7-verdicts": "done: merged 8927c1c (verdicts via explain Subject/Target; read-only-views.py passes)",
     "site-redesign": "done: merged b360a20; frames f45d7bb, 9c099a0 (9 real frames, 390 px no overflow)",
     "T8-docs": "done: 2968e7d (0.15.0 bump, README, MANUAL, CHANGELOG, CLAUDE.md=AGENTS.md)",
-    "T9-gates-release": "in progress: verify.sh offline on ab43753 passed 50/50; rerun on 2968e7d running; reviewer running"
+    "T9-gates-release": "in progress: verify.sh offline on ab43753 passed 50/50; rerun on 2968e7d running; reviewer running",
+    "autoreview-P1-uv-stop-admission": {
+      "status": "fixed",
+      "commit": "5daf86a",
+      "proof": "an_admitted_attempt_survives_a_later_stop_and_only_once; planted journal-stop/admitted-begin, journal-stop/dropped-admission"
+    }
   },
   "checks": {
     "verify.sh offline @ab43753": "pass (50 steps)",
@@ -23,6 +28,7 @@
     "frames.py": "pass",
     "csp.py --check": "pass",
     "check_facts.py": "37/37",
-    "site 390px overflow": "none (scrollWidth 390)"
+    "site 390px overflow": "none (scrollWidth 390)",
+    "planted-violations journal-stop/ @5daf86a": "6/6 proven"
   }
 }

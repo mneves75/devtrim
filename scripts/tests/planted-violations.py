@@ -2115,10 +2115,30 @@ CASES = (
     Case(
         name="journal-stop/uv-lock",
         relative_path="src/ops/caches.rs",
-        before="                    crate::journal::refuse_if_stopped(ctx)?;\n",
+        before="                    let _admission = crate::journal::admit(ctx)?;\n",
         after="",
         tests=("ops::caches::tests::a_stopped_apply_creates_nothing_in_the_uv_cache",),
         marker="PV journal-stop/uv-lock",
+    ),
+    # The admission is ignored at begin: a stop arriving after uv's lock was
+    # created refuses the attempt, leaving the lock file unjournaled.
+    Case(
+        name="journal-stop/admitted-begin",
+        relative_path="src/journal.rs",
+        before="    if !admitted {\n        refuse_if_stopped(ctx)?;\n    }\n",
+        after="    let _ = admitted;\n    refuse_if_stopped(ctx)?;\n",
+        tests=("journal::tests::an_admitted_attempt_survives_a_later_stop_and_only_once",),
+        marker="PV journal-stop/admitted-begin",
+    ),
+    # An admission dropped before begin keeps admitting: an attempt after a
+    # failed uv preparation would pass a stop.
+    Case(
+        name="journal-stop/dropped-admission",
+        relative_path="src/journal.rs",
+        before="            monitor.admitted.store(false, Ordering::SeqCst);\n",
+        after="",
+        tests=("journal::tests::an_admitted_attempt_survives_a_later_stop_and_only_once",),
+        marker="PV journal-stop/dropped-admission",
     ),
 )
 

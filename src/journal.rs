@@ -230,6 +230,9 @@ pub(crate) struct ApplyMonitor {
     bytes_finished: AtomicU64,
     stop: std::sync::atomic::AtomicBool,
     stopped: std::sync::atomic::AtomicUsize,
+    /// Set by [`admit`] for the one attempt it lets through, and taken by the
+    /// next [`begin`] or cleared when the admission drops.
+    admitted: std::sync::atomic::AtomicBool,
     current: std::sync::Mutex<Option<CurrentItem>>,
     /// Bumped on every change, so the screen redraws only when there is news.
     version: AtomicU64,
@@ -337,9 +340,8 @@ pub(crate) struct JournalAttempt {
 }
 
 /// Refuses with [`ApplyStopped`] once a stop was requested, counting the
-/// refusal. A category that must write before its attempt (uv's cache lock)
-/// asks first, so a stopped apply touches nothing at all.
-pub(crate) fn refuse_if_stopped(ctx: &Ctx) -> Result<()> {
+/// refusal.
+fn refuse_if_stopped(ctx: &Ctx) -> Result<()> {
     if let Some(monitor) = ctx.apply_monitor()
         && monitor.stop_requested()
     {
@@ -350,11 +352,44 @@ pub(crate) fn refuse_if_stopped(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
+/// The stop decision for an attempt that must write before its [`begin`]:
+/// taking uv's cache lock creates `<cache>/.lock`. It refuses as `begin` does
+/// once a stop was requested; otherwise the next `begin` honours it, so a stop
+/// arriving between the two cannot refuse an attempt whose preparation has
+/// already changed something. It admits that one `begin` only, and nothing
+/// once it drops, so an attempt that fails before `begin` lets no later one
+/// past a stop.
+#[must_use = "an admission dropped at once admits nothing"]
+pub(crate) struct Admission(Option<std::sync::Arc<ApplyMonitor>>);
+
+impl Drop for Admission {
+    fn drop(&mut self) {
+        if let Some(monitor) = &self.0 {
+            monitor.admitted.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+pub(crate) fn admit(ctx: &Ctx) -> Result<Admission> {
+    refuse_if_stopped(ctx)?;
+    let monitor = ctx.apply_monitor();
+    if let Some(monitor) = &monitor {
+        monitor.admitted.store(true, Ordering::SeqCst);
+    }
+    Ok(Admission(monitor))
+}
+
 pub(crate) fn begin(ctx: &Ctx, record: JournalRecord) -> Result<JournalAttempt> {
     // First, before the journal folder, its lock or its file is opened or
     // created: a stopped apply refuses every later attempt with nothing
-    // written and nothing touched, whichever category loop asked.
-    refuse_if_stopped(ctx)?;
+    // written and nothing touched, whichever category loop asked, unless
+    // `admit` already decided for this one.
+    let admitted = ctx
+        .apply_monitor()
+        .is_some_and(|monitor| monitor.admitted.swap(false, Ordering::SeqCst));
+    if !admitted {
+        refuse_if_stopped(ctx)?;
+    }
     if record.phase != "attempt" || !valid_record(&record) {
         anyhow::bail!("refusing invalid apply journal attempt");
     }
@@ -1773,6 +1808,47 @@ mod tests {
             )
             .is_ok()
         );
+        crate::ops::remove_test_path(root);
+    }
+
+    /// A stop requested after `admit` let an attempt through does not refuse
+    /// that attempt's `begin`, which may follow a write (uv's lock); the next
+    /// attempt is refused, and so is any attempt after an admission dropped
+    /// without reaching `begin`.
+    #[test]
+    fn an_admitted_attempt_survives_a_later_stop_and_only_once() {
+        let root = temp("stop-admission");
+        let ctx = Ctx::for_test(root.clone());
+        let monitor = std::sync::Arc::new(ApplyMonitor::new(3, 12));
+        let record =
+            || JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/uv"), 4);
+        ctx.with_apply_monitor(monitor.clone(), || {
+            let unused = admit(&ctx).unwrap();
+            drop(unused);
+            let admission = admit(&ctx).unwrap();
+            monitor.request_stop();
+            let attempt = begin(&ctx, record()).expect(
+                "PV journal-stop/admitted-begin: a stop after admit refused the admitted attempt",
+            );
+            attempt.finish(&ctx, Ok(())).unwrap();
+            let error = begin(&ctx, record())
+                .err()
+                .expect("PV journal-stop/one-admission: one admission let two attempts through");
+            assert!(error.downcast_ref::<ApplyStopped>().is_some(), "{error:#}");
+            drop(admission);
+        });
+        ctx.with_apply_monitor(std::sync::Arc::new(ApplyMonitor::new(1, 4)), || {
+            let monitor = ctx.apply_monitor().unwrap();
+            drop(admit(&ctx).unwrap());
+            monitor.request_stop();
+            assert!(
+                begin(&ctx, record()).is_err(),
+                "PV journal-stop/dropped-admission: an admission that never reached begin admitted a later attempt"
+            );
+        });
+        assert_eq!(monitor.finished(), 1);
+        assert_eq!(monitor.stopped(), 1);
+        assert!(admit(&ctx).is_ok(), "no monitor, nothing to refuse");
         crate::ops::remove_test_path(root);
     }
 
