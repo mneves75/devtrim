@@ -498,7 +498,7 @@ impl Explorer {
 }
 
 /// Proportional bar in eighth-cell resolution.
-fn bar(size: u64, largest: u64, width: usize) -> String {
+pub(crate) fn bar(size: u64, largest: u64, width: usize) -> String {
     if largest == 0 || width == 0 {
         return String::new();
     }

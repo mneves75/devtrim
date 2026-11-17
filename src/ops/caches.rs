@@ -379,7 +379,8 @@ fn cache_note(path: &Path) -> String {
         .find(|(relative, _)| path.ends_with(Path::new("Library/Caches").join(relative)))
     {
         Some((_, command)) => format!(
-            "not rebuilt by its next use: `{command}` downloads it again; a large cache costs bandwidth"
+            "not rebuilt by its next use: `{command}` downloads it again; a large cache costs bandwidth{}",
+            crate::report::comes_back_note(Some(command))
         ),
         None => {
             "regenerated automatically on next use; a large cache costs bandwidth or rebuild time"
@@ -988,6 +989,20 @@ mod tests {
                 entry.relative
             );
         }
+    }
+
+    #[test]
+    fn a_command_rebuilt_cache_says_what_brings_it_back_and_others_do_not() {
+        let home = Path::new("/Users/example");
+        let playwright = cache_note(&home.join("Library/Caches/ms-playwright"));
+        assert!(
+            playwright.ends_with("; comes back with: npx playwright install"),
+            "{playwright}"
+        );
+        let pods = cache_note(&home.join("Library/Caches/CocoaPods"));
+        assert!(pods.ends_with("; comes back with: pod install"), "{pods}");
+        let other = cache_note(&home.join("Library/Caches/pip"));
+        assert!(!other.contains("comes back with"), "{other}");
     }
 
     /// The command table can never name a cache the carve-out does not list.

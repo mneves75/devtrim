@@ -44,6 +44,9 @@ struct ArtifactCandidate {
 struct ArtifactEvidence {
     label: String,
     corroboration: String,
+    /// How the output comes back, named only where its corroboration says
+    /// which tool made it; display only.
+    comes_back_with: Option<&'static str>,
 }
 
 impl Op for Artifacts {
@@ -154,8 +157,9 @@ impl Op for Artifacts {
                             Some(candidate.path.clone()),
                             size,
                             format!(
-                                "repo last active {last_activity} UTC; corroboration: {}",
-                                candidate.evidence.corroboration
+                                "repo last active {last_activity} UTC; corroboration: {}{}",
+                                candidate.evidence.corroboration,
+                                crate::report::comes_back_note(candidate.evidence.comes_back_with)
                             ),
                             escalate(5, size.allocated),
                             Action::Trash,
@@ -646,15 +650,39 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
         return Ok(Some(ArtifactEvidence {
             label: format!("stale {name} artifacts"),
             corroboration,
+            comes_back_with: comes_back_with(name),
         }));
     }
     if cachedir_tag_matches(path)? {
         return Ok(Some(ArtifactEvidence {
             label: "stale CACHEDIR.TAG cache".into(),
             corroboration: "CACHEDIR.TAG signature".into(),
+            comes_back_with: None,
         }));
     }
     Ok(None)
+}
+
+/// What rebuilds a corroborated output, by the name whose owner file was
+/// found beside or inside it. Only names one tool owns: a virtualenv
+/// (`pyvenv.cfg`) is made by venv, virtualenv, uv or poetry alike, a
+/// `.dart_tool` by `dart` or `flutter`, and Python's bytecode and linter
+/// caches by whatever runs next, so those name nothing.
+fn comes_back_with(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "target" => "cargo build",
+        ".build" => "swift build",
+        "Pods" => "pod install",
+        ".output" => "nuxt build",
+        ".zig-cache" | "zig-out" => "zig build",
+        ".tox" => "tox",
+        ".nox" => "nox",
+        ".gradle" | ".cxx" => "the next Gradle build",
+        ".terragrunt-cache" => "the next Terragrunt run",
+        ".next" | ".nuxt" | ".turbo" | ".parcel-cache" | ".svelte-kit" | ".astro" | ".expo"
+        | ".angular" => "the project's build",
+        _ => return None,
+    })
 }
 
 fn sibling_evidence(path: &Path, filenames: &[&str]) -> Result<Option<String>> {
@@ -739,6 +767,41 @@ mod tests {
             roots: vec![home.clone()],
             ..Ctx::for_test(home)
         }
+    }
+
+    #[test]
+    fn only_a_corroborated_owner_names_what_rebuilds_it() {
+        for (name, command) in [
+            ("target", "cargo build"),
+            (".build", "swift build"),
+            ("Pods", "pod install"),
+            (".output", "nuxt build"),
+            (".zig-cache", "zig build"),
+            ("zig-out", "zig build"),
+            (".tox", "tox"),
+            (".nox", "nox"),
+            (".gradle", "the next Gradle build"),
+            (".cxx", "the next Gradle build"),
+            (".terragrunt-cache", "the next Terragrunt run"),
+            (".next", "the project's build"),
+        ] {
+            assert_eq!(comes_back_with(name), Some(command), "{name}");
+        }
+        for name in [".venv", "venv", "__pycache__", ".dart_tool", "build", "x"] {
+            assert_eq!(comes_back_with(name), None, "{name}");
+        }
+        let root = temp("comes-back");
+        let rust = root.join("rust/target");
+        std::fs::create_dir_all(&rust).unwrap();
+        std::fs::write(root.join("rust/Cargo.toml"), "[package]").unwrap();
+        let tagged = root.join("tagged");
+        std::fs::create_dir_all(&tagged).unwrap();
+        std::fs::write(tagged.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).unwrap();
+        let rust = artifact_evidence(&rust).unwrap().unwrap();
+        let tagged = artifact_evidence(&tagged).unwrap().unwrap();
+        crate::ops::remove_test_path(&root);
+        assert_eq!(rust.comes_back_with, Some("cargo build"));
+        assert_eq!(tagged.comes_back_with, None, "a cache tag names no owner");
     }
 
     #[test]
