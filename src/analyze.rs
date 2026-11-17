@@ -12,6 +12,7 @@
 //! a real home directory takes minutes and a frozen interface is not an
 //! acceptable way to spend them. Leaving a directory cancels its in-flight walk.
 
+use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -51,6 +52,8 @@ struct Entry {
     /// True when traversal could not read everything below this entry, so the
     /// size is a lower bound rather than a measurement.
     partial: bool,
+    /// Where most of a directory's space is, when one child chain holds it.
+    culprit: Option<Culprit>,
 }
 
 impl Entry {
@@ -69,16 +72,120 @@ enum Progress {
     Failed(String),
 }
 
-/// Recursively sums regular-file sizes below `path`.
+/// Where most of a directory's space is: the chain of children, each holding
+/// at least half of the folder above it, that a walk found below an entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Culprit {
+    /// Names below the entry, outermost first; never empty.
+    chain: Vec<OsString>,
+    /// Allocated bytes of the chain's last element.
+    bytes: u64,
+    /// Whether the last element is a directory (else a regular file).
+    last_is_dir: bool,
+    /// The walk was partial, or met a file with further hard links, which is
+    /// counted in the first folder that reaches it: the chain's sizes are then
+    /// lower bounds rather than measurements.
+    lower_bound: bool,
+}
+
+/// A chain stops at a folder that is one thing to the operator: an install,
+/// a bundle, or a Git repository (judged by a `.git` child, see [`Frame`]).
+fn is_whole_unit(name: &OsStr) -> bool {
+    let bytes = name.as_encoded_bytes();
+    bytes.eq_ignore_ascii_case(b"node_modules")
+        || [
+            &b".app"[..],
+            b".framework",
+            b".bundle",
+            b".photoslibrary",
+            b".xcarchive",
+        ]
+        .iter()
+        .any(|suffix| {
+            bytes.len() > suffix.len()
+                && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+        })
+}
+
+/// The largest child a folder has shown so far, with its own chain.
+#[derive(Debug, Default)]
+struct Largest {
+    bytes: u64,
+    name: OsString,
+    is_dir: bool,
+    /// The child's own chain, `None` for a file or a whole unit.
+    below: Option<(Vec<OsString>, u64, bool)>,
+}
+
+/// One open directory of the post-order walk: what its children add up to
+/// and which of them is largest. One frame per level, so memory follows the
+/// walk's depth, never the number of directories.
+#[derive(Debug, Default)]
+struct Level {
+    total: u64,
+    largest: Option<Largest>,
+    /// A child named `.git` (any ASCII case): this folder is a repository.
+    repository: bool,
+}
+
+impl Level {
+    /// Larger first; between equal sizes the name that sorts first, as the
+    /// listing orders them.
+    fn offer(
+        &mut self,
+        bytes: u64,
+        name: &OsStr,
+        is_dir: bool,
+        below: Option<(Vec<OsString>, u64, bool)>,
+    ) {
+        self.total = self.total.saturating_add(bytes);
+        let better = self.largest.as_ref().is_none_or(|largest| {
+            bytes > largest.bytes || (bytes == largest.bytes && name < largest.name.as_os_str())
+        });
+        if better {
+            self.largest = Some(Largest {
+                bytes,
+                name: name.to_os_string(),
+                is_dir,
+                below,
+            });
+        }
+    }
+
+    /// This folder's chain: its largest child when that child holds at least
+    /// half of it, then that child's own chain.
+    fn chain(self) -> Option<(Vec<OsString>, u64, bool)> {
+        let largest = self.largest?;
+        if largest.bytes == 0 || u128::from(largest.bytes) * 2 < u128::from(self.total) {
+            return None;
+        }
+        Some(match largest.below {
+            Some((mut chain, bytes, last_is_dir)) => {
+                chain.insert(0, largest.name);
+                (chain, bytes, last_is_dir)
+            }
+            None => (vec![largest.name], largest.bytes, largest.is_dir),
+        })
+    }
+}
+
+/// Recursively sums regular-file sizes below `path`, and finds in the same
+/// walk where most of them are ([`Culprit`]).
 ///
 /// Symbolic links are never followed and a different device is never entered:
 /// an explorer that wandered onto a network mount would appear to hang, and one
 /// that followed a link would attribute another tree's bytes to this one.
-/// Returns the total and whether anything was unreadable.
-fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
+/// Returns the total, whether anything was unreadable, and the culprit.
+fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool, Option<Culprit>) {
     let mut total = 0u64;
     let mut usage = crate::safety::DiskUsage::default();
     let mut partial = false;
+    let mut linked = false;
+    // `frames[depth]` gathers the children of the open directory at `depth`.
+    // The walk yields contents first, so a directory arrives after all of
+    // its children and closes its frame.
+    let mut frames: Vec<Level> = Vec::new();
+    let mut root_chain = None;
     // `same_file_system` stops the walk at the mount point instead of filtering
     // afterwards. Filtering after the fact still descends: a stalled network
     // mount blocks inside `WalkDir::next()`, where the cancellation flag is
@@ -87,14 +194,56 @@ fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
         .follow_links(false)
         .follow_root_links(false)
         .same_file_system(true)
+        .contents_first(true)
     {
         if cancel.load(Ordering::Relaxed) {
-            return (total, true);
+            return (total, true, None);
         }
         let Ok(entry) = result else {
             partial = true;
             continue;
         };
+        let depth = entry.depth();
+        while frames.len() < depth {
+            frames.push(Level::default());
+        }
+        if depth > 0 && crate::safety::is_git_metadata_name(entry.file_name()) {
+            frames[depth - 1].repository = true;
+        }
+        if entry.file_type().is_dir() {
+            // A directory walkdir could not open, or one on another device,
+            // arrives without children and so without a frame.
+            let own = if frames.len() > depth {
+                // Deeper frames left open would be a walk that skipped a
+                // directory's own entry; their bytes still belong here.
+                while frames.len() > depth + 1 {
+                    let orphan = frames.pop().unwrap_or_default();
+                    if let Some(parent) = frames.last_mut() {
+                        parent.total = parent.total.saturating_add(orphan.total);
+                    }
+                    partial = true;
+                }
+                frames.pop().unwrap_or_default()
+            } else {
+                Level::default()
+            };
+            let (bytes, unit) = (
+                own.total,
+                own.repository || is_whole_unit(entry.file_name()),
+            );
+            let chain = own.chain();
+            if depth == 0 {
+                root_chain = chain;
+            } else {
+                frames[depth - 1].offer(
+                    bytes,
+                    entry.file_name(),
+                    true,
+                    if unit { None } else { chain },
+                );
+            }
+            continue;
+        }
         if !entry.file_type().is_file() {
             continue;
         }
@@ -111,6 +260,7 @@ fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
             partial = true;
             continue;
         }
+        linked |= metadata.nlink() > 1;
         // Measured bytes never saturate silently: an overflowed total that
         // still presents itself as a measurement is the shape S8 forbids. It
         // cannot happen with real file sizes, so it becomes a lower bound
@@ -119,6 +269,9 @@ fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
             partial = true;
             continue;
         };
+        if depth > 0 {
+            frames[depth - 1].offer(bytes, entry.file_name(), false, None);
+        }
         match total.checked_add(bytes) {
             Some(sum) => total = sum,
             None => {
@@ -127,7 +280,13 @@ fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool) {
             }
         }
     }
-    (total, partial)
+    let culprit = root_chain.map(|(chain, bytes, last_is_dir)| Culprit {
+        chain,
+        bytes,
+        last_is_dir,
+        lower_bound: partial || linked,
+    });
+    (total, partial, culprit)
 }
 
 /// Immediate children of `directory`, without following symlinks.
@@ -188,15 +347,17 @@ fn measure_children(
                     size: 0,
                     is_dir: true,
                     partial: true,
+                    culprit: None,
                 });
                 continue;
             }
-            let (size, partial) = measure_tree(&path, device, cancel);
+            let (size, partial, culprit) = measure_tree(&path, device, cancel);
             report_entry(Entry {
                 path,
                 size,
                 is_dir: true,
                 partial,
+                culprit,
             });
         } else {
             // A file that cannot be sized is a lower bound, never a guess.
@@ -209,6 +370,7 @@ fn measure_children(
                 size,
                 is_dir: false,
                 partial,
+                culprit: None,
             });
         }
     }
@@ -859,6 +1021,233 @@ mod tests {
         );
     }
 
+    /// The culprit by plain recursion, independent of the post-order walk:
+    /// each folder's size, then its chain under the same rules.
+    fn reference(path: &Path) -> (u64, Option<(Vec<OsString>, u64, bool)>) {
+        let Ok(listing) = std::fs::read_dir(path) else {
+            return (0, None);
+        };
+        let mut names: Vec<OsString> = listing.map(|child| child.unwrap().file_name()).collect();
+        names.sort();
+        let mut children = Vec::new();
+        for name in names {
+            let child = path.join(&name);
+            let metadata = std::fs::symlink_metadata(&child).unwrap();
+            if metadata.is_dir() {
+                let (bytes, chain) = reference(&child);
+                let repository = std::fs::read_dir(&child).is_ok_and(|mut listing| {
+                    listing.any(|grandchild| {
+                        crate::safety::is_git_metadata_name(&grandchild.unwrap().file_name())
+                    })
+                });
+                let below = if repository || is_whole_unit(&name) {
+                    None
+                } else {
+                    chain
+                };
+                children.push((bytes, name, true, below));
+            } else if metadata.is_file() {
+                let bytes = crate::safety::allocated_bytes(&metadata, &child).unwrap();
+                children.push((bytes, name, false, None));
+            }
+        }
+        let total: u64 = children.iter().map(|child| child.0).sum();
+        // Larger first; names arrive sorted, so the first of equals stays.
+        let largest = children
+            .into_iter()
+            .reduce(|best, child| if child.0 > best.0 { child } else { best });
+        let chain = largest.and_then(|(bytes, name, is_dir, below)| {
+            if bytes == 0 || bytes * 2 < total {
+                return None;
+            }
+            Some(match below {
+                Some((rest, last, last_is_dir)) => {
+                    let mut chain = vec![name];
+                    chain.extend(rest);
+                    (chain, last, last_is_dir)
+                }
+                None => (vec![name], bytes, is_dir),
+            })
+        });
+        (total, chain)
+    }
+
+    #[derive(Debug, Clone)]
+    enum Spec {
+        File(usize),
+        Dir(Vec<(usize, Spec)>, bool),
+    }
+
+    /// Case-distinct names, so an APFS volume keeps them apart; `.git`
+    /// makes its folder a repository and the next two are whole units.
+    const NAMES: [&str; 7] = ["a", "b", "c", "node_modules", "Tool.app", ".git", "d"];
+    const SIZES: [usize; 6] = [0, 1, 4096, 5000, 9000, 40_000];
+
+    /// Writes `children` below `path`, recording the folders to lock.
+    fn plant(path: &Path, children: &[(usize, Spec)], locked: &mut Vec<PathBuf>) {
+        std::fs::create_dir_all(path).unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for (name, spec) in children {
+            if !seen.insert(*name) {
+                continue;
+            }
+            let child = path.join(NAMES[*name]);
+            match spec {
+                Spec::File(size) => std::fs::write(&child, vec![b'x'; SIZES[*size]]).unwrap(),
+                Spec::Dir(grandchildren, lock) => {
+                    plant(&child, grandchildren, locked);
+                    if *lock {
+                        locked.push(child);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Puts back the mode of every folder a case locked, even when an
+    /// assertion fails, so the temporary tree can be removed.
+    struct Unlock(Vec<PathBuf>);
+
+    impl Drop for Unlock {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            for path in self.0.iter().rev() {
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+
+    fn spec() -> impl proptest::strategy::Strategy<Value = Vec<(usize, Spec)>> {
+        use proptest::prelude::*;
+        let leaf = (0..SIZES.len()).prop_map(Spec::File);
+        let tree = leaf.prop_recursive(4, 48, 5, |inner| {
+            (
+                proptest::collection::vec((0..NAMES.len(), inner), 0..5),
+                proptest::bool::weighted(0.08),
+            )
+                .prop_map(|(children, lock)| Spec::Dir(children, lock))
+        });
+        proptest::collection::vec((0..NAMES.len(), tree), 0..6)
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+        /// The walk's chain equals the reference's on generated trees: ties,
+        /// a dominant file, whole units, repositories and unreadable folders.
+        #[test]
+        fn the_culprit_chain_matches_a_brute_force_reference(children in spec()) {
+            use std::os::unix::fs::PermissionsExt;
+            let root = tempfile::Builder::new().prefix("devtrim-culprit").tempdir().unwrap();
+            let mut locked = Vec::new();
+            plant(root.path(), &children, &mut locked);
+            for path in &locked {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            }
+            let _unlock = Unlock(locked.clone());
+            let device = std::fs::symlink_metadata(root.path()).unwrap().dev();
+
+            let (total, partial, culprit) =
+                measure_tree(root.path(), device, &AtomicBool::new(false));
+            let (expected_total, expected_chain) = reference(root.path());
+
+            proptest::prop_assert_eq!(total, expected_total);
+            proptest::prop_assert_eq!(partial, !locked.is_empty());
+            let found = culprit
+                .clone()
+                .map(|culprit| (culprit.chain, culprit.bytes, culprit.last_is_dir));
+            proptest::prop_assert_eq!(found, expected_chain);
+            if let Some(culprit) = culprit {
+                proptest::prop_assert_eq!(culprit.lower_bound, !locked.is_empty());
+            }
+        }
+    }
+
+    fn culprit_of(path: &Path) -> Option<Culprit> {
+        let device = std::fs::symlink_metadata(path).unwrap().dev();
+        measure_tree(path, device, &AtomicBool::new(false)).2
+    }
+
+    fn names(culprit: &Culprit) -> Vec<&str> {
+        culprit
+            .chain
+            .iter()
+            .map(|name| name.to_str().unwrap())
+            .collect()
+    }
+
+    /// The chain follows the folders that hold most of the space, stops at
+    /// an install, and may end at one dominant file.
+    #[test]
+    fn the_chain_stops_at_a_whole_unit_or_a_file() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-culprit-stop")
+            .tempdir()
+            .unwrap();
+        write(&root.path().join("app/node_modules/pkg/big"), 200_000);
+        write(&root.path().join("app/src/main.rs"), 4096);
+        write(&root.path().join("media/clips/movie.mov"), 300_000);
+        write(&root.path().join("media/clips/note.txt"), 10);
+        let install = culprit_of(&root.path().join("app")).unwrap();
+        assert_eq!(names(&install), ["node_modules"]);
+        assert!(install.last_is_dir && !install.lower_bound);
+        let movie = culprit_of(&root.path().join("media")).unwrap();
+        assert_eq!(names(&movie), ["clips", "movie.mov"]);
+        assert!(!movie.last_is_dir);
+        // No child holds half: no chain at all.
+        write(&root.path().join("even/one"), 40_000);
+        write(&root.path().join("even/two"), 40_000);
+        write(&root.path().join("even/three"), 40_000);
+        assert_eq!(culprit_of(&root.path().join("even")), None);
+    }
+
+    /// A Git repository is one project: the chain names it and stops.
+    #[test]
+    fn the_chain_stops_at_a_repository() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-culprit-repo")
+            .tempdir()
+            .unwrap();
+        write(&root.path().join("web/.git/HEAD"), 10);
+        write(&root.path().join("web/node_modules/pkg/big"), 200_000);
+        assert_eq!(names(&culprit_of(root.path()).unwrap()), ["web"]);
+    }
+
+    /// A hard-linked file counts once, in the first folder that reaches it,
+    /// so the chain's sizes are lower bounds and say so.
+    #[test]
+    fn a_hard_link_makes_the_chain_a_lower_bound() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-culprit-link")
+            .tempdir()
+            .unwrap();
+        write(&root.path().join("a/blob"), 200_000);
+        std::fs::create_dir_all(root.path().join("b")).unwrap();
+        std::fs::hard_link(root.path().join("a/blob"), root.path().join("b/blob")).unwrap();
+        let device = std::fs::symlink_metadata(root.path()).unwrap().dev();
+        let (total, partial, culprit) = measure_tree(root.path(), device, &AtomicBool::new(false));
+        assert!(!partial);
+        let culprit = culprit.unwrap();
+        assert_eq!(culprit.bytes, total, "the blob counts once, in one folder");
+        assert!(culprit.lower_bound);
+        // Positive control: the same tree without the link is a measurement.
+        std::fs::remove_file(root.path().join("b/blob")).unwrap();
+        assert!(!culprit_of(root.path()).unwrap().lower_bound);
+    }
+
+    /// A cancelled walk claims no chain.
+    #[test]
+    fn a_cancelled_walk_has_no_culprit() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-culprit-cancel")
+            .tempdir()
+            .unwrap();
+        write(&root.path().join("a/blob"), 200_000);
+        let device = std::fs::symlink_metadata(root.path()).unwrap().dev();
+        let (_, partial, culprit) = measure_tree(root.path(), device, &AtomicBool::new(true));
+        assert!(partial);
+        assert_eq!(culprit, None);
+    }
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
     }
@@ -896,6 +1285,7 @@ mod tests {
                 size: 100 - index as u64,
                 is_dir: index % 2 == 0,
                 partial: false,
+                culprit: None,
             })
             .collect();
         explorer
