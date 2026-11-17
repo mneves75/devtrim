@@ -1,4 +1,4 @@
-/* devtrim site: one stylesheet for both pages (DESIGN.md v4).
+/* devtrim site: one stylesheet for both pages (DESIGN.md v5).
    Tokens, top bar, type scale, code and terminal frames are shared; the
    landing sections follow. The landing page is dark only; MANUAL.html adds
    its light mode by switching color-scheme, never by redefining tokens. */
@@ -172,7 +172,11 @@ pre code { background: none; padding: 0; font-size: 1em; }
 
 /* ---------- landing: sections ---------- */
 .home main > section { padding-block: var(--space-section); }
-.home main > section:nth-of-type(even) { background: var(--surface); }
+.home main > section.band { background: var(--surface); }
+/* A slot waits for scripts/site/frames.py: until its frame is rendered, the
+   step or section it belongs to is not shown at all, on screen or on paper. */
+.home .slot:not(:has(.term-frame)),
+.walk-steps > li:not(:has(.term-frame)) { display: none !important; }
 .home h2 { max-inline-size: 22ch; margin-block-end: clamp(1.75rem, 1rem + 2vw, 2.75rem); }
 figcaption { color: var(--muted); font-size: var(--step-small); margin-block-start: 0.75rem; max-inline-size: 68ch; }
 
@@ -187,25 +191,48 @@ figcaption { color: var(--muted); font-size: var(--step-small); margin-block-sta
   .hero-row { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); align-items: end; }
 }
 
-/* walkthrough: tabs once script runs; without it, every step in order */
+/* walkthrough: a rail of steps once script runs; without it, every step in order */
 .walk { margin-block-start: clamp(2rem, 1rem + 3vw, 3.5rem); }
-.walk .term-frame { --term-max: 1.25rem; }
+.walk .term-frame { --term-max: 1rem; }
 .walk .term-frame[data-cols] { --cols: 100; }
 /* One type scale for every step, and one box: the narrower steps keep the
    container's width instead of shrinking to their columns. */
 .walk .term-frame .term { inline-size: auto; }
 .walk-tabs { display: flex; flex-wrap: wrap; gap: 0.25rem clamp(1rem, 0.5rem + 2.5vw, 1.5rem); margin-block-end: 1rem; }
 .walk-tabs [role="tab"] {
-  min-block-size: 2.75rem; padding: 0.5rem 0; border: 0; background: none; cursor: pointer;
-  color: var(--muted); font: inherit; font-weight: 650;
+  min-block-size: 2.75rem; padding: 0.5rem 0; border: 0; border-radius: 0; background: none; cursor: pointer;
+  color: var(--muted); font: inherit; font-weight: 650; text-align: start;
   box-shadow: inset 0 -2px 0 transparent;
 }
 .walk-tabs [role="tab"][aria-selected="true"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.tab-name { display: block; }
+.tab-note { display: none; }
 .walk-steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 2.5rem; }
 .walk-steps > li, .walk-steps figure { min-inline-size: 0; }
 .walk-steps figcaption { margin-block: 0 0.75rem; }
 .walk-steps figcaption strong { color: var(--text); }
 .walk.is-tabs .walk-steps figcaption strong { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Every step shares one cell, so the rail never moves when a shorter screen is shown. */
+.walk.is-tabs .walk-steps > li { grid-area: 1 / 1; }
+.walk.is-tabs .walk-steps > li.is-off { visibility: hidden; }
+/* Beside the screen only where a 100-column frame keeps about 13px type or more. */
+@media (width >= 72rem) {
+  .walk.is-tabs { display: grid; grid-template-columns: 17rem minmax(0, 1fr); column-gap: clamp(2rem, 3vw, 3rem); align-items: start; }
+  .walk.is-tabs .walk-tabs { flex-direction: column; flex-wrap: nowrap; gap: 0.25rem; margin: 0; }
+  .walk.is-tabs .walk-tabs [role="tab"] {
+    display: grid; grid-template-columns: 1.25rem minmax(0, 1fr); align-content: center;
+    padding: 0.75rem 1rem 0.8rem 0.75rem; border-radius: var(--radius); box-shadow: none;
+  }
+  .walk.is-tabs .walk-tabs [role="tab"][aria-selected="true"] { background: var(--surface-raised); }
+  /* The TUI's own cursor marks the step on screen, as it marks the highlighted row.
+     It sits on the tab, outside the span that names it, so it is never read aloud. */
+  .walk.is-tabs .walk-tabs [role="tab"]::before { content: "\203A"; grid-column: 1; grid-row: 1; color: transparent; font-family: var(--mono); }
+  .walk.is-tabs .walk-tabs [role="tab"][aria-selected="true"]::before { color: var(--accent); }
+  .walk.is-tabs .tab-name, .walk.is-tabs .tab-note { grid-column: 2; }
+  /* Only the step on screen carries its note, so six steps still fit beside one frame. */
+  .walk.is-tabs [aria-selected="true"] .tab-note { display: block; margin-block-start: 0.25rem; color: var(--muted); font-size: var(--step-small); font-weight: 400; line-height: 1.45; }
+  .walk.is-tabs .walk-steps figcaption { display: none; }
+}
 
 /* demo video, secondary */
 .video-card { border-radius: var(--radius); background: var(--surface-raised); overflow: clip; display: grid; }
@@ -216,6 +243,17 @@ video { inline-size: 100%; background: #000; aspect-ratio: 16 / 9; }
 @media (width >= 64rem) {
   .video-card { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); align-items: start; }
 }
+
+/* analyze: where the space went, beside the screen that shows it */
+.analyze-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2rem clamp(2.5rem, 5vw, 5rem); align-items: start; }
+@media (width >= 64rem) { .analyze-split { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); } }
+.analyze-split figure { min-inline-size: 0; }
+.analyze-body { display: grid; gap: 1rem; max-inline-size: 60ch; }
+.verdicts { margin: 0.25rem 0 0; display: grid; gap: 0.75rem; }
+.verdicts div { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: 0.25rem 1rem; align-items: baseline; }
+.verdicts dt .lbl { color: var(--text); }
+.verdicts dd { margin: 0; color: var(--muted); font-size: var(--step-small); }
+@media (width < 30rem) { .verdicts div { grid-template-columns: minmax(0, 1fr); } }
 
 /* commands: one table, grouped by what happens */
 .commands { inline-size: 100%; border-collapse: collapse; font-size: var(--step-small); }
@@ -272,11 +310,12 @@ video { inline-size: 100%; background: #000; aspect-ratio: 16 / 9; }
   .btn:hover, .copy:hover { background: color-mix(in oklch, var(--surface-high), var(--text) 10%); }
   .btn.primary:hover { background: var(--accent-hover); }
   .walk-tabs [role="tab"]:hover { color: var(--text); }
+  .walk.is-tabs .walk-tabs [role="tab"][aria-selected="false"]:hover { background: var(--surface); }
   .commands th[scope="row"] a:hover { text-decoration: underline; }
 }
 @media (prefers-reduced-motion: no-preference) {
   .btn, .copy { transition: transform 140ms var(--ease-out), background-color 140ms var(--ease-out); }
-  .walk.is-tabs .walk-steps > li { animation: step-in 180ms var(--ease-out); }
+  .walk.is-tabs .walk-steps > li:not(.is-off) { animation: step-in 180ms var(--ease-out); }
 }
 
 @keyframes step-in { from { opacity: 0; transform: translateY(6px); } }
@@ -286,11 +325,14 @@ video { inline-size: 100%; background: #000; aspect-ratio: 16 / 9; }
   /* Paper is light: the tokens flip, and only the frames keep their dark
      ground, printed exactly so their light ink stays readable. */
   :root { color-scheme: light; }
-  .walk-steps > li[hidden] { display: block !important; }
+  .walk.is-tabs { display: block; }
+  .walk.is-tabs .walk-steps > li, .walk.is-tabs .walk-steps > li.is-off { grid-area: auto; visibility: visible; }
   .walk-steps > li { animation: none !important; break-inside: avoid; }
+  .walk.is-tabs .walk-steps figcaption { display: block; }
   .walk.is-tabs .walk-steps figcaption strong { position: static; inline-size: auto; block-size: auto; clip-path: none; }
   .term { overflow: visible; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   /* No 11px floor on paper, where nothing can scroll: every column fits. */
   .term-frame .term { font-size: min((100cqi - 2rem) / (var(--cols) * 0.605), var(--term-max)); }
   figure, tr { break-inside: avoid; }
+  h2, h3 { break-after: avoid; }
 }
