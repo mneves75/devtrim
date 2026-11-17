@@ -59,23 +59,29 @@ built binary before the frame is regenerated.
 2. **Walkthrough**, in the order a person meets it: Scan (`tui:scanning`),
    Overview (`tui:overview`), Preview (`tui:results`), Leave one out
    (`tui:select`), Confirm (`tui:confirm`), Apply (`tui:progress`). Every
-   walkthrough frame is 100 columns at one type size (`--term-max: 1rem`).
+   walkthrough frame shares one type size (`--term-max: 1rem`, `--cols: 100`)
+   and one box, so a narrower capture (`tui:select` and `tui:confirm` are 84
+   columns today) keeps the size of the 100-column ones; new captures are 100
+   columns.
    - Without script every step shows in order with its caption.
    - With script the captions become a rail of tabs (one `button role="tab"`
      per step, named by the step's name and described by the rest of its
-     caption). On ≥ 64rem the rail stands beside the screen, vertical, and only
-     the selected step shows its note; narrower, it is a wrapping row of names
+     caption). On ≥ 72rem, where a 100-column frame keeps about 13 px type, the
+     rail stands beside the screen, vertical, and only the selected step shows
+     its note; narrower, it is a wrapping row of names
      above the screen with the caption shown in the panel.
-   - Keys follow the APG tabs pattern: arrows on both axes, Home, End, roving
-     tabindex, automatic activation; `aria-orientation` follows the layout.
+   - Keys follow the APG tabs pattern as vercel-labs/ui implements it: the
+     arrows of the rail's own axis (Up/Down beside the screen, Left/Right
+     above it), wrapping at the ends, Home, End, roving tabindex, automatic
+     activation; `aria-orientation` follows the layout.
      The selected step carries the TUI's own cursor `›` in the accent, set on
      the tab outside the span that names it, so it is never read aloud.
    - All panels share one grid cell; the inactive ones are `inert` and
      `visibility: hidden`, so the rail never moves when a shorter screen shows.
-   - The Apply step needs an apply. `frames.py` never moves anything to the
-     developer's Trash; its only honest capture is a permanent-mode apply of
-     the disposable demo home, which is the coordinator's call. Without it, the
-     step stays out.
+   - The Apply step needs an apply, and `frames.py` never applies a plan.
+     Open question: whether to capture one, for instance a permanent-mode
+     apply of the disposable demo home, which would keep anything out of the
+     developer's Trash. Until that is decided and built, the step stays out.
 3. **Demo video**, secondary, with its transcript; no autoplay.
 4. **Find where the space went** (`#analyze`, slot `tui:analyze`): the
    `analyze` screen beside two sentences and the four verdicts as a `<dl>`
@@ -115,7 +121,9 @@ muted #4d4d4d · accent #3a6300 · amber #7a4d00 · red #ad2a19.
 
 Measured 2026-11-17 from computed colours in Chrome, every text node against
 its composited background (`color-mix` surfaces included), all details open:
-no pair below 4.5:1. Lowest: landing 5.87:1 (frame dim grey on #050505);
+no pair below 4.5:1. Resting text nodes only: pseudo-element text (the `$`
+prompt, the rail cursor), placeholders and hover, focus and Copied states were
+not walked. Lowest: landing 5.87:1 (frame dim grey on #050505);
 manual dark 6.68:1 (red label on #121212); manual light 5.22:1 (danger-scale
 numeral #111111 on the #e8553f fill), then 5.37:1 (accent command name on the
 `:target` card tint).

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="devtrim is a local-first disk cleaner for macOS developer machines. It measures, classifies and trims caches and build output, previews every action, scores its danger and moves files to the Trash first.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-/ltUULF/W97jlrkkFA5It495mHi4brSDpH6xI0uZLGc='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-exiWuf/iUtsQUPowOYlYjIeh8AZk44rplzwAuK2BJkg='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>devtrim — measure · classify · trim</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -382,6 +382,9 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
   });
   if (tabs.length > 1) {
     walk.querySelector(".walk-steps").setAttribute("role", "none");
+    // The rail stands beside the screen on wide viewports and above it otherwise.
+    const wide = matchMedia("(width >= 72rem)");
+    const orient = () => tablist.setAttribute("aria-orientation", wide.matches ? "vertical" : "horizontal");
     const show = (index, focus) => {
       tabs.forEach((tab, i) => {
         const on = i === index;
@@ -396,14 +399,13 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
     tablist.addEventListener("keydown", event => {
       const at = tabs.indexOf(document.activeElement);
       const last = tabs.length - 1;
-      const next = { ArrowRight: at + 1, ArrowDown: at + 1, ArrowLeft: at - 1, ArrowUp: at - 1, Home: 0, End: last }[event.key];
+      // Arrows follow the rail's axis, as the APG tabs pattern and vercel-labs/ui do.
+      const keys = wide.matches ? { ArrowDown: at + 1, ArrowUp: at - 1 } : { ArrowRight: at + 1, ArrowLeft: at - 1 };
+      const next = { ...keys, Home: 0, End: last }[event.key];
       if (next === undefined || at < 0) return;
       event.preventDefault();
       show(next < 0 ? last : next > last ? 0 : next, true);
     });
-    // The rail stands beside the screen on wide viewports and above it otherwise.
-    const wide = matchMedia("(width >= 64rem)");
-    const orient = () => tablist.setAttribute("aria-orientation", wide.matches ? "vertical" : "horizontal");
     wide.addEventListener("change", orient);
     orient();
     tablist.hidden = false;

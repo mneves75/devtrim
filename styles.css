@@ -215,7 +215,8 @@ figcaption { color: var(--muted); font-size: var(--step-small); margin-block-sta
 /* Every step shares one cell, so the rail never moves when a shorter screen is shown. */
 .walk.is-tabs .walk-steps > li { grid-area: 1 / 1; }
 .walk.is-tabs .walk-steps > li.is-off { visibility: hidden; }
-@media (width >= 64rem) {
+/* Beside the screen only where a 100-column frame keeps about 13px type or more. */
+@media (width >= 72rem) {
   .walk.is-tabs { display: grid; grid-template-columns: 17rem minmax(0, 1fr); column-gap: clamp(2rem, 3vw, 3rem); align-items: start; }
   .walk.is-tabs .walk-tabs { flex-direction: column; flex-wrap: nowrap; gap: 0.25rem; margin: 0; }
   .walk.is-tabs .walk-tabs [role="tab"] {
