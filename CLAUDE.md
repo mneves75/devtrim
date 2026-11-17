@@ -36,7 +36,7 @@ This catches stale lock metadata early; it does not replace the five nightly fuz
 
 ## Agent execution
 
-For Fable 5.1 and GPT-6 Astra, specify the outcome, preserved boundaries,
+For Fable 5.1 and GPT-6.2 Astra, specify the outcome, preserved boundaries,
 verification, and stopping condition. Batch independent reads, edit targeted
 hunks, and keep useful local work moving during independent reviews. Run the
 smallest meaningful check first; widen for changed safety boundaries and final
@@ -46,7 +46,7 @@ across compaction. Model/effort selection belongs to the harness, not this repo;
 verify availability before claiming a model ran.
 
 These procedures follow the [Fable 5.1 guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1)
-and [Astra guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra),
+and [Astra guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6.2-astra),
 checked 2026-09-04. User instructions take precedence over skill procedures.
 
 ## Commands
