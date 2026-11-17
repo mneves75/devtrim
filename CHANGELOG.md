@@ -36,6 +36,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   facts are regenerated from the pages.
 - `scripts/tests/tui.py` waits for the menu to render before reading it, so a
   binary that never draws fails with the reason `release-policy.sh` requires.
+- This release's local gates ran TruffleHog 3.99.9, Gitleaks 8.30.1, actionlint 1.7.12, ShellCheck 0.11.0, Node 26.13.0 and npm 12.2.2; the hosted run on the pinned versions is the authoritative one.
 
 ## [0.14.0] - 2026-11-16
 
