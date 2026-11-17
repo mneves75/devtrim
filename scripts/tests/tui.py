@@ -253,6 +253,9 @@ def verify_menu(binary):
             # The volume's free space is on the first screen, before any key:
             # statvfs reads the real disk even under the disposable home.
             session.wait_for_screen("Scan everything", " free of ", "% used")
+            # The snapshot answer arrives from a worker and is drawn with no
+            # key pressed; its wording depends on the machine.
+            session.wait_for_screen_without("checking snapshots")
             if b"\x1b[?1049h" not in session.output:
                 raise AssertionError("TUI did not enter alternate screen")
             session.send(b"?")

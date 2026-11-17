@@ -412,7 +412,8 @@ impl Overview {
 
 impl RowSize {
     /// The row's text in at most `width` columns: the size and count, then
-    /// the size alone, then nothing. A range is never cut to its upper end.
+    /// the size alone, then a range's lower bound, then nothing. A range is
+    /// never cut to its upper end.
     fn text(&self, width: usize) -> Option<String> {
         let candidates: Vec<String> = match self {
             Self::Blank => Vec::new(),
@@ -420,8 +421,18 @@ impl RowSize {
             Self::Rescan => vec!["rescan".into()],
             Self::Nothing => vec!["none".into()],
             Self::Report { findings } => vec![format!("report · {findings}"), "report".into()],
-            Self::Offers { size, findings, .. } => {
-                vec![format!("{size} · {findings}"), size.clone()]
+            Self::Offers {
+                size,
+                findings,
+                at_least,
+                ..
+            } => {
+                let mut candidates = vec![format!("{size} · {findings}"), size.clone()];
+                // Too narrow for the range: its lower bound, never its upper.
+                if let Some(at_least) = at_least {
+                    candidates.push(format!("≥{}", report::gb(*at_least)));
+                }
+                candidates
             }
         };
         candidates
@@ -429,13 +440,14 @@ impl RowSize {
             .find(|candidate| candidate.chars().count() <= width)
     }
 
-    /// What the Selected pane says about the last scan of this row.
-    fn detail(&self) -> Vec<String> {
+    /// What the Selected pane says about the last scan of this row; the
+    /// size line only when the row itself could not show it (`shown`).
+    fn detail(&self, shown: bool) -> Vec<String> {
         match self {
             Self::Blank => Vec::new(),
             Self::Failed => vec!["Last scan: failed; open it to see why and retry.".into()],
             Self::Rescan => {
-                vec!["Applied since the last scan; Scan everything again for its size.".into()]
+                vec!["Changed since the last scan; rescan for its size.".into()]
             }
             Self::Nothing => vec!["Last scan: nothing to give back.".into()],
             Self::Report { findings } => {
@@ -447,7 +459,10 @@ impl RowSize {
                 at_least,
                 ..
             } => {
-                let mut lines = vec![format!("Last scan: {size} in {findings} finding(s).")];
+                let mut lines = Vec::new();
+                if !shown {
+                    lines.push(format!("Last scan: {size} in {findings} finding(s)."));
+                }
                 if let Some(at_least) = at_least {
                     lines.push(format!(
                         "at least {} comes back; APFS clones share the rest",
@@ -1829,6 +1844,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     // The label and the size share what is left after the highlight mark,
     // the key and the badge.
     let room = usize::from(menu_area.width.saturating_sub(2 + 2 + 10));
+    let row_room = |item: &MenuItem| room.saturating_sub(item.label.chars().count() + 1);
     let items = MENU.iter().map(|item| {
         let (marker, token, _) = badge(item.operation);
         let mut spans = vec![
@@ -1839,8 +1855,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         let label = item.label.chars().count();
         let size = app.overview.as_ref().and_then(|overview| {
             let row = overview.row(item.operation);
-            row.text(room.saturating_sub(label + 1))
-                .map(|text| (text, row))
+            row.text(row_room(item)).map(|text| (text, row))
         });
         if let Some((text, row)) = size {
             let token = match row {
@@ -1874,7 +1889,11 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         let (_, _, meaning) = badge(item.operation);
         let mut lines = wrapped(item.label, width, app.theme.bold(Token::Accent));
         if let Some(overview) = &app.overview {
-            for text in overview.row(item.operation).detail() {
+            let row = overview.row(item.operation);
+            // A size the row already shows is not repeated; what it cannot
+            // show is said here.
+            let shown = row.text(row_room(item)).is_some();
+            for text in row.detail(shown) {
                 lines.extend(wrapped(&text, width, Style::default()));
             }
         }
@@ -1889,9 +1908,8 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         lines
     };
     // The form is chosen for the tallest entry, so the pane does not reflow
-    // as the highlight moves: the whole disk block, then without its bar, then
-    // without the snapshot line, then the free-space line in one row, then
-    // without blank rows between the parts.
+    // as the highlight moves: the fullest disk block that fits, with blank
+    // rows between the parts and then without them, before a sparer block.
     let tallest = |spaced: bool| {
         MENU.iter()
             .map(|item| selected_lines(item, spaced).len())
@@ -1905,8 +1923,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     };
     let sparest = forms.len() - 1;
     let (chosen, spaced) = (0..forms.len())
-        .map(|index| (index, true))
-        .chain(std::iter::once((sparest, false)))
+        .flat_map(|index| [(index, true), (index, false)])
         .find(|(index, spaced)| fits(&forms[*index], *spaced))
         .unwrap_or((sparest, false));
     let mut lines = forms[chosen].clone();
@@ -1918,8 +1935,9 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// The disk block from fullest to sparest: free space, bar and snapshot
-/// line; without the bar; free space alone; free space in one row. Always
-/// at least one form, empty when nothing was read.
+/// line; without the bar; free space alone, each with the free-space line
+/// whole and then in its one-row form. Always at least one form, empty when
+/// nothing was read.
 fn disk_forms(app: &App, width: usize) -> Vec<Vec<Line<'static>>> {
     let (first, short, bar) = match &app.disk {
         None => return vec![Vec::new()],
@@ -1935,11 +1953,15 @@ fn disk_forms(app: &App, width: usize) -> Vec<Vec<Line<'static>>> {
                 width,
                 Style::default(),
             );
-            let short = wrapped(
-                &format!("{free} free · {percent}% used"),
-                width,
-                Style::default(),
-            );
+            // The one-row form, as short as the pane needs.
+            let short = [
+                format!("{free} free · {percent}% used"),
+                format!("{free} free · {percent}%"),
+            ]
+            .iter()
+            .map(|text| wrapped(text, width, Style::default()))
+            .min_by_key(|rows| (rows.len() > 1, rows.len()))
+            .unwrap_or_default();
             let filled = crate::analyze::bar(used, space.total, width);
             let rest = width.saturating_sub(filled.chars().count());
             let bar = Line::from(vec![
@@ -1982,51 +2004,20 @@ fn disk_forms(app: &App, width: usize) -> Vec<Vec<Line<'static>>> {
         first.clone()
     };
     vec![
-        [first.clone(), bar, snapshots.clone()].concat(),
-        [first.clone(), snapshots].concat(),
+        [first.clone(), bar.clone(), snapshots.clone()].concat(),
+        [shortest.clone(), bar, snapshots.clone()].concat(),
+        [first.clone(), snapshots.clone()].concat(),
+        [shortest.clone(), snapshots].concat(),
         first,
         shortest,
     ]
 }
 
-/// `text` broken into rows of at most `width` columns at spaces, a word
-/// longer than a row split across rows, so the pane knows how tall it is.
+/// Prose rows for the Selected pane, through [`wrap_words`] so the pane
+/// knows how tall it is before it draws.
 fn wrapped(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
-    let width = width.max(1);
-    let mut rows: Vec<String> = Vec::new();
-    let mut row = String::new();
-    for word in text.split(' ').filter(|word| !word.is_empty()) {
-        let mut word: Vec<char> = word.chars().collect();
-        loop {
-            let used = row.chars().count();
-            let needed = if used == 0 {
-                word.len()
-            } else {
-                used + 1 + word.len()
-            };
-            if needed <= width {
-                if used > 0 {
-                    row.push(' ');
-                }
-                row.extend(word.iter());
-                break;
-            }
-            if used > 0 {
-                rows.push(std::mem::take(&mut row));
-                continue;
-            }
-            let rest = word.split_off(width);
-            rows.push(word.into_iter().collect());
-            word = rest;
-            if word.is_empty() {
-                break;
-            }
-        }
-    }
-    if !row.is_empty() || rows.is_empty() {
-        rows.push(row);
-    }
-    rows.into_iter()
+    wrap_words(text, width.max(1))
+        .into_iter()
         .map(|row| Line::styled(row, style))
         .collect()
 }
@@ -3711,10 +3702,9 @@ mod tests {
     /// The menu row of `label`, trimmed, from a rendered screen.
     fn menu_row<'a>(rows: &'a [String], label: &str) -> &'a str {
         rows.iter()
-            .find(|row| row.contains(&format!(" {label} ")) && row.contains("  "))
-            .map_or("", |row| {
-                row.split(['│', '└', '┌']).next().unwrap_or("").trim_end()
-            })
+            .map(|row| row.split(['│', '└', '┌']).next().unwrap_or("").trim_end())
+            .find(|row| row.ends_with(label) || row.contains(&format!(" {label} ")))
+            .unwrap_or("")
     }
 
     #[test]
@@ -3844,19 +3834,95 @@ mod tests {
         let selected = screen_rows(&menu_with(&app, 2), 120, 40);
         let pane = selected_pane_text(&selected);
         assert!(
-            pane.contains("Last scan: 1.9–21.8 GB in 2 finding(s)."),
-            "{pane}"
-        );
-        assert!(
             pane.contains("at least 1.9 GB comes back; APFS clones share the rest"),
             "{pane}"
         );
-        let caches = selected_pane_text(&screen_rows(&menu_with(&app, 1), 120, 40));
         assert!(
-            caches.contains("Last scan: 12.0 GB in 1 finding(s)."),
-            "{caches}"
+            !pane.contains("Last scan:"),
+            "the row already shows it: {pane}"
         );
+        let caches = selected_pane_text(&screen_rows(&menu_with(&app, 1), 120, 40));
         assert!(!caches.contains("at least"), "{caches}");
+    }
+
+    /// A row whose label leaves no room at 64 columns says in the pane what
+    /// the row cannot; every other row shows its state at 64 columns, and
+    /// every entry's badge meaning stays whole.
+    #[test]
+    fn at_the_minimum_size_every_row_states_its_scan_and_every_meaning_is_whole() {
+        let findings = vec![
+            sized("caches", 12 * GIB, None),
+            sized("nm", 100 * GIB, Some(54 * GIB)),
+            sized("target", 5 * GIB, Some(GIB)),
+            sized("agents", 3 * GIB, None),
+            sized("toolchain", 2 * GIB, None),
+        ];
+        let sections = vec![
+            section("caches", 0..1),
+            section("node-modules", 1..2),
+            section("artifacts", 2..3),
+            section("simulators", 3..3),
+            section("xcode", 3..3),
+            section("toolchains", 4..5),
+            section("installers", 5..5),
+            section("agents", 3..4),
+            section("leftovers", 5..5),
+        ];
+        let mut app = scan_everything(findings, sections);
+        app.back_to_menu();
+        app.disk = disk_menu().disk;
+        app.snapshots = Snapshots::Counted(2);
+        let squeeze = |text: &str| text.split_whitespace().collect::<String>();
+        let rows = screen_rows(&menu_with(&app, 0), MIN_WIDTH, MIN_HEIGHT);
+        // 72.0–122.0 GB is too wide beside its label: its lower bound.
+        assert!(
+            menu_row(&rows, "Scan everything").ends_with("everything     ≥72.0 GB"),
+            "{rows:#?}"
+        );
+        assert!(
+            menu_row(&rows, "node_modules").ends_with("54.0–100.0 GB"),
+            "{rows:#?}"
+        );
+        assert!(
+            menu_row(&rows, "Build artifacts").ends_with("1.0–5.0 GB"),
+            "{rows:#?}"
+        );
+        assert!(
+            menu_row(&rows, "Swift toolchains").ends_with("2.0 GB · 1"),
+            "{rows:#?}"
+        );
+        assert!(menu_row(&rows, "Docker").ends_with("failed"), "{rows:#?}");
+        // The one label too long for any size at 64 columns.
+        assert!(
+            menu_row(&rows, "Agent caches & history").ends_with("history"),
+            "{rows:#?}"
+        );
+        let agents = selected_pane_text(&screen_rows(&menu_with(&app, 10), MIN_WIDTH, MIN_HEIGHT));
+        assert!(
+            squeeze(&agents).contains(&squeeze("Last scan: 3.0 GB in 1 finding(s).")),
+            "{agents}"
+        );
+        let overview = app.overview.as_mut().unwrap();
+        overview.applied.insert("agents");
+        overview.failed.push("caches");
+        for (selected, entry) in MENU.iter().enumerate() {
+            let rows = screen_rows(&menu_with(&app, selected), MIN_WIDTH, MIN_HEIGHT);
+            let pane = selected_pane_text(&rows);
+            let (_, _, meaning) = badge(entry.operation);
+            assert!(squeeze(&pane).contains(&squeeze(meaning)), "{rows:#?}");
+            assert!(pane.contains("GB free"), "the disk line stays: {rows:#?}");
+            assert!(
+                rows.concat()
+                    .contains("↑↓ move · Enter open · q quit · ? keys")
+            );
+        }
+        let rows = screen_rows(&menu_with(&app, 0), MIN_WIDTH, MIN_HEIGHT);
+        assert!(menu_row(&rows, "Caches").ends_with("failed"), "{rows:#?}");
+        let agents = selected_pane_text(&screen_rows(&menu_with(&app, 10), MIN_WIDTH, MIN_HEIGHT));
+        assert!(
+            squeeze(&agents).contains(&squeeze("Changed since the last scan")),
+            "{agents}"
+        );
     }
 
     #[test]
@@ -3876,7 +3942,7 @@ mod tests {
             );
         }
         let pane = selected_pane_text(&screen_rows(&menu_with(&app, 2), 120, 40));
-        assert!(pane.contains("Applied since the last scan"), "{pane}");
+        assert!(pane.contains("Changed since the last scan"), "{pane}");
         // A new Scan everything replaces the overview, and with it every rescan.
         app.finish_scan(
             ops::ScanResult {
@@ -3900,7 +3966,12 @@ mod tests {
         let row = Overview::offers(GIB, 20 * GIB, 7);
         assert_eq!(row.text(20).as_deref(), Some("1.0–20.0 GB · 7"));
         assert_eq!(row.text(12).as_deref(), Some("1.0–20.0 GB"));
-        assert_eq!(row.text(10), None, "never the upper bound alone");
+        assert_eq!(
+            row.text(10).as_deref(),
+            Some("≥1.0 GB"),
+            "the lower bound, never the upper"
+        );
+        assert_eq!(row.text(6), None);
         let single = Overview::offers(5 * GIB, 5 * GIB, 1);
         assert_eq!(single.text(20).as_deref(), Some("5.0 GB · 1"));
         assert_eq!(RowSize::Blank.text(40), None);
