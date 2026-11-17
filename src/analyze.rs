@@ -615,6 +615,8 @@ fn scan_context(ctx: &Ctx) -> Ctx {
         diagnostics: Default::default(),
         journal_errors: Default::default(),
         apply_results: Default::default(),
+        // The verdict scan never applies.
+        apply_monitor: Default::default(),
     }
 }
 
