@@ -367,8 +367,9 @@ runs one fresh read-only scan with your roots and marks each entry by the
 findings `devtrim explain` uses: `OFFERED` (the command and whether it moves to
 the Trash), `HOLDS n` (a folder holding n offered entries), `IN OFFER` (inside an
 offered target), `PROTECTED` (with the rule) or `NOT OFFERED` (outside the scan
-roots and every finding). `f` then hides the entries nothing offers. None of it
-grants deletion: the command a verdict names is the way to act on it.
+roots and every finding); an entry inside the roots that nothing offers has no
+tag. `f` then hides the entries no offer reaches, and quitting while the
+verdicts still load exits 130. None of it grants deletion: the command a verdict names is the way to act on it.
 
 `status` reads machine vitals through fixed-argv system tools and reports a
 health score that **names every input it could not read** rather than scoring

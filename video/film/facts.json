@@ -1680,8 +1680,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-analyze"
  },
  {
-  "id": "f5587a19a",
-  "text": "Each folder names the chain below it that holds most of its space, each step at least half of the one above, stopping at a Git repository, a node_modules install or a bundle; m goes to its end. v runs one fresh read-only scan and marks entries OFFERED, HOLDS n, IN OFFER, PROTECTED or NOT OFFERED, as devtrim explain would; f then hides what nothing offers. A verdict names a command and grants nothing.",
+  "id": "fc2378eaa",
+  "text": "Each folder names the chain below it that holds most of its space, each step at least half of the one above, stopping at a Git repository, a node_modules install or a bundle; m goes to its end. v runs one fresh read-only scan and marks entries OFFERED, HOLDS n, IN OFFER, PROTECTED or NOT OFFERED, as devtrim explain would; an entry inside the scan roots that nothing offers has no tag. f then hides what no offer reaches, and quitting while the verdicts load exits 130. A verdict names a command and grants nothing.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-analyze"
  },
  {

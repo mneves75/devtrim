@@ -446,8 +446,12 @@ impl Verdict {
         }
     }
 
+    /// What the filter keeps: anything an offer reaches, inside one too.
     fn holds_offers(&self) -> bool {
-        matches!(self, Self::Offered { .. } | Self::Holds { .. })
+        matches!(
+            self,
+            Self::Offered { .. } | Self::Holds { .. } | Self::InOffer { .. }
+        )
     }
 }
 
@@ -1231,7 +1235,7 @@ fn status_line(explorer: &Explorer, partial: bool, shown_empty: bool) -> (String
     }
     if explorer.filtering() && shown_empty {
         return (
-            "Filtered: nothing here is offered or holds an offer.".into(),
+            "Filtered: nothing here is offered, holds an offer or lies inside one.".into(),
             Token::Muted,
         );
     }
@@ -2558,5 +2562,39 @@ mod tests {
         assert!(rows[15].starts_with('└'), "{rows:#?}");
         assert!(rows[16].contains("? keys"), "{rows:#?}");
         assert!(rows[16].contains("q quit"), "{rows:#?}");
+    }
+
+    /// REVIEW: docs say `f` "hides what nothing offers". Inside an offered
+    /// target every entry is IN OFFER (it goes with the offer), yet the filter
+    /// hides them all and the status says nothing here is offered.
+    #[test]
+    fn the_filter_keeps_entries_inside_an_offer() {
+        let Planted {
+            _fixture,
+            home,
+            mut verdicts,
+        } = planted("analyze-review-inoffer");
+        let install = home.join("dev/web/node_modules");
+        let mut explorer = Explorer::new(install.clone(), Theme::from_env());
+        explorer.entries = vec![Entry {
+            path: install.join("pkg"),
+            size: 4096,
+            is_dir: true,
+            partial: false,
+            culprit: None,
+        }];
+        verdicts.remember(&install.join("pkg"));
+        explorer.verdicts = VerdictState::Loaded(verdicts);
+        assert!(matches!(
+            explorer.verdict(&explorer.entries[0].clone()),
+            Some(Verdict::InOffer { .. })
+        ));
+        explorer.handle_key(key(KeyCode::Char('f')));
+        let output = screen(&explorer, 64, 18).concat();
+        assert_eq!(
+            explorer.shown().len(),
+            1,
+            "REVIEW: filter hid an IN OFFER entry: {output}"
+        );
     }
 }

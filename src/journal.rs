@@ -336,18 +336,25 @@ pub(crate) struct JournalAttempt {
     rotation_lock: File,
 }
 
-pub(crate) fn begin(ctx: &Ctx, record: JournalRecord) -> Result<JournalAttempt> {
-    // First, before the journal folder, its lock or its file is opened or
-    // created: a stopped apply refuses every later attempt with nothing
-    // written and nothing touched, whichever category loop asked.
-    let monitor = ctx.apply_monitor();
-    if let Some(monitor) = &monitor
+/// Refuses with [`ApplyStopped`] once a stop was requested, counting the
+/// refusal. A category that must write before its attempt (uv's cache lock)
+/// asks first, so a stopped apply touches nothing at all.
+pub(crate) fn refuse_if_stopped(ctx: &Ctx) -> Result<()> {
+    if let Some(monitor) = ctx.apply_monitor()
         && monitor.stop_requested()
     {
         monitor.stopped.fetch_add(1, Ordering::SeqCst);
         monitor.version.fetch_add(1, Ordering::SeqCst);
         return Err(ApplyStopped.into());
     }
+    Ok(())
+}
+
+pub(crate) fn begin(ctx: &Ctx, record: JournalRecord) -> Result<JournalAttempt> {
+    // First, before the journal folder, its lock or its file is opened or
+    // created: a stopped apply refuses every later attempt with nothing
+    // written and nothing touched, whichever category loop asked.
+    refuse_if_stopped(ctx)?;
     if record.phase != "attempt" || !valid_record(&record) {
         anyhow::bail!("refusing invalid apply journal attempt");
     }
@@ -356,7 +363,7 @@ pub(crate) fn begin(ctx: &Ctx, record: JournalRecord) -> Result<JournalAttempt> 
     let rotation_lock = acquire_apply_lock(&location)?;
     append_at(&location, &record)
         .with_context(|| format!("cannot write apply journal: {}", ctx.journal_path.display()))?;
-    if let Some(monitor) = monitor {
+    if let Some(monitor) = ctx.apply_monitor() {
         monitor.began(&record);
     }
     Ok(JournalAttempt {

@@ -27,7 +27,7 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   above, stopping at a Git repository, an install or a bundle); `m` goes to its
   end. `v` marks each entry `OFFERED`, `HOLDS n`, `IN OFFER`, `PROTECTED` or
   `NOT OFFERED` from one fresh read-only scan matched as `devtrim explain`
-  matches, and `f` hides what nothing offers. Neither grants deletion.
+  matches, and `f` hides what no offer reaches. Neither grants deletion.
 
 ### Changed
 - The landing page and manual describe these screens with frames rendered from
