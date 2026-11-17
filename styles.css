@@ -325,7 +325,7 @@ video { inline-size: 100%; background: #000; aspect-ratio: 16 / 9; }
      ground, printed exactly so their light ink stays readable. */
   :root { color-scheme: light; }
   .walk.is-tabs { display: block; }
-  .walk.is-tabs .walk-steps > li { grid-area: auto; visibility: visible; }
+  .walk.is-tabs .walk-steps > li, .walk.is-tabs .walk-steps > li.is-off { grid-area: auto; visibility: visible; }
   .walk-steps > li { animation: none !important; break-inside: avoid; }
   .walk.is-tabs .walk-steps figcaption { display: block; }
   .walk.is-tabs .walk-steps figcaption strong { position: static; inline-size: auto; block-size: auto; clip-path: none; }
@@ -333,4 +333,5 @@ video { inline-size: 100%; background: #000; aspect-ratio: 16 / 9; }
   /* No 11px floor on paper, where nothing can scroll: every column fits. */
   .term-frame .term { font-size: min((100cqi - 2rem) / (var(--cols) * 0.605), var(--term-max)); }
   figure, tr { break-inside: avoid; }
+  h2, h3 { break-after: avoid; }
 }
