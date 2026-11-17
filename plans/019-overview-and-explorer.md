@@ -1,6 +1,6 @@
 # 019 — Answer "where did my disk go" before asking what to clean
 
-Status: IMPLEMENTED on branch, releasing as 0.15.0. Base `9ce4edc` (0.14.0 production). Target 0.15.0.
+Status: SHIPPED in 0.15.0 (2026-11-17, main cf7962b). Base `9ce4edc` (0.14.0 production). Target 0.15.0.
 
 Origin: review of `govijr/fix-storage` f354e20 (TypeScript, 2026-11-16) and
 `morajabi/poo` 1893c39 (Rust + SwiftUI, 2026-11-16), requested 2026-11-17 as

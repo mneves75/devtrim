@@ -29,6 +29,7 @@
     "csp.py --check": "pass",
     "check_facts.py": "37/37",
     "site 390px overflow": "none (scrollWidth 390)",
-    "planted-violations journal-stop/ @5daf86a": "6/6 proven"
+    "planted-violations journal-stop/ @5daf86a": "6/6 proven",
+    "release v0.15.0": "verify-live pass; stable == beta bytes; formula == candidate e8e97858; brew devtrim 0.15.0 sole"
   }
 }
