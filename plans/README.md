@@ -28,7 +28,8 @@ Ratatui interface and its shared safety/release boundaries.
 | [015](015-html-dashboard.md) | Complete the offline HTML dashboard and verified release candidate | P1 | M | 014 | DONE in 0.12.0 |
 | [016](016-ux-and-audit-0.13.md) | Redesign the site and terminal UI; fix the whole-project audit | P1 | L | 015 | DONE in 0.13.0 |
 | [017](017-comment-prune-and-audit.md) | Prune comments, plan workaround refactors, fix the audit | P1 | M | 016 | DONE in 0.13.1 |
-| [018](018-measured-space-and-explain.md) | Measure what an apply frees, size APFS clones, explain a path | P1 | L | 017 | IN PROGRESS |
+| [018](018-measured-space-and-explain.md) | Measure what an apply frees, size APFS clones, explain a path | P1 | L | 017 | DONE in 0.14.0 |
+| [019](019-overview-and-explorer.md) | Overview on open, scan and apply progress, stop between targets, culprit and verdicts in analyze | P2 | L | 018 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 
