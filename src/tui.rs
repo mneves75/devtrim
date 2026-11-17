@@ -1664,8 +1664,7 @@ const HELP_KEYS: &[HelpGroup] = &[
             ("↑/↓, k/j", "navigate lists and scroll output"),
             ("PgUp/PgDn", "move a page; g/G the first or last row"),
             ("Enter", "open the operation, or the item in full"),
-            ("b, Esc", "back a screen; on the menu, Esc quits"),
-            ("?", "open or close this reference"),
+            ("b, Esc, ?", "back; Esc quits the menu; ? this reference"),
             ("q, Ctrl+C", "quit, stopping a scan; not during an apply"),
         ],
     ),
@@ -1677,6 +1676,7 @@ const HELP_KEYS: &[HelpGroup] = &[
             ("a", "apply the selected items of the plan"),
             ("s", "toggle Trash-first and permanent deletion"),
             ("r", "rescan, or retry after a failure"),
+            ("x", "during an apply, stop after the current item"),
         ],
     ),
 ];

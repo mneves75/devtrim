@@ -7,13 +7,16 @@ selection narrowing a plan; the project purge view applying through the
 real node-modules and artifacts owners; the detail pane at the minimum
 size, where a long path cannot fit and the pane must say what it hides;
 a scan blocked on a probe that does not answer, which must keep the screen
-alive and stop promptly on a key or a signal; and an apply blocked the same
-way, which must refuse a quit key yet stop on SIGTERM.
+alive and stop promptly on a key or a signal; an apply blocked the same
+way, which must refuse a quit key yet stop on SIGTERM; and `x` asking an
+apply blocked between targets to stop, which must finish the current one
+and leave every later target untouched.
 """
 
 import argparse
 import errno
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -254,12 +257,12 @@ def verify_menu(binary):
             if b"\x1b[?1049h" not in session.output:
                 raise AssertionError("TUI did not enter alternate screen")
             session.send(b"?")
-            session.wait_for("open or close this reference")
+            session.wait_for("Esc quits the menu; ? this reference")
             session.send(b"\x1b")
             # The overlay is gone and the menu beneath it intact. Only the cells
             # the overlay covered are redrawn, so this reads the screen rather
             # than waiting for new output.
-            session.wait_for_screen_without("open or close this reference")
+            session.wait_for_screen_without("Esc quits the menu; ? this reference")
             session.wait_for_screen("Scan everything", "Enter open")
             session.quit()
             if termios.tcgetattr(session.master) != session.original:
@@ -641,6 +644,73 @@ def verify_blocked_apply_refuses_quit(binary):
                 os.kill(probe, signal.SIGKILL)
 
 
+def verify_stop_between_targets(binary):
+    """`x` during an apply stops it between attempts, never inside one. The
+    project purge removes `node_modules` first; the stubbed `pgrep` answers at
+    once until that is gone, then blocks the `artifacts` liveness probe that
+    runs before `target` is attempted, which is the positive control that the
+    apply was mid-plan. q and Ctrl+C stay refused; `x` must say it is
+    stopping, and once the probe is released the outcome must report the
+    untried `target` as not attempted, with `target` byte for byte intact and
+    only the removed item in the journal."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        marker = home / "pgrep.pid"
+        release = home / "pgrep.release"
+        name = "-".join(["a-project-whose-directory-name-wraps"] * 4)
+        gate = home / "dev" / name / name / "node_modules"
+        project = stale_project(
+            home,
+            pgrep=(
+                f"if [ -e '{gate}' ]; then exit 1; fi\n"
+                f"echo $$ > '{marker}'\n"
+                f"while [ ! -e '{release}' ]; do /bin/sleep 0.1; done\nexit 1"
+            ),
+        )
+        kept = (project / "target" / "debug" / "out").read_bytes()
+        probe = None
+        try:
+            with Session(binary, home, rows=18, columns=64) as session:
+                session.deadline = time.monotonic() + 90
+                session.wait_for("Scan everything")
+                session.send(b"p")
+                session.wait_for_screen("Review every finding")
+                session.send(b"sa")
+                session.wait_for_screen("then Enter")
+                session.send(b"0\r")
+                while not marker.exists() or not marker.read_text().endswith("\n"):
+                    session.read_output()
+                probe = int(marker.read_text())
+                if not alive(probe):
+                    raise AssertionError("positive control: the stubbed artifacts probe is not running")
+                if project.joinpath("node_modules").exists():
+                    raise AssertionError("positive control: the first target was not removed")
+                session.wait_for_screen("1 of 2 ·", "x stop after this item")
+                session.send(b"q\x03")
+                session.settle(1.5)
+                if session.process.poll() is not None:
+                    raise AssertionError("q or Ctrl+C quit in the middle of an apply")
+                session.wait_for_screen("Quitting is refused until this apply returns.")
+                session.send(b"x")
+                session.wait_for_screen("Stopping after the current item")
+                release.write_text("")
+                session.wait_for_screen("Stopped by you: 1 done, 1 not attempted.")
+                # At 18 rows the errors sit below the long removal note.
+                session.send(b"jjjj")
+                session.wait_for_screen("stopped by you: 1 not attempted")
+                session.quit(expected_status=1)
+            if (project / "target" / "debug" / "out").read_bytes() != kept:
+                raise AssertionError("a target after the stop was touched")
+            journal = home / "state" / "devtrim" / "journal.jsonl"
+            records = [json.loads(line) for line in journal.read_text().splitlines()]
+            phases = [record["phase"] for record in records]
+            if phases != ["attempt", "result"] or not records[0]["target"].endswith("node_modules"):
+                raise AssertionError(f"the journal holds more than the removed item: {records}")
+        finally:
+            if probe is not None and alive(probe):
+                os.kill(probe, signal.SIGKILL)
+
+
 def uv_cache_home(directory):
     home = Path(directory).resolve()
     cache = home / ".cache" / "uv"
@@ -766,6 +836,7 @@ def main():
         verify_scan_error_exit(binary)
         stop_seconds = verify_slow_scan_stops(binary)
         verify_blocked_apply_refuses_quit(binary)
+        verify_stop_between_targets(binary)
     except (AssertionError, OSError, termios.error) as error:
         print(f"tui: {error}", file=sys.stderr)
         return 1
@@ -774,7 +845,7 @@ def main():
         " pasted and Alt-modified answers refused, selection, action-key explanations, project purge, the minimum-size"
         " detail pane and view, confirmation feedback and answer limit at 64×18, Esc on the too-small"
         " screen, rescanning from the outcome, row numbers past 999, stopping a scan blocked on its probe, and refusing to"
-        " quit an apply blocked on its probe passed"
+        " quit an apply blocked on its probe, and stopping an apply between targets with x passed"
     )
     print(f"tui: seconds from stop to exit during a blocked scan: {stop_seconds}")
     return 0

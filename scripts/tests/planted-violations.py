@@ -2084,6 +2084,24 @@ CASES = (
         tests=("safety::tests::a_volume_with_a_snapshot_counts_allocated_blocks",),
         marker="PV size/snapshot-fallback",
     ),
+    # The stop flag is ignored at the journal's begin, the one check every
+    # attempt in every category passes: later targets are attempted again.
+    Case(
+        name="journal-stop/begin",
+        relative_path="src/journal.rs",
+        before="        && monitor.stop_requested()\n    {\n        monitor.stopped",
+        after="        && false\n    {\n        monitor.stopped",
+        tests=("ops::tests::a_stop_between_targets_removes_only_the_finished_one",),
+        marker="PV journal-stop/begin",
+    ),
+    Case(
+        name="journal-stop/command",
+        relative_path="src/journal.rs",
+        before="        && monitor.stop_requested()\n    {\n        monitor.stopped",
+        after="        && false\n    {\n        monitor.stopped",
+        tests=("ops::tests::a_stop_between_typed_commands_runs_only_the_finished_one",),
+        marker="PV journal-stop/command",
+    ),
 )
 
 
