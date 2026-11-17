@@ -275,6 +275,9 @@ struct App {
     /// The scan or apply running on the worker thread, and when it started,
     /// for the working screen's clock.
     working: Option<(Work, Instant)>,
+    /// How far the apply on the worker thread has gone, read from the journal
+    /// as each attempt begins and finishes; it also carries the stop request.
+    apply_monitor: Option<std::sync::Arc<crate::journal::ApplyMonitor>>,
     /// The home folder, shown as `~` in the path column; `None` shows paths
     /// as they are.
     home: Option<std::path::PathBuf>,
@@ -305,6 +308,7 @@ impl Default for App {
             help: false,
             scroll_limit: std::cell::Cell::new(0),
             working: None,
+            apply_monitor: None,
             home: None,
         }
     }
@@ -434,10 +438,53 @@ impl App {
         self.working = Some((Work::Scan, Instant::now()));
     }
 
-    fn begin_apply(&mut self) {
+    fn begin_apply(&mut self, monitor: std::sync::Arc<crate::journal::ApplyMonitor>) {
         self.screen = Screen::Loading;
         self.say(Token::Muted, "Applying only the exact previewed findings…");
         self.working = Some((Work::Apply, Instant::now()));
+        self.apply_monitor = Some(monitor);
+    }
+
+    /// `x` during an apply: the journal refuses every attempt after the one
+    /// in progress, which always runs to its end. Asked once; a second press
+    /// changes nothing.
+    fn request_stop(&mut self) {
+        let Some(monitor) = self.apply_monitor.as_ref().filter(|_| applying(self)) else {
+            return;
+        };
+        if monitor.stop_requested() {
+            return;
+        }
+        monitor.request_stop();
+        let subject = if monitor.current().is_some_and(|item| item.command) {
+            "command"
+        } else {
+            "item"
+        };
+        self.say(
+            Token::Warning,
+            format!("Stopping after the current {subject}…"),
+        );
+    }
+
+    /// What `x` would wait for, as the footer names it.
+    fn stop_key_label(&self) -> Option<&'static str> {
+        let monitor = self.apply_monitor.as_ref().filter(|_| applying(self))?;
+        if monitor.stop_requested() {
+            return None;
+        }
+        Some(if monitor.current().is_some_and(|item| item.command) {
+            "stops after this command"
+        } else {
+            "stop after this item"
+        })
+    }
+
+    /// Changes when the working screen has something new to show.
+    fn progress_version(&self) -> u64 {
+        self.apply_monitor
+            .as_ref()
+            .map_or(0, |monitor| monitor.version())
     }
 
     /// Whole seconds the scan or apply on the worker thread has run.
@@ -464,9 +511,17 @@ impl App {
                 if !outcome.errors.is_empty() {
                     self.failed = true;
                 }
-                let (token, status) =
-                    outcome_status(!outcome.errors.is_empty(), outcome.summary.items_touched);
-                self.say(token, status);
+                if outcome.stopped > 0 {
+                    let status = format!(
+                        "Stopped by you: {} done, {} not attempted.",
+                        outcome.summary.items_touched, outcome.stopped
+                    );
+                    self.say(Token::Warning, status);
+                } else {
+                    let (token, status) =
+                        outcome_status(!outcome.errors.is_empty(), outcome.summary.items_touched);
+                    self.say(token, status);
+                }
                 self.summary = Some(outcome.summary);
                 self.errors = outcome.errors;
                 self.scroll = 0;
@@ -1099,9 +1154,17 @@ fn run_loop(
             }
             Intent::Apply(plan) => {
                 if approved_plan_matches(&app, &plan) {
-                    app.begin_apply();
-                    let result =
-                        in_background(terminal, &mut app, interrupts, || run_apply(ctx, plan))?;
+                    let monitor = std::sync::Arc::new(crate::journal::ApplyMonitor::new(
+                        plan.findings
+                            .iter()
+                            .filter(|finding| finding.action.is_actionable())
+                            .count(),
+                        report::actionable_bytes(&plan.findings),
+                    ));
+                    app.begin_apply(monitor.clone());
+                    let result = in_background(terminal, &mut app, interrupts, || {
+                        run_apply(ctx, plan, &monitor)
+                    })?;
                     app.finish_apply(result);
                     // What the apply reported on the way, shown with its
                     // outcome rather than left for the next scan to carry.
@@ -1144,6 +1207,7 @@ fn in_background<T: Send>(
     job: impl FnOnce() -> T + Send,
 ) -> Result<T> {
     let scanning = matches!(app.working, Some((Work::Scan, _)));
+    let applying = matches!(app.working, Some((Work::Apply, _)));
     let finished = thread::scope(|scope| -> Result<thread::Result<T>> {
         let worker = scope.spawn(job);
         let mut shown = None;
@@ -1151,10 +1215,10 @@ fn in_background<T: Send>(
             if let Some(signal) = interrupts.received() {
                 restore_and_exit(signal);
             }
-            let elapsed = app.elapsed_seconds();
-            if shown != Some(elapsed) {
+            let now = (app.elapsed_seconds(), app.progress_version());
+            if shown != Some(now) {
                 terminal.draw(|frame| render(frame, app))?;
-                shown = Some(elapsed);
+                shown = Some(now);
             }
             if !event::poll(TICK).context("cannot poll terminal input")? {
                 continue;
@@ -1163,6 +1227,10 @@ fn in_background<T: Send>(
                 Event::Key(key) if scanning && is_quit_key(key) => {
                     restore_and_exit(signal_hook::consts::SIGINT)
                 }
+                Event::Key(key) if applying && is_stop_key(key) => {
+                    app.request_stop();
+                    shown = None;
+                }
                 Event::Resize(..) => shown = None,
                 _ => {}
             }
@@ -1170,12 +1238,24 @@ fn in_background<T: Send>(
         Ok(worker.join())
     })?;
     app.working = None;
+    app.apply_monitor = None;
     match finished {
         Ok(value) => Ok(value),
         // The panic already restored the terminal through Ratatui's hook; end
         // the run as a panic on this thread always did.
         Err(panic) => std::panic::resume_unwind(panic),
     }
+}
+
+/// `x` alone, which asks an apply to stop between attempts; Alt+x and the
+/// like are not it.
+fn is_stop_key(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && key.code == KeyCode::Char('x')
+        && key
+            .modifiers
+            .difference(event::KeyModifiers::SHIFT)
+            .is_empty()
 }
 
 fn is_quit_key(key: KeyEvent) -> bool {
@@ -1278,8 +1358,13 @@ fn approved_plan_matches(app: &App, plan: &ApprovedPlan) -> bool {
 }
 
 /// Applies a plan on the worker thread. The loop matched its approval against
-/// the displayed preview before it started.
-fn run_apply(ctx: &Ctx, plan: ApprovedPlan) -> Result<ApplyOutcome> {
+/// the displayed preview before it started. `monitor` watches it from the
+/// journal, which also honours its stop request between attempts.
+fn run_apply(
+    ctx: &Ctx,
+    plan: ApprovedPlan,
+    monitor: &std::sync::Arc<crate::journal::ApplyMonitor>,
+) -> Result<ApplyOutcome> {
     let ApprovedPlan {
         operation,
         findings,
@@ -1291,12 +1376,16 @@ fn run_apply(ctx: &Ctx, plan: ApprovedPlan) -> Result<ApplyOutcome> {
         return Err(read_only());
     }
     crate::journal::check_writable(ctx)?;
-    let mut outcome = crate::volume::measure_apply(&ctx.home, || match operation {
-        Operation::Clean(target) => ops::for_target(target).apply(&findings, ctx),
-        Operation::Purge => ops::purge::Purge.apply(&findings, ctx),
-        Operation::TrashEmpty => apply_trash(ctx, &findings, approval),
-        Operation::ScanAll | Operation::Icloud => Err(read_only()),
+    let mut outcome = ctx.with_apply_monitor(monitor.clone(), || {
+        crate::volume::measure_apply(&ctx.home, || match operation {
+            Operation::Clean(target) => ops::for_target(target).apply(&findings, ctx),
+            Operation::Purge => ops::purge::Purge.apply(&findings, ctx),
+            Operation::TrashEmpty => apply_trash(ctx, &findings, approval),
+            Operation::ScanAll | Operation::Icloud => Err(read_only()),
+        })
     })?;
+    // Before the journal's own errors join, which belong to finished items.
+    outcome.settle_stop(monitor);
     outcome.errors.extend(ctx.take_journal_errors());
     Ok(outcome)
 }
@@ -1635,6 +1724,10 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_loading(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![Line::raw(app.status.as_str())];
+    if let Some(monitor) = app.apply_monitor.as_ref().filter(|_| applying(app)) {
+        let inner = usize::from(area.width.saturating_sub(2));
+        lines.push(Line::raw(apply_progress_line(app, monitor, inner)));
+    }
     // The clock moving is what says the scan is still alive; a probe can take
     // minutes on a loaded machine.
     if let Some(elapsed) = app.elapsed_seconds() {
@@ -1649,6 +1742,37 @@ fn render_loading(frame: &mut Frame, area: Rect, app: &App) {
             .block(Block::bordered().title(" Working ")),
         area,
     );
+}
+
+/// `n of N · X of Y · <category> <item>` within `width` columns: the counts
+/// whole, then the item in progress keeping its end, where a path names it.
+fn apply_progress_line(app: &App, monitor: &crate::journal::ApplyMonitor, width: usize) -> String {
+    let counts = format!(
+        "{} of {} · {} of {}",
+        monitor.finished(),
+        monitor.total_findings,
+        report::gb(monitor.bytes_finished()),
+        report::gb(monitor.total_bytes)
+    );
+    let Some(item) = monitor.current() else {
+        return truncate_right(&counts, width);
+    };
+    let subject = match (&app.home, item.command) {
+        (Some(home), false) => match std::path::Path::new(&item.subject).strip_prefix(home) {
+            Ok(below) => format!("~/{}", below.display()),
+            Err(_) => item.subject.clone(),
+        },
+        _ => item.subject.clone(),
+    };
+    let head = format!("{counts} · {} ", report::terminal_safe(&item.op));
+    let room = width.saturating_sub(Span::raw(head.as_str()).width());
+    if room < 8 {
+        return truncate_right(&counts, width);
+    }
+    format!(
+        "{head}{}",
+        truncate_left(&report::terminal_safe(&subject), room)
+    )
 }
 
 /// The plan as the current mode would apply it, computed once per frame: the
@@ -2292,7 +2416,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             typed = format!("Type PURGE {expected_gb}, then Enter");
             vec![(typed.as_str(), ""), ("Esc", "cancel")]
         }
-        (Screen::Loading, _) if applying(app) => Vec::new(),
+        (Screen::Loading, _) if applying(app) => app
+            .stop_key_label()
+            .map(|label| vec![("x", label)])
+            .unwrap_or_default(),
         (Screen::Loading, _) => vec![("q", "quit")],
         _ => footer_keys(app),
     };
@@ -2810,7 +2937,7 @@ mod tests {
             approval: Approval::Yes,
         };
 
-        run_apply(&ctx, plan).unwrap();
+        run_apply(&ctx, plan, &Default::default()).unwrap();
 
         assert!(ctx.journal_path.with_extension("jsonl.1").exists());
     }
@@ -2851,9 +2978,10 @@ mod tests {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
             apply_results: Default::default(),
+            apply_monitor: Default::default(),
         };
 
-        app.finish_apply(run_apply(&ctx, plan));
+        app.finish_apply(run_apply(&ctx, plan, &Default::default()));
 
         assert_eq!(app.screen, Screen::Error);
         assert!(app.summary.is_none());
@@ -4242,6 +4370,7 @@ mod tests {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
             apply_results: Default::default(),
+            apply_monitor: Default::default(),
         };
         ctx.diagnostic("warn", "skipping a scan root: synthetic");
 
@@ -4288,5 +4417,141 @@ mod tests {
         assert!(output.contains("┌ Error"), "{output}");
         assert!(!output.contains("Failed closed"), "{output}");
         assert!(output.contains("Nothing was changed."), "{output}");
+    }
+
+    fn applying_app(command: bool) -> (App, std::sync::Arc<crate::journal::ApplyMonitor>) {
+        let monitor = std::sync::Arc::new(crate::journal::ApplyMonitor::new(3, 3 << 30));
+        monitor.set_current_for_test(crate::journal::CurrentItem {
+            op: "node_modules".into(),
+            subject: if command {
+                "docker --host unix:///var/run/docker.sock image prune -a -f".into()
+            } else {
+                "/Users/example/dev/a-very-long-project-name/packages/web/node_modules".into()
+            },
+            command,
+        });
+        let mut app = App {
+            home: Some(std::path::PathBuf::from("/Users/example")),
+            ..App::default()
+        };
+        app.begin_apply(monitor.clone());
+        (app, monitor)
+    }
+
+    /// The working screen of an apply says how far it has gone and what it is
+    /// doing, whole at the minimum size, and offers the stop key; asking it
+    /// changes the screen at once and the key is no longer offered.
+    #[test]
+    fn the_apply_screen_shows_progress_and_offers_a_stop_at_the_minimum_size() {
+        let (mut app, monitor) = applying_app(false);
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let frame = rows.concat();
+        assert!(
+            frame.contains("Applying only the exact previewed findings"),
+            "{rows:#?}"
+        );
+        assert!(
+            frame.contains("0 of 3 · 0 B of 3.0 GB · node_modules …"),
+            "{rows:#?}"
+        );
+        assert!(
+            frame.contains("/web/node_modules"),
+            "the item keeps its end: {rows:#?}"
+        );
+        assert!(frame.contains("x stop after this item"), "{rows:#?}");
+        assert!(frame.contains("Quitting is refused until this apply returns."));
+
+        app.request_stop();
+        assert!(monitor.stop_requested());
+        let frame = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT).concat();
+        assert!(
+            frame.contains("Stopping after the current item…"),
+            "{frame}"
+        );
+        assert!(!frame.contains("x stop"), "{frame}");
+        assert!(frame.contains("Quitting is refused until this apply returns."));
+    }
+
+    /// A typed command can run for minutes, so the key says it waits for the
+    /// command, and so does the screen once it is pressed.
+    #[test]
+    fn a_stop_during_a_typed_command_says_it_waits_for_the_command() {
+        let (mut app, _monitor) = applying_app(true);
+        let frame = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT).concat();
+        assert!(frame.contains("x stops after this command"), "{frame}");
+        app.request_stop();
+        let frame = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT).concat();
+        assert!(
+            frame.contains("Stopping after the current command…"),
+            "{frame}"
+        );
+    }
+
+    /// Only a bare `x` asks for a stop, and never outside an apply.
+    #[test]
+    fn only_a_bare_x_during_an_apply_stops_it() {
+        assert!(is_stop_key(key(KeyCode::Char('x'))));
+        let mut alt = key(KeyCode::Char('x'));
+        alt.modifiers = event::KeyModifiers::ALT;
+        assert!(!is_stop_key(alt));
+        assert!(!is_stop_key(key(KeyCode::Char('q'))));
+        let (mut app, monitor) = applying_app(false);
+        app.working = Some((Work::Scan, Instant::now()));
+        app.request_stop();
+        assert!(
+            !monitor.stop_requested(),
+            "a scan has nothing to stop between"
+        );
+    }
+
+    /// The outcome of a stopped apply says what finished and what was never
+    /// attempted, and the run still counts as failed.
+    #[test]
+    fn a_stopped_apply_reports_what_was_not_attempted() {
+        let mut app = App::default();
+        let mut outcome = ApplyOutcome::new("caches");
+        outcome.summary.items_touched = 1;
+        outcome.stopped = 2;
+        outcome
+            .errors
+            .push("stopped by you: 2 not attempted".into());
+        app.finish_apply(Ok(outcome));
+        assert_eq!(app.screen, Screen::Outcome);
+        assert!(app.failed);
+        assert_eq!(app.status, "Stopped by you: 1 done, 2 not attempted.");
+        let frame = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT).concat();
+        assert!(frame.contains("stopped by you: 2 not attempted"), "{frame}");
+    }
+
+    /// The working screens' new lines paint nothing under `NO_COLOR`, and they
+    /// say in words what color would add.
+    #[test]
+    fn progress_screens_paint_no_color_under_no_color() {
+        use crate::theme::ColorSupport;
+        use ratatui::style::Color;
+        let (mut stopping, _monitor) = applying_app(false);
+        stopping.request_stop();
+        let screens = vec![applying_app(false).0, applying_app(true).0, stopping]
+            .into_iter()
+            .chain(progress_apps());
+        for mut app in screens {
+            app.theme = Theme::new(ColorSupport::None);
+            let backend = TestBackend::new(MIN_WIDTH, MIN_HEIGHT);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            for cell in terminal.backend().buffer().content() {
+                assert_eq!(cell.fg, Color::Reset, "a working screen painted a color");
+                assert_eq!(
+                    cell.bg,
+                    Color::Reset,
+                    "a working screen painted a background"
+                );
+            }
+        }
+    }
+
+    /// Scan screens for the test above; the scan board adds its own.
+    fn progress_apps() -> Vec<App> {
+        Vec::new()
     }
 }

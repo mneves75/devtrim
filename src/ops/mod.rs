@@ -132,6 +132,10 @@ pub(crate) trait Op: Sync {
 pub(crate) struct ApplyOutcome {
     pub summary: Summary,
     pub errors: Vec<String>,
+    /// Findings the journal refused because the operator asked the apply to
+    /// stop ([`crate::journal::ApplyStopped`]): never attempted, and kept out
+    /// of `errors` so a stop reads as one line rather than one per finding.
+    pub stopped: usize,
 }
 
 impl ApplyOutcome {
@@ -146,6 +150,7 @@ impl ApplyOutcome {
                 home_volume: None,
             },
             errors: Vec::new(),
+            stopped: 0,
         }
     }
 
@@ -182,9 +187,39 @@ impl ApplyOutcome {
             .saturating_add(summary.bytes_trashed_estimate);
         self.summary.notes.extend(summary.notes);
         self.errors.extend(other.errors);
+        self.stopped = self.stopped.saturating_add(other.stopped);
+    }
+
+    /// After an apply the operator asked to stop: how many findings of the
+    /// plan were never attempted, as one error line, so the run still reads as
+    /// partial. Counted from the plan rather than from the refusals alone,
+    /// because a category that stops at its first failure (Docker) never asks
+    /// the journal about the findings after it; every attempt with a result and
+    /// every other failure is taken off first.
+    pub(crate) fn settle_stop(&mut self, monitor: &crate::journal::ApplyMonitor) {
+        if !monitor.stop_requested() {
+            return;
+        }
+        let unaccounted = monitor
+            .total_findings
+            .saturating_sub(monitor.finished())
+            .saturating_sub(self.errors.len());
+        self.stopped = self.stopped.max(monitor.stopped()).max(unaccounted);
+        if self.stopped > 0 {
+            self.errors
+                .push(format!("stopped by you: {} not attempted", self.stopped));
+        }
     }
 
     pub(crate) fn fail(&mut self, error: anyhow::Error) {
+        // Found through every context a category wrapped it in.
+        if error
+            .downcast_ref::<crate::journal::ApplyStopped>()
+            .is_some()
+        {
+            self.stopped = self.stopped.saturating_add(1);
+            return;
+        }
         self.errors.push(format!("{error:#}"));
     }
 }
@@ -2484,5 +2519,180 @@ mod tests {
                 .any(|message| message.contains("skipping protected path"))
         );
         crate::ops::remove_test_path(home);
+    }
+
+    fn trash_of_three(name: &str) -> (TestFixture, PathBuf) {
+        let fixture = TestFixture::new(name);
+        let trash = fixture.path().join(".Trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        for (item, bytes) in [("a-first", 1), ("b-second", 2), ("c-third", 3)] {
+            std::fs::write(trash.join(item), vec![b'x'; bytes * 4096]).unwrap();
+        }
+        let home = fixture.path().canonicalize().unwrap();
+        (fixture, home)
+    }
+
+    fn journal_records(ctx: &Ctx) -> Vec<crate::journal::JournalRecord> {
+        std::fs::read_to_string(&ctx.journal_path)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// A stop asked from inside the first attempt's finish lets that one
+    /// target go and refuses every later one at the journal: nothing else is
+    /// removed or journaled, every attempt keeps its result, and the outcome
+    /// says how many were not attempted in one line.
+    #[test]
+    fn a_stop_between_targets_removes_only_the_finished_one() {
+        let (_fixture, home) = trash_of_three("devtrim-stop-between");
+        let ctx = context(home.clone());
+        let mut findings = trash_findings(&ctx).unwrap();
+        findings.sort_by(|a, b| a.label.cmp(&b.label));
+        assert_eq!(findings.len(), 3);
+        let untouched: Vec<(PathBuf, Vec<u8>)> = ["b-second", "c-third"]
+            .iter()
+            .map(|name| {
+                let path = home.join(".Trash").join(name);
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        let monitor = std::sync::Arc::new(crate::journal::ApplyMonitor::stopping_after(
+            3,
+            crate::report::actionable_bytes(&findings),
+            1,
+        ));
+
+        let mut outcome =
+            ctx.with_apply_monitor(monitor.clone(), || purge_trash(&findings, &ctx).unwrap());
+        outcome.settle_stop(&monitor);
+
+        assert_eq!(
+            outcome.summary.items_touched, 1,
+            "PV journal-stop/begin: the stop did not hold the targets after the first"
+        );
+        assert!(!home.join(".Trash/a-first").exists());
+        for (path, bytes) in &untouched {
+            assert_eq!(
+                &std::fs::read(path).unwrap(),
+                bytes,
+                "{} changed",
+                path.display()
+            );
+        }
+        let records = journal_records(&ctx);
+        assert_eq!(
+            records.iter().map(|r| r.phase.as_str()).collect::<Vec<_>>(),
+            ["attempt", "result"],
+            "only the finished target is journaled, with its result"
+        );
+        assert_eq!(records[0].id, records[1].id);
+        assert_eq!(outcome.stopped, 2);
+        assert_eq!(outcome.errors, ["stopped by you: 2 not attempted"]);
+        assert_eq!(monitor.finished(), 1);
+        assert_eq!(monitor.bytes_finished(), findings[0].size_bytes);
+    }
+
+    /// Unwatched, or watched without a stop, the same plan finishes whole and
+    /// the monitor's counts equal the plan's.
+    #[test]
+    fn the_monitor_counts_equal_the_plan_after_a_full_apply() {
+        let (_fixture, home) = trash_of_three("devtrim-monitor-counts");
+        let ctx = context(home.clone());
+        let findings = trash_findings(&ctx).unwrap();
+        let total = crate::report::actionable_bytes(&findings);
+        let monitor = std::sync::Arc::new(crate::journal::ApplyMonitor::new(3, total));
+
+        let mut outcome =
+            ctx.with_apply_monitor(monitor.clone(), || purge_trash(&findings, &ctx).unwrap());
+        outcome.settle_stop(&monitor);
+
+        assert_eq!(outcome.summary.items_touched, 3);
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        assert_eq!(monitor.finished(), 3);
+        assert_eq!(monitor.bytes_finished(), total);
+        assert!(
+            monitor
+                .current()
+                .is_some_and(|item| !item.command && item.op == "trash-empty")
+        );
+        assert!(ctx.apply_monitor().is_none());
+    }
+
+    /// A typed command is refused the same way: the first one runs and is
+    /// journaled; once the stop is asked the next never starts. The command
+    /// is a Docker prune aimed at a socket that does not exist, so running
+    /// it, even with the guard removed, can change nothing.
+    #[test]
+    fn a_stop_between_typed_commands_runs_only_the_finished_one() {
+        let fixture = TestFixture::new("devtrim-stop-commands");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let ctx = context(home.clone());
+        let host = format!("unix://{}/absent.sock", home.display());
+        let authority = crate::report::CommandAuthority::DockerImagePrune { host };
+        let monitor = std::sync::Arc::new(crate::journal::ApplyMonitor::stopping_after(2, 0, 1));
+        let results = ctx.with_apply_monitor(monitor.clone(), || {
+            (0..2)
+                .map(|_| run_command_authority("docker", &authority, 0, &ctx, |c| c.to_string()))
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            results[1].as_ref().err().is_some_and(|error| error
+                .downcast_ref::<crate::journal::ApplyStopped>()
+                .is_some()),
+            "PV journal-stop/command: the second command was not refused by the stop"
+        );
+        let records = journal_records(&ctx);
+        assert_eq!(
+            records.iter().map(|r| r.phase.as_str()).collect::<Vec<_>>(),
+            ["attempt", "result"]
+        );
+        assert!(records[0].argv.is_some());
+        // Docker stops at its first failure; the plan still counts it.
+        let mut outcome = ApplyOutcome::new("docker");
+        for result in results {
+            if let Err(error) = result {
+                outcome.fail(error);
+            }
+        }
+        outcome.settle_stop(&monitor);
+        assert_eq!(outcome.stopped, 1);
+        assert_eq!(outcome.errors.len(), 2, "{:?}", outcome.errors);
+        assert_eq!(outcome.errors[1], "stopped by you: 1 not attempted");
+    }
+
+    /// The stop refusal is recognized through every context a category and
+    /// `purge` wrap around it, and a category that breaks at its first
+    /// failure still has its untried findings counted.
+    #[test]
+    fn a_stop_refusal_is_counted_through_contexts_and_after_a_break() {
+        let mut outcome = ApplyOutcome::new("purge");
+        let wrapped = anyhow::Error::new(crate::journal::ApplyStopped)
+            .context("cannot write apply journal")
+            .context("failed to remove a cache")
+            .context("node_modules");
+        outcome.fail(wrapped);
+        outcome.fail(anyhow::anyhow!("an unrelated refusal"));
+        assert_eq!(outcome.stopped, 1);
+        assert_eq!(outcome.errors, ["an unrelated refusal"]);
+        let mut total = ApplyOutcome::new("purge");
+        total.merge(outcome);
+        assert_eq!(total.stopped, 1);
+
+        // Five findings, one finished, one refused for its own reason, one
+        // refused by the stop, and two its loop never offered the journal.
+        let monitor = crate::journal::ApplyMonitor::new(5, 0);
+        monitor.request_stop();
+        let mut finished = ApplyOutcome::new("docker");
+        finished.stopped = 1;
+        finished.errors.push("an unrelated refusal".into());
+        finished.settle_stop(&monitor);
+        assert_eq!(finished.stopped, 4);
+        let mut unasked = ApplyOutcome::new("docker");
+        unasked.settle_stop(&crate::journal::ApplyMonitor::new(5, 0));
+        assert!(unasked.errors.is_empty(), "no stop, no line");
     }
 }

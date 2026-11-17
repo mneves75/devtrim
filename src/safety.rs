@@ -70,6 +70,9 @@ pub(crate) struct Ctx {
     /// result record itself could not be written: the apply document reports
     /// each finding's outcome from these.
     pub(crate) apply_results: Mutex<Vec<crate::journal::JournalRecord>>,
+    /// How far the apply in progress has gone and whether the operator asked
+    /// it to stop; set by the TUI for one apply at a time, never by the CLI.
+    pub(crate) apply_monitor: Mutex<Option<std::sync::Arc<crate::journal::ApplyMonitor>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +124,7 @@ impl Ctx {
             diagnostics: Mutex::new(Vec::new()),
             journal_errors: Mutex::new(Vec::new()),
             apply_results: Mutex::new(Vec::new()),
+            apply_monitor: Mutex::new(None),
         };
         for warning in root_warnings {
             ctx.diagnostic("warn", warning);
@@ -152,6 +156,7 @@ impl Ctx {
             diagnostics: Default::default(),
             journal_errors: Default::default(),
             apply_results: Default::default(),
+            apply_monitor: Default::default(),
         }
     }
 
@@ -200,6 +205,39 @@ impl Ctx {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(record);
+    }
+
+    /// The monitor of the apply in progress, if one watches it.
+    pub(crate) fn apply_monitor(&self) -> Option<std::sync::Arc<crate::journal::ApplyMonitor>> {
+        self.apply_monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Watches the applies `apply` runs with `monitor`, and always clears it
+    /// afterwards, so a stop asked of one apply can never refuse the next.
+    pub(crate) fn with_apply_monitor<T>(
+        &self,
+        monitor: std::sync::Arc<crate::journal::ApplyMonitor>,
+        apply: impl FnOnce() -> T,
+    ) -> T {
+        struct Clear<'a>(&'a Ctx);
+        impl Drop for Clear<'_> {
+            fn drop(&mut self) {
+                *self
+                    .0
+                    .apply_monitor
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            }
+        }
+        *self
+            .apply_monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(monitor);
+        let _clear = Clear(self);
+        apply()
     }
 
     pub(crate) fn take_apply_results(&self) -> Vec<crate::journal::JournalRecord> {
