@@ -85,7 +85,7 @@ built binary before the frame is regenerated.
 3. **Demo video**, secondary, with its transcript; no autoplay.
 4. **Find where the space went** (`#analyze`, slot `tui:analyze`): the
    `analyze` screen beside two sentences and the four verdicts as a `<dl>`
-   (OFFERED, HOLDS, PROTECTED, OUTSIDE), set in ink, not danger colours,
+   (OFFERED, HOLDS, IN OFFER, PROTECTED, NOT OFFERED), set in ink, not danger colours,
    because a verdict is not a danger level. The frame is captured at 80
    columns so it reads at the column's width without falling to the 11 px floor.
 5. **Commands**: one `<table>` (command, what it does in one line, what

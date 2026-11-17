@@ -45,9 +45,199 @@
   "link": "https://mneves75.github.io/devtrim/#brew-hero"
  },
  {
-  "id": "f537e3ad5",
-  "text": "Copy Read the manual Preview Leave one out Confirm",
-  "link": "https://mneves75.github.io/devtrim/#step-preview"
+  "id": "ffe7f5b10",
+  "text": "Copy Read the manual",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "fba6a4fd1",
+  "text": "Scan. Each category is listed as it finishes, with its size and count; the rest show as waiting.",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f06abe20d",
+  "text": " devtrim v0.14.0 · Scan everything",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "fc9d7281e",
+  "text": "┌ Working ─────────────────────────────────────────────────────────────────────────────────────────┐",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f34588966",
+  "text": "│                                       Scanning everything…                                       │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "fd82692b9",
+  "text": "│                               0 s elapsed · 7 of 10 categories done                              │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "fe6098fc4",
+  "text": "│                                   caches       0 B · 0 findings                                  │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f76e84fae",
+  "text": "│                                   node-modules waiting                                           │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f6ba7123a",
+  "text": "│                                   artifacts    waiting                                           │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "fe2e8251b",
+  "text": "│                                   simulators   0 B · 0 findings                                  │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f57d1aa84",
+  "text": "│                                   xcode        waiting                                           │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f9b4ea6d5",
+  "text": "│                                   docker       0 B · 0 findings                                  │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f5c665f93",
+  "text": "│                                   toolchains   0 B · 0 findings                                  │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f5854d40e",
+  "text": "│                                   installers   0 B · 0 findings                                  │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "ffdf4ef36",
+  "text": "│                                   agents       0 B · 0 findings                                  │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f1fff8cd9",
+  "text": "│                                   leftovers    0 B · 0 findings                                  │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "ffab793fa",
+  "text": "│                                                                                                  │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f0f8369ce",
+  "text": "└──────────────────────────────────────────────────────────────────────────────────────────────────┘",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f4c8d5573",
+  "text": " q quit",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f7208d1ab",
+  "text": " q stops the scan and quits; other keys wait for the results.",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "fbe9f470c",
+  "text": "Overview. The menu opens on the volume’s free space, and after a scan each category shows what it can give back.",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f0f88c4ff",
+  "text": " devtrim v0.14.0 · Menu",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "fd9d63cc7",
+  "text": " Operations",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "fd600cf87",
+  "text": "▶ 1 READ-ONLY Scan everything",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f84db18e9",
+  "text": "  2 TRASH     Caches",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f0ae31a5f",
+  "text": "  3 TRASH     node_modules",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f2d7dec50",
+  "text": "  4 TRASH     Build artifacts",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "fcbff209c",
+  "text": "  p TRASH     Project purge",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f8a398e5a",
+  "text": "  5 PERMANENT Simulators",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "ff1d6660c",
+  "text": "  6 TRASH     Xcode",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f81468885",
+  "text": "  7 PERMANENT Docker",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f121a9686",
+  "text": "  8 TRASH     Swift toolchains",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f48f5514a",
+  "text": "  d TRASH     Installers",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f2882b705",
+  "text": "  a TRASH     Agent caches & history",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f8b215a03",
+  "text": "  9 READ-ONLY Agent leftovers",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f38166908",
+  "text": "  i READ-ONLY iCloud status",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f9685123d",
+  "text": "  0 PERMANENT Empty Trash",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f23573188",
+  "text": " ↑↓ move · Enter open · q quit · ? key",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
+ },
+ {
+  "id": "f214bfee7",
+  "text": " Preview first. Nothing changes until",
+  "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
   "id": "f8680d584",
@@ -85,16 +275,6 @@
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "ffab793fa",
-  "text": "│                                                                                                  │",
-  "link": "https://mneves75.github.io/devtrim/#step-preview"
- },
- {
-  "id": "f0f8369ce",
-  "text": "└──────────────────────────────────────────────────────────────────────────────────────────────────┘",
-  "link": "https://mneves75.github.io/devtrim/#step-preview"
- },
- {
   "id": "f020f3196",
   "text": "┌ Details ─────────────────────────────────────────────────────────────────────────────────────────┐",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
@@ -115,8 +295,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "fda6b1f04",
-  "text": "│repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml                                │",
+  "id": "f9ed6fa4b",
+  "text": "│repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build  │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
@@ -230,6 +410,51 @@
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
+  "id": "ff17e8462",
+  "text": "Apply. The plan runs one finding at a time with its count and size, and a stop key ends it after the current item, never inside one.",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "f1307895b",
+  "text": " devtrim v0.14.0 · Project purge",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "f254f7e54",
+  "text": "┌ Apply outcome ───────────────────────────────────────────────────────────────────────────────────┐",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "fa9f69a92",
+  "text": "│purge: 0 item(s), ~0 B reclaimed estimate                                                         │",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "f7106c2ac",
+  "text": "│free space on the home volume: 12.2 GB → 12.2 GB (-4 MB), measured; other processes also write    │",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "fa81837f1",
+  "text": "│Errors                                                                                            │",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "f1d3149de",
+  "text": "│• stopped by you: 4 not attempted                                                                 │",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "fb2c7550b",
+  "text": " ↑↓ move · r rescan · b back · q quit · ? keys",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "f1d6a2e75",
+  "text": " Stopped by you: 0 done, 4 not attempted.",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
   "id": "f036cdeca",
   "text": "Preview first. Approve once.",
   "link": "https://mneves75.github.io/devtrim/#demo-h"
@@ -268,6 +493,111 @@
   "id": "f2ea922ca",
   "text": "Download the demo",
   "link": "https://mneves75.github.io/devtrim/#demo-transcript"
+ },
+ {
+  "id": "f1af2e79d",
+  "text": "Find where the space went.",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f903e28de",
+  "text": " devtrim v0.14.0 · analyze · /private/tmp/devtrim-demo/dev · 7.8 GB",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f1f334485",
+  "text": "┌ Contents ────────────────────────────────────────────────────────────────────┐",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f441d4f22",
+  "text": "│     5.9 GB ████████████████████████ HOLDS 1     payments-api/                │",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f880cfbd9",
+  "text": "│▶    1.9 GB ███████▋                 HOLDS 3     storefront/                  │",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "febe67ffe",
+  "text": "│                                                                              │",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f6e0fb421",
+  "text": "└ mostly in node_modules/ · 1.1 GB · 57% ──────────────────────────────────────┘",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f3f81bd2c",
+  "text": " ↑↓ move · Esc back · m culprit · v verdicts · f filter · q quit · ? keys",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "fb6c71d70",
+  "text": " HOLDS 3 offers · 1.9 GB · devtrim scan",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f86adaec4",
+  "text": "devtrim analyze names the folder that holds most of the space below the one you are on, with its size and share, and one key goes straight to it. It reads and never deletes.",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "fd2fe6e93",
+  "text": "On request it marks each entry by the same findings devtrim explain uses:",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f17eb41e8",
+  "text": "OFFERED",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f40c9ec0d",
+  "text": "A category offers it; the line names the command and whether it moves to the Trash or goes for good.",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f14218b0d",
+  "text": "HOLDS",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f4add5b77",
+  "text": "A folder with entries a category offers, and how many.",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "fa2da5a89",
+  "text": "PROTECTED",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f2c10178c",
+  "text": "devtrim refuses to touch it, and says why.",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f0219ee35",
+  "text": "IN OFFER",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "fe40d35c1",
+  "text": "It lies inside a folder a category already offers, so it goes with that folder.",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f423824c6",
+  "text": "NOT OFFERED",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f5b1f306e",
+  "text": "It lies outside the scan roots, so nothing reports on it.",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
   "id": "fa1990d38",
@@ -605,8 +935,8 @@
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
-  "id": "f3d01166d",
-  "text": "           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; action: move to Trash",
+  "id": "fd0e596b8",
+  "text": "           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build; action: move to Trash",
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
@@ -620,8 +950,8 @@
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
-  "id": "f374a0d51",
-  "text": "           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; action: move to Trash",
+  "id": "f1935c328",
+  "text": "           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; comes back with: the project's build; action: move to Trash",
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {

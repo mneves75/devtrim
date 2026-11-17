@@ -16,8 +16,9 @@ exit. devtrim measures the blocks deleting a file frees, so neither a sparse
 file (no blocks) nor an APFS clone (blocks shared with its source) would show
 its size: the projects are built from plain 0.1 GiB files of real bytes, and
 the 7.8 GB of findings take 7.8 GB in `/private/tmp` until the script exits.
-The real HOME is never read or changed; the script never applies a plan, since
-a Trash move goes to the developer's own Trash whatever HOME says. Each frame's
+The real HOME is never read or changed. Its one apply is permanent (a Trash
+move would land in the developer's own Trash whatever HOME says), runs after
+every other frame, and removes only demo targets inside the demo home. Each frame's
 column count goes into `styles.css` between the `frames:cols` markers, since the
 page's CSP admits no inline style attribute to carry it.
 """
@@ -28,8 +29,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("tui", ROOT / "scripts/tests/tui.py")
@@ -143,9 +146,10 @@ def box_rows(grid):
     return top, bottom + 1
 
 
-def to_html(grid, first_row=0, last_row=None):
+def to_html(grid, first_row=0, last_row=None, last_column=None):
     lines = []
     for cells in grid[first_row:last_row]:
+        cells = cells[:last_column]
         spans, current, run = [], None, ""
         for classes, character in cells:
             if classes != current and run:
@@ -205,6 +209,96 @@ def capture(binary, home, rows, columns, steps):
         session.settle(0.3)
         grid = colored_screen(session.output, rows, columns)
         session.send(b"\x1b")
+        session.process.kill()
+        return grid
+
+
+def set_pgrep(home, body):
+    """Replaces the demo home's `pgrep` stub; `exit 1` means no build runs."""
+    tui.write_script(home / "bin" / "pgrep", body)
+
+
+def kill_marked(marker):
+    """Ends the stub process that wrote its PID to `marker`, if it still runs."""
+    if marker.exists() and marker.read_text().strip():
+        try:
+            os.kill(int(marker.read_text()), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    marker.unlink(missing_ok=True)
+
+
+def scanning(binary, home, rows, columns):
+    """Scan everything mid-scan: the build probe never answers, so the
+    categories that ask for it stay waiting while the rest finish."""
+    marker = home / "pgrep.pid"
+    set_pgrep(home, f"echo $$ > '{marker}'\nexec /bin/sleep 60")
+    try:
+        with tui.Session(binary, home, rows=rows, columns=columns) as session:
+            session.wait_for_screen("Scan everything")
+            session.send(b"1")
+            session.wait_for_screen("of 10 categories done", "waiting")
+            session.settle(0.5)
+            grid = colored_screen(session.output, rows, columns)
+            # q during a scan kills the scan's process groups and exits 130;
+            # a SIGKILL would leave the stub holding the terminal open.
+            session.send(b"q")
+            while session.process.poll() is None:
+                session.read_output()
+            return grid
+    finally:
+        kill_marked(marker)
+        set_pgrep(home, "exit 1")
+
+
+def progress(binary, home, rows, columns):
+    """A permanent purge of the demo home held mid-plan, then asked to stop.
+    Permanent, because a Trash move would land in the developer's own Trash;
+    every target lies inside the throwaway demo home. node_modules goes first;
+    the gated probe then holds the next target's liveness check, and `x`
+    asks the apply to stop after the item in progress."""
+    marker = home / "pgrep.pid"
+    release = home / "pgrep.release"
+    gate = home / "dev" / "storefront" / "node_modules"
+    set_pgrep(
+        home,
+        f"if [ -e '{gate}' ]; then exit 1; fi\necho $$ > '{marker}'\n"
+        f"while [ ! -e '{release}' ]; do /bin/sleep 0.1; done\nexit 1",
+    )
+    try:
+        with tui.Session(binary, home, rows=rows, columns=columns) as session:
+            session.deadline = time.monotonic() + 120
+            session.wait_for_screen("Scan everything")
+            session.send(b"p")
+            session.wait_for_screen("Review every finding", "payments-api")
+            session.send(b"sa")
+            session.wait_for_screen("then Enter")
+            screen = tui.screen_text(tui.render_screen(session.output, rows, columns))
+            typed = re.search(r"Type (PURGE [0-9.]+|[0-9.]+), then Enter", screen).group(1)
+            session.send(typed.encode() + b"\r")
+            session.wait_for_screen("x stop after this item", " of ")
+            session.send(b"x")
+            session.wait_for_screen("Stopping after the current item")
+            session.settle(0.5)
+            grid = colored_screen(session.output, rows, columns)
+            release.write_text("")
+            session.wait_for_screen("Stopped by you")
+            session.process.kill()
+            return grid
+    finally:
+        kill_marked(marker)
+
+
+def analyze(binary, home, rows, columns):
+    """`devtrim analyze` on the demo projects with devtrim's verdicts loaded."""
+    arguments = ["analyze", str(home / "dev")]
+    with tui.Session(binary, home, rows=rows, columns=columns, arguments=arguments) as session:
+        session.wait_for_screen("payments-api", "mostly in")
+        session.send(b"v")
+        session.wait_for_screen("HOLDS")
+        session.settle(0.3)
+        grid = colored_screen(session.output, rows, columns)
+        session.send(b"q")
         session.process.kill()
         return grid
 
@@ -288,10 +382,25 @@ def main():
             (b"a", ("This plan:",)),
         ])
         frames["tui:confirm"] = block("confirm exact plan", 84, to_html(confirm, box_rows(confirm)[0]))
+        # The menu after Scan everything, cropped to the menu column: the pane
+        # beside it shows the real volume's free space, which belongs to the
+        # machine running this script, not to the demo.
+        overview = capture(binary, home, rows, columns, [
+            (None, ("Scan everything",)),
+            (b"1", ("Read-only result",)),
+            (b"b", ("Operations", "GB")),
+        ])
+        frames["tui:overview"] = block("menu after a scan", 38, to_html(overview, 0, rows, 38))
+        frames["tui:analyze"] = block("analyze with verdicts", 80, to_html(analyze(binary, home, 22, 80)))
+        frames["tui:scanning"] = block("scan in progress", columns, to_html(scanning(binary, home, rows, columns)))
         scan, scan_columns = scan_summary(binary, home)
         frames["cli:scan"] = block("devtrim scan", scan_columns, scan)
         frames["cli:refusals"] = (
             f'<pre class="term" role="region" tabindex="0" aria-label="devtrim refusals"><code>{refusals(binary, home)}</code></pre>'
+        )
+        # Last: it removes demo targets for real, inside the demo home only.
+        frames["tui:progress"] = block(
+            "apply stopping after this item", columns, to_html(progress(binary, home, rows, columns))
         )
     finally:
         shutil.rmtree(home)

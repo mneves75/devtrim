@@ -53,6 +53,30 @@
           <figure>
             <figcaption><strong>Scan.</strong> Each category is listed as it finishes, with its size and count; the rest show as waiting.</figcaption>
 <!-- tui:scanning -->
+<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: scan in progress"><code><span class="v b"> devtrim </span><span class="v">v0.14.0 · Scan everything                                                                  </span>
+┌ Working ─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                       Scanning everything…                                       │
+│                               <span class="k">0 s elapsed · 7 of 10 categories done</span>                              │
+│                                   <span class="g">caches       0 B · 0 findings</span>                                  │
+│                                   <span class="k">node-modules waiting         </span>                                  │
+│                                   <span class="k">artifacts    waiting         </span>                                  │
+│                                   <span class="g">simulators   0 B · 0 findings</span>                                  │
+│                                   <span class="k">xcode        waiting         </span>                                  │
+│                                   <span class="g">docker       0 B · 0 findings</span>                                  │
+│                                   <span class="g">toolchains   0 B · 0 findings</span>                                  │
+│                                   <span class="g">installers   0 B · 0 findings</span>                                  │
+│                                   <span class="g">agents       0 B · 0 findings</span>                                  │
+│                                   <span class="g">leftovers    0 B · 0 findings</span>                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ <span class="c">q</span> quit
+ <span class="k">q stops the scan and quits; other keys wait for the results.</span></code></pre></div>
 <!-- /tui:scanning -->
           </figure>
         </li>
@@ -60,6 +84,30 @@
           <figure>
             <figcaption><strong>Overview.</strong> The menu opens on the volume&rsquo;s free space, and after a scan each category shows what it can give back.</figcaption>
 <!-- tui:overview -->
+<div class="term-frame" data-cols="38" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: menu after a scan"><code><span class="v b"> devtrim </span><span class="v">v0.14.0 · Menu               </span>
+<span class="k"> Operations</span>
+<span class="b">▶ </span><span class="k b">1 </span><span class="u b">READ-ONLY </span><span class="b">Scan everything         </span>
+  <span class="k">2 </span><span class="g">TRASH     </span>Caches
+  <span class="k">3 </span><span class="g">TRASH     </span>node_modules
+  <span class="k">4 </span><span class="g">TRASH     </span>Build artifacts
+  <span class="k">p </span><span class="g">TRASH     </span>Project purge
+  <span class="k">5 </span><span class="r">PERMANENT </span>Simulators
+  <span class="k">6 </span><span class="g">TRASH     </span>Xcode
+  <span class="k">7 </span><span class="r">PERMANENT </span>Docker
+  <span class="k">8 </span><span class="g">TRASH     </span>Swift toolchains
+  <span class="k">d </span><span class="g">TRASH     </span>Installers
+  <span class="k">a </span><span class="g">TRASH     </span>Agent caches &amp; history
+  <span class="k">9 </span><span class="u">READ-ONLY </span>Agent leftovers
+  <span class="k">i </span><span class="u">READ-ONLY </span>iCloud status
+  <span class="k">0 </span><span class="r">PERMANENT </span>Empty Trash
+
+
+
+
+
+
+ <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">Enter</span> open<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> key
+ <span class="k">Preview first. Nothing changes until </span></code></pre></div>
 <!-- /tui:overview -->
           </figure>
         </li>
@@ -85,7 +133,7 @@
 │<span class="g b">stale target artifacts</span>                                                                            │
 │5.9 GB · danger-5 · move to Trash                                                                 │
 │/private/tmp/devtrim-demo/dev/payments-api/target                                                 │
-│<span class="k">repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml</span>                                │
+│<span class="k">repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build</span>  │
 │project: /private/tmp/devtrim-demo/dev/payments-api                                               │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
  <span class="c">Space</span> pick<span class="k"> · </span><span class="c">A</span> none<span class="k"> · </span><span class="c">a</span> apply<span class="k"> · </span><span class="c">Enter</span> details<span class="k"> · </span><span class="c">s</span> permanent<span class="k"> · </span><span class="c">r</span> rescan<span class="k"> · </span><span class="c">b</span> back<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
@@ -103,7 +151,6 @@
 │<span class="g b">› </span>[ ] <span class="y">  3. danger-5 </span><span class="c">  614 MB  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>    │
 │  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>  │
 │  <span class="k">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.confi…</span>│
-│                                                                                  │
 │                                                                                  │
 │                                                                                  │
 │                                                                                  │
@@ -140,6 +187,30 @@
           <figure>
             <figcaption><strong>Apply.</strong> The plan runs one finding at a time with its count and size, and a stop key ends it after the current item, never inside one.</figcaption>
 <!-- tui:progress -->
+<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: apply stopping after this item"><code><span class="v b"> devtrim </span><span class="v">v0.14.0 · Project purge                                                                    </span>
+┌ Apply outcome ───────────────────────────────────────────────────────────────────────────────────┐
+│<span class="r b">purge: 0 item(s), ~0 B reclaimed estimate</span>                                                         │
+│free space on the home volume: 12.2 GB → 12.2 GB (-4 MB), measured; other processes also write    │
+│                                                                                                  │
+│                                                                                                  │
+│<span class="r b">Errors</span>                                                                                            │
+│• stopped by you: 4 not attempted                                                                 │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">r</span> rescan<span class="k"> · </span><span class="c">b</span> back<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
+ <span class="y">Stopped by you: 0 done, 4 not attempted.</span></code></pre></div>
 <!-- /tui:progress -->
           </figure>
         </li>
@@ -176,6 +247,28 @@
     <div class="analyze-split">
       <figure>
 <!-- tui:analyze -->
+<div class="term-frame" data-cols="80" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: analyze with verdicts"><code><span class="v b"> devtrim </span><span class="v">v0.14.0 · analyze · /private/tmp/devtrim-demo/dev · 7.8 GB             </span>
+┌ Contents ────────────────────────────────────────────────────────────────────┐
+│  <span class="c">   5.9 GB </span><span class="k">████████████████████████ </span><span class="c b">HOLDS 1     </span>payments-api/                │
+│<span class="g b">▶    1.9 GB ███████▋                 HOLDS 3     storefront/                  </span>│
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└<span class="u"> mostly in node_modules/ · 1.1 GB · 57% </span>──────────────────────────────────────┘
+ <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">Esc</span> back<span class="k"> · </span><span class="c">m</span> culprit<span class="k"> · </span><span class="c">v</span> verdicts<span class="k"> · </span><span class="c">f</span> filter<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
+ <span class="c">HOLDS 3 offers · 1.9 GB · devtrim scan</span></code></pre></div>
 <!-- /tui:analyze -->
       </figure>
       <div class="analyze-body">
@@ -185,7 +278,8 @@
           <div><dt><span class="lbl">OFFERED</span></dt><dd>A category offers it; the line names the command and whether it moves to the Trash or goes for good.</dd></div>
           <div><dt><span class="lbl">HOLDS</span></dt><dd>A folder with entries a category offers, and how many.</dd></div>
           <div><dt><span class="lbl">PROTECTED</span></dt><dd>devtrim refuses to touch it, and says why.</dd></div>
-          <div><dt><span class="lbl">OUTSIDE</span></dt><dd>No category scans there, so devtrim has no opinion about it.</dd></div>
+          <div><dt><span class="lbl">IN OFFER</span></dt><dd>It lies inside a folder a category already offers, so it goes with that folder.</dd></div>
+          <div><dt><span class="lbl">NOT OFFERED</span></dt><dd>It lies outside the scan roots, so nothing reports on it.</dd></div>
         </dl>
       </div>
     </div>
@@ -235,7 +329,7 @@
 
     <figure class="scan-fig">
 <!-- cli:scan -->
-<div class="term-frame" data-cols="105" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
+<div class="term-frame" data-cols="143" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
 Categories
   artifacts        6.7 GB      3 finding(s)   devtrim clean artifacts --apply
   node-modules     1.1 GB      1 finding(s)   devtrim clean node-modules --apply
@@ -244,13 +338,13 @@ artifacts
 
 ~/dev/payments-api · 5.9 GB in 1 item(s)
    5.9 GB  danger:5  stale target artifacts  ~/dev/payments-api/target
-           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; action: move to Trash
+           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build; action: move to Trash
 
 ~/dev/storefront · 819 MB in 2 item(s)
    614 MB  danger:5  stale .next artifacts  ~/dev/storefront/.next
-           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; action: move to Trash
+           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; comes back with: the project&#x27;s build; action: move to Trash
    205 MB  danger:5  stale .turbo artifacts  ~/dev/storefront/.turbo
-           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; action: move to Trash
+           └─ repo last active 2020-01-01 UTC; corroboration: sibling package.json; comes back with: the project&#x27;s build; action: move to Trash
 
 node-modules
 
