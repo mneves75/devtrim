@@ -218,12 +218,18 @@ figcaption { color: var(--muted); font-size: var(--step-small); margin-block-sta
 @media (width >= 64rem) {
   .walk.is-tabs { display: grid; grid-template-columns: 17rem minmax(0, 1fr); column-gap: clamp(2rem, 3vw, 3rem); align-items: start; }
   .walk.is-tabs .walk-tabs { flex-direction: column; flex-wrap: nowrap; gap: 0.25rem; margin: 0; }
-  .walk.is-tabs .walk-tabs [role="tab"] { padding: 0.75rem 1rem 0.8rem 0.75rem; border-radius: var(--radius); box-shadow: none; }
+  .walk.is-tabs .walk-tabs [role="tab"] {
+    display: grid; grid-template-columns: 1.25rem minmax(0, 1fr); align-content: center;
+    padding: 0.75rem 1rem 0.8rem 0.75rem; border-radius: var(--radius); box-shadow: none;
+  }
   .walk.is-tabs .walk-tabs [role="tab"][aria-selected="true"] { background: var(--surface-raised); }
-  /* The TUI's own cursor marks the step on screen, as it marks the highlighted row. */
-  .walk.is-tabs .tab-name::before { content: "\203A"; display: inline-block; inline-size: 1.25rem; color: transparent; font-family: var(--mono); }
-  .walk.is-tabs [aria-selected="true"] .tab-name::before { color: var(--accent); }
-  .walk.is-tabs .tab-note { display: block; margin: 0.25rem 0 0 1.25rem; color: var(--muted); font-size: var(--step-small); font-weight: 400; line-height: 1.45; }
+  /* The TUI's own cursor marks the step on screen, as it marks the highlighted row.
+     It sits on the tab, outside the span that names it, so it is never read aloud. */
+  .walk.is-tabs .walk-tabs [role="tab"]::before { content: "\203A"; grid-column: 1; grid-row: 1; color: transparent; font-family: var(--mono); }
+  .walk.is-tabs .walk-tabs [role="tab"][aria-selected="true"]::before { color: var(--accent); }
+  .walk.is-tabs .tab-name, .walk.is-tabs .tab-note { grid-column: 2; }
+  /* Only the step on screen carries its note, so six steps still fit beside one frame. */
+  .walk.is-tabs [aria-selected="true"] .tab-note { display: block; margin-block-start: 0.25rem; color: var(--muted); font-size: var(--step-small); font-weight: 400; line-height: 1.45; }
   .walk.is-tabs .walk-steps figcaption { display: none; }
 }
 

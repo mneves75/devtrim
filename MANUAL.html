@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-ijL6AoXQmAPEgADU+K4A+13Q3KYrNjWuhf9eLPE5LxQ='; script-src 'sha256-zvGG5ifHmmR1CNzSGHAaKUAhSpOsKLpUKORivqqSNkk=' 'sha256-raW12eF+201QhYBide0DcynKxZzCAKmYZzKqJy9BYdo='; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-XG9Pb3ntIyZoHGmTP6E/68yl0iScgzc/A0o1SQn/ZC0='; script-src 'sha256-zvGG5ifHmmR1CNzSGHAaKUAhSpOsKLpUKORivqqSNkk=' 'sha256-raW12eF+201QhYBide0DcynKxZzCAKmYZzKqJy9BYdo='; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="description" content="devtrim manual — measure, classify, trim. Safe disk hygiene for macOS developer machines.">
 <title>devtrim — Manual</title>
@@ -158,6 +158,7 @@ pre code { background: none; padding: 0; font-size: 1em; }
     background: var(--bg); color: var(--text); font-size: max(16px, 1rem);
   }
   #filter::placeholder { color: var(--muted); opacity: 1; }
+  #filter { caret-color: var(--accent); }
   #filter-count { font-size: 0.875rem; color: var(--muted); }
   #filter-count:empty { display: none; }
   #theme-toggle {
@@ -187,6 +188,9 @@ pre code { background: none; padding: 0; font-size: 1em; }
   /* ============ main flow ============ */
   main { padding-block: 1.25rem 4rem; min-inline-size: 0; }
   .manual-title { padding-block: clamp(1.5rem, 1rem + 2vw, 2.5rem) 0.5rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 1rem; }
+  /* A reading surface: the title and sections step down from the landing page's display scale. */
+  .manual-title h1 { font-size: clamp(2.25rem, 1.6rem + 2.2vw, 3.5rem); letter-spacing: -0.035em; }
+  main h2 { font-size: clamp(1.625rem, 1.35rem + 1vw, 2.25rem); }
   /* The version line: scripts/release.sh checks this exact markup. */
   .manual-title .chip { font-family: var(--mono); font-size: var(--step-small); color: var(--muted); }
   @media (width > 55rem) {
@@ -213,7 +217,7 @@ pre code { background: none; padding: 0; font-size: 1em; }
 
   /* tables → stack on narrow screens (reflow-safe) */
   .tbl-wrap { overflow-x: auto; }
-  table { border-collapse: collapse; inline-size: 100%; font-size: var(--step-small); }
+  table { border-collapse: collapse; inline-size: 100%; font-size: var(--step-small); font-variant-numeric: tabular-nums; }
   th, td { text-align: start; padding: 0.625rem 0.75rem; border-block-end: 1px solid var(--rule); vertical-align: top; }
   thead th { color: var(--muted); font-weight: 600; font-size: 0.875rem; }
   td code { white-space: nowrap; }
