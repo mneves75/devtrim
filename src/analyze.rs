@@ -761,9 +761,12 @@ impl Explorer {
                         self.verdict_errors.push(error);
                     }
                 }
+                // Read before the swap: with the filter on, the rows on
+                // screen change with the verdicts.
+                let anchor = self.highlighted().map(|entry| entry.path.clone());
                 self.verdicts = VerdictState::Loaded(verdicts);
                 self.shown_second = None;
-                self.reposition(None);
+                self.reposition(anchor);
                 true
             }
             Err(TryRecvError::Disconnected) => {
@@ -2150,10 +2153,15 @@ mod tests {
         };
         for (width, height) in [(64, 18), (120, 40)] {
             let rows = screen(&explorer, width, height);
-            assert!(
-                rows[usize::from(height) - 1].contains("loading devtrim's verdicts… 3s"),
-                "{rows:#?}"
-            );
+            // At least the three seconds already spent; a loaded machine may
+            // add one between the two renders.
+            let status = &rows[usize::from(height) - 1];
+            let seconds = status
+                .split("loading devtrim's verdicts… ")
+                .nth(1)
+                .and_then(|rest| rest.trim_end().strip_suffix('s'))
+                .and_then(|seconds| seconds.parse::<u64>().ok());
+            assert!(seconds.is_some_and(|seconds| seconds >= 3), "{rows:#?}");
             assert!(
                 !rows[usize::from(height) - 2].contains("v verdicts"),
                 "{rows:#?}"
@@ -2264,6 +2272,8 @@ mod tests {
         let mut explorer = Explorer::new(root.path().to_path_buf(), Theme::from_env());
         explorer.begin_scan();
         finish(&mut explorer);
+        // The cursor stays on whichever entry arrived first; start at the top.
+        explorer.handle_key(key(KeyCode::Home));
         assert!(explorer.highlighted().unwrap().path.ends_with("big"));
 
         explorer.handle_key(key(KeyCode::Char('m')));

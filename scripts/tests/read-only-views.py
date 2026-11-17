@@ -167,7 +167,10 @@ def culprit(binary, home):
     (corpus / "small" / "data").write_bytes(b"x" * 4096)
     view = View(binary, home, ["analyze", str(corpus)])
     try:
-        view.wait("mostly in a/b/movie.mov")
+        view.wait("Contents")
+        # The cursor stays on whichever entry arrived first; start at the top.
+        view.send(b"g")
+        view.wait_screen(40, 120, "mostly in a/b/movie.mov", gone="Measuring")
         start = view.send(b"m")
         view.wait("movie.mov", start)
         view.wait_screen(40, 120, "/culprit/big/a/b", gone="mostly in a/b/movie.mov")
@@ -214,7 +217,7 @@ def verdicts(binary):
         view = View(binary, home, ["analyze", str(project)])
         try:
             view.wait("Contents")
-            view.send(b"v")
+            view.send(b"gv")
             view.wait_screen(40, 120, "loading devtrim's verdicts", gone="Read-only.")
             deadline = time.monotonic() + 10
             while not probe_pid(home):
