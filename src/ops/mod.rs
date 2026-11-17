@@ -271,7 +271,43 @@ pub(crate) fn for_target(target: crate::cli::Target) -> Box<dyn Op> {
 }
 
 pub(crate) fn scan_all(ctx: &Ctx) -> ScanResult {
-    let operations = all();
+    scan_all_observed(ctx, None)
+}
+
+/// What one category's scan came to, sent the moment it returns, in
+/// completion order, so a screen can show a long scan as it goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CategoryDone {
+    pub category: &'static str,
+    /// The category's tally, or why its scan failed.
+    pub tally: std::result::Result<CategoryTally, String>,
+}
+
+/// One finished category as its section will read: what it offers, after
+/// the protected targets the preview drops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CategoryTally {
+    pub actionable_bytes: u64,
+    pub findings: usize,
+    /// Findings that stand for something the scan could not judge.
+    pub unjudged: usize,
+}
+
+/// Called from each scan thread as its category finishes.
+pub(crate) type ScanObserver<'a> = &'a (dyn Fn(CategoryDone) + Sync);
+
+/// [`scan_all`], telling `observer` about each category as it finishes. The
+/// result is the same with or without one: it is still assembled in registry
+/// order after every thread has joined.
+pub(crate) fn scan_all_observed(ctx: &Ctx, observer: Option<ScanObserver<'_>>) -> ScanResult {
+    scan_operations(ctx, &all(), observer)
+}
+
+fn scan_operations(
+    ctx: &Ctx,
+    operations: &[Box<dyn Op>],
+    observer: Option<ScanObserver<'_>>,
+) -> ScanResult {
     let observations = project::ScanObservations::default();
     let mut findings = Vec::new();
     let mut sections = Vec::new();
@@ -280,11 +316,26 @@ pub(crate) fn scan_all(ctx: &Ctx) -> ScanResult {
     // serializes each attempt/result pair.
     std::thread::scope(|scope| {
         let mut scans = Vec::with_capacity(operations.len());
-        for operation in &operations {
+        for operation in operations {
             let operation = operation.as_ref();
             let name = operation.name();
             let observations = &observations;
-            scans.push((name, scope.spawn(move || operation.scan(ctx, observations))));
+            scans.push((
+                name,
+                scope.spawn(move || {
+                    let mut report = DoneReport {
+                        observer,
+                        category: name,
+                        sent: false,
+                    };
+                    let result = operation.scan(ctx, observations);
+                    report.send(match &result {
+                        Ok(findings) => Ok(category_tally(findings, ctx)),
+                        Err(error) => Err(format!("{error:#}")),
+                    });
+                    result
+                }),
+            ));
         }
         for (name, scan_thread) in scans {
             match scan_thread.join() {
@@ -315,21 +366,77 @@ pub(crate) fn scan_all(ctx: &Ctx) -> ScanResult {
     }
 }
 
+/// Tells the observer how one category ended; a scan that panics reports
+/// from the drop, so the screen never waits on a category that is gone.
+struct DoneReport<'a> {
+    observer: Option<ScanObserver<'a>>,
+    category: &'static str,
+    sent: bool,
+}
+
+impl DoneReport<'_> {
+    fn send(&mut self, tally: std::result::Result<CategoryTally, String>) {
+        self.sent = true;
+        if let Some(observer) = self.observer {
+            observer(CategoryDone {
+                category: self.category,
+                tally,
+            });
+        }
+    }
+}
+
+impl Drop for DoneReport<'_> {
+    fn drop(&mut self) {
+        if !self.sent {
+            self.send(Err("scan thread terminated abnormally".into()));
+        }
+    }
+}
+
+/// The section a category's findings will make once the preview has dropped
+/// what the sink would refuse, counted without the diagnostics that dropping
+/// writes, which stay in registry order on the joining thread.
+fn category_tally(findings: &[Finding], ctx: &Ctx) -> CategoryTally {
+    let kept = findings
+        .iter()
+        .filter(|finding| protected_target(finding, ctx).is_none());
+    let mut tally = CategoryTally {
+        actionable_bytes: 0,
+        findings: 0,
+        unjudged: 0,
+    };
+    for finding in kept {
+        tally.findings += 1;
+        if finding.scan_error().is_some() {
+            tally.unjudged += 1;
+        }
+        if finding.action.is_actionable() {
+            tally.actionable_bytes = tally.actionable_bytes.saturating_add(finding.size_bytes);
+        }
+    }
+    tally
+}
+
+/// The target of an actionable finding the sink would refuse as protected.
+fn protected_target<'a>(finding: &'a Finding, ctx: &Ctx) -> Option<&'a Path> {
+    finding
+        .action
+        .is_actionable()
+        .then(|| finding.target())
+        .flatten()
+        .filter(|target| {
+            crate::safety::is_protected(target, &ctx.home)
+                || crate::safety::is_config_protected(target, &ctx.protect)
+        })
+}
+
 /// Drops actionable findings the sink would refuse as protected — a built-in
 /// protected path (`/Volumes`, `~/Library` outside its carve-out) or a
 /// configured `protect` entry — so a preview never offers what apply refuses.
 pub(crate) fn filter_protected_findings(findings: &mut Vec<Finding>, ctx: &Ctx) {
     findings.retain(|finding| {
-        let protected = finding
-            .action
-            .is_actionable()
-            .then(|| finding.target())
-            .flatten()
-            .filter(|target| {
-                crate::safety::is_protected(target, &ctx.home)
-                    || crate::safety::is_config_protected(target, &ctx.protect)
-            });
-        if let Some(target) = protected {
+        if let Some(target) = protected_target(finding, ctx) {
             ctx.diagnostic(
                 "info",
                 format!("skipping protected path: {}", target.display()),
@@ -2694,5 +2801,172 @@ mod tests {
         let mut unasked = ApplyOutcome::new("docker");
         unasked.settle_stop(&crate::journal::ApplyMonitor::new(5, 0));
         assert!(unasked.errors.is_empty(), "no stop, no line");
+    }
+
+    #[derive(Clone, Copy)]
+    enum Fake {
+        /// Finishes only after `Last` has, so completion order is reversed.
+        WaitsForLast,
+        Protected,
+        Fails,
+        Panics,
+        Last,
+    }
+
+    struct FakeOp {
+        name: &'static str,
+        fake: Fake,
+        last_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Op for FakeOp {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn scan(&self, _: &Ctx, _: &project::ScanObservations) -> Result<Vec<Finding>> {
+            let finding = |label: &str, path: &str, size| {
+                Finding::new(
+                    label,
+                    Some(PathBuf::from(path)),
+                    size,
+                    "test",
+                    3,
+                    Action::Trash,
+                )
+            };
+            match self.fake {
+                Fake::WaitsForLast => {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    while !self.last_done.load(std::sync::atomic::Ordering::SeqCst) {
+                        assert!(std::time::Instant::now() < deadline, "Last never finished");
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Ok(vec![
+                        finding("one", "/Users/example/dev/a/node_modules", 4096),
+                        Finding::new("not judged", None, 0, "x", 0, Action::Info)
+                            .with_scan_error("synthetic".into()),
+                    ])
+                }
+                Fake::Protected => Ok(vec![
+                    finding("kept", "/Users/example/dev/b/target", 8192),
+                    finding("protected", "/Volumes/External/target", 1 << 20),
+                ]),
+                Fake::Fails => anyhow::bail!("synthetic scan failure"),
+                Fake::Panics => panic!("synthetic scan panic"),
+                Fake::Last => {
+                    self.last_done
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(vec![finding("last", "/Users/example/dev/c/target", 512)])
+                }
+            }
+        }
+        fn apply(&self, _: &[Finding], _: &Ctx) -> Result<ApplyOutcome> {
+            anyhow::bail!("a scan test never applies")
+        }
+    }
+
+    fn fake_operations() -> Vec<Box<dyn Op>> {
+        let last_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        [
+            ("waits", Fake::WaitsForLast),
+            ("protected", Fake::Protected),
+            ("fails", Fake::Fails),
+            ("panics", Fake::Panics),
+            ("last", Fake::Last),
+        ]
+        .into_iter()
+        .map(|(name, fake)| {
+            Box::new(FakeOp {
+                name,
+                fake,
+                last_done: last_done.clone(),
+            }) as Box<dyn Op>
+        })
+        .collect()
+    }
+
+    /// Watching a scan changes nothing it returns or reports: the result is
+    /// assembled in registry order whatever order the categories finish in,
+    /// while the observer hears each one as it finishes, failures included,
+    /// with the tally its section will have.
+    #[test]
+    fn an_observed_scan_is_identical_and_keeps_registry_order() {
+        let scan = |observed: bool| {
+            let ctx = context(PathBuf::from("/Users/example"));
+            let heard = std::sync::Mutex::new(Vec::new());
+            let observer = |done: CategoryDone| heard.lock().unwrap().push(done);
+            let result =
+                scan_operations(&ctx, &fake_operations(), observed.then_some(&observer as _));
+            (
+                result.findings,
+                result.sections,
+                result.errors,
+                ctx.take_diagnostics(),
+                heard.into_inner().unwrap(),
+            )
+        };
+        let (findings, sections, errors, diagnostics, unheard) = scan(false);
+        let (observed_findings, observed_sections, observed_errors, observed_diagnostics, heard) =
+            scan(true);
+        assert!(unheard.is_empty());
+        assert_eq!(observed_findings, findings);
+        assert_eq!(observed_sections, sections);
+        assert_eq!(observed_errors, errors);
+        assert_eq!(observed_diagnostics, diagnostics);
+
+        assert_eq!(
+            sections
+                .iter()
+                .map(|section| section.category)
+                .collect::<Vec<_>>(),
+            ["waits", "protected", "last"],
+            "PV scan/registry-order: the result followed completion order"
+        );
+        assert_eq!(errors[0], "waits: synthetic");
+        assert_eq!(errors[1], "fails: synthetic scan failure");
+        assert_eq!(errors[2], "panics: scan thread terminated abnormally");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|line| line.contains("/Volumes/External/target"))
+        );
+
+        let order: Vec<_> = heard.iter().map(|done| done.category).collect();
+        let position = |name| order.iter().position(|heard| *heard == name).unwrap();
+        assert_eq!(order.len(), 5, "every category is heard once: {order:?}");
+        assert!(
+            position("last") < position("waits"),
+            "heard in completion order"
+        );
+        let tally = |name| {
+            heard
+                .iter()
+                .find(|done| done.category == name)
+                .unwrap()
+                .tally
+                .clone()
+        };
+        assert_eq!(
+            tally("waits"),
+            Ok(CategoryTally {
+                actionable_bytes: 4096,
+                findings: 2,
+                unjudged: 1
+            })
+        );
+        assert_eq!(
+            tally("protected"),
+            Ok(CategoryTally {
+                actionable_bytes: 8192,
+                findings: 1,
+                unjudged: 0
+            }),
+            "the tally drops what the preview drops"
+        );
+        assert_eq!(tally("fails"), Err("synthetic scan failure".into()));
+        assert_eq!(
+            tally("panics"),
+            Err("scan thread terminated abnormally".into())
+        );
     }
 }

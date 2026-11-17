@@ -278,6 +278,8 @@ struct App {
     /// How far the apply on the worker thread has gone, read from the journal
     /// as each attempt begins and finishes; it also carries the stop request.
     apply_monitor: Option<std::sync::Arc<crate::journal::ApplyMonitor>>,
+    /// Each category of a Scan everything in progress, as it finishes.
+    scan_board: Option<std::sync::Arc<ScanBoard>>,
     /// The home folder, shown as `~` in the path column; `None` shows paths
     /// as they are.
     home: Option<std::path::PathBuf>,
@@ -309,6 +311,7 @@ impl Default for App {
             scroll_limit: std::cell::Cell::new(0),
             working: None,
             apply_monitor: None,
+            scan_board: None,
             home: None,
         }
     }
@@ -436,6 +439,8 @@ impl App {
         self.input.clear();
         self.say(Token::Muted, format!("Scanning {}…", operation.subject()));
         self.working = Some((Work::Scan, Instant::now()));
+        self.scan_board =
+            (operation == Operation::ScanAll).then(|| std::sync::Arc::new(ScanBoard::new()));
     }
 
     fn begin_apply(&mut self, monitor: std::sync::Arc<crate::journal::ApplyMonitor>) {
@@ -482,9 +487,12 @@ impl App {
 
     /// Changes when the working screen has something new to show.
     fn progress_version(&self) -> u64 {
-        self.apply_monitor
+        let applied = self
+            .apply_monitor
             .as_ref()
-            .map_or(0, |monitor| monitor.version())
+            .map_or(0, |monitor| monitor.version());
+        let scanned = self.scan_board.as_ref().map_or(0, |board| board.version());
+        applied.wrapping_add(scanned)
     }
 
     /// Whole seconds the scan or apply on the worker thread has run.
@@ -1147,8 +1155,10 @@ fn run_loop(
             }
             Intent::Load(operation) => {
                 app.begin_load(operation);
-                let loaded =
-                    in_background(terminal, &mut app, interrupts, || run_scan(ctx, operation))?;
+                let board = app.scan_board.clone();
+                let loaded = in_background(terminal, &mut app, interrupts, || {
+                    run_scan(ctx, operation, board.as_deref())
+                })?;
                 app.finish_load(operation, loaded);
                 settle(terminal, &app)?;
             }
@@ -1239,6 +1249,7 @@ fn in_background<T: Send>(
     })?;
     app.working = None;
     app.apply_monitor = None;
+    app.scan_board = None;
     match finished {
         Ok(value) => Ok(value),
         // The panic already restored the terminal through Ratatui's hook; end
@@ -1274,6 +1285,54 @@ fn settle(terminal: &mut DefaultTerminal, app: &App) -> Result<()> {
     Ok(())
 }
 
+/// One category and how its scan ended, once it has.
+type BoardRow = (&'static str, Option<Result<ops::CategoryTally, String>>);
+
+/// Every category of a Scan everything, in registry order, with how it
+/// ended once its scan thread returns; filled from those threads while the
+/// working screen reads it.
+struct ScanBoard {
+    rows: std::sync::Mutex<Vec<BoardRow>>,
+    version: std::sync::atomic::AtomicU64,
+}
+
+impl ScanBoard {
+    fn new() -> Self {
+        Self {
+            rows: std::sync::Mutex::new(
+                ops::all()
+                    .iter()
+                    .map(|operation| (operation.name(), None))
+                    .collect(),
+            ),
+            version: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn record(&self, done: ops::CategoryDone) {
+        let mut rows = self
+            .rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(row) = rows.iter_mut().find(|(name, _)| *name == done.category) {
+            row.1 = Some(done.tally);
+        }
+        self.version
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn rows(&self) -> Vec<BoardRow> {
+        self.rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn version(&self) -> u64 {
+        self.version.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// What a scan produced, carried from the worker thread to the screen.
 enum Loaded {
     Scan(ops::ScanResult, Vec<String>),
@@ -1285,7 +1344,7 @@ enum Loaded {
 /// diagnostics it captured travel with the result, together with any still
 /// queued from before it, such as the root, protect and journal warnings
 /// `Ctx::from_cli` raises before the first scan.
-fn run_scan(ctx: &Ctx, operation: Operation) -> Loaded {
+fn run_scan(ctx: &Ctx, operation: Operation, board: Option<&ScanBoard>) -> Loaded {
     let walks_roots = match operation {
         Operation::ScanAll | Operation::Purge => true,
         Operation::Clean(target) => ops::for_target(target).scans_roots(),
@@ -1296,7 +1355,12 @@ fn run_scan(ctx: &Ctx, operation: Operation) -> Loaded {
     }
     let scanned = match operation {
         Operation::ScanAll => {
-            let result = ops::scan_all(ctx);
+            let record = |done: ops::CategoryDone| {
+                if let Some(board) = board {
+                    board.record(done);
+                }
+            };
+            let result = ops::scan_all_observed(ctx, Some(&record));
             return Loaded::Scan(result, ctx.take_diagnostics());
         }
         Operation::Clean(target) => {
@@ -1730,10 +1794,23 @@ fn render_loading(frame: &mut Frame, area: Rect, app: &App) {
     }
     // The clock moving is what says the scan is still alive; a probe can take
     // minutes on a loaded machine.
+    let board = app.scan_board.as_ref().map(|board| board.rows());
     if let Some(elapsed) = app.elapsed_seconds() {
-        lines.push(Line::styled(
-            format!("{elapsed} s elapsed"),
-            app.theme.style(Token::Muted),
+        let clock = match &board {
+            Some(rows) => format!(
+                "{elapsed} s elapsed · {} of {} categories done",
+                rows.iter().filter(|(_, state)| state.is_some()).count(),
+                rows.len()
+            ),
+            None => format!("{elapsed} s elapsed"),
+        };
+        lines.push(Line::styled(clock, app.theme.style(Token::Muted)));
+    }
+    if let Some(rows) = board {
+        lines.extend(scan_board_lines(
+            app,
+            &rows,
+            usize::from(area.width.saturating_sub(2)),
         ));
     }
     frame.render_widget(
@@ -1742,6 +1819,52 @@ fn render_loading(frame: &mut Frame, area: Rect, app: &App) {
             .block(Block::bordered().title(" Working ")),
         area,
     );
+}
+
+/// One row per category in registry order, each saying in words whether it
+/// is done (what it offers), failed (why) or still waiting, so the state reads
+/// without color. Padded to one width so the centered rows line up.
+fn scan_board_lines(app: &App, rows: &[BoardRow], width: usize) -> Vec<Line<'static>> {
+    let texts: Vec<(String, Token)> = rows
+        .iter()
+        .map(|(name, state)| {
+            let (state, token) = match state {
+                None => ("waiting".to_string(), Token::Muted),
+                Some(Ok(tally)) => {
+                    let mut text = format!(
+                        "{} · {} finding{}",
+                        report::gb(tally.actionable_bytes),
+                        tally.findings,
+                        if tally.findings == 1 { "" } else { "s" }
+                    );
+                    if tally.unjudged > 0 {
+                        text.push_str(&format!(" · {} not judged", tally.unjudged));
+                    }
+                    (text, Token::Success)
+                }
+                Some(Err(reason)) => {
+                    let reason = reason.lines().next().unwrap_or_default();
+                    (
+                        format!("failed: {}", report::terminal_safe(reason)),
+                        Token::Critical,
+                    )
+                }
+            };
+            (truncate_right(&format!("{name:<12} {state}"), width), token)
+        })
+        .collect();
+    let widest = texts
+        .iter()
+        .map(|(text, _)| Span::raw(text.as_str()).width())
+        .max()
+        .unwrap_or(0);
+    texts
+        .into_iter()
+        .map(|(text, token)| {
+            let pad = widest.saturating_sub(Span::raw(text.as_str()).width());
+            Line::styled(format!("{text}{}", " ".repeat(pad)), app.theme.style(token))
+        })
+        .collect()
 }
 
 /// `n of N · X of Y · <category> <item>` within `width` columns: the counts
@@ -4376,7 +4499,7 @@ mod tests {
 
         let operation = Operation::Clean(Target::Installers);
         let mut app = App::default();
-        app.finish_load(operation, run_scan(&ctx, operation));
+        app.finish_load(operation, run_scan(&ctx, operation, None));
 
         assert!(
             app.warnings
@@ -4550,8 +4673,80 @@ mod tests {
         }
     }
 
-    /// Scan screens for the test above; the scan board adds its own.
+    /// Scan screens for the test above.
     fn progress_apps() -> Vec<App> {
-        Vec::new()
+        vec![scanning_app()]
+    }
+
+    /// A Scan everything in progress: one category done, one failed with a
+    /// long reason, one done with an unjudged finding, the rest waiting.
+    fn scanning_app() -> App {
+        let mut app = App::default();
+        app.begin_load(Operation::ScanAll);
+        let board = app.scan_board.clone().unwrap();
+        board.record(ops::CategoryDone {
+            category: "caches",
+            tally: Ok(ops::CategoryTally {
+                actionable_bytes: 3 << 30,
+                findings: 12,
+                unjudged: 0,
+            }),
+        });
+        board.record(ops::CategoryDone {
+            category: "docker",
+            tally: Err(format!("cannot reach the daemon {}", "x".repeat(200))),
+        });
+        board.record(ops::CategoryDone {
+            category: "artifacts",
+            tally: Ok(ops::CategoryTally {
+                actionable_bytes: 4096,
+                findings: 1,
+                unjudged: 1,
+            }),
+        });
+        app
+    }
+
+    /// A Scan everything lists every category with its state, whole at the
+    /// minimum size, below the status and the clock; a single-category scan
+    /// keeps the screen it had.
+    #[test]
+    fn the_scan_screen_lists_every_category_at_the_minimum_size() {
+        let app = scanning_app();
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let frame = rows.concat();
+        assert!(frame.contains("Scanning everything"), "{rows:#?}");
+        assert!(
+            frame.contains("0 s elapsed · 3 of 10 categories done"),
+            "{rows:#?}"
+        );
+        for operation in ops::all() {
+            assert!(
+                frame.contains(operation.name()),
+                "{} missing: {rows:#?}",
+                operation.name()
+            );
+        }
+        assert!(
+            frame.contains("caches       3.0 GB · 12 findings"),
+            "{rows:#?}"
+        );
+        assert!(
+            frame.contains("artifacts    4 KB · 1 finding · 1 not judged"),
+            "{rows:#?}"
+        );
+        assert!(
+            frame.contains("docker       failed: cannot reach the daemon"),
+            "{rows:#?}"
+        );
+        assert!(frame.contains("toolchains   waiting"), "{rows:#?}");
+        assert!(frame.contains("q quit"), "the footer survives: {rows:#?}");
+
+        let mut single = App::default();
+        single.begin_load(Operation::Clean(Target::Caches));
+        assert!(single.scan_board.is_none());
+        let frame = screen_rows(&single, MIN_WIDTH, MIN_HEIGHT).concat();
+        assert!(frame.contains("0 s elapsed"));
+        assert!(!frame.contains("waiting"));
     }
 }
