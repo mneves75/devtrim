@@ -290,10 +290,13 @@ def progress(binary, home, rows, columns):
 
 
 def analyze(binary, home, rows, columns):
-    """`devtrim analyze` on the demo projects with devtrim's verdicts loaded."""
-    arguments = ["analyze", str(home / "dev")]
+    """`devtrim analyze` on the demo home with devtrim's verdicts loaded."""
+    arguments = ["analyze", str(home)]
     with tui.Session(binary, home, rows=rows, columns=columns, arguments=arguments) as session:
-        session.wait_for_screen("payments-api", "mostly in")
+        session.wait_for_screen("dev/", "bin/")
+        # The culprit line belongs to the highlighted folder: go up to dev/.
+        session.send(b"\x1b[A" * 8)
+        session.wait_for_screen("mostly in")
         session.send(b"v")
         session.wait_for_screen("HOLDS")
         session.settle(0.3)
@@ -391,7 +394,7 @@ def main():
             (b"b", ("Operations", "GB")),
         ])
         frames["tui:overview"] = block("menu after a scan", 38, to_html(overview, 0, rows, 38))
-        frames["tui:analyze"] = block("analyze with verdicts", 80, to_html(analyze(binary, home, 22, 80)))
+        frames["tui:analyze"] = block("analyze with verdicts", 80, to_html(analyze(binary, home, 18, 80)))
         frames["tui:scanning"] = block("scan in progress", columns, to_html(scanning(binary, home, rows, columns)))
         scan, scan_columns = scan_summary(binary, home)
         frames["cli:scan"] = block("devtrim scan", scan_columns, scan)

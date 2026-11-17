@@ -435,8 +435,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "f6dab2dff",
-  "text": "│free space on the home volume: 34.2 GB → 34.2 GB (+24 MB), measured; other processes also write   │",
+  "id": "fead6f755",
+  "text": "│free space on the home volume: 33.5 GB → 33.5 GB (+88 MB), measured; other processes also write   │",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
@@ -505,8 +505,8 @@
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
-  "id": "f581914a6",
-  "text": " devtrim v0.15.0 · analyze · /private/tmp/devtrim-demo/dev · 7.8 GB",
+  "id": "fd6849f3d",
+  "text": " devtrim v0.15.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB",
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
@@ -515,13 +515,33 @@
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
-  "id": "f441d4f22",
-  "text": "│     5.9 GB ████████████████████████ HOLDS 1     payments-api/                │",
+  "id": "f9a8f207b",
+  "text": "│▶    7.8 GB ████████████████████████ HOLDS 4     dev/                         │",
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
-  "id": "f880cfbd9",
-  "text": "│▶    1.9 GB ███████▋                 HOLDS 3     storefront/                  │",
+  "id": "f005d6bbf",
+  "text": "│      28 KB                          NOT OFFERED unused-a-project-whose-direct│",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "fd23d4e3a",
+  "text": "│       8 KB                          NOT OFFERED bin/                         │",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "fbb54eacd",
+  "text": "│        0 B                          NOT OFFERED cache/                       │",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "fb4398ba4",
+  "text": "│        0 B                          NOT OFFERED config/                      │",
+  "link": "https://mneves75.github.io/devtrim/#analyze-h"
+ },
+ {
+  "id": "f60acca89",
+  "text": "│        0 B                          NOT OFFERED state/                       │",
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
@@ -530,8 +550,8 @@
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
-  "id": "f6e0fb421",
-  "text": "└ mostly in node_modules/ · 1.1 GB · 57% ──────────────────────────────────────┘",
+  "id": "f33056458",
+  "text": "└ mostly in payments-api/ · 5.9 GB · 75% ──────────────────────────────────────┘",
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
@@ -540,8 +560,8 @@
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
-  "id": "fb6c71d70",
-  "text": " HOLDS 3 offers · 1.9 GB · devtrim scan",
+  "id": "fbfa72fa9",
+  "text": " HOLDS 4 offers · 7.8 GB · devtrim scan",
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {

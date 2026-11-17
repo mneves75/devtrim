@@ -190,7 +190,7 @@
 <div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: apply stopping after this item"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · Project purge                                                                    </span>
 ┌ Apply outcome ───────────────────────────────────────────────────────────────────────────────────┐
 │<span class="r b">purge: 0 item(s), ~0 B reclaimed estimate</span>                                                         │
-│free space on the home volume: 34.2 GB → 34.2 GB (+24 MB), measured; other processes also write   │
+│free space on the home volume: 33.5 GB → 33.5 GB (+88 MB), measured; other processes also write   │
 │                                                                                                  │
 │                                                                                                  │
 │<span class="r b">Errors</span>                                                                                            │
@@ -247,10 +247,14 @@
     <div class="analyze-split">
       <figure>
 <!-- tui:analyze -->
-<div class="term-frame" data-cols="80" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: analyze with verdicts"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · analyze · /private/tmp/devtrim-demo/dev · 7.8 GB             </span>
+<div class="term-frame" data-cols="80" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: analyze with verdicts"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB                 </span>
 ┌ Contents ────────────────────────────────────────────────────────────────────┐
-│  <span class="c">   5.9 GB </span><span class="k">████████████████████████ </span><span class="c b">HOLDS 1     </span>payments-api/                │
-│<span class="g b">▶    1.9 GB ███████▋                 HOLDS 3     storefront/                  </span>│
+│<span class="g b">▶    7.8 GB ████████████████████████ HOLDS 4     dev/                         </span>│
+│  <span class="c">    28 KB </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>unused-a-project-whose-direct│
+│  <span class="c">     8 KB </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>bin/                         │
+│  <span class="c">      0 B </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>cache/                       │
+│  <span class="c">      0 B </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>config/                      │
+│  <span class="c">      0 B </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>state/                       │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -258,17 +262,9 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-└<span class="u"> mostly in node_modules/ · 1.1 GB · 57% </span>──────────────────────────────────────┘
+└<span class="u"> mostly in payments-api/ · 5.9 GB · 75% </span>──────────────────────────────────────┘
  <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">Esc</span> back<span class="k"> · </span><span class="c">m</span> culprit<span class="k"> · </span><span class="c">v</span> verdicts<span class="k"> · </span><span class="c">f</span> filter<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
- <span class="c">HOLDS 3 offers · 1.9 GB · devtrim scan</span></code></pre></div>
+ <span class="c">HOLDS 4 offers · 7.8 GB · devtrim scan</span></code></pre></div>
 <!-- /tui:analyze -->
       </figure>
       <div class="analyze-body">
