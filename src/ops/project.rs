@@ -484,12 +484,9 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
         format!("cannot read Git config keys for {}", worktree.display())
     })?;
     let mut command = hardened_git(worktree, "git");
-    command.args([
-        "-c",
-        "core.attributesFile=/dev/null",
-        "-c",
-        "diff.external=",
-    ]);
+    command
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .env_remove("GIT_CONFIG_COUNT");
     let starts_ascii = |bytes: &[u8], prefix: &[u8]| {
         bytes.len() >= prefix.len() && bytes[..prefix.len()].eq_ignore_ascii_case(prefix)
     };
@@ -497,29 +494,33 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
         bytes.len() >= suffix.len()
             && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
     };
+    // Use GIT_CONFIG_COUNT/KEY_i/VALUE_i instead of `-c key=val` because `-c`
+    // splits at the first `=`, which fails when a subsection name contains `=`.
+    let mut overrides: Vec<(OsString, &'static str)> = vec![
+        (OsString::from("core.attributesFile"), "/dev/null"),
+        (OsString::from("diff.external"), ""),
+    ];
     for raw_key in config_keys
         .split(|byte| *byte == 0)
         .filter(|slice| !slice.is_empty())
     {
-        let suffix: Option<&[u8]> = if starts_ascii(raw_key, b"filter.")
+        if starts_ascii(raw_key, b"filter.")
             && (ends_ascii(raw_key, b".clean")
                 || ends_ascii(raw_key, b".smudge")
                 || ends_ascii(raw_key, b".process"))
             || starts_ascii(raw_key, b"diff.")
                 && (ends_ascii(raw_key, b".textconv") || ends_ascii(raw_key, b".command"))
         {
-            Some(b"=")
+            overrides.push((OsString::from_vec(raw_key.to_vec()), ""));
         } else if starts_ascii(raw_key, b"filter.") && ends_ascii(raw_key, b".required") {
-            Some(b"=false")
-        } else {
-            None
-        };
-        if let Some(value) = suffix {
-            let mut override_arg = Vec::with_capacity(raw_key.len() + value.len());
-            override_arg.extend_from_slice(raw_key);
-            override_arg.extend_from_slice(value);
-            command.arg("-c").arg(OsString::from_vec(override_arg));
+            overrides.push((OsString::from_vec(raw_key.to_vec()), "false"));
         }
+    }
+    command.env("GIT_CONFIG_COUNT", overrides.len().to_string());
+    for (index, (key, value)) in overrides.into_iter().enumerate() {
+        command
+            .env(format!("GIT_CONFIG_KEY_{index}"), key)
+            .env(format!("GIT_CONFIG_VALUE_{index}"), value);
     }
     command.args([
         "status",
@@ -1460,13 +1461,13 @@ mod tests {
             assert!(status.success(), "git {args:?} failed");
         };
         git(&["init", "-q"]);
-        std::fs::write(repo.join(".gitattributes"), "* filter=hostile\n").unwrap();
+        std::fs::write(repo.join(".gitattributes"), "* filter=hostile=eq\n").unwrap();
         std::fs::write(repo.join("tracked.txt"), "before\n").unwrap();
         git(&["add", ".gitattributes", "tracked.txt"]);
         git(&["commit", "-q", "-m", "initial"]);
         let filter_cmd = format!("touch '{}' && cat", marker.display());
-        git(&["config", "filter.hostile.clean", &filter_cmd]);
-        git(&["config", "filter.hostile.required", "true"]);
+        git(&["config", "filter.hostile=eq.clean", &filter_cmd]);
+        git(&["config", "filter.hostile=eq.required", "true"]);
         std::fs::write(repo.join("tracked.txt"), "after\n").unwrap();
 
         let dirty = worktree_dirty_count(&repo).unwrap();

@@ -2079,8 +2079,8 @@ CASES = (
     Case(
         name="size/clone-private",
         relative_path="src/safety.rs",
-        before=".map_or(0, |blocks| blocks.private)\n}",
-        after=".map_or(0, |blocks| blocks.allocated)\n}",
+        before="                entry.private.unwrap_or(0)",
+        after="                let _ = entry.private;\n                allocated",
         tests=("safety::tests::a_clone_of_a_file_outside_the_tree_frees_at_least_its_private_bytes",),
         marker="PV size/clone-private",
     ),

@@ -99,16 +99,10 @@ pub fn file_blocks(path: &Path, dev: u64, ino: u64) -> Option<FileBlocks> {
 /// without following symlinks. Returns [`BulkError::Unsupported`] off macOS or
 /// when the filesystem cannot serve the requested attribute set, and
 /// [`BulkError::Io`] on real I/O errors so callers fail closed.
+#[cfg(not(target_os = "macos"))]
 pub fn read_dir_bulk(directory: &Path) -> Result<Vec<BulkEntry>, BulkError> {
-    #[cfg(target_os = "macos")]
-    {
-        read_dir_bulk_macos(directory)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = directory;
-        Err(BulkError::Unsupported)
-    }
+    let _ = directory;
+    Err(BulkError::Unsupported)
 }
 
 /// The mounted volume holding a file.
@@ -274,12 +268,16 @@ fn read_attributes(path: &Path) -> Option<[u8; BUFFER_SIZE]> {
     (status == 0).then_some(buffer)
 }
 
+/// Reads every entry of `directory` in batched `getattrlistbulk(2)` calls
+/// without following symlinks. Returns [`BulkError::Unsupported`] when the
+/// filesystem cannot serve the requested attribute set, and [`BulkError::Io`]
+/// on real I/O errors so callers fail closed.
 #[cfg(target_os = "macos")]
 #[allow(
     unsafe_code,
     reason = "getattrlistbulk(2) has no safe wrapper; isolated inside apfs-size"
 )]
-fn read_dir_bulk_macos(directory: &Path) -> Result<Vec<BulkEntry>, BulkError> {
+pub fn read_dir_bulk(directory: &Path) -> Result<Vec<BulkEntry>, BulkError> {
     use rustix::fs::{Mode, OFlags, open};
     use std::os::fd::AsRawFd;
 

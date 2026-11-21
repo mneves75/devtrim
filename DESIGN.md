@@ -78,8 +78,10 @@ built binary before the frame is regenerated.
      activation; `aria-orientation` follows the layout.
      The selected step carries the TUI's own cursor `›` in the accent, set on
      the tab outside the span that names it, so it is never read aloud.
-   - All panels share one grid cell; the inactive ones are `inert` and
-     `visibility: hidden`, so the rail never moves when a shorter screen shows.
+   - All panels share one grid cell; inactive ones use `hidden="until-found"`
+     with a `beforematch` listener (no `inert`) and `visibility: hidden` so
+     find-in-page can reveal them while the rail never moves when a shorter
+     screen shows.
    - The Apply step needs an apply, and `frames.py` never applies a plan.
      Open question: whether to capture one, for instance a permanent-mode
      apply of the disposable demo home, which would keep anything out of the

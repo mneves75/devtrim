@@ -267,6 +267,13 @@ fn is_local_buildx_node(node: &BuildxNode, local_contexts: &BTreeMap<String, Str
     if node.status.trim() != "running" {
         return false;
     }
+    let has_worker_id = node
+        .ids
+        .as_deref()
+        .is_some_and(|ids| ids.iter().any(|identifier| !identifier.trim().is_empty()));
+    if !has_worker_id {
+        return false;
+    }
     let endpoint = node.endpoint.trim();
     is_local_docker_host(endpoint) || local_contexts.contains_key(endpoint)
 }
@@ -1019,12 +1026,14 @@ mod tests {
             "\n",
             r#"{"Name":"kiri-build","Driver":"docker-container","Current":true,"Nodes":[{"Name":"kiri-build0","Endpoint":"orbstack","Status":"running","IDs":["zmazdby6v31ni8m0iz6hq923g"]}]}"#,
             "\n",
-            // Two non-current aliases with empty IDs sharing `(name, endpoint)`: smallest name `alpha` wins.
-            r#"{"Name":"zeta","Driver":"docker-container","Current":false,"Nodes":[{"Name":"shared0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":null}]}"#,
+            // Two non-current aliases sharing `(name, endpoint, ID)`: smallest name `alpha` wins.
+            r#"{"Name":"zeta","Driver":"docker-container","Current":false,"Nodes":[{"Name":"shared0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":["id-shared"]}]}"#,
             "\n",
-            r#"{"Name":"alpha","Driver":"docker-container","Current":false,"Nodes":[{"Name":"shared0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":[]}]}"#,
+            r#"{"Name":"alpha","Driver":"docker-container","Current":false,"Nodes":[{"Name":"shared0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":["id-shared"]}]}"#,
             "\n",
-            // Rejected: non-container drivers, remote node, stopped node, malformed name.
+            // Rejected: missing worker IDs, non-container drivers, remote node, stopped node, malformed name.
+            r#"{"Name":"no-ids","Driver":"docker-container","Current":false,"Nodes":[{"Name":"n0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":[]}]}"#,
+            "\n",
             r#"{"Name":"default","Driver":"docker","Current":false,"Nodes":[{"Name":"default","Endpoint":"orbstack","Status":"running","IDs":null}]}"#,
             "\n",
             r#"{"Name":"remote-builder","Driver":"remote","Current":false,"Nodes":[{"Name":"r0","Endpoint":"tls://remote:1234","Status":"running","IDs":null}]}"#,

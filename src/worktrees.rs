@@ -17,8 +17,8 @@ use crate::report::{Action, Finding};
 use crate::safety::{Ctx, measure_lenient};
 
 /// What the report cannot see, stated once with every run.
-pub(crate) const NOT_ASSESSED: &str = "not assessed: ignored files, open files by other \
-     users, or whether work is still wanted. `git worktree remove <path>` runs the \
+pub(crate) const NOT_ASSESSED: &str = "not assessed: ignored files, submodule changes, open files \
+     by other users, or whether work is still wanted. `git worktree remove <path>` runs the \
      repository's configured programs: use it only in a repository you trust, after your own \
      review";
 
