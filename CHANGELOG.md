@@ -4,9 +4,24 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-21
+
+### Added
+- Batched APFS directory measurement on macOS via `getattrlistbulk(2)` in `crates/apfs-size` (with automatic fallback to `walkdir` on `ENOTSUP`/`EINVAL`/`ENOSYS` and fail-closed handling on I/O or per-entry kernel errors), while removing the unused `CloneFamily` fields tracked since `0.14.0`.
+- Default project root discovery now includes `~/.t3/worktrees` alongside `~/.codex/worktrees` and conventional project directories.
+- `clean docker` now discovers local `docker-container` BuildKit builders via `docker buildx ls` and `docker context ls`, deduplicates aliases sharing the same BuildKit node, skips remote/non-running builders, and prunes verified local builders with `CommandAuthority::DockerBuildxPrune` (re-verified at apply).
+- `worktrees` enriches each linked worktree note with live `in-use`, `dirty (N changes)`, or `clean` status (via hardened `git status --porcelain=v1 -z` and a single read-only active-process CWD probe; probe failures never claim `clean`) plus `last active YYYY-MM-DD UTC`, while remaining strictly report-only (`Action::Info`).
+- `clean leftovers` now reports abandoned `.git/objects/tmp_objdir-*` directories and local AI model stores (`~/.ollama/models`, `~/.lmstudio/models`) strictly as `Action::Info`.
+- Mole-inspired TUI upgrades: menu overview summary card (`Selected` pane, yielding cleanly at 64×18), 6-cell proportional inline share bars on results rows at widths `>= 96`, live progress bar on the Working screen for scans and applies, `o` direct jump from `Scan everything` results to an actionable category preview, and an actionable post-apply `trash-empty --only-devtrim` next-step hint when bytes were moved to Trash.
+
 ### Changed
+- Redesigned `index.html`, `MANUAL.html`, `styles.css`, and `DESIGN.md` (v6) using 2026+ web standards: single-row scrollable walkthrough tabs with scroll-driven fade masks and progressive CSS Anchor Positioning underline, `hidden="until-found"` with `beforematch`, container-queried `.table-wrapper`, CSS `subgrid` architectural pillars, `color-scheme: only dark` on terminal frames, and fixed `tui:overview` (54 cols) and `tui:progress` (live mid-apply capture) frames with regenerated `video/film/facts.json`.
+- Retired the `GHSA-g3hv-75wg-m249` npm audit waiver (`video/audit-waivers.json` is now `[]`) by upgrading `eslint` to `10.15.0` and pinning `minimatch` `11.0.8` in `video/package.json`.
 - The landing page links the verified immutable 0.15.0 release after production
   promotion, with regenerated film facts.
+
+### Fixed
+- `scripts/site/frames.py` now captures `tui:overview` at 54 columns (so category sizes and footer controls are not truncated) and waits for `"1 of 4"` before capturing `tui:progress` mid-apply.
 
 ## [0.15.0] - 2026-11-17
 

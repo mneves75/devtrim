@@ -217,17 +217,30 @@ Non-negotiable boundaries:
   HEAD's commit date and HEAD's newest reflog entry, so a clone or checkout of
   old history is active. Both dates are rendered in UTC, the clock the
   staleness cutoff counts in; the probe pins `TZ=UTC0` for `git` alone.
-- The two read-only reports add three Git queries through the same hardened
-  builder: `worktree list --porcelain -z` and `rev-parse --path-format=absolute
-  --git-common-dir` for `worktrees`, and `check-ignore -q -- .scratch/` for the
-  `.scratch` rows of `clean leftovers` (run only when that folder exists; exit 0
-  is ignored, 1 is not, anything else refuses). None of them runs a configured
-  program even unhardened (measured on Git 2.56). A path a worktree listing names
-  is repository data: it is measured only when it is a real directory inside a
-  scan root whose `.git` file names a gitdir in that repository's `worktrees`, and
-  Git runs only in folders the walk itself finds, never in a path because a listing named it. Neither report creates a
-  finding with a target action, a deletion-list entry, a command authority or a
-  journal record.
+- The two read-only reports add four Git queries through the same hardened
+  builder: `worktree list --porcelain -z`, `rev-parse --path-format=absolute
+  --git-common-dir`, and `status --porcelain=v1 -z --untracked-files=normal`
+  for `worktrees` (plus a single read-only active-process CWD probe per run so
+  active worktrees show `in-use` and a probe failure never claims `clean`), and
+  `check-ignore -q -- .scratch/` for the `.scratch` rows of `clean leftovers`
+  (run only when that folder exists; exit 0 is ignored, 1 is not, anything else
+  refuses). `clean leftovers` also surfaces abandoned `.git/objects/tmp_objdir-*`
+  folders and local AI model stores (`~/.ollama/models`, `~/.lmstudio/models`)
+  strictly as `Action::Info`. None of those Git queries runs a configured
+  program even unhardened. A path a worktree listing names is repository data:
+  it is measured only when it is a real directory inside a scan root whose
+  `.git` file names a gitdir in that repository's `worktrees`, and Git runs
+  only in folders the walk itself finds, never in a path because a listing
+  named it. Neither report creates a finding with a target action, a
+  deletion-list entry, a command authority or a journal record.
+- `clean docker` discovers local `docker-container` BuildKit builders via
+  `docker --host <host> buildx ls --format '{{json .}}'` and `docker context ls
+  --format '{{json .}}'`, deduplicates aliases sharing node IDs, and emits
+  `CommandAuthority::DockerBuildxPrune { host, builder }` only for running
+  builders whose every node resolves to an absolute local `unix://` socket and
+  whose builder name matches the strict `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` rule.
+  Apply re-verifies the local host, builder name, and live local builder state
+  before running `docker --host <host> buildx prune --builder <builder> -a -f`.
 - A permanent removal refuses, before removing anything, a tree holding a
   folder without write and search permission, since it would otherwise stop
   part-way. The one exception is a direct Trash child in `trash-empty`, whose
@@ -505,14 +518,17 @@ Non-negotiable boundaries:
   foreign-parent-device refusal using injected observed metadata; that test
   does not mount a volume or perform a real Trash move.
 
-- A cleanup category's sizes take one `lstat` and one `getattrlist` per file,
-  plus one `statfs` per device and one `diskutil apfs listSnapshots -plist` per
-  device per minute, for the lower bound beside the size; `getattrlistbulk` would
-  batch them but is not used. Report-only views take the `lstat` alone. The only
-  `unsafe` code is that one read-only `getattrlist` call, isolated in the
-  `crates/apfs-size` workspace crate (`#![deny(unsafe_code)]`, one reasoned
-  `allow`, a bounds-checked safe parser of its reply). The `devtrim` crate, which
-  deletes files, keeps `unsafe_code = "forbid"`.
+- On macOS, directory size walks batch `lstat` metadata per directory through
+  `getattrlistbulk(2)` (falling back to `walkdir` if the filesystem returns
+  `ENOTSUP`/`EINVAL`/`ENOSYS`, and failing closed on real I/O or per-entry
+  kernel errors). A cleanup category also reads each regular file's APFS private
+  size via `getattrlist(2)` (plus one `statfs` per device and one `diskutil apfs
+  listSnapshots -plist` per device per minute) for the lower bound beside the
+  size; report-only views skip the per-file private-size query. The only
+  `unsafe` code is those two read-only macOS FFI calls, isolated in the
+  `crates/apfs-size` workspace crate (`#![deny(unsafe_code)]`, reasoned
+  `allow`s, bounds-checked safe parsers of every kernel reply). The `devtrim`
+  crate, which deletes files, keeps `unsafe_code = "forbid"`.
 
 - Sizes are estimated allocated bytes (the blocks each file holds, each
   hard-linked file counted once), not guaranteed immediately reclaimable space,

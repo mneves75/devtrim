@@ -17,51 +17,51 @@
  },
  "row.cursor": {
   "text": "›",
-  "fact": "f320ec151"
+  "fact": "f3e479258"
  },
  "row.open": {
   "text": "[",
-  "fact": "f320ec151"
+  "fact": "f3e479258"
  },
  "row.mark": {
   "text": "x",
-  "fact": "f320ec151"
+  "fact": "f3e479258"
  },
  "row.close": {
   "text": "]",
-  "fact": "f320ec151"
+  "fact": "f3e479258"
  },
  "row.1.end": {
   "text": "5.9 GB  TRASH    stale target artifacts",
-  "fact": "f320ec151"
+  "fact": "fbaf38f7f"
  },
  "row.1.short": {
   "text": "1. danger-5   5.9 GB",
-  "fact": "f320ec151"
+  "fact": "fbaf38f7f"
  },
  "row.2.end": {
   "text": "1.1 GB  TRASH    stale node_modules",
-  "fact": "f33c55567"
+  "fact": "ff36b0a9f"
  },
  "row.2.short": {
   "text": "2. danger-5   1.1 GB",
-  "fact": "f33c55567"
+  "fact": "ff36b0a9f"
  },
  "row.3.end": {
   "text": "614 MB  TRASH    stale .next artifacts",
-  "fact": "fafd8b077"
+  "fact": "f5fad5d17"
  },
  "row.3.short": {
   "text": "3. danger-5   614 MB",
-  "fact": "fafd8b077"
+  "fact": "f5fad5d17"
  },
  "row.4.end": {
   "text": "205 MB  TRASH    stale .turbo artifacts",
-  "fact": "ff35ae38b"
+  "fact": "f01a57ddd"
  },
  "row.4.short": {
   "text": "4. danger-5   205 MB",
-  "fact": "ff35ae38b"
+  "fact": "f01a57ddd"
  },
  "see": {
   "text": "See before anything moves",

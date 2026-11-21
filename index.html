@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="devtrim is a local-first disk cleaner for macOS developer machines. It measures, classifies and trims caches and build output, previews every action, scores its danger and moves files to the Trash first.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-exiWuf/iUtsQUPowOYlYjIeh8AZk44rplzwAuK2BJkg='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-FCkQVLBoloumJ4xVsGcwe4674eoqN/DEs0Mc5uS1nK8='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>devtrim — measure · classify · trim</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -53,9 +53,10 @@
           <figure>
             <figcaption><strong>Scan.</strong> Each category is listed as it finishes, with its size and count; the rest show as waiting.</figcaption>
 <!-- tui:scanning -->
-<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: scan in progress"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · Scan everything                                                                  </span>
+<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: scan in progress"><code><span class="v b"> devtrim </span><span class="v">v0.16.0 · Scan everything                                                                  </span>
 ┌ Working ─────────────────────────────────────────────────────────────────────────────────────────┐
 │                                       Scanning everything…                                       │
+│                                   <span class="g">████████████████▊</span><span class="k">······· 70%</span>                                   │
 │                               <span class="k">0 s elapsed · 7 of 10 categories done</span>                              │
 │                                   <span class="g">caches       0 B · 0 findings</span>                                  │
 │                                   <span class="k">node-modules waiting         </span>                                  │
@@ -73,7 +74,6 @@
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
  <span class="c">q</span> quit
  <span class="k">q stops the scan and quits; other keys wait for the results.</span></code></pre></div>
@@ -84,20 +84,20 @@
           <figure>
             <figcaption><strong>Overview.</strong> The menu opens on the volume&rsquo;s free space, and after a scan each category shows what it can give back.</figcaption>
 <!-- tui:overview -->
-<div class="term-frame" data-cols="38" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: menu after a scan"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · Menu               </span>
+<div class="term-frame" data-cols="54" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: menu after a scan"><code><span class="v b"> devtrim </span><span class="v">v0.16.0 · Menu                               </span>
 <span class="k"> Operations</span>
-<span class="b">▶ </span><span class="k b">1 </span><span class="u b">READ-ONLY </span><span class="b">Scan everything         </span>
-  <span class="k">2 </span><span class="g">TRASH     </span>Caches
-  <span class="k">3 </span><span class="g">TRASH     </span>node_modules
-  <span class="k">4 </span><span class="g">TRASH     </span>Build artifacts
+<span class="b">▶ </span><span class="k b">1 </span><span class="u b">READ-ONLY </span><span class="b">Scan everything               </span><span class="g b">7.8 GB · 4</span>
+  <span class="k">2 </span><span class="g">TRASH     </span>Caches                              <span class="k">none</span>
+  <span class="k">3 </span><span class="g">TRASH     </span>node_modules                  <span class="g">1.1 GB · 1</span>
+  <span class="k">4 </span><span class="g">TRASH     </span>Build artifacts               <span class="g">6.7 GB · 3</span>
   <span class="k">p </span><span class="g">TRASH     </span>Project purge
-  <span class="k">5 </span><span class="r">PERMANENT </span>Simulators
-  <span class="k">6 </span><span class="g">TRASH     </span>Xcode
-  <span class="k">7 </span><span class="r">PERMANENT </span>Docker
-  <span class="k">8 </span><span class="g">TRASH     </span>Swift toolchains
-  <span class="k">d </span><span class="g">TRASH     </span>Installers
-  <span class="k">a </span><span class="g">TRASH     </span>Agent caches &amp; history
-  <span class="k">9 </span><span class="u">READ-ONLY </span>Agent leftovers
+  <span class="k">5 </span><span class="r">PERMANENT </span>Simulators                          <span class="k">none</span>
+  <span class="k">6 </span><span class="g">TRASH     </span>Xcode                               <span class="k">none</span>
+  <span class="k">7 </span><span class="r">PERMANENT </span>Docker                              <span class="k">none</span>
+  <span class="k">8 </span><span class="g">TRASH     </span>Swift toolchains                    <span class="k">none</span>
+  <span class="k">d </span><span class="g">TRASH     </span>Installers                          <span class="k">none</span>
+  <span class="k">a </span><span class="g">TRASH     </span>Agent caches &amp; history              <span class="k">none</span>
+  <span class="k">9 </span><span class="u">READ-ONLY </span>Agent leftovers                     <span class="k">none</span>
   <span class="k">i </span><span class="u">READ-ONLY </span>iCloud status
   <span class="k">0 </span><span class="r">PERMANENT </span>Empty Trash
 
@@ -106,8 +106,8 @@
 
 
 
- <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">Enter</span> open<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> key
- <span class="k">Preview first. Nothing changes until </span></code></pre></div>
+ <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">Enter</span> open<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
+ <span class="k">Preview first. Nothing changes until you explicitly a</span></code></pre></div>
 <!-- /tui:overview -->
           </figure>
         </li>
@@ -116,11 +116,12 @@
             <figcaption><strong>Preview.</strong> Two stale demo projects: every finding with its danger, size and path, before anything changes.</figcaption>
 <!-- tui:results -->
 <div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: purge preview"><code>┌ TRASH-FIRST · 4/4 selected · 7.8 GB · danger-5 ──────────────────────────────────────────────────┐
-│<span class="g b">› </span>[x] <span class="y">  1. danger-5 </span><span class="c">  5.9 GB  TRASH    </span><span class="b">stale target artifacts</span><span class="k">  payments-api/target</span>                │
-│  [x] <span class="y">  2. danger-5 </span><span class="c">  1.1 GB  TRASH    </span><span class="b">stale node_modules</span><span class="k">  storefront/node_modules</span>                │
-│  [x] <span class="y">  3. danger-5 </span><span class="c">  614 MB  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>                    │
-│  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>                  │
+│<span class="g b">› </span>[x] <span class="y">  1. danger-5 </span><span class="c">  5.9 GB </span><span class="g">██████</span><span class="c">  TRASH    </span><span class="b">stale target artifacts</span><span class="k">  payments-api/target</span>         │
+│  [x] <span class="y">  2. danger-5 </span><span class="c">  1.1 GB </span><span class="g">█</span><span class="k">·····</span><span class="c">  TRASH    </span><span class="b">stale node_modules</span><span class="k">  storefront/node_modules</span>         │
+│  [x] <span class="y">  3. danger-5 </span><span class="c">  614 MB </span><span class="g">▌</span><span class="k">·····</span><span class="c">  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>             │
+│  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB </span><span class="g">▏</span><span class="k">·····</span><span class="c">  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>           │
 │  <span class="k">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config/devtrim.toml r…</span>│
+│                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -131,7 +132,6 @@
 ┌ Details ─────────────────────────────────────────────────────────────────────────────────────────┐
 │<span class="g b">stale target artifacts</span>                                                                            │
 │5.9 GB · danger-5 · move to Trash                                                                 │
-│frees at least 5.9 GB: APFS clones share the rest                                                 │
 │/private/tmp/devtrim-demo/dev/payments-api/target                                                 │
 │<span class="k">repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build</span>  │
 │project: /private/tmp/devtrim-demo/dev/payments-api                                               │
@@ -187,14 +187,14 @@
           <figure>
             <figcaption><strong>Apply.</strong> The plan runs one finding at a time with its count and size, and a stop key ends it after the current item, never inside one.</figcaption>
 <!-- tui:progress -->
-<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: apply stopping after this item"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · Project purge                                                                    </span>
-┌ Apply outcome ───────────────────────────────────────────────────────────────────────────────────┐
-│<span class="r b">purge: 0 item(s), ~0 B reclaimed estimate</span>                                                         │
-│free space on the home volume: 33.5 GB → 33.5 GB (+88 MB), measured; other processes also write   │
+<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: apply stopping after this item"><code><span class="v b"> devtrim </span><span class="v">v0.16.0 · Project purge                                                                    </span>
+┌ Working ─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 Stopping after the current item…                                 │
+│                                   <span class="g">██████</span><span class="k">·················· 25%</span>                                   │
+│              1 of 4 · 1.1 GB of 7.8 GB · node-modules ~/dev/storefront/node_modules              │
+│                                            <span class="k">0 s elapsed</span>                                           │
 │                                                                                                  │
 │                                                                                                  │
-│<span class="r b">Errors</span>                                                                                            │
-│• stopped by you: 4 not attempted                                                                 │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -209,13 +209,32 @@
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
- <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">r</span> rescan<span class="k"> · </span><span class="c">b</span> back<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
- <span class="y">Stopped by you: 0 done, 4 not attempted.</span></code></pre></div>
+
+ <span class="y">Quitting is refused until this apply returns.</span></code></pre></div>
 <!-- /tui:progress -->
           </figure>
         </li>
       </ol>
     </div>
+
+    <dl class="pillars" aria-label="Core guarantees">
+      <div>
+        <dt>APFS clone truth</dt>
+        <dd>Batched <code>getattrlistbulk</code> scans report allocated blocks and a private-size lower bound when clones share storage.</dd>
+      </div>
+      <div>
+        <dt>Agent-era visibility</dt>
+        <dd>Tracks linked worktrees (in-use, dirty, idle), local Docker <code>buildx</code> caches, abandoned <code>tmp_objdir</code> debris, and local AI model stores.</dd>
+      </div>
+      <div>
+        <dt>Trash-first &amp; journaled</dt>
+        <dd>Every apply writes a write-ahead JSONL journal, verifies target inode identity before mutation, and moves files to Trash by default.</dd>
+      </div>
+      <div>
+        <dt>Zero background risk</dt>
+        <dd>No daemon, no auto-clean schedule, no telemetry, and untrusted <code>.git/config</code> hooks or filters never execute during scans.</dd>
+      </div>
+    </dl>
   </div>
 </section>
 
@@ -247,7 +266,7 @@
     <div class="analyze-split">
       <figure>
 <!-- tui:analyze -->
-<div class="term-frame" data-cols="80" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: analyze with verdicts"><code><span class="v b"> devtrim </span><span class="v">v0.15.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB                 </span>
+<div class="term-frame" data-cols="80" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: analyze with verdicts"><code><span class="v b"> devtrim </span><span class="v">v0.16.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB                 </span>
 ┌ Contents ────────────────────────────────────────────────────────────────────┐
 │<span class="g b">▶    7.8 GB ████████████████████████ HOLDS 4     dev/                         </span>│
 │  <span class="c">    28 KB </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>unused-a-project-whose-direct│
@@ -285,6 +304,7 @@
 <section id="commands" aria-labelledby="commands-h">
   <div class="wrap">
     <h2 id="commands-h">One interactive TUI. Explicit commands for automation.</h2>
+    <div class="table-wrapper" tabindex="0" role="region" aria-labelledby="commands-h">
     <table class="commands" aria-labelledby="commands-h">
       <thead><tr><th scope="col">Command</th><th scope="col">What it does</th><th scope="col">What happens</th></tr></thead>
       <tbody>
@@ -294,8 +314,8 @@
         <tr><th scope="row"><a href="MANUAL.html#cmd-dashboard"><code>devtrim dashboard</code></a></th><td>A private, offline HTML disk map with the category previews.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
         <tr><th scope="row"><a href="MANUAL.html#cmd-analyze"><code>devtrim analyze</code></a></th><td>Explore disk usage interactively, largest first.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
         <tr><th scope="row"><a href="MANUAL.html#cmd-largest"><code>devtrim largest</code></a></th><td>The largest directories one and two levels below the scan roots.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
-        <tr><th scope="row"><a href="MANUAL.html#cmd-worktrees"><code>devtrim worktrees</code></a></th><td>Each repository's linked worktrees with their sizes.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
-        <tr><th scope="row"><a href="MANUAL.html#cmd-leftovers"><code>devtrim clean leftovers</code></a></th><td>Agent scratch and ignored <code>.scratch</code> folders, listed for your review.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-worktrees"><code>devtrim worktrees</code></a></th><td>Each repository's linked worktrees with sizes, liveness, dirty count and activity.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-leftovers"><code>devtrim clean leftovers</code></a></th><td>Agent scratch, ignored <code>.scratch</code>, Git <code>tmp_objdir</code> debris and local AI models.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
         <tr><th scope="row"><a href="MANUAL.html#cmd-app-storage"><code>devtrim app-storage</code></a></th><td>WhatsApp data and saved Screen Studio projects.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
         <tr><th scope="row"><a href="MANUAL.html#cmd-icloud"><code>devtrim icloud</code></a></th><td>Large iCloud Drive files and their locally allocated storage.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
         <tr><th scope="row"><a href="MANUAL.html#cmd-uninstall"><code>devtrim uninstall</code></a></th><td>Files named for an app's exact bundle identifier.</td><td><span class="lbl ro">READ-ONLY</span></td></tr>
@@ -315,17 +335,18 @@
       </tbody>
       <tbody>
         <tr><th scope="rowgroup" colspan="3">Remove for good</th></tr>
-        <tr><th scope="row"><a href="MANUAL.html#cmd-docker"><code>devtrim clean docker</code></a></th><td>Unused images and build cache; volumes are never pruned.</td><td><span class="lbl perm">PERMANENT</span></td></tr>
+        <tr><th scope="row"><a href="MANUAL.html#cmd-docker"><code>devtrim clean docker</code></a></th><td>Unused images, daemon build cache and local <code>buildx</code> builders; volumes are never pruned.</td><td><span class="lbl perm">PERMANENT</span></td></tr>
         <tr><th scope="row"><a href="MANUAL.html#cmd-simulators"><code>devtrim clean simulators</code></a></th><td>Simulator devices whose runtime is gone.</td><td><span class="lbl perm">PERMANENT</span></td></tr>
         <tr><th scope="row"><a href="MANUAL.html#cmd-optimize"><code>devtrim optimize</code></a></th><td>QuickLook, font and Launch Services caches macOS rebuilds.</td><td><span class="lbl perm">PERMANENT</span></td></tr>
         <tr><th scope="row"><a href="MANUAL.html#cmd-trash-empty"><code>devtrim trash-empty</code></a></th><td>Empties the Trash after you type its size.</td><td><span class="lbl perm">PERMANENT</span></td></tr>
       </tbody>
     </table>
+    </div>
     <p class="shred-note"><code>--shred</code> turns a <span class="lbl trash">TRASH</span> plan <span class="lbl perm">PERMANENT</span>, and its preview says so.</p>
 
     <figure class="scan-fig">
 <!-- cli:scan -->
-<div class="term-frame" data-cols="184" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
+<div class="term-frame" data-cols="143" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: devtrim scan"><code><span class="k">$</span> devtrim scan
 Categories
   artifacts        6.7 GB      3 finding(s)   devtrim clean artifacts --apply
   node-modules     1.1 GB      1 finding(s)   devtrim clean node-modules --apply
@@ -334,7 +355,7 @@ artifacts
 
 ~/dev/payments-api · 5.9 GB in 1 item(s)
    5.9 GB  danger:5  stale target artifacts  ~/dev/payments-api/target
-           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build; frees at least 5.9 GB: APFS clones share the rest; action: move to Trash
+           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build; action: move to Trash
 
 ~/dev/storefront · 819 MB in 2 item(s)
    614 MB  danger:5  stale .next artifacts  ~/dev/storefront/.next
@@ -453,7 +474,6 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
     tab.type = "button";
     tab.id = id;
     tab.setAttribute("role", "tab");
-    tab.setAttribute("aria-controls", panel.id);
     const name = document.createElement("span");
     name.className = "tab-name";
     name.id = id + "-name";
@@ -481,11 +501,16 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
         tab.setAttribute("aria-selected", String(on));
         tab.tabIndex = on ? 0 : -1;
         panels[i].inert = !on;
+        panels[i].hidden = on ? false : "until-found";
         panels[i].classList.toggle("is-off", !on);
       });
+      if (!wide.matches) {
+        tabs[index].scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
       if (focus) tabs[index].focus();
     };
     tabs.forEach((tab, i) => tab.addEventListener("click", () => show(i, false)));
+    panels.forEach((panel, i) => panel.addEventListener("beforematch", () => show(i, false)));
     tablist.addEventListener("keydown", event => {
       const at = tabs.indexOf(document.activeElement);
       const last = tabs.length - 1;
@@ -496,6 +521,16 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
       event.preventDefault();
       show(next < 0 ? last : next > last ? 0 : next, true);
     });
+    if (!CSS.supports("animation-timeline", "scroll(self inline)")) {
+      const first = tabs[0], last = tabs[tabs.length - 1];
+      const observer = new IntersectionObserver(entries => {
+        for (const entry of entries) {
+          tablist.classList.toggle(entry.target === first ? "more-start" : "more-end", entry.intersectionRatio < 1);
+        }
+      }, { root: tablist, threshold: 1, rootMargin: "1px" });
+      observer.observe(first);
+      observer.observe(last);
+    }
     wide.addEventListener("change", orient);
     orient();
     tablist.hidden = false;

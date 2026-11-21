@@ -55,8 +55,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-scan"
  },
  {
-  "id": "f5a824368",
-  "text": " devtrim v0.15.0 · Scan everything",
+  "id": "f73b6d9b8",
+  "text": " devtrim v0.16.0 · Scan everything",
   "link": "https://mneves75.github.io/devtrim/#step-scan"
  },
  {
@@ -67,6 +67,11 @@
  {
   "id": "f34588966",
   "text": "│                                       Scanning everything…                                       │",
+  "link": "https://mneves75.github.io/devtrim/#step-scan"
+ },
+ {
+  "id": "f8938edc5",
+  "text": "│                                   ████████████████▊······· 70%                                   │",
   "link": "https://mneves75.github.io/devtrim/#step-scan"
  },
  {
@@ -150,8 +155,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "fdbe85b20",
-  "text": " devtrim v0.15.0 · Menu",
+  "id": "f9ec551db",
+  "text": " devtrim v0.16.0 · Menu",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
@@ -160,23 +165,23 @@
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "fd600cf87",
-  "text": "▶ 1 READ-ONLY Scan everything",
+  "id": "ff35e59c7",
+  "text": "▶ 1 READ-ONLY Scan everything               7.8 GB · 4",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f84db18e9",
-  "text": "  2 TRASH     Caches",
+  "id": "f3efe0e81",
+  "text": "  2 TRASH     Caches                              none",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f0ae31a5f",
-  "text": "  3 TRASH     node_modules",
+  "id": "f3e7c7ee5",
+  "text": "  3 TRASH     node_modules                  1.1 GB · 1",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f2d7dec50",
-  "text": "  4 TRASH     Build artifacts",
+  "id": "f02edff4a",
+  "text": "  4 TRASH     Build artifacts               6.7 GB · 3",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
@@ -185,38 +190,38 @@
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f8a398e5a",
-  "text": "  5 PERMANENT Simulators",
+  "id": "f792542ca",
+  "text": "  5 PERMANENT Simulators                          none",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "ff1d6660c",
-  "text": "  6 TRASH     Xcode",
+  "id": "f9372cb0d",
+  "text": "  6 TRASH     Xcode                               none",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f81468885",
-  "text": "  7 PERMANENT Docker",
+  "id": "fd9905e49",
+  "text": "  7 PERMANENT Docker                              none",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f121a9686",
-  "text": "  8 TRASH     Swift toolchains",
+  "id": "f7bf96e78",
+  "text": "  8 TRASH     Swift toolchains                    none",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f48f5514a",
-  "text": "  d TRASH     Installers",
+  "id": "f5d3f8d12",
+  "text": "  d TRASH     Installers                          none",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f2882b705",
-  "text": "  a TRASH     Agent caches & history",
+  "id": "f0fc61420",
+  "text": "  a TRASH     Agent caches & history              none",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f8b215a03",
-  "text": "  9 READ-ONLY Agent leftovers",
+  "id": "f1d743e55",
+  "text": "  9 READ-ONLY Agent leftovers                     none",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
@@ -230,13 +235,13 @@
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f23573188",
-  "text": " ↑↓ move · Enter open · q quit · ? key",
+  "id": "f4a167bd4",
+  "text": " ↑↓ move · Enter open · q quit · ? keys",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f214bfee7",
-  "text": " Preview first. Nothing changes until",
+  "id": "f02445560",
+  "text": " Preview first. Nothing changes until you explicitly a",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
@@ -250,23 +255,23 @@
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "f320ec151",
-  "text": "│› [x]   1. danger-5   5.9 GB  TRASH    stale target artifacts  payments-api/target                │",
+  "id": "f3e479258",
+  "text": "│› [x]   1. danger-5   5.9 GB ██████  TRASH    stale target artifacts  payments-api/target         │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "f33c55567",
-  "text": "│  [x]   2. danger-5   1.1 GB  TRASH    stale node_modules  storefront/node_modules                │",
+  "id": "ff640a029",
+  "text": "│  [x]   2. danger-5   1.1 GB █·····  TRASH    stale node_modules  storefront/node_modules         │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "fafd8b077",
-  "text": "│  [x]   3. danger-5   614 MB  TRASH    stale .next artifacts  storefront/.next                    │",
+  "id": "fc81aebe2",
+  "text": "│  [x]   3. danger-5   614 MB ▌·····  TRASH    stale .next artifacts  storefront/.next             │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "ff35ae38b",
-  "text": "│  [x]   4. danger-5   205 MB  TRASH    stale .turbo artifacts  storefront/.turbo                  │",
+  "id": "f77610383",
+  "text": "│  [x]   4. danger-5   205 MB ▏·····  TRASH    stale .turbo artifacts  storefront/.turbo           │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
@@ -287,11 +292,6 @@
  {
   "id": "f38fb2aaa",
   "text": "│5.9 GB · danger-5 · move to Trash                                                                 │",
-  "link": "https://mneves75.github.io/devtrim/#step-preview"
- },
- {
-  "id": "ff0bcead1",
-  "text": "│frees at least 5.9 GB: APFS clones share the rest                                                 │",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
@@ -420,43 +420,73 @@
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "f22caac4e",
-  "text": " devtrim v0.15.0 · Project purge",
+  "id": "f52fc66f9",
+  "text": " devtrim v0.16.0 · Project purge",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "f254f7e54",
-  "text": "┌ Apply outcome ───────────────────────────────────────────────────────────────────────────────────┐",
+  "id": "f4ab58538",
+  "text": "│                                 Stopping after the current item…                                 │",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "fa9f69a92",
-  "text": "│purge: 0 item(s), ~0 B reclaimed estimate                                                         │",
+  "id": "f530a95fb",
+  "text": "│                                   ██████·················· 25%                                   │",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "fead6f755",
-  "text": "│free space on the home volume: 33.5 GB → 33.5 GB (+88 MB), measured; other processes also write   │",
+  "id": "f9791f1ca",
+  "text": "│              1 of 4 · 1.1 GB of 7.8 GB · node-modules ~/dev/storefront/node_modules              │",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "fa81837f1",
-  "text": "│Errors                                                                                            │",
+  "id": "f8a85ac17",
+  "text": "│                                            0 s elapsed                                           │",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "f1d3149de",
-  "text": "│• stopped by you: 4 not attempted                                                                 │",
+  "id": "f9532629d",
+  "text": " Quitting is refused until this apply returns.",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "fb2c7550b",
-  "text": " ↑↓ move · r rescan · b back · q quit · ? keys",
+  "id": "f8af7a016",
+  "text": "APFS clone truth",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "f1d6a2e75",
-  "text": " Stopped by you: 0 done, 4 not attempted.",
+  "id": "f3721dfed",
+  "text": "Batched getattrlistbulk scans report allocated blocks and a private-size lower bound when clones share storage.",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "f27d32883",
+  "text": "Agent-era visibility",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "fc35f5061",
+  "text": "Tracks linked worktrees (in-use, dirty, idle), local Docker buildx caches, abandoned tmp_objdir debris, and local AI model stores.",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "fe9117edf",
+  "text": "Trash-first & journaled",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "f541ad41e",
+  "text": "Every apply writes a write-ahead JSONL journal, verifies target inode identity before mutation, and moves files to Trash by default.",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "f7b8dd69c",
+  "text": "Zero background risk",
+  "link": "https://mneves75.github.io/devtrim/#step-progress"
+ },
+ {
+  "id": "f763bf3e5",
+  "text": "No daemon, no auto-clean schedule, no telemetry, and untrusted .git/config hooks or filters never execute during scans.",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
@@ -505,8 +535,8 @@
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
-  "id": "fd6849f3d",
-  "text": " devtrim v0.15.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB",
+  "id": "fad2e2d7c",
+  "text": " devtrim v0.16.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB",
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
@@ -715,8 +745,8 @@
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
-  "id": "fd6072121",
-  "text": "Each repository's linked worktrees with their sizes.",
+  "id": "f645907d7",
+  "text": "Each repository's linked worktrees with sizes, liveness, dirty count and activity.",
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
@@ -725,8 +755,8 @@
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
-  "id": "fd4d749af",
-  "text": "Agent scratch and ignored .scratch folders, listed for your review.",
+  "id": "ffdce7840",
+  "text": "Agent scratch, ignored .scratch, Git tmp_objdir debris and local AI models.",
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
@@ -880,8 +910,8 @@
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
-  "id": "f53d769b8",
-  "text": "Unused images and build cache; volumes are never pruned.",
+  "id": "fa732760a",
+  "text": "Unused images, daemon build cache and local buildx builders; volumes are never pruned.",
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
@@ -960,8 +990,8 @@
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
-  "id": "f3a3043e1",
-  "text": "           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build; frees at least 5.9 GB: APFS clones share the rest; action: move to Trash",
+  "id": "fd0e596b8",
+  "text": "           └─ repo last active 2020-01-01 UTC; corroboration: sibling Cargo.toml; comes back with: cargo build; action: move to Trash",
   "link": "https://mneves75.github.io/devtrim/#commands-h"
  },
  {
@@ -1230,8 +1260,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html"
  },
  {
-  "id": "fe2ef1133",
-  "text": "v0.15.0 Filter sections Theme: Dark",
+  "id": "f6f7ed818",
+  "text": "v0.16.0 Filter sections Theme: Dark",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-contents"
  },
  {
@@ -1545,8 +1575,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-tui"
  },
  {
-  "id": "f60e50556",
-  "text": "The menu shows the home volume's free space and how many local APFS snapshots it keeps, which hold space no scan can see; after a scan each operation names what its last scan offered, as a range such as 1.9–21.8 GB where APFS clones share blocks, and asks for a rescan once an apply has changed it. Scan everything lists the ten categories as each finishes. An apply shows the item it is on and how many items and bytes are done; x stops after the current item or command, and nothing later is attempted or journaled.",
+  "id": "f10be467f",
+  "text": "The menu shows the home volume's free space and how many local APFS snapshots it keeps, which hold space no scan can see; after a scan each operation names what its last scan offered, as a range such as 1.9–21.8 GB where APFS clones share blocks, summarizes total reclaimable space in the Selected pane, and asks for a rescan once an apply has changed a category. Scan everything and applies display a live progress bar; pressing o on a finding in Scan everything jumps straight into its actionable category preview. Wide terminals (≥ 96 cols) show proportional inline share bars beside finding sizes, and Trash-first outcomes name devtrim trash-empty --only-devtrim as the next step. During apply, x stops after the current item or command, and nothing later is attempted or journaled.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-tui"
  },
  {
@@ -1605,13 +1635,13 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-disk"
  },
  {
-  "id": "ffb61221c",
-  "text": "worktreeslinked worktrees and their sizesREAD-ONLY",
+  "id": "f09d0e567",
+  "text": "worktreeslinked worktrees with sizes, liveness, dirty state and activityREAD-ONLY",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-worktrees"
  },
  {
-  "id": "fb18ced1d",
-  "text": "Read-only list of every repository's linked worktrees under your scan roots, from one git worktree list --porcelain -z per repository through the same hardened Git invocation the scans use: branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is the repository's own claim, so it is measured only when it is a real directory inside a scan root whose .git file leads back to that repository; anything else is listed unsized with the reason. The main worktree is listed but not measured. Sizes follow no link, stay on one device, never count a nested worktree twice, and are lower bounds when entries cannot be read; such a row stays listed and the run exits 1. The report never says safe, stale or removable and shows no date: uncommitted, untracked and ignored work leave none. A bare repository has no .git marker and is found only through one of its worktrees. git worktree remove <path> runs the repository's configured programs, so use it only in a repository you trust, after your own review.",
+  "id": "f03f180cb",
+  "text": "Read-only list of every repository's linked worktrees under your scan roots (including ~/.codex/worktrees and ~/.t3/worktrees by default), from one git worktree list --porcelain -z per repository through the same hardened Git invocation the scans use: branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is the repository's own claim, so it is measured only when it is a real directory inside a scan root whose .git file leads back to that repository; anything else is listed unsized with the reason. For each verified linked worktree, devtrim also reports running-process liveness (in-use when a current-user build or agent process works inside it), working-tree cleanliness (dirty (N changes) vs clean via hardened git status --porcelain=v1 -z), and last Git activity date (or no commits yet); a failed probe records an error rather than claiming idle or clean. The main worktree is listed but not measured. Sizes follow no link, stay on one device, never count a nested worktree twice, and are lower bounds when entries cannot be read; such a row stays listed and the run exits 1. The report never says safe, stale or removable and adds no deletion authority. A bare repository has no .git marker and is found only through one of its worktrees. git worktree remove <path> runs the repository's configured programs, so use it only in a repository you trust, after your own review.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-worktrees"
  },
  {
@@ -1695,13 +1725,13 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-status"
  },
  {
-  "id": "f674236ec",
-  "text": "leftoversreport-only review hintsREAD-ONLY",
+  "id": "f8c6bda5f",
+  "text": "leftoversreport-only review hints, Git tmp_objdir debris and local AI modelsREAD-ONLY",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-leftovers"
  },
  {
-  "id": "fe52449b7",
-  "text": "Lists possible agent scratch and .supergoal paths for manual review, and the folders inside a repository's top-level .scratch when Git ignores that folder (git check-ignore) and tracks nothing in it; a .scratch child that is a linked worktree is labelled as one. It never deletes any of them: worktree or mission staleness cannot be proven from a name, and ignored files are still somebody's data.",
+  "id": "faca4ecb6",
+  "text": "Lists possible agent scratch and .supergoal paths for manual review, folders inside a repository's top-level .scratch when Git ignores that folder (git check-ignore) and tracks nothing in it (labelling linked worktrees there as such), abandoned .git/objects/tmp_objdir-* directories left by interrupted Git operations (deduplicated per objects directory), and non-empty local AI model stores under ~/.ollama/models and ~/.lmstudio/models. It never deletes any of them: worktree or mission staleness cannot be proven from a name, devtrim never modifies .git, and local models are managed by their own runtimes.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-leftovers"
  },
  {
@@ -1820,13 +1850,13 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-optimize"
  },
  {
-  "id": "ffbcb8bb4",
-  "text": "dockerunused images + build cachePERMANENT",
+  "id": "f8ecc635e",
+  "text": "dockerunused images, daemon build cache + local buildx buildersPERMANENT",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-docker"
  },
  {
-  "id": "f28380f45",
-  "text": "image prune -a + builder prune on the exact previewed local Unix-socket endpoint. Remote Docker contexts are refused. Volumes are never touched — a volume can hold your live database. The scan also reports the host-side VM disk image as a non-actionable finding measured in allocated blocks: docker system df measures inside the guest, while that sparse image is what the host actually pays for, and pruning does not shrink it. Restart the VM to trigger compaction. The disclosure appears even when the daemon is stopped, which is the one state where the cost is invisible to docker and still present.",
+  "id": "fa8f844ff",
+  "text": "image prune -a + builder prune on the exact previewed local Unix-socket endpoint, plus per-builder buildx prune --builder <name> -a -f for local running docker-container buildx builders (deduplicated by backing BuildKit node so alias builders sharing one container are never double-counted or double-pruned). Remote Docker contexts and buildx builders with any non-local node endpoint are refused, and builder names are strictly validated and rechecked at apply. Volumes are never touched — a volume can hold your live database. The scan also reports the host-side VM disk image as a non-actionable finding measured in allocated blocks: docker system df measures inside the guest, while that sparse image is what the host actually pays for, and pruning does not shrink it. Restart the VM to trigger compaction. The disclosure appears even when the daemon is stopped, which is the one state where the cost is invisible to docker and still present.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-docker"
  },
  {
@@ -2627,6 +2657,11 @@
  {
   "id": "ff9e5d5c6",
   "text": "devtrim returns nonzero and includes the error in JSON. Failed actions are never counted as touched or reclaimed; fix the owner tool and preview again.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "fc391231e",
+  "text": "devtrim v0.16.0",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {
