@@ -8,8 +8,8 @@ In progress (2026-11-21) on branch `plan/020-agent-era-perf-ux` (from `main` `f3
 - **T5 (Video waiver retirement)**: Upgraded `eslint` to `10.15.0`, pinned `minimatch` `11.0.8`, cleared `video/audit-waivers.json` to `[]`. Verified clean on Node 24 and Node 26 (`video-audit.py` + `video-audit-controls.py`).
 - **T6 (2026+ Site Modernization & Frames)**: Applied `modern-web-guidance` (scroll-driven tab fades, forced-colors-safe border underline + CSS anchor positioning, `hidden="until-found"`, container-queried table wrapper, `subgrid` pillars, `color-scheme: only dark` on `.term`), fixed `tui:overview` (54 cols) and `tui:progress` (live mid-apply capture) in `frames.py`, regenerated `facts.json` & updated `copy.json` IDs, verified 0 horizontal overflow via Chrome CDP at `390×844` and `1440×900`, `csp-controls.py`, and `film-controls.py`.
 - **T7 (`cccc` rule & test pruning)**: Audited every new function with `cccc 1.8.0` and removed 3 unit tests targeting `<= 5` non-regex helpers (`is_valid_builder_name`, `parse_buildx_du`, `format_worktree_state`), keeping behavioral/end-to-end and `> 5` tests.
-- **T8 (Version bump & docs)**: Bumped to `0.16.0` across `Cargo.toml`, lockfiles, `README.md`, `MANUAL.html`, `CHANGELOG.md`, `SECURITY.md`, `CODING_STANDARDS.md`, `AGENTS.md`/`CLAUDE.md`.
-- **T9 (Gates, cross-model reviews, security gate & release)**: Next.
+- **T8 (Version bump & docs)**: Bumped to `0.16.0` across `Cargo.toml`, lockfiles, `README.md`, `MANUAL.html`, `CHANGELOG.md`, `SECURITY.md`, `CODING_STANDARDS.md`, `DESIGN.md`, `AGENTS.md`/`CLAUDE.md`.
+- **T9 (Gates, cross-model reviews, security gate & release)**: Closed all cross-model `sol-security` (`GIT-FILTER-CONFIG`, `GIT-WORKTREE-ROOT`, `LEFTOVERS-GITDIR-SCOPE`) and `sol-verify` (`local_buildx_probe_error`, `DESIGN.md` sync) findings; finalizing fuzz, CI, independent verification, security gate, staging beta, and production release.
 
 # Progress — 0.15.0 (plans/019)
 

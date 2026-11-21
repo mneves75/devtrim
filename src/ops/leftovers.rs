@@ -57,7 +57,16 @@ impl Op for Leftovers {
         let mut findings = Vec::new();
         let mut unread = Vec::new();
         let mut seen_objects_dirs = HashSet::new();
-        for root in project::normalized_roots(&ctx.roots) {
+        let normalized = project::normalized_roots(&ctx.roots);
+        let scoped_roots: Vec<(PathBuf, PathBuf)> = normalized
+            .iter()
+            .filter_map(|root| {
+                std::fs::canonicalize(root)
+                    .ok()
+                    .map(|real| (root.to_path_buf(), real))
+            })
+            .collect();
+        for root in normalized {
             if !is_directory_if_present(root)? {
                 continue;
             }
@@ -70,9 +79,12 @@ impl Op for Leftovers {
                 if let Err(error) = scratch_findings(&repository, &mut findings) {
                     findings.push(project::unjudged_finding(".scratch", &repository, &error));
                 }
-                if let Err(error) =
-                    tmp_objdir_findings(&repository, &mut seen_objects_dirs, &mut findings)
-                {
+                if let Err(error) = tmp_objdir_findings(
+                    &repository,
+                    &scoped_roots,
+                    &mut seen_objects_dirs,
+                    &mut findings,
+                ) {
                     findings.push(project::unjudged_finding(
                         "Git tmp_objdir",
                         &repository,
@@ -211,8 +223,46 @@ fn scratch_findings(repository: &Path, findings: &mut Vec<Finding>) -> Result<()
 /// (and its common objects directory when a linked worktree has `commondir`).
 /// Deduplicated by `(dev, ino)` so linked worktrees sharing one object store
 /// report each debris directory once. Never follows symlinks or modifies `.git`.
+const MAX_GIT_POINTER_BYTES: u64 = 4096;
+
+fn read_bounded_pointer(path: &Path) -> Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
+        }
+    };
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let file =
+        std::fs::File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let mut buffer = Vec::new();
+    file.take(MAX_GIT_POINTER_BYTES + 1)
+        .read_to_end(&mut buffer)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    if buffer.len() as u64 > MAX_GIT_POINTER_BYTES {
+        anyhow::bail!(
+            "Git pointer {} exceeds {MAX_GIT_POINTER_BYTES} bytes",
+            path.display()
+        );
+    }
+    Ok(Some(buffer))
+}
+
 fn tmp_objdir_findings(
     repository: &Path,
+    scoped_roots: &[(PathBuf, PathBuf)],
     seen_objects_dirs: &mut HashSet<(u64, u64)>,
     findings: &mut Vec<Finding>,
 ) -> Result<()> {
@@ -228,45 +278,33 @@ fn tmp_objdir_findings(
     if metadata.is_dir() {
         objects_dirs.push(dot_git.join("objects"));
     } else if metadata.is_file() {
-        let bytes = std::fs::read(&dot_git)
-            .with_context(|| format!("cannot read {}", dot_git.display()))?;
+        let Some(bytes) = read_bounded_pointer(&dot_git)? else {
+            return Ok(());
+        };
         let Some(target) = project::gitfile_target(&bytes) else {
             return Ok(());
         };
         let gitdir = repository.join(target);
         objects_dirs.push(gitdir.join("objects"));
         let commondir_file = gitdir.join("commondir");
-        match std::fs::symlink_metadata(&commondir_file) {
-            Ok(common_metadata) if common_metadata.is_file() => {
-                let common_bytes = std::fs::read(&commondir_file)
-                    .with_context(|| format!("cannot read {}", commondir_file.display()))?;
-                let mut common_target = common_bytes.as_slice();
-                while let [rest @ .., b'\n' | b'\r'] = common_target {
-                    common_target = rest;
-                }
-                if !common_target.is_empty() {
-                    objects_dirs.push(
-                        gitdir
-                            .join(OsStr::from_bytes(common_target))
-                            .join("objects"),
-                    );
-                }
+        if let Some(common_bytes) = read_bounded_pointer(&commondir_file)? {
+            let mut common_target = common_bytes.as_slice();
+            while let [rest @ .., b'\n' | b'\r'] = common_target {
+                common_target = rest;
             }
-            Ok(_) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) => {}
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("cannot inspect {}", commondir_file.display()));
+            if !common_target.is_empty() {
+                objects_dirs.push(
+                    gitdir
+                        .join(OsStr::from_bytes(common_target))
+                        .join("objects"),
+                );
             }
         }
     } else {
         return Ok(());
     }
 
+    let canonical_repo = std::fs::canonicalize(repository).ok();
     for objects_dir in objects_dirs {
         let objects_metadata = match std::fs::symlink_metadata(&objects_dir) {
             Ok(objects_metadata) => objects_metadata,
@@ -284,6 +322,41 @@ fn tmp_objdir_findings(
             }
         };
         if !objects_metadata.is_dir() {
+            continue;
+        }
+        // Reject symlinked ancestors and pointers escaping the repository or
+        // normalized scan roots so an untrusted `.git` or `commondir` cannot
+        // inspect arbitrary host directories.
+        let Ok(canonical_objects) = std::fs::canonicalize(&objects_dir) else {
+            continue;
+        };
+        let lexical_matches = canonical_objects == crate::safety::clean(&objects_dir)
+            || canonical_repo.as_ref().is_some_and(|repo_real| {
+                objects_dir
+                    .strip_prefix(repository)
+                    .ok()
+                    .map(|relative| crate::safety::clean(&repo_real.join(relative)))
+                    .as_ref()
+                    == Some(&canonical_objects)
+            })
+            || scoped_roots.iter().any(|(root, root_real)| {
+                objects_dir
+                    .strip_prefix(root)
+                    .ok()
+                    .map(|relative| crate::safety::clean(&root_real.join(relative)))
+                    .as_ref()
+                    == Some(&canonical_objects)
+            });
+        if !lexical_matches {
+            continue;
+        }
+        let in_scope = canonical_repo
+            .as_ref()
+            .is_some_and(|repo_real| canonical_objects.starts_with(repo_real))
+            || scoped_roots
+                .iter()
+                .any(|(_, root_real)| canonical_objects.starts_with(root_real));
+        if !in_scope {
             continue;
         }
         if !seen_objects_dirs.insert((objects_metadata.dev(), objects_metadata.ino())) {

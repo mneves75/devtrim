@@ -2081,6 +2081,53 @@ fn eval_worktrees_reports_dirty_clean_activity_and_in_use_state() {
         "worktrees must remain strictly read-only: {document}"
     );
 
+    // Hostile repository clean filter with `=` in subsection name plus an
+    // inherited `GIT_CONFIG=/dev/null` must never execute filters during scan.
+    let marker = sandbox.path().join("filter-ran");
+    write(&clean.join(".gitattributes"), "README filter=hostile=eq\n");
+    git(&sandbox, &clean, STALE, &["add", ".gitattributes"]);
+    git(
+        &sandbox,
+        &clean,
+        STALE,
+        &["commit", "-q", "-m", "add hostile attribute"],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &[
+            "config",
+            "filter.hostile=eq.clean",
+            &format!("touch '{}'; cat", marker.display()),
+        ],
+    );
+    let with_git_config = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["worktrees", "--root", dev.to_str().unwrap(), "--json"])
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("GIT_CONFIG", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        with_git_config.status.success(),
+        "{}",
+        String::from_utf8_lossy(&with_git_config.stderr)
+    );
+    assert!(
+        !marker.exists(),
+        "worktrees scan executed a repository clean filter when GIT_CONFIG was set"
+    );
+    let with_git_config_doc = json(&with_git_config);
+    assert!(
+        finding_at(&with_git_config_doc, &clean)["note"]
+            .as_str()
+            .unwrap()
+            .contains("clean"),
+        "{with_git_config_doc}"
+    );
+
     // Fail-closed: if the process probe fails, clean must not be claimed and
     // the error must be reported with nonzero status.
     sandbox.script("pgrep", "printf 'pgrep failed\\n' >&2; exit 2");
@@ -2113,6 +2160,16 @@ fn eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only() {
     repo(&sandbox, &app, STALE, &["README"]);
     let tmp_objdir = app.join(".git/objects/tmp_objdir-incoming-abc");
     write(&tmp_objdir.join("pack.tmp"), &"x".repeat(4096));
+    // Hostile `.git` pointers: one escaping the scan root and one traversing a
+    // symlinked ancestor must both be ignored.
+    let outside_tmp = sandbox.path().join("outside-git/objects/tmp_objdir-escape");
+    write(&outside_tmp.join("pack.tmp"), &"e".repeat(4096));
+    write(&dev.join("escape-repo/.git"), "gitdir: ../../outside-git\n");
+    let symlink_target = dev.join("real-gitdir");
+    let symlink_tmp = symlink_target.join("objects/tmp_objdir-via-link");
+    write(&symlink_tmp.join("pack.tmp"), &"s".repeat(4096));
+    write(&dev.join("symlink-repo/.git"), "gitdir: link-git\n");
+    std::os::unix::fs::symlink(&symlink_target, dev.join("symlink-repo/link-git")).unwrap();
     let ollama_models = sandbox.path().join(".ollama/models");
     write(&ollama_models.join("blobs/sha256-model"), &"m".repeat(4096));
     let lmstudio_models = sandbox.path().join(".lmstudio/models");
@@ -2136,6 +2193,18 @@ fn eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only() {
         assert_eq!(finding["action"]["type"], "info", "{document}");
         assert!(finding["size_bytes"].as_u64().unwrap() > 0, "{document}");
     }
+    let listed_paths: Vec<&str> = document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|finding| finding["path"].as_str())
+        .collect();
+    assert!(
+        !listed_paths
+            .iter()
+            .any(|path| path.contains("tmp_objdir-escape") || path.contains("tmp_objdir-via-link")),
+        "hostile .git pointers must not escape scan roots or traverse symlinks: {document}"
+    );
 
     let apply = run(
         &sandbox,

@@ -303,6 +303,9 @@ fn hardened_git(root: &Path, git: &str) -> Command {
         .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .env_remove("GIT_CEILING_DIRECTORIES")
         .env_remove("GIT_DISCOVERY_ACROSS_FILESYSTEM")
+        .env_remove("GIT_CONFIG")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .env_remove("GIT_CONFIG_COUNT")
         .env_remove("GIT_LITERAL_PATHSPECS")
         .env_remove("GIT_GLOB_PATHSPECS")
         .env_remove("GIT_NOGLOB_PATHSPECS")
@@ -478,15 +481,30 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt as _;
 
+    if !has_git_marker(worktree)? {
+        anyhow::bail!("not a Git worktree: {}", worktree.display());
+    }
+    let dot_git = worktree.join(".git");
     let mut list_config = hardened_git(worktree, "git");
-    list_config.args(["config", "--includes", "--list", "--name-only", "-z"]);
+    list_config
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .arg("--git-dir")
+        .arg(&dot_git)
+        .arg("--work-tree")
+        .arg(worktree)
+        .args(["config", "--includes", "--list", "--name-only", "-z"]);
     let config_keys = hardened_output(list_config, || {
         format!("cannot read Git config keys for {}", worktree.display())
     })?;
     let mut command = hardened_git(worktree, "git");
     command
-        .env_remove("GIT_CONFIG_PARAMETERS")
-        .env_remove("GIT_CONFIG_COUNT");
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .arg("--git-dir")
+        .arg(&dot_git)
+        .arg("--work-tree")
+        .arg(worktree);
     let starts_ascii = |bytes: &[u8], prefix: &[u8]| {
         bytes.len() >= prefix.len() && bytes[..prefix.len()].eq_ignore_ascii_case(prefix)
     };
@@ -496,9 +514,12 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
     };
     // Use GIT_CONFIG_COUNT/KEY_i/VALUE_i instead of `-c key=val` because `-c`
     // splits at the first `=`, which fails when a subsection name contains `=`.
-    let mut overrides: Vec<(OsString, &'static str)> = vec![
-        (OsString::from("core.attributesFile"), "/dev/null"),
-        (OsString::from("diff.external"), ""),
+    let mut overrides: Vec<(OsString, OsString)> = vec![
+        (
+            OsString::from("core.attributesFile"),
+            OsString::from("/dev/null"),
+        ),
+        (OsString::from("diff.external"), OsString::new()),
     ];
     for raw_key in config_keys
         .split(|byte| *byte == 0)
@@ -511,9 +532,12 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
             || starts_ascii(raw_key, b"diff.")
                 && (ends_ascii(raw_key, b".textconv") || ends_ascii(raw_key, b".command"))
         {
-            overrides.push((OsString::from_vec(raw_key.to_vec()), ""));
+            overrides.push((OsString::from_vec(raw_key.to_vec()), OsString::new()));
         } else if starts_ascii(raw_key, b"filter.") && ends_ascii(raw_key, b".required") {
-            overrides.push((OsString::from_vec(raw_key.to_vec()), "false"));
+            overrides.push((
+                OsString::from_vec(raw_key.to_vec()),
+                OsString::from("false"),
+            ));
         }
     }
     command.env("GIT_CONFIG_COUNT", overrides.len().to_string());
@@ -1475,6 +1499,20 @@ mod tests {
         assert!(
             !marker.exists(),
             "worktree_dirty_count executed repository-configured filter.clean"
+        );
+
+        // A hostile core.worktree pointing to a dirty external folder must be
+        // ignored so status stays bound to the validated worktree directory.
+        let outside = base.join("outside-dirty");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("extra1.txt"), "1").unwrap();
+        std::fs::write(outside.join("extra2.txt"), "2").unwrap();
+        std::fs::write(repo.join("tracked.txt"), "before\n").unwrap();
+        git(&["config", "core.worktree", outside.to_str().unwrap()]);
+        assert_eq!(
+            worktree_dirty_count(&repo).unwrap(),
+            0,
+            "worktree_dirty_count followed hostile core.worktree outside validated directory"
         );
     }
 }

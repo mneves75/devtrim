@@ -225,15 +225,23 @@ Non-negotiable boundaries:
   `check-ignore -q -- .scratch/` for the `.scratch` rows of `clean leftovers`
   (run only when that folder exists; exit 0 is ignored, 1 is not, anything else
   refuses). Before running `git status --ignore-submodules=all`,
-  `worktree_dirty_count` lists all effective config keys via `git config
-  --includes --list --name-only -z` (preserving raw non-UTF-8 bytes) and
-  overrides every `filter.*.{clean,smudge,process}`, `filter.*.required`,
+  `worktree_dirty_count` clears `GIT_CONFIG`, `GIT_CONFIG_PARAMETERS`, and
+  `GIT_CONFIG_COUNT`, isolates both Git calls with `GIT_CONFIG_NOSYSTEM=1` and
+  `GIT_CONFIG_GLOBAL=/dev/null`, verifies `has_git_marker` and pins
+  `--git-dir <worktree>/.git --work-tree <worktree>` so repository
+  `core.worktree` cannot redirect `git status`, lists all effective config keys
+  via `git config --includes --list --name-only -z` (preserving raw non-UTF-8
+  bytes), and overrides every
+  `filter.*.{clean,smudge,process}`, `filter.*.required`,
   `diff.*.{textconv,command}`, `diff.external`, and `core.attributesFile` via
   `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_i`/`GIT_CONFIG_VALUE_i` environment
   variables so untrusted repositories and their submodules never execute
-  content filters or diff drivers during status inspection. `clean leftovers` also surfaces Git
-  `.git/objects/tmp_objdir-*` folders and local AI model stores
-  (`~/.ollama/models`, `~/.lmstudio/models`) strictly as `Action::Info`. A path
+  content filters or diff drivers or inspect paths outside the validated
+  worktree. `clean leftovers` also surfaces Git `.git/objects/tmp_objdir-*`
+  folders (bounding `.git`/`commondir` pointer reads to 4 KiB and refusing
+  symlinked ancestors or targets outside the repository/scan roots) and local AI
+  model stores (`~/.ollama/models`, `~/.lmstudio/models`) strictly as
+  `Action::Info`. A path
   a worktree listing names is repository data: it is measured only when it is a
   real directory inside a scan root whose `.git` file names a gitdir in that
   repository's `worktrees`, and Git runs only in folders the walk itself finds,

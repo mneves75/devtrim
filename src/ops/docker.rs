@@ -388,15 +388,11 @@ fn local_buildx_probe_error(
         let Some(nodes) = builder.nodes.as_deref() else {
             continue;
         };
-        let all_local = !nodes.is_empty()
-            && nodes.iter().all(|node| {
-                let endpoint = node.endpoint.trim();
-                is_local_docker_host(endpoint) || local_contexts.contains_key(endpoint)
-            });
-        if !all_local {
-            continue;
-        }
         for node in nodes {
+            let endpoint = node.endpoint.trim();
+            if !(is_local_docker_host(endpoint) || local_contexts.contains_key(endpoint)) {
+                continue;
+            }
             let status = node.status.trim();
             if !matches!(status, "running" | "stopped" | "inactive" | "") {
                 return Some(format!(

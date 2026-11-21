@@ -70,8 +70,8 @@ built binary before the frame is regenerated.
      per step, named by the step's name and described by the rest of its
      caption). On ≥ 72rem, where a 100-column frame keeps about 13 px type, the
      rail stands beside the screen, vertical, and only the selected step shows
-     its note; narrower, it is a wrapping row of names
-     above the screen with the caption shown in the panel.
+     its note; narrower, it is a single scrollable row of names with
+     scroll-driven fade masks above the screen and the caption shown in the panel.
    - Keys follow the APG tabs pattern as vercel-labs/ui implements it: the
      arrows of the rail's own axis (Up/Down beside the screen, Left/Right
      above it), wrapping at the ends, Home, End, roving tabindex, automatic
@@ -95,7 +95,7 @@ built binary before the frame is regenerated.
 5. **Commands**: one `<table>` (command, what it does in one line, what
    happens) grouped by the written label, coloured and spelled out; every
    command links to its card in the manual (`MANUAL.html#cmd-<name>`). Below
-   48rem it stacks into two-line rows. The `devtrim scan` frame follows it.
+   a 44rem container width it stacks into two-line rows. The `devtrim scan` frame follows it.
 6. **Safety**: a short "never touched" list beside the real refusals frame,
    then the release verification commands and a link to SECURITY.md.
 7. **Install**: Homebrew, the Apple-silicon download and the source build.

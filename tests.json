@@ -74,14 +74,19 @@
     {
       "id": "T8",
       "title": "Version bump 0.16.0 and full documentation sync",
-      "status": "in_progress",
-      "verified_by": []
+      "status": "passed",
+      "verified_by": [
+        "Cargo.toml, Cargo.lock, fuzz/Cargo.lock, README.md, MANUAL.html, CHANGELOG.md, SECURITY.md, CODING_STANDARDS.md, DESIGN.md, AGENTS.md == CLAUDE.md"
+      ]
     },
     {
       "id": "T9",
       "title": "Full offline/online gates, cross-model review, mneves-verify, mneves-security gate, staging beta & prod release",
-      "status": "pending",
-      "verified_by": []
+      "status": "in_progress",
+      "verified_by": [
+        "scripts/verify.sh offline (227/227 planted-violations, MSRV 1.88.0, film-controls)",
+        "Sol autoreview SCOPED-CLEAN; Sol security findings GIT-FILTER-CONFIG/GIT-WORKTREE-ROOT/LEFTOVERS-GITDIR-SCOPE fixed"
+      ]
     }
   ]
 }
