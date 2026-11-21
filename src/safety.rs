@@ -305,7 +305,7 @@ pub(crate) enum RootsOrigin {
 /// which the walk of that repository's root already reaches. A root says only
 /// where to look: every finding still needs its category's corroborated name,
 /// Git owner, and staleness, so a wider default adds no deletion authority.
-const DEFAULT_PROJECT_ROOTS: [&str; 10] = [
+const DEFAULT_PROJECT_ROOTS: [&str; 11] = [
     "dev",
     "Developer",
     "Development",
@@ -316,6 +316,7 @@ const DEFAULT_PROJECT_ROOTS: [&str; 10] = [
     "Workspace",
     "www",
     ".codex/worktrees",
+    ".t3/worktrees",
 ];
 
 struct ResolvedRoots {
@@ -1847,6 +1848,27 @@ impl DiskUsage {
         Ok(allocated)
     }
 
+    /// The allocated bytes a batched [`apfs_size::BulkEntry`] regular file adds
+    /// to the walk's total, matching [`Self::add`] for hard links and APFS
+    /// private-size lower bounds without a second `lstat` or `getattrlist`.
+    fn add_bulk(&mut self, entry: &apfs_size::BulkEntry, path: &Path) -> u64 {
+        if entry.nlink > 1 && !self.linked.insert((entry.dev, entry.ino)) {
+            return 0;
+        }
+        let allocated = entry.allocated;
+        if let Some(estimate) = &mut self.estimate {
+            let freed = if entry.nlink > 1 {
+                0
+            } else if estimate.is_trusted(path, entry.dev) {
+                entry.private.unwrap_or(0)
+            } else {
+                allocated
+            };
+            estimate.bytes = estimate.bytes.and_then(|total| total.checked_add(freed));
+        }
+        allocated
+    }
+
     /// The walk's `Size`, given the allocated bytes `add` returned in total.
     pub(crate) fn size(&self, allocated: u64) -> Size {
         Size::new(
@@ -1857,17 +1879,20 @@ impl DiskUsage {
 }
 
 impl Estimate {
+    fn is_trusted(&mut self, path: &Path, dev: u64) -> bool {
+        *self
+            .trusted
+            .entry(dev)
+            .or_insert_with(|| private_size_trusted(path, dev))
+    }
+
     /// A file's private bytes where the private size is true; `None` keeps
     /// its allocated blocks, since off APFS or under a snapshot it is unknown.
     fn private_bytes(&mut self, metadata: &std::fs::Metadata, path: &Path) -> Option<u64> {
         use std::os::unix::fs::MetadataExt;
 
-        let dev = metadata.dev();
-        let trusted = *self
-            .trusted
-            .entry(dev)
-            .or_insert_with(|| private_size_trusted(path, dev));
-        trusted.then(|| private_or_nothing(metadata, path))
+        self.is_trusted(path, metadata.dev())
+            .then(|| private_or_nothing(metadata, path))
     }
 }
 
@@ -1977,17 +2002,96 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(Size, Option<std::time::SystemTi
 }
 
 fn walk_stats(path: &Path, mut usage: DiskUsage) -> Result<(Size, Option<std::time::SystemTime>)> {
-    let mut bytes = 0u64;
-    let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => {}
+    let root_metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((Size::default(), newest));
+            return Ok((Size::default(), Some(std::time::SystemTime::UNIX_EPOCH)));
         }
         Err(error) => {
             return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
         }
+    };
+    if root_metadata.file_type().is_file() {
+        let newest = root_metadata.modified().ok();
+        let bytes = usage.add(&root_metadata, path)?;
+        return Ok((usage.size(bytes), newest));
     }
+    if !root_metadata.file_type().is_dir() {
+        return Ok((Size::default(), Some(std::time::SystemTime::UNIX_EPOCH)));
+    }
+    // On macOS APFS, batching directory metadata with `getattrlistbulk(2)`
+    // replaces per-file `lstat` + `getattrlist` calls with one syscall per
+    // 64 KiB batch. An unsupported filesystem falls back to `walkdir`; a real
+    // I/O failure propagates fail-closed.
+    let estimating = usage.estimate.is_some();
+    match walk_stats_bulk(path, &mut usage) {
+        Ok(result) => Ok(result),
+        Err(BulkWalkError::Unsupported) => {
+            let fallback_usage = if estimating {
+                DiskUsage::estimating()
+            } else {
+                DiskUsage::default()
+            };
+            walk_stats_walkdir(path, fallback_usage)
+        }
+        Err(BulkWalkError::Failed(error)) => Err(error),
+    }
+}
+
+enum BulkWalkError {
+    Unsupported,
+    Failed(anyhow::Error),
+}
+
+fn walk_stats_bulk(
+    root: &Path,
+    usage: &mut DiskUsage,
+) -> std::result::Result<(Size, Option<std::time::SystemTime>), BulkWalkError> {
+    let mut bytes = 0u64;
+    let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = match apfs_size::read_dir_bulk(&directory) {
+            Ok(entries) => entries,
+            Err(apfs_size::BulkError::Unsupported) => return Err(BulkWalkError::Unsupported),
+            Err(apfs_size::BulkError::Io(error)) => {
+                return Err(BulkWalkError::Failed(
+                    anyhow::Error::new(error)
+                        .context(format!("cannot measure {}", directory.display())),
+                ));
+            }
+        };
+        for entry in entries {
+            let child = directory.join(&entry.name);
+            match entry.kind {
+                apfs_size::EntryKind::Directory => pending.push(child),
+                apfs_size::EntryKind::File => {
+                    match entry.modified {
+                        Some(modified) => newest = newest.map(|current| current.max(modified)),
+                        None => newest = None,
+                    }
+                    bytes = bytes
+                        .checked_add(usage.add_bulk(&entry, &child))
+                        .ok_or_else(|| {
+                            BulkWalkError::Failed(anyhow::anyhow!(
+                                "size overflow under {}",
+                                root.display()
+                            ))
+                        })?;
+                }
+                apfs_size::EntryKind::Other => {}
+            }
+        }
+    }
+    Ok((usage.size(bytes), newest))
+}
+
+fn walk_stats_walkdir(
+    path: &Path,
+    mut usage: DiskUsage,
+) -> Result<(Size, Option<std::time::SystemTime>)> {
+    let mut bytes = 0u64;
+    let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
         .follow_root_links(false)
@@ -4122,5 +4226,26 @@ mod tests {
                 PathBuf::from("/work/v1^2"),
             ]
         );
+    }
+
+    #[test]
+    fn bulk_walk_matches_walkdir_across_links_clones_and_unreadable_subdirs() {
+        let fixture = crate::ops::TestFixture::new("devtrim-bulk-parity");
+        let root = fixture.path().to_path_buf();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let source = root.join("nested/source.bin");
+        std::fs::write(&source, vec![7u8; 64 * 1024]).unwrap();
+        std::fs::hard_link(&source, root.join("hardlink.bin")).unwrap();
+        std::os::unix::fs::symlink(&source, root.join("symlink.bin")).unwrap();
+
+        let (bulk_size, bulk_newest) = walk_stats(&root, DiskUsage::estimating()).unwrap();
+        let (ref_size, ref_newest) = walk_stats_walkdir(&root, DiskUsage::estimating()).unwrap();
+        assert_eq!(bulk_size, ref_size);
+        assert_eq!(bulk_newest, ref_newest);
+
+        let sealed = crate::ops::Unreadable::new(&root.join("sealed"), 0o000);
+        let denied = walk_stats(&root, DiskUsage::default());
+        drop(sealed);
+        assert!(denied.is_err(), "unreadable subdirectory must fail closed");
     }
 }

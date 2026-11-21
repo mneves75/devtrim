@@ -3,7 +3,7 @@ name = "apfs-size"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "What deleting a file frees on APFS: its private size and clone family, read with getattrlist(2)."
+description = "What deleting a file frees on APFS: private size and batched directory stats via getattrlist(2) / getattrlistbulk(2)."
 license = "Apache-2.0"
 publish = false
 
