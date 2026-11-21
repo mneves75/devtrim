@@ -265,26 +265,69 @@ fn in_scope_without_symlinks(
             .any(|(_, root_real)| canonical.starts_with(root_real))
 }
 
-/// Returns `true` when `repository/.git` is a regular gitfile whose target
-/// escapes `repository` and `scoped_roots` or traverses a symlinked ancestor.
+/// Returns `true` when `repository/.git` is anything other than a real `.git`
+/// directory or a valid bounded gitfile whose `gitdir` (and `commondir`, when
+/// present) stays inside `repository` or `scoped_roots` without traversing
+/// symlinks. Fails closed on symlinks, oversized/unreadable pointers, or
+/// escaping `commondir` so `.scratch` never invokes Git on untrusted pointers.
 fn has_out_of_scope_gitfile(repository: &Path, scoped_roots: &[(PathBuf, PathBuf)]) -> bool {
+    use rustix::fs::{AtFlags, Mode, OFlags, open, statat};
+
     let dot_git = repository.join(".git");
     let Ok(metadata) = std::fs::symlink_metadata(&dot_git) else {
-        return false;
+        return true;
     };
-    if !metadata.is_file() {
+    if metadata.is_dir() {
         return false;
     }
+    if !metadata.is_file() {
+        return true;
+    }
     let Ok(Some(bytes)) = project::read_bounded_pointer(&dot_git) else {
-        return false;
+        return true;
     };
     let Some(target) = project::gitfile_target(&bytes) else {
-        return false;
+        return true;
     };
     let gitdir = repository.join(target);
     let canonical_repo = std::fs::canonicalize(repository).ok();
-    !std::fs::symlink_metadata(&gitdir).is_ok_and(|entry| entry.is_dir())
+    if !std::fs::symlink_metadata(&gitdir).is_ok_and(|entry| entry.is_dir())
         || !in_scope_without_symlinks(&gitdir, repository, canonical_repo.as_deref(), scoped_roots)
+    {
+        return true;
+    }
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let Ok(gitdir_fd) = open(&gitdir, dir_flags, Mode::empty()) else {
+        return true;
+    };
+    let gitdir_file = std::fs::File::from(gitdir_fd);
+    if statat(&gitdir_file, "commondir", AtFlags::SYMLINK_NOFOLLOW).is_ok() {
+        let commondir_path = gitdir.join("commondir");
+        let Ok(Some(common_bytes)) =
+            project::read_bounded_pointer_at(&gitdir_file, "commondir", &commondir_path)
+        else {
+            return true;
+        };
+        let mut common_target = common_bytes.as_slice();
+        while let [rest @ .., b'\n' | b'\r'] = common_target {
+            common_target = rest;
+        }
+        if common_target.is_empty() {
+            return true;
+        }
+        let resolved_common = gitdir.join(OsStr::from_bytes(common_target));
+        if !std::fs::symlink_metadata(&resolved_common).is_ok_and(|entry| entry.is_dir())
+            || !in_scope_without_symlinks(
+                &resolved_common,
+                repository,
+                canonical_repo.as_deref(),
+                scoped_roots,
+            )
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn tmp_objdir_findings(

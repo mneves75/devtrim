@@ -275,12 +275,14 @@ Non-negotiable boundaries:
   (CLI plugin discovery paths, no credentials) and
   `buildx/instances/<builder>` pinned to `Driver: "docker-container"` and the
   verified local `unix://` node endpoints (with no `contexts/` directory),
-  binding both `DOCKER_CONFIG` and `BUILDX_CONFIG` to that attempt directory
-  and clearing `DOCKER_CONTEXT` and `BUILDX_BUILDER` before running
-  `docker --host <host> buildx prune --builder <builder> -a -f`, so neither a
-  concurrent builder/context rebind, an inherited `BUILDX_CONFIG`/`BUILDX_BUILDER`,
-  nor a concurrent devtrim apply can redirect the prune to a remote or
-  unpreviewed worker.
+  binding `DOCKER_CONFIG` to that attempt directory and `BUILDX_CONFIG` to its
+  `buildx` child while clearing `DOCKER_CONTEXT` and `BUILDX_BUILDER` before
+  running `docker --host <host> buildx prune --builder <builder> -a -f`. This
+  closes inherited `BUILDX_CONFIG`/`BUILDX_BUILDER` overrides, concurrent
+  builder/context rebinding to remote endpoints, and cross-apply pin
+  collisions; the residual window is the same local same-UID container-name
+  lookup (`buildx_buildkit_<node>`) that Docker Buildx's CLI driver performs on
+  the verified local Unix socket.
 - A permanent removal refuses, before removing anything, a tree holding a
   folder without write and search permission, since it would otherwise stop
   part-way. The one exception is a direct Trash child in `trash-empty`, whose
