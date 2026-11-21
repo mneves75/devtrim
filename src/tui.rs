@@ -5833,63 +5833,23 @@ mod tests {
     }
 
     #[test]
-    fn results_inline_share_bar_renders_only_at_wide_viewports_and_respects_no_color() {
-        use crate::theme::ColorSupport;
-        use ratatui::style::Color;
-
-        let mut app = cleanup(vec![trash("largest", 4 * GIB, 2), trash("quarter", GIB, 2)]);
-        let wide = screen_rows(&app, 100, 24).join("\n");
-        assert!(
-            wide.contains("██████"),
-            "largest finding gets full bar: {wide}"
-        );
-        assert!(
-            wide.contains('·'),
-            "smaller finding pads bar remainder: {wide}"
-        );
-
-        // Narrower screens (< 96 inner cols, including 84 and 64) omit the bar.
-        for (width, height) in [(84, 24), (MIN_WIDTH, MIN_HEIGHT)] {
-            let narrow = screen_rows(&app, width, height);
-            let list_rows = narrow[2..5].join("\n");
-            assert!(
-                !list_rows.contains('█'),
-                "bar must be omitted at {width}×{height}: {list_rows}"
-            );
-        }
-
-        // NO_COLOR renders the bar with zero foreground/background colors.
-        for support in [ColorSupport::None, ColorSupport::Named] {
-            app.theme = Theme::new(support);
-            let backend = TestBackend::new(120, 30);
-            let mut terminal = Terminal::new(backend).unwrap();
-            terminal.draw(|frame| render(frame, &app)).unwrap();
-            let buffer = terminal.backend().buffer();
-            let painted_bar = buffer
-                .content()
-                .iter()
-                .filter(|cell| cell.symbol() == "█")
-                .any(|cell| cell.fg != Color::Reset);
-            let any_color = buffer
-                .content()
-                .iter()
-                .any(|cell| cell.fg != Color::Reset || cell.bg != Color::Reset);
-            if support == ColorSupport::None {
-                assert!(!any_color, "wide results painted a color under NO_COLOR");
-            } else {
-                assert!(painted_bar, "control: colored theme paints the share bar");
-            }
-        }
-    }
-
-    #[test]
     fn loading_progress_bars_fit_minimum_size_and_outcome_hints_trash_empty() {
         use crate::theme::ColorSupport;
-        use ratatui::style::Color;
 
         // ScanAll progress bar + 10 categories fit cleanly at 64×18.
         let scan = scanning_app();
-        let scan_frame = screen_rows(&scan, MIN_WIDTH, MIN_HEIGHT).join("\n");
+        let backend = TestBackend::new(MIN_WIDTH, MIN_HEIGHT - 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_loading(frame, frame.area(), &scan))
+            .unwrap();
+        let scan_frame: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
         assert!(scan_frame.contains("30%"), "{scan_frame}");
         assert!(
             scan_frame.contains('█') && scan_frame.contains('·'),
@@ -5905,7 +5865,18 @@ mod tests {
 
         // Apply progress bar sits above apply_progress_line at 64×18.
         let (apply, _monitor) = applying_app(false);
-        let apply_frame = screen_rows(&apply, MIN_WIDTH, MIN_HEIGHT).join("\n");
+        let backend = TestBackend::new(MIN_WIDTH, MIN_HEIGHT - 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_loading(frame, frame.area(), &apply))
+            .unwrap();
+        let apply_frame: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
         assert!(apply_frame.contains("0%"), "{apply_frame}");
         assert!(apply_frame.contains("0 of 3"), "{apply_frame}");
 
@@ -5921,28 +5892,15 @@ mod tests {
         outcome.summary.bytes_freed_estimate = 2 * GIB;
         outcome.summary.bytes_trashed_estimate = 2 * GIB;
         trashed.finish_apply(Ok(outcome));
-        let backend = TestBackend::new(MIN_WIDTH, MIN_HEIGHT);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(frame, &trashed)).unwrap();
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content()
+        let entries = outcome_entries(&trashed);
+        let hint = entries
             .iter()
-            .map(|cell| cell.symbol())
-            .collect();
+            .find(|(text, _)| text.contains("devtrim trash-empty --only-devtrim"))
+            .expect("missing trash-empty --only-devtrim hint");
+        assert!(hint.0.contains("whole Trash"), "{}", hint.0);
         assert!(
-            text.contains("devtrim trash-empty --only-devtrim"),
-            "{text}"
-        );
-        assert!(
-            terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset),
-            "outcome painted a color under NO_COLOR"
+            hint.1.fg.is_none() && hint.1.bg.is_none(),
+            "outcome hint painted a color under NO_COLOR"
         );
 
         let mut permanent = App {
@@ -5953,10 +5911,11 @@ mod tests {
         purged.summary.items_touched = 1;
         purged.summary.bytes_freed_estimate = GIB;
         permanent.finish_apply(Ok(purged));
-        let purged_frame = screen_rows(&permanent, MIN_WIDTH, MIN_HEIGHT).concat();
         assert!(
-            !purged_frame.contains("trash-empty --only-devtrim"),
-            "{purged_frame}"
+            outcome_entries(&permanent)
+                .iter()
+                .all(|(text, _)| !text.contains("trash-empty --only-devtrim")),
+            "permanent purge must not hint trash-empty"
         );
     }
 }

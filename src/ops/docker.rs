@@ -8,7 +8,7 @@ use std::process::Command;
 
 use super::{Action, ApplyOutcome, Finding, Op, command_stdout, optional_command_stdout};
 use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
-use crate::report::CommandAuthority;
+use crate::report::{BuildxNodeIdentity, CommandAuthority};
 use crate::safety::{Ctx, escalate};
 
 pub(crate) struct Docker;
@@ -293,13 +293,14 @@ fn needs_context_lookup(builders: &[BuildxBuilder]) -> bool {
 }
 
 /// Canonical per-node identity combining each node's name, resolved local
-/// socket endpoint, and sorted worker IDs so neither an un-ID'd node nor a
-/// retargeted context alias can slip past apply re-verification.
+/// socket endpoint, and sorted worker IDs structurally so neither an un-ID'd
+/// node, a delimiter character, nor a retargeted context alias can slip past
+/// apply re-verification.
 fn builder_node_fingerprint(
     nodes: &[BuildxNode],
     local_contexts: &BTreeMap<String, String>,
-) -> Vec<String> {
-    let mut entries: Vec<String> = nodes
+) -> Vec<BuildxNodeIdentity> {
+    let mut entries: Vec<BuildxNodeIdentity> = nodes
         .iter()
         .map(|node| {
             let endpoint = node.endpoint.trim();
@@ -307,17 +308,20 @@ fn builder_node_fingerprint(
                 .get(endpoint)
                 .map(String::as_str)
                 .unwrap_or(endpoint);
-            let mut node_ids: Vec<&str> = node
+            let mut ids: Vec<String> = node
                 .ids
                 .iter()
                 .flatten()
-                .map(String::as_str)
-                .map(str::trim)
+                .map(|identifier| identifier.trim().to_string())
                 .filter(|identifier| !identifier.is_empty())
                 .collect();
-            node_ids.sort_unstable();
-            node_ids.dedup();
-            format!("{}@{}#{}", node.name.trim(), resolved, node_ids.join(","))
+            ids.sort();
+            ids.dedup();
+            BuildxNodeIdentity {
+                name: node.name.trim().to_string(),
+                endpoint: resolved.to_string(),
+                ids,
+            }
         })
         .collect();
     entries.sort();
@@ -332,7 +336,7 @@ fn deduplicate_local_buildx_builders(
     builders: &[BuildxBuilder],
     local_contexts: &BTreeMap<String, String>,
 ) -> Vec<BuildxBuilder> {
-    let mut winners: BTreeMap<Vec<String>, BuildxBuilder> = BTreeMap::new();
+    let mut winners: BTreeMap<Vec<BuildxNodeIdentity>, BuildxBuilder> = BTreeMap::new();
     for candidate in builders {
         if candidate.driver.trim() != "docker-container" || !is_valid_builder_name(&candidate.name)
         {
@@ -498,7 +502,11 @@ fn scan_buildx_findings(host: &str) -> Result<Vec<Finding>> {
     Ok(findings)
 }
 
-fn verify_local_buildx_builder(host: &str, builder: &str, expected_nodes: &[String]) -> Result<()> {
+fn verify_local_buildx_builder(
+    host: &str,
+    builder: &str,
+    expected_nodes: &[BuildxNodeIdentity],
+) -> Result<()> {
     if expected_nodes.is_empty() {
         anyhow::bail!(
             "refusing buildx prune: builder `{builder}` carries no previewed node identity"
@@ -1066,6 +1074,13 @@ mod tests {
         ctx.home = home.path().to_path_buf();
         ctx.journal_path = home.path().join("journal.jsonl");
 
+        let sample_node = || {
+            vec![BuildxNodeIdentity {
+                name: "kiri-build0".into(),
+                endpoint: "unix:///var/run/docker.sock".into(),
+                ids: vec!["node-1".into()],
+            }]
+        };
         let non_local = Finding::command(
             "remote buildx",
             1024,
@@ -1074,7 +1089,7 @@ mod tests {
             CommandAuthority::DockerBuildxPrune {
                 host: "ssh://prod.example".into(),
                 builder: "kiri-build".into(),
-                nodes: vec!["id:node-1".into()],
+                nodes: sample_node(),
             },
         );
         let outcome = Docker.apply(&[non_local], &ctx).unwrap();
@@ -1093,7 +1108,7 @@ mod tests {
             CommandAuthority::DockerBuildxPrune {
                 host: "unix:///var/run/docker.sock".into(),
                 builder: "--all".into(),
-                nodes: vec!["id:node-1".into()],
+                nodes: sample_node(),
             },
         );
         let outcome = Docker.apply(&[bad_name], &ctx).unwrap();

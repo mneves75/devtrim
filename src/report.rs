@@ -16,6 +16,16 @@ pub enum Action {
     None,
 }
 
+/// Canonical identity of one BuildKit node inside a local `docker-container`
+/// builder, compared structurally at apply so no delimiter in any field can
+/// cause two distinct node sets to compare equal.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct BuildxNodeIdentity {
+    pub(crate) name: String,
+    pub(crate) endpoint: String,
+    pub(crate) ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandAuthority {
     DockerImagePrune {
@@ -27,7 +37,7 @@ pub(crate) enum CommandAuthority {
     DockerBuildxPrune {
         host: String,
         builder: String,
-        nodes: Vec<String>,
+        nodes: Vec<BuildxNodeIdentity>,
     },
     DeleteSimulator {
         udid: String,
