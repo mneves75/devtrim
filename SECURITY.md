@@ -228,8 +228,9 @@ Non-negotiable boundaries:
   `worktree_dirty_count` lists all effective config keys via `git config
   --includes --list --name-only -z` (preserving raw non-UTF-8 bytes) and
   overrides every `filter.*.{clean,smudge,process}`, `filter.*.required`,
-  `diff.*.{textconv,command}`, `diff.external`, and `core.attributesFile` on
-  the command line so untrusted repositories and their submodules never execute
+  `diff.*.{textconv,command}`, `diff.external`, and `core.attributesFile` via
+  `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_i`/`GIT_CONFIG_VALUE_i` environment
+  variables so untrusted repositories and their submodules never execute
   content filters or diff drivers during status inspection. `clean leftovers` also surfaces Git
   `.git/objects/tmp_objdir-*` folders and local AI model stores
   (`~/.ollama/models`, `~/.lmstudio/models`) strictly as `Action::Info`. A path
@@ -532,17 +533,19 @@ Non-negotiable boundaries:
   foreign-parent-device refusal using injected observed metadata; that test
   does not mount a volume or perform a real Trash move.
 
-- On macOS, directory size walks batch `lstat` metadata per directory through
-  `getattrlistbulk(2)` (falling back to `walkdir` if the filesystem returns
-  `ENOTSUP`/`EINVAL`/`ENOSYS`, and failing closed on real I/O or per-entry
-  kernel errors). A cleanup category also reads each regular file's APFS private
-  size via `getattrlist(2)` (plus one `statfs` per device and one `diskutil apfs
-  listSnapshots -plist` per device per minute) for the lower bound beside the
-  size; report-only views skip the per-file private-size query. The only
-  `unsafe` code is those two read-only macOS FFI calls, isolated in the
-  `crates/apfs-size` workspace crate (`#![deny(unsafe_code)]`, reasoned
-  `allow`s, bounds-checked safe parsers of every kernel reply). The `devtrim`
-  crate, which deletes files, keeps `unsafe_code = "forbid"`.
+- On macOS, directory size walks batch `lstat` metadata and APFS private sizes
+  (`ATTR_CMNEXT_PRIVATESIZE`) per directory through `getattrlistbulk(2)`
+  (falling back to `walkdir` plus per-file `getattrlist(2)` if the filesystem
+  returns `ENOTSUP`/`EINVAL`/`ENOSYS`, and failing closed on real I/O or
+  per-entry kernel errors); single-file measurements also use `getattrlist(2)`.
+  Cleanup categories pair private sizes with one `statfs` per device and one
+  `diskutil apfs listSnapshots -plist` per device per minute for the lower
+  bound beside the size; report-only views skip the snapshot check and ignore
+  the private-size field. The only `unsafe` code is those two read-only macOS
+  FFI calls, isolated in the `crates/apfs-size` workspace crate
+  (`#![deny(unsafe_code)]`, reasoned `allow`s, bounds-checked safe parsers of
+  every kernel reply). The `devtrim` crate, which deletes files, keeps
+  `unsafe_code = "forbid"`.
 
 - Sizes are estimated allocated bytes (the blocks each file holds, each
   hard-linked file counted once), not guaranteed immediately reclaimable space,

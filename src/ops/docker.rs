@@ -330,13 +330,14 @@ fn builder_node_fingerprint(
 }
 
 /// Filter to running local `docker-container` builders and collapse aliases
-/// pointing at the exact same backing BuildKit nodes, preferring `Current == true`
-/// then lexicographically smallest builder name.
+/// pointing at the exact same backing BuildKit nodes (matched by resolved
+/// local socket and worker IDs, independent of node name), preferring
+/// `Current == true` then lexicographically smallest builder name.
 fn deduplicate_local_buildx_builders(
     builders: &[BuildxBuilder],
     local_contexts: &BTreeMap<String, String>,
 ) -> Vec<BuildxBuilder> {
-    let mut winners: BTreeMap<Vec<BuildxNodeIdentity>, BuildxBuilder> = BTreeMap::new();
+    let mut winners: BTreeMap<Vec<(String, Vec<String>)>, BuildxBuilder> = BTreeMap::new();
     for candidate in builders {
         if candidate.driver.trim() != "docker-container" || !is_valid_builder_name(&candidate.name)
         {
@@ -352,7 +353,12 @@ fn deduplicate_local_buildx_builders(
         {
             continue;
         }
-        let key = builder_node_fingerprint(nodes, local_contexts);
+        let mut key: Vec<(String, Vec<String>)> = builder_node_fingerprint(nodes, local_contexts)
+            .into_iter()
+            .map(|identity| (identity.endpoint, identity.ids))
+            .collect();
+        key.sort();
+        key.dedup();
         match winners.get_mut(&key) {
             Some(existing) => {
                 if (!candidate.current, candidate.name.as_str())
@@ -1034,10 +1040,15 @@ mod tests {
             "\n",
             r#"{"Name":"kiri-build","Driver":"docker-container","Current":true,"Nodes":[{"Name":"kiri-build0","Endpoint":"orbstack","Status":"running","IDs":["zmazdby6v31ni8m0iz6hq923g"]}]}"#,
             "\n",
-            // Two non-current aliases sharing `(name, endpoint, ID)`: smallest name `alpha` wins.
-            r#"{"Name":"zeta","Driver":"docker-container","Current":false,"Nodes":[{"Name":"shared0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":["id-shared"]}]}"#,
+            // Two non-current aliases sharing `(resolved endpoint, ID)` even with different node names: smallest name `alpha` wins.
+            r#"{"Name":"zeta","Driver":"docker-container","Current":false,"Nodes":[{"Name":"shared-a","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":["id-shared"]}]}"#,
             "\n",
-            r#"{"Name":"alpha","Driver":"docker-container","Current":false,"Nodes":[{"Name":"shared0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":["id-shared"]}]}"#,
+            r#"{"Name":"alpha","Driver":"docker-container","Current":false,"Nodes":[{"Name":"shared-b","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":["id-shared"]}]}"#,
+            "\n",
+            // Delimiter safety: `["a,b"]` and `["a","b"]` are distinct worker IDs and must stay separate.
+            r#"{"Name":"comma-one","Driver":"docker-container","Current":false,"Nodes":[{"Name":"c0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":["a,b"]}]}"#,
+            "\n",
+            r#"{"Name":"comma-two","Driver":"docker-container","Current":false,"Nodes":[{"Name":"c0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":["a","b"]}]}"#,
             "\n",
             // Rejected: missing worker IDs, non-container drivers, remote node, stopped node, malformed name.
             r#"{"Name":"no-ids","Driver":"docker-container","Current":false,"Nodes":[{"Name":"n0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":[]}]}"#,
@@ -1061,7 +1072,7 @@ mod tests {
             .iter()
             .map(|builder| builder.name.as_str())
             .collect();
-        assert_eq!(names, vec!["alpha", "kiri-build"]);
+        assert_eq!(names, vec!["alpha", "comma-one", "comma-two", "kiri-build"]);
     }
 
     #[test]

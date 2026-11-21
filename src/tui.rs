@@ -2614,8 +2614,9 @@ fn render_scrolled(
 }
 
 /// Narrower views (including 64×18 and 84-column captures) omit the inline
-/// share bar so label and path truncation stay unchanged.
-const SHARE_BAR_MIN_WIDTH: usize = 96;
+/// share bar so label and path truncation stay unchanged; 94 inner columns
+/// equals 96 terminal columns minus the two vertical box borders.
+const SHARE_BAR_MIN_WIDTH: usize = 94;
 const SHARE_BAR_WIDTH: usize = 6;
 
 fn max_finding_bytes(findings: &[Finding]) -> u64 {
