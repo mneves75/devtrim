@@ -774,6 +774,7 @@ def verify_stop_during_a_command(binary):
             f"  '--host {host} system df'*)\n"
             "    printf 'Images\\t2GB\\t1GB (50%%)\\t0\\n'\n"
             "    printf 'Build Cache\\t3GB\\t1GB\\t0\\n' ;;\n"
+            f"  '--host {host} buildx ls'*) ;;\n"
             f"  '--host {host} image prune -a -f')\n"
             f"    echo $$ > '{marker}'\n"
             f"    while [ ! -e '{release}' ]; do /bin/sleep 0.1; done\n"

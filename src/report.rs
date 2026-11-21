@@ -20,6 +20,7 @@ pub enum Action {
 pub(crate) enum CommandAuthority {
     DockerImagePrune { host: String },
     DockerBuilderPrune { host: String },
+    DockerBuildxPrune { host: String, builder: String },
     DeleteSimulator { udid: String },
     Maintenance(MaintenanceTask),
 }
@@ -107,6 +108,22 @@ impl CommandAuthority {
                     .map(String::from)
                     .collect(),
             ),
+            Self::DockerBuildxPrune { host, builder } => (
+                "docker",
+                [
+                    "--host",
+                    host.as_str(),
+                    "buildx",
+                    "prune",
+                    "--builder",
+                    builder.as_str(),
+                    "-a",
+                    "-f",
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            ),
             Self::DeleteSimulator { udid } => (
                 "xcrun",
                 ["simctl", "delete", udid]
@@ -141,7 +158,9 @@ impl CommandAuthority {
 
     pub(crate) fn docker_host(&self) -> Option<&str> {
         match self {
-            Self::DockerImagePrune { host } | Self::DockerBuilderPrune { host } => Some(host),
+            Self::DockerImagePrune { host }
+            | Self::DockerBuilderPrune { host }
+            | Self::DockerBuildxPrune { host, .. } => Some(host),
             Self::DeleteSimulator { .. } | Self::Maintenance(_) => None,
         }
     }
@@ -151,6 +170,7 @@ impl CommandAuthority {
             Self::DeleteSimulator { udid } => Some(udid),
             Self::DockerImagePrune { .. }
             | Self::DockerBuilderPrune { .. }
+            | Self::DockerBuildxPrune { .. }
             | Self::Maintenance(_) => None,
         }
     }
@@ -160,6 +180,7 @@ impl CommandAuthority {
             Self::Maintenance(task) => Some(*task),
             Self::DockerImagePrune { .. }
             | Self::DockerBuilderPrune { .. }
+            | Self::DockerBuildxPrune { .. }
             | Self::DeleteSimulator { .. } => None,
         }
     }

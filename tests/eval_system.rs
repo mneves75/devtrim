@@ -1529,6 +1529,7 @@ fn docker_stub(sandbox: &Sandbox) {
     printf 'Containers\t1MB\t0B (0%%)\t0\n'
     printf 'Local Volumes\t5GB\t4GB (80%%)\t0\n'
     printf 'Build Cache\t3GB\t1GB\t0\n' ;;
+  '--host unix:///var/run/docker.sock buildx ls'*) ;;
   '--host unix:///var/run/docker.sock image prune -a -f') printf 'Total reclaimed space: 1GB\n' ;;
   '--host unix:///var/run/docker.sock builder prune -a -f') printf 'Total:\t3GB\n' ;;
   *) exit 1 ;;
@@ -1568,6 +1569,15 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
             "df",
             "--format",
             "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}\t{{.Active}}",
+        ]),
+        argv(&[
+            "docker",
+            "--host",
+            DOCKER_HOST,
+            "buildx",
+            "ls",
+            "--format",
+            "{{json .}}",
         ]),
     ];
     let image_prune = argv(&[
@@ -1670,6 +1680,74 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
     assert_journaled_commands(&sandbox, "docker", &[image_prune, builder_prune]);
 }
 
+#[test]
+fn eval_clean_docker_buildx_prunes_deduplicated_local_builder_and_skips_remote() {
+    let sandbox = Sandbox::in_target("eval-docker-buildx");
+    write(&sandbox.path().join(".docker/config.json"), "{}");
+    stub(
+        &sandbox,
+        "docker",
+        r#"case "$*" in
+  'context inspect') printf '%s\n' '[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]' ;;
+  'context ls --format {{json .}}')
+    printf '%s\n' '{"Name":"kiri","DockerEndpoint":"unix:///tmp/kiri.sock"}'
+    printf '%s\n' '{"Name":"prod","DockerEndpoint":"ssh://ops@prod.example"}' ;;
+  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\n' ;;
+  '--host unix:///var/run/docker.sock system df'*)
+    printf 'Images\t1GB\t0B (0%%)\t0\n'
+    printf 'Build Cache\t0B\t0B\t0\n' ;;
+  '--host unix:///var/run/docker.sock buildx ls --format {{json .}}')
+    printf '%s\n' '{"Name":"default","Driver":"docker","Current":false,"Nodes":[{"Name":"default","Endpoint":"default","Status":"running","IDs":["def-id"]}]}'
+    printf '%s\n' '{"Name":"kiri-build","Driver":"docker-container","Current":false,"Nodes":[{"Name":"kiri-build0","Endpoint":"kiri","Status":"running","IDs":["node-id-1"]}]}'
+    printf '%s\n' '{"Name":"kiri","Driver":"docker-container","Current":true,"Nodes":[{"Name":"kiri-build0","Endpoint":"kiri","Status":"running","IDs":["node-id-1"]}]}'
+    printf '%s\n' '{"Name":"kiri","Driver":"docker-container","Current":true,"Nodes":[{"Name":"kiri-build0","Endpoint":"kiri","Status":"running","IDs":["node-id-1"]}]}'
+    printf '%s\n' '{"Name":"prod-builder","Driver":"docker-container","Current":false,"Nodes":[{"Name":"prod0","Endpoint":"prod","Status":"running","IDs":["remote-id"]}]}' ;;
+  '--host unix:///var/run/docker.sock buildx du --builder kiri')
+    printf 'Reclaimable:\t2.05GiB\nTotal:\t2.05GiB\n' ;;
+  '--host unix:///var/run/docker.sock buildx du --builder prod-builder')
+    printf 'Reclaimable:\t1GiB\nTotal:\t1GiB\n' ;;
+  '--host unix:///var/run/docker.sock buildx prune --builder kiri -a -f')
+    printf 'Total:\t2.05GiB\n' ;;
+  *) exit 1 ;;
+esac"#,
+    );
+    let buildx_prune = argv(&[
+        "docker",
+        "--host",
+        DOCKER_HOST,
+        "buildx",
+        "prune",
+        "--builder",
+        "kiri",
+        "-a",
+        "-f",
+    ]);
+
+    let preview = run(&sandbox, &["clean", "docker", "--json"]);
+    let document = json(&preview);
+    assert!(preview.status.success(), "{document}");
+    assert_eq!(
+        command_plan(&document),
+        vec![buildx_prune.clone()],
+        "PV eval/docker-buildx: only the deduplicated local docker-container builder may be planned: {document}"
+    );
+    assert!(
+        !calls(&sandbox).iter().any(|call| call
+            .iter()
+            .any(|arg| arg == "prod-builder" || arg == "kiri-build")),
+        "remote or alias builders must never be queried or pruned"
+    );
+
+    let apply = run(
+        &sandbox,
+        &["clean", "docker", "--apply", "--yolo", "--json"],
+    );
+    let document = json(&apply);
+    assert!(apply.status.success(), "{document}");
+    assert_eq!(document["summary"]["items_touched"], 1, "{document}");
+    assert_journaled_commands(&sandbox, "docker", &[buildx_prune]);
+}
+
 /// A stopped daemon is an error that still tells the operator what the host
 /// pays for the VM disk image, and no prune is attempted.
 #[test]
@@ -1735,6 +1813,7 @@ fn eval_a_command_failing_with_long_stderr_is_journaled_as_a_result() {
   'context inspect') printf '%s\n' '[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]' ;;
   '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\n' ;;
   '--host unix:///var/run/docker.sock system df'*) printf 'Images\t2GB\t1GB (50%%)\t0\n' ;;
+  '--host unix:///var/run/docker.sock buildx ls'*) ;;
   '--host unix:///var/run/docker.sock image prune -a -f')
     /usr/bin/head -c 200000 /dev/zero | /usr/bin/tr '\0' e >&2
     exit 1 ;;
