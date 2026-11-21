@@ -410,6 +410,7 @@ const FIXTURE_DATE: &str = "2020-01-01T00:00:00Z";
 fn review_worktrees_partial_read_human_keeps_rows_and_exits_one() {
     let sandbox = Sandbox::in_target("review-worktrees-human");
     sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    sandbox.script("pgrep", "exit 1");
     let dev = sandbox.path().join("dev");
     let app = dev.join("app");
     write(&app.join("README"), "readme");

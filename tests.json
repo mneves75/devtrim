@@ -1,35 +1,92 @@
 {
-  "plan": "plans/019-overview-and-explorer.md",
-  "base": "9ce4edc",
-  "branch": "plan/019-overview-explorer",
-  "target_version": "0.15.0",
-  "tasks": {
-    "T0-experiments": "done: scan 110-261 s, apply p90 338 s, xattr last-used falsified, R1 clone gap confirmed (node_modules 21.77 vs 1.88 GB)",
-    "T1-volume-line": "done: merged 59c8878 (worker proofs: fmt, clippy, 321 lib tests, evals, ast-grep, tui.py, read-only-views pass on edc7463)",
-    "T2-scan-progress": "done: merged fcac80d (scan board; tui.py scan-board flow passes)",
-    "T3-menu-sizes": "done: merged 59c8878 (worker proofs: fmt, clippy, 321 lib tests, evals, ast-grep, tui.py, read-only-views pass on edc7463); row-sum eval replaced by shared CategoryTotal used by scan_text (same code path)",
-    "T4a-apply-progress": "done: merged fcac80d (ApplyMonitor progress line)",
-    "T4b-stop-between-targets": "done: merged fcac80d + d019dc0 (stop checked in journal::begin; planted journal-stop/begin, /command, /before-open)",
-    "T5-comes-back-with": "done: merged 59c8878 (worker proofs: fmt, clippy, 321 lib tests, evals, ast-grep, tui.py, read-only-views pass on edc7463)",
-    "T6-culprit": "done: merged 8927c1c (culprit chain, proptest against brute-force reference)",
-    "T7-verdicts": "done: merged 8927c1c (verdicts via explain Subject/Target; read-only-views.py passes)",
-    "site-redesign": "done: merged b360a20; frames f45d7bb, 9c099a0 (9 real frames, 390 px no overflow)",
-    "T8-docs": "done: 2968e7d (0.15.0 bump, README, MANUAL, CHANGELOG, CLAUDE.md=AGENTS.md)",
-    "T9-gates-release": "in progress: verify.sh offline on ab43753 passed 50/50; rerun on 2968e7d running; reviewer running",
-    "autoreview-P1-uv-stop-admission": {
-      "status": "fixed",
-      "commit": "5daf86a",
-      "proof": "an_admitted_attempt_survives_a_later_stop_and_only_once; planted journal-stop/admitted-begin, journal-stop/dropped-admission"
+  "plan": "plans/020-agent-era-perf-ux.md",
+  "target_version": "0.16.0",
+  "base_commit": "f3818c2",
+  "branch": "plan/020-agent-era-perf-ux",
+  "updated_at": "2026-11-21",
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "APFS getattrlistbulk(2) batching + remove unused clone fields + .t3/worktrees default root",
+      "status": "passed",
+      "verified_by": [
+        "rustup run 1.98.1 cargo test --locked -p apfs-size",
+        "rustup run 1.98.1 cargo test --locked --all-targets --all-features",
+        "8000-file A/B benchmark: 35.5ms vs 37.3ms (0.15.0)"
+      ]
+    },
+    {
+      "id": "T2",
+      "title": "Docker buildx local builder cache discovery and safe pruning",
+      "status": "passed",
+      "verified_by": [
+        "eval_clean_docker_buildx_prunes_deduplicated_local_builder_and_skips_remote",
+        "PV eval/docker-buildx in scripts/tests/planted-violations.py"
+      ]
+    },
+    {
+      "id": "T3",
+      "title": "Enriched worktrees (dirty/in-use/clean + activity) and leftovers (tmp_objdir, Ollama/LM Studio models)",
+      "status": "passed",
+      "verified_by": [
+        "eval_worktrees_reports_dirty_clean_activity_and_in_use_state",
+        "eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only"
+      ]
+    },
+    {
+      "id": "T4",
+      "title": "Mole-inspired TUI UX (overview summary, inline share bars, progress bar, o jump, next-step hint)",
+      "status": "passed",
+      "verified_by": [
+        "python3 scripts/tests/tui.py target/debug/devtrim",
+        "python3 scripts/tests/read-only-views.py target/debug/devtrim",
+        "unit tests in src/tui.rs"
+      ]
+    },
+    {
+      "id": "T5",
+      "title": "Retire video/audit-waivers.json (GHSA-g3hv-75wg-m249)",
+      "status": "passed",
+      "verified_by": [
+        "video-audit.py on Node 24 & Node 26 (no advisories, waivers=[])",
+        "scripts/tests/video-audit-controls.py (28 cases)"
+      ]
+    },
+    {
+      "id": "T6",
+      "title": "2026+ Site redesign (index.html, MANUAL.html, styles.css, DESIGN.md) and frames.py fixes",
+      "status": "passed",
+      "verified_by": [
+        "scripts/site/frames.py (9 frames, 5 widths)",
+        "scripts/site/csp.py --check + csp-controls.py (52 cases)",
+        "check_facts.py (37/37) + film-controls.py (0 failures)",
+        "Chrome CDP 390x844 & 1440x900 (scrollWidth == innerWidth, 0 console exceptions)"
+      ]
+    },
+    {
+      "id": "T7",
+      "title": "cccc <= 5 test rule and mneves-prune-tests pass",
+      "status": "passed",
+      "verified_by": [
+        "cccc 1.8.0 audit on all modified Rust files; pruned 3 <=5 non-regex unit tests"
+      ]
+    },
+    {
+      "id": "T8",
+      "title": "Version bump 0.16.0 and full documentation sync",
+      "status": "passed",
+      "verified_by": [
+        "Cargo.toml, Cargo.lock, fuzz/Cargo.lock, README.md, MANUAL.html, CHANGELOG.md, SECURITY.md, CODING_STANDARDS.md, DESIGN.md, AGENTS.md == CLAUDE.md"
+      ]
+    },
+    {
+      "id": "T9",
+      "title": "Full offline/online gates, cross-model review, mneves-verify, mneves-security gate, staging beta & prod release",
+      "status": "in_progress",
+      "verified_by": [
+        "scripts/verify.sh offline (227/227 planted-violations, MSRV 1.88.0, film-controls)",
+        "Sol autoreview SCOPED-CLEAN; Sol security findings GIT-FILTER-CONFIG/GIT-WORKTREE-ROOT/LEFTOVERS-GITDIR-SCOPE fixed"
+      ]
     }
-  },
-  "checks": {
-    "verify.sh offline @ab43753": "pass (50 steps)",
-    "fuzz cargo check --locked (cfg fuzzing)": "pass",
-    "frames.py": "pass",
-    "csp.py --check": "pass",
-    "check_facts.py": "37/37",
-    "site 390px overflow": "none (scrollWidth 390)",
-    "planted-violations journal-stop/ @5daf86a": "6/6 proven",
-    "release v0.15.0": "verify-live pass; stable == beta bytes; formula == candidate e8e97858; brew devtrim 0.15.0 sole"
-  }
+  ]
 }

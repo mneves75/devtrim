@@ -1869,6 +1869,16 @@ CASES = (
         target="eval_system",
     ),
     Case(
+        name="eval/docker-buildx",
+        relative_path="src/ops/docker.rs",
+        # Non-local buildx endpoints are no longer filtered out.
+        before="    let endpoint = node.endpoint.trim();\n    is_local_docker_host(endpoint) || local_contexts.contains_key(endpoint)\n}",
+        after="    let _ = (node, local_contexts);\n    true\n}",
+        tests=("eval_clean_docker_buildx_prunes_deduplicated_local_builder_and_skips_remote",),
+        marker="PV eval/docker-buildx",
+        target="eval_system",
+    ),
+    Case(
         name="eval/docker-down",
         relative_path="src/ops/docker.rs",
         # The daemon-down error stops naming the VM image and its size.
@@ -2069,8 +2079,8 @@ CASES = (
     Case(
         name="size/clone-private",
         relative_path="src/safety.rs",
-        before=".map_or(0, |blocks| blocks.private)\n}",
-        after=".map_or(0, |blocks| blocks.allocated)\n}",
+        before="                entry.private.unwrap_or(0)",
+        after="                let _ = entry.private;\n                allocated",
         tests=("safety::tests::a_clone_of_a_file_outside_the_tree_frees_at_least_its_private_bytes",),
         marker="PV size/clone-private",
     ),
@@ -2079,8 +2089,8 @@ CASES = (
     Case(
         name="size/snapshot-fallback",
         relative_path="src/safety.rs",
-        before="        trusted.then(|| private_or_nothing(metadata, path))",
-        after="        let _ = trusted;\n        true.then(|| private_or_nothing(metadata, path))",
+        before="            .or_insert_with(|| private_size_trusted(path, dev))",
+        after="            .or_insert_with(|| { let _ = (path, dev); true })",
         tests=("safety::tests::a_volume_with_a_snapshot_counts_allocated_blocks",),
         marker="PV size/snapshot-fallback",
     ),

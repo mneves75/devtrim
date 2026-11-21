@@ -1817,6 +1817,7 @@ fn finding_at<'a>(document: &'a serde_json::Value, path: &Path) -> &'a serde_jso
 fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_repository() {
     let sandbox = Sandbox::in_target("eval-worktrees");
     sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    sandbox.script("pgrep", "exit 1");
     let dev = sandbox.path().join("dev");
     let app = dev.join("app");
     write(&app.join("README"), "readme");
@@ -1991,12 +1992,274 @@ fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_reposit
     );
 }
 
+#[test]
+fn eval_worktrees_reports_dirty_clean_activity_and_in_use_state() {
+    let sandbox = Sandbox::in_target("eval-worktrees-state");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let dev = sandbox.path().join("dev");
+    let app = dev.join("app");
+    write(&app.join("README"), "readme");
+    repo(&sandbox, &app, STALE, &["README"]);
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "quiet-branch",
+            "../app-clean",
+        ],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "dirty-branch",
+            "../app-dirty",
+        ],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "active-branch",
+            "../app-active",
+        ],
+    );
+    let clean = dev.join("app-clean");
+    let dirty = dev.join("app-dirty");
+    let active = dev.join("app-active");
+    write(&dirty.join("untracked-a.txt"), "a");
+    write(&dirty.join("untracked-b.txt"), "b");
+
+    let active_real = active.canonicalize().unwrap();
+    sandbox.script("pgrep", "printf '4242\\n'");
+    sandbox.script(
+        "lsof",
+        &format!("printf 'p4242\\nfcwd\\nn{}\\n'", active_real.display()),
+    );
+
+    let output = run(
+        &sandbox,
+        &["worktrees", "--root", dev.to_str().unwrap(), "--json"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document = json(&output);
+    let note = |path: &Path| {
+        finding_at(&document, path)["note"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert!(note(&clean).contains("clean"), "{document}");
+    assert!(note(&clean).contains("last active "), "{document}");
+    assert!(note(&dirty).contains("dirty (2 changes)"), "{document}");
+    assert!(note(&active).contains("in-use"), "{document}");
+    assert!(
+        document["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|finding| finding["action"]["type"] == "info"),
+        "worktrees must remain strictly read-only: {document}"
+    );
+
+    // Hostile repository clean filter with `=` in subsection name plus an
+    // inherited `GIT_CONFIG=/dev/null` must never execute filters during scan,
+    // even when the filtered tracked file is modified so Git must hash it.
+    let marker = sandbox.path().join("filter-ran");
+    write(&clean.join(".gitattributes"), "README filter=hostile=eq\n");
+    git(&sandbox, &clean, STALE, &["add", ".gitattributes"]);
+    git(
+        &sandbox,
+        &clean,
+        STALE,
+        &["commit", "-q", "-m", "add hostile attribute"],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &[
+            "config",
+            "filter.hostile=eq.clean",
+            &format!("touch '{}'; cat", marker.display()),
+        ],
+    );
+    // Keep the exact 6-byte size (`"readme"` -> `"README"`) and shift mtime so
+    // Git's stat/size shortcut cannot decide dirtiness without entering content
+    // conversion (which would execute `filter.hostile=eq.clean` if not blocked).
+    write(&clean.join("README"), "README");
+    let readme_file = std::fs::File::options()
+        .write(true)
+        .open(clean.join("README"))
+        .unwrap();
+    readme_file
+        .set_modified(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+        )
+        .unwrap();
+    let with_git_config = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["worktrees", "--root", dev.to_str().unwrap(), "--json"])
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("GIT_CONFIG", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        with_git_config.status.success(),
+        "{}",
+        String::from_utf8_lossy(&with_git_config.stderr)
+    );
+    assert!(
+        !marker.exists(),
+        "worktrees scan executed a repository clean filter when GIT_CONFIG was set"
+    );
+    let with_git_config_doc = json(&with_git_config);
+    assert!(
+        finding_at(&with_git_config_doc, &clean)["note"]
+            .as_str()
+            .unwrap()
+            .contains("dirty (1 change)"),
+        "{with_git_config_doc}"
+    );
+    write(&clean.join("README"), "readme");
+
+    // Fail-closed: if the process probe fails, clean must not be claimed and
+    // the error must be reported with nonzero status.
+    sandbox.script("pgrep", "printf 'pgrep failed\\n' >&2; exit 2");
+    let failed_probe = run(
+        &sandbox,
+        &["worktrees", "--root", dev.to_str().unwrap(), "--json"],
+    );
+    assert!(!failed_probe.status.success());
+    let failed_doc = json(&failed_probe);
+    assert!(
+        !finding_at(&failed_doc, &clean)["note"]
+            .as_str()
+            .unwrap()
+            .contains("clean"),
+        "a failed process probe must never claim clean: {failed_doc}"
+    );
+    assert!(
+        !failed_doc["errors"].as_array().unwrap().is_empty(),
+        "a failed process probe must record an error: {failed_doc}"
+    );
+}
+
+#[test]
+fn eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only() {
+    let sandbox = Sandbox::in_target("eval-leftovers-new");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let dev = sandbox.path().join("dev");
+    let app = dev.join("app");
+    write(&app.join("README"), "readme");
+    repo(&sandbox, &app, STALE, &["README"]);
+    let tmp_objdir = app.join(".git/objects/tmp_objdir-incoming-abc");
+    write(&tmp_objdir.join("pack.tmp"), &"x".repeat(4096));
+    // Hostile `.git` pointers: one escaping the scan root and one traversing a
+    // symlinked ancestor must both be ignored.
+    let outside_git = sandbox.path().join("outside-git");
+    let outside_tmp = outside_git.join("objects/tmp_objdir-escape");
+    write(&outside_tmp.join("pack.tmp"), &"e".repeat(4096));
+    // An unreadable `commondir` outside scan roots must never be opened;
+    // opening it would raise a permission error and fail the scan.
+    let outside_commondir = outside_git.join("commondir");
+    write(&outside_commondir, "..\n");
+    write(&dev.join("escape-repo/.git"), "gitdir: ../../outside-git\n");
+    write(&dev.join("escape-repo/.scratch/probe/file.txt"), "probe");
+    let symlink_target = dev.join("real-gitdir");
+    let symlink_tmp = symlink_target.join("objects/tmp_objdir-via-link");
+    write(&symlink_tmp.join("pack.tmp"), &"s".repeat(4096));
+    write(&dev.join("symlink-repo/.git"), "gitdir: link-git\n");
+    std::os::unix::fs::symlink(&symlink_target, dev.join("symlink-repo/link-git")).unwrap();
+    let ollama_models = sandbox.path().join(".ollama/models");
+    write(&ollama_models.join("blobs/sha256-model"), &"m".repeat(4096));
+    let lmstudio_models = sandbox.path().join(".lmstudio/models");
+    write(&lmstudio_models.join("org/model.gguf"), &"g".repeat(4096));
+
+    let before = Tree::snapshot(sandbox.path());
+    let outside_commondir_guard = ModeGuard::unreadable(outside_commondir);
+    let preview = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            dev.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(preview.status.success(), "{}", json(&preview));
+    let document = json(&preview);
+    assert!(
+        document["errors"].as_array().unwrap().is_empty(),
+        "out-of-scope unreadable commondir must never be opened: {document}"
+    );
+    for expected in [&tmp_objdir, &ollama_models, &lmstudio_models] {
+        let finding = finding_at(&document, expected);
+        assert_eq!(finding["action"]["type"], "info", "{document}");
+        assert!(finding["size_bytes"].as_u64().unwrap() > 0, "{document}");
+    }
+    let listed_paths: Vec<&str> = document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|finding| finding["path"].as_str())
+        .collect();
+    assert!(
+        !listed_paths
+            .iter()
+            .any(|path| path.contains("tmp_objdir-escape") || path.contains("tmp_objdir-via-link")),
+        "hostile .git pointers must not escape scan roots or traverse symlinks: {document}"
+    );
+
+    let apply = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            dev.to_str().unwrap(),
+            "--apply",
+            "--yolo",
+            "--json",
+        ],
+    );
+    drop(outside_commondir_guard);
+    assert_eq!(apply.status.code(), Some(2), "{}", json(&apply));
+    before.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "eval/leftovers-read-only",
+    );
+}
+
 /// A worktree that cannot be read in full is still listed with its
 /// lower-bound size, and the partial read is an error: the run exits nonzero.
 #[test]
 fn eval_worktrees_partial_read_keeps_the_row_and_fails_the_run() {
     let sandbox = Sandbox::in_target("eval-worktrees-partial");
     sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    sandbox.script("pgrep", "exit 1");
     let dev = sandbox.path().join("dev");
     let app = dev.join("app");
     write(&app.join("README"), "readme");

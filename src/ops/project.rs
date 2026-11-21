@@ -303,6 +303,9 @@ fn hardened_git(root: &Path, git: &str) -> Command {
         .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .env_remove("GIT_CEILING_DIRECTORIES")
         .env_remove("GIT_DISCOVERY_ACROSS_FILESYSTEM")
+        .env_remove("GIT_CONFIG")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .env_remove("GIT_CONFIG_COUNT")
         .env_remove("GIT_LITERAL_PATHSPECS")
         .env_remove("GIT_GLOB_PATHSPECS")
         .env_remove("GIT_NOGLOB_PATHSPECS")
@@ -467,6 +470,152 @@ pub(crate) fn worktree_listing(repo: &Path) -> Result<Vec<u8>> {
     })
 }
 
+/// Number of dirty entries (staged, unstaged, or untracked) in `worktree`.
+/// Uses `--no-optional-locks` through `hardened_git` so inspection never
+/// refreshes the index on disk, skips submodule status recursion
+/// (`--ignore-submodules=all`), and neutralizes every repository-configured
+/// content filter (`filter.*.{clean,smudge,process,required}`) and external
+/// diff/textconv driver — including non-UTF-8 config keys — before `git status`
+/// hashes modified files.
+pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    if !has_git_marker(worktree)? {
+        anyhow::bail!("not a Git worktree: {}", worktree.display());
+    }
+    let dot_git = worktree.join(".git");
+    let dot_git_metadata = std::fs::symlink_metadata(&dot_git)
+        .with_context(|| format!("cannot inspect Git marker {}", dot_git.display()))?;
+    if !dot_git_metadata.is_dir() && !dot_git_metadata.is_file() {
+        anyhow::bail!("refusing non-regular Git marker {}", dot_git.display());
+    }
+    const SHA1_EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const SHA256_EMPTY_TREE: &str =
+        "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321";
+
+    let mut list_config = hardened_git(worktree, "git");
+    list_config
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .arg("--git-dir")
+        .arg(&dot_git)
+        .arg("--work-tree")
+        .arg(worktree)
+        .args(["config", "--includes", "--list", "-z"]);
+    let config_entries = hardened_output(list_config, || {
+        format!("cannot read Git config keys for {}", worktree.display())
+    })?;
+    let mut empty_tree = SHA1_EMPTY_TREE;
+    let starts_ascii = |bytes: &[u8], prefix: &[u8]| {
+        bytes.len() >= prefix.len() && bytes[..prefix.len()].eq_ignore_ascii_case(prefix)
+    };
+    let ends_ascii = |bytes: &[u8], suffix: &[u8]| {
+        bytes.len() >= suffix.len()
+            && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    };
+    // Use `--attr-source=<empty-tree>` + `GIT_ATTR_NOSYSTEM=1` +
+    // `core.attributesFile=/dev/null` so `.gitattributes`, system attributes,
+    // and global attributes are disabled atomically inside `git status` itself
+    // with zero two-process race, and also neutralize every configured
+    // `filter.*` / `diff.*` key via `GIT_CONFIG_COUNT` for defense in depth
+    // (including `.git/info/attributes` and subsections containing `=` or
+    // non-UTF-8 bytes).
+    let mut overrides: Vec<(OsString, OsString)> = vec![
+        (
+            OsString::from("core.attributesFile"),
+            OsString::from("/dev/null"),
+        ),
+        (OsString::from("diff.external"), OsString::new()),
+    ];
+    for entry in config_entries
+        .split(|byte| *byte == 0)
+        .filter(|slice| !slice.is_empty())
+    {
+        let (raw_key, raw_value) = match entry.iter().position(|byte| *byte == b'\n') {
+            Some(newline) => (&entry[..newline], Some(&entry[newline + 1..])),
+            None => (entry, None),
+        };
+        if raw_key.eq_ignore_ascii_case(b"extensions.objectformat")
+            && raw_value.is_some_and(|value| value.eq_ignore_ascii_case(b"sha256"))
+        {
+            empty_tree = SHA256_EMPTY_TREE;
+        }
+        if starts_ascii(raw_key, b"filter.")
+            && (ends_ascii(raw_key, b".clean")
+                || ends_ascii(raw_key, b".smudge")
+                || ends_ascii(raw_key, b".process"))
+            || starts_ascii(raw_key, b"diff.")
+                && (ends_ascii(raw_key, b".textconv") || ends_ascii(raw_key, b".command"))
+        {
+            overrides.push((OsString::from_vec(raw_key.to_vec()), OsString::new()));
+        } else if starts_ascii(raw_key, b"filter.") && ends_ascii(raw_key, b".required") {
+            overrides.push((
+                OsString::from_vec(raw_key.to_vec()),
+                OsString::from("false"),
+            ));
+        }
+    }
+    let mut command = hardened_git(worktree, "git");
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .arg("--git-dir")
+        .arg(&dot_git)
+        .arg("--work-tree")
+        .arg(worktree)
+        .arg("--attr-source")
+        .arg(empty_tree);
+    command.env("GIT_CONFIG_COUNT", overrides.len().to_string());
+    for (index, (key, value)) in overrides.into_iter().enumerate() {
+        command
+            .env(format!("GIT_CONFIG_KEY_{index}"), key)
+            .env(format!("GIT_CONFIG_VALUE_{index}"), value);
+    }
+    command.args([
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=normal",
+        "--ignore-submodules=all",
+    ]);
+    let listed = hardened_output(command, || {
+        format!("cannot check working-tree status of {}", worktree.display())
+    })?;
+    parse_porcelain_status_count(&listed)
+        .with_context(|| format!("invalid Git status output for {}", worktree.display()))
+}
+
+/// Counts NUL-delimited `git status --porcelain=v1 -z` records.
+/// A rename or copy record carries a second NUL-terminated field for the
+/// original path, which must be consumed so one rename counts as one change.
+fn parse_porcelain_status_count(output: &[u8]) -> Result<usize> {
+    if output.is_empty() {
+        return Ok(0);
+    }
+    let Some(entries) = output.strip_suffix(b"\0") else {
+        anyhow::bail!("porcelain status output did not end with a NUL");
+    };
+    let mut count = 0usize;
+    let mut fields = entries.split(|byte| *byte == 0);
+    while let Some(entry) = fields.next() {
+        if entry.len() < 4 || entry[2] != b' ' {
+            anyhow::bail!("malformed porcelain status entry");
+        }
+        count = count.saturating_add(1);
+        if matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C') {
+            let Some(original) = fields.next() else {
+                anyhow::bail!("truncated rename or copy entry in porcelain status");
+            };
+            if original.is_empty() {
+                anyhow::bail!("empty original path in porcelain status");
+            }
+        }
+    }
+    Ok(count)
+}
+
 /// The absolute common directory (`.git` of the main worktree) of the
 /// repository holding `repo`.
 pub(crate) fn git_common_dir(repo: &Path) -> Result<PathBuf> {
@@ -595,25 +744,84 @@ pub(crate) fn listed_repositories(repos: &[PathBuf]) -> String {
 /// query there, so the scanners leave such a worktree out and name it, rather
 /// than let one orphan — common under `~/.codex/worktrees` once a repository
 /// is deleted — fail the whole category. Nothing in it is offered; apply would
+pub(crate) const MAX_GIT_POINTER_BYTES: u64 = 4096;
+
+/// Reads a Git pointer file (`.git` or `commondir`) without following symlinks
+/// or blocking on non-regular files, checking the already-open descriptor and
+/// refusing files larger than `MAX_GIT_POINTER_BYTES`. Returns `Ok(None)` when
+/// the path is absent, a symlink, or not a regular file.
+pub(crate) fn read_bounded_pointer(path: &Path) -> Result<Option<Vec<u8>>> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let descriptor = match open(path, flags, Mode::empty()) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
+            return Ok(None);
+        }
+        Err(errno) => {
+            return Err(std::io::Error::from(errno))
+                .with_context(|| format!("cannot read {}", path.display()));
+        }
+    };
+    read_bounded_pointer_file(std::fs::File::from(descriptor), path)
+}
+
+/// Same as `read_bounded_pointer`, opened relative to an already-open directory
+/// descriptor via `openat` so ancestor components cannot be swapped between
+/// containment validation and the read.
+pub(crate) fn read_bounded_pointer_at(
+    directory: &std::fs::File,
+    name: &str,
+    display_path: &Path,
+) -> Result<Option<Vec<u8>>> {
+    use rustix::fs::{Mode, OFlags, openat};
+
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let descriptor = match openat(directory, name, flags, Mode::empty()) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
+            return Ok(None);
+        }
+        Err(errno) => {
+            return Err(std::io::Error::from(errno))
+                .with_context(|| format!("cannot read {}", display_path.display()));
+        }
+    };
+    read_bounded_pointer_file(std::fs::File::from(descriptor), display_path)
+}
+
+fn read_bounded_pointer_file(file: std::fs::File, display_path: &Path) -> Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("cannot inspect {}", display_path.display()))?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let mut buffer = Vec::new();
+    file.take(MAX_GIT_POINTER_BYTES + 1)
+        .read_to_end(&mut buffer)
+        .with_context(|| format!("cannot read {}", display_path.display()))?;
+    if buffer.len() as u64 > MAX_GIT_POINTER_BYTES {
+        anyhow::bail!(
+            "Git pointer {} exceeds {MAX_GIT_POINTER_BYTES} bytes",
+            display_path.display()
+        );
+    }
+    Ok(Some(buffer))
+}
+
 /// refuse it anyway, because its activity cannot be read. Any other shape is
 /// not an orphan and goes to Git as before.
 pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
     let marker = repo.join(".git");
-    let metadata = match std::fs::symlink_metadata(&marker) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("cannot inspect Git marker {}", marker.display()));
-        }
-    };
-    if !metadata.file_type().is_file() {
-        return Ok(false);
-    }
     // Anything Git would reject is not an orphan: it goes to Git, which
     // refuses it.
-    let bytes = std::fs::read(&marker)
-        .with_context(|| format!("cannot read Git marker {}", marker.display()))?;
+    let Some(bytes) = read_bounded_pointer(&marker)? else {
+        return Ok(false);
+    };
     let Some(target) = gitfile_target(&bytes) else {
         return Ok(false);
     };
@@ -1316,5 +1524,81 @@ mod tests {
             "PV git/utc-dates: activity was read in a local zone, not the cutoff's UTC"
         );
         crate::ops::remove_test_path(base);
+    }
+
+    #[test]
+    fn porcelain_status_counts_renames_and_copies_once_and_refuses_truncation() {
+        assert_eq!(parse_porcelain_status_count(b"").unwrap(), 0);
+        assert_eq!(
+            parse_porcelain_status_count(
+                b" M src/lib.rs\0?? notes.txt\0R  new name.rs\0old name.rs\0CM copy\nfile.rs\0orig\nfile.rs\0"
+            )
+            .unwrap(),
+            4
+        );
+        for malformed in [
+            &b" M missing-nul.rs"[..],
+            &b"M\0"[..],
+            &b"MMno-space.rs\0"[..],
+            &b"R  only-destination.rs\0"[..],
+            &b"C  copy.rs\0\0"[..],
+        ] {
+            assert!(
+                parse_porcelain_status_count(malformed).is_err(),
+                "accepted malformed status: {malformed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn worktree_dirty_count_never_runs_repository_configured_clean_filters() {
+        let fixture = crate::ops::TestFixture::new("dirty-clean-filter");
+        let base = fixture.path();
+        let repo = base.join("repo");
+        let marker = base.join("filter-ran");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(repo.join(".gitattributes"), "* filter=hostile=eq\n").unwrap();
+        std::fs::write(repo.join("tracked.txt"), "before\n").unwrap();
+        git(&["add", ".gitattributes", "tracked.txt"]);
+        git(&["commit", "-q", "-m", "initial"]);
+        let filter_cmd = format!("touch '{}' && cat", marker.display());
+        git(&["config", "filter.hostile=eq.clean", &filter_cmd]);
+        git(&["config", "filter.hostile=eq.required", "true"]);
+        std::fs::write(repo.join("tracked.txt"), "after\n").unwrap();
+
+        let dirty = worktree_dirty_count(&repo).unwrap();
+        assert_eq!(dirty, 1);
+        assert!(
+            !marker.exists(),
+            "worktree_dirty_count executed repository-configured filter.clean"
+        );
+
+        // A hostile core.worktree pointing to a dirty external folder must be
+        // ignored so status stays bound to the validated worktree directory.
+        let outside = base.join("outside-dirty");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("extra1.txt"), "1").unwrap();
+        std::fs::write(outside.join("extra2.txt"), "2").unwrap();
+        std::fs::write(repo.join("tracked.txt"), "before\n").unwrap();
+        git(&["config", "core.worktree", outside.to_str().unwrap()]);
+        assert_eq!(
+            worktree_dirty_count(&repo).unwrap(),
+            0,
+            "worktree_dirty_count followed hostile core.worktree outside validated directory"
+        );
     }
 }

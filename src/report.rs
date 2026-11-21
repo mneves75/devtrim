@@ -16,11 +16,32 @@ pub enum Action {
     None,
 }
 
+/// Canonical identity of one BuildKit node inside a local `docker-container`
+/// builder, compared structurally at apply so no delimiter in any field can
+/// cause two distinct node sets to compare equal.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct BuildxNodeIdentity {
+    pub(crate) name: String,
+    pub(crate) endpoint: String,
+    pub(crate) ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandAuthority {
-    DockerImagePrune { host: String },
-    DockerBuilderPrune { host: String },
-    DeleteSimulator { udid: String },
+    DockerImagePrune {
+        host: String,
+    },
+    DockerBuilderPrune {
+        host: String,
+    },
+    DockerBuildxPrune {
+        host: String,
+        builder: String,
+        nodes: Vec<BuildxNodeIdentity>,
+    },
+    DeleteSimulator {
+        udid: String,
+    },
     Maintenance(MaintenanceTask),
 }
 
@@ -107,6 +128,22 @@ impl CommandAuthority {
                     .map(String::from)
                     .collect(),
             ),
+            Self::DockerBuildxPrune { host, builder, .. } => (
+                "docker",
+                [
+                    "--host",
+                    host.as_str(),
+                    "buildx",
+                    "prune",
+                    "--builder",
+                    builder.as_str(),
+                    "-a",
+                    "-f",
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            ),
             Self::DeleteSimulator { udid } => (
                 "xcrun",
                 ["simctl", "delete", udid]
@@ -141,7 +178,9 @@ impl CommandAuthority {
 
     pub(crate) fn docker_host(&self) -> Option<&str> {
         match self {
-            Self::DockerImagePrune { host } | Self::DockerBuilderPrune { host } => Some(host),
+            Self::DockerImagePrune { host }
+            | Self::DockerBuilderPrune { host }
+            | Self::DockerBuildxPrune { host, .. } => Some(host),
             Self::DeleteSimulator { .. } | Self::Maintenance(_) => None,
         }
     }
@@ -151,6 +190,7 @@ impl CommandAuthority {
             Self::DeleteSimulator { udid } => Some(udid),
             Self::DockerImagePrune { .. }
             | Self::DockerBuilderPrune { .. }
+            | Self::DockerBuildxPrune { .. }
             | Self::Maintenance(_) => None,
         }
     }
@@ -160,6 +200,7 @@ impl CommandAuthority {
             Self::Maintenance(task) => Some(*task),
             Self::DockerImagePrune { .. }
             | Self::DockerBuilderPrune { .. }
+            | Self::DockerBuildxPrune { .. }
             | Self::DeleteSimulator { .. } => None,
         }
     }

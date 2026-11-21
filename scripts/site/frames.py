@@ -276,10 +276,12 @@ def progress(binary, home, rows, columns):
             screen = tui.screen_text(tui.render_screen(session.output, rows, columns))
             typed = re.search(r"Type (PURGE [0-9.]+|[0-9.]+), then Enter", screen).group(1)
             session.send(typed.encode() + b"\r")
-            session.wait_for_screen("x stop after this item", " of ")
+            # Wait until the first item finishes and the second blocks on the
+            # gated pgrep probe so `x` captures live mid-apply progress rather
+            # than finishing at 0 items before the frame is read.
+            session.wait_for_screen("x stop after this item", "1 of 4")
             session.send(b"x")
             session.wait_for_screen("Stopping after the current item")
-            session.settle(0.5)
             grid = colored_screen(session.output, rows, columns)
             release.write_text("")
             session.wait_for_screen("Stopped by you")
@@ -385,15 +387,15 @@ def main():
             (b"a", ("This plan:",)),
         ])
         frames["tui:confirm"] = block("confirm exact plan", 84, to_html(confirm, box_rows(confirm)[0]))
-        # The menu after Scan everything, cropped to the menu column: the pane
-        # beside it shows the real volume's free space, which belongs to the
-        # machine running this script, not to the demo.
+        # The menu after Scan everything, cropped to the 54-column menu +
+        # category-sizes area: the pane beside it shows the real volume's free
+        # space, which belongs to the machine running this script, not to the demo.
         overview = capture(binary, home, rows, columns, [
             (None, ("Scan everything",)),
             (b"1", ("Read-only result",)),
             (b"b", ("Operations", "GB")),
         ])
-        frames["tui:overview"] = block("menu after a scan", 38, to_html(overview, 0, rows, 38))
+        frames["tui:overview"] = block("menu after a scan", 54, to_html(overview, 0, rows, 54))
         frames["tui:analyze"] = block("analyze with verdicts", 80, to_html(analyze(binary, home, 18, 80)))
         frames["tui:scanning"] = block("scan in progress", columns, to_html(scanning(binary, home, rows, columns)))
         scan, scan_columns = scan_summary(binary, home)

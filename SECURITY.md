@@ -217,17 +217,74 @@ Non-negotiable boundaries:
   HEAD's commit date and HEAD's newest reflog entry, so a clone or checkout of
   old history is active. Both dates are rendered in UTC, the clock the
   staleness cutoff counts in; the probe pins `TZ=UTC0` for `git` alone.
-- The two read-only reports add three Git queries through the same hardened
-  builder: `worktree list --porcelain -z` and `rev-parse --path-format=absolute
-  --git-common-dir` for `worktrees`, and `check-ignore -q -- .scratch/` for the
-  `.scratch` rows of `clean leftovers` (run only when that folder exists; exit 0
-  is ignored, 1 is not, anything else refuses). None of them runs a configured
-  program even unhardened (measured on Git 2.56). A path a worktree listing names
-  is repository data: it is measured only when it is a real directory inside a
-  scan root whose `.git` file names a gitdir in that repository's `worktrees`, and
-  Git runs only in folders the walk itself finds, never in a path because a listing named it. Neither report creates a
-  finding with a target action, a deletion-list entry, a command authority or a
-  journal record.
+- The two read-only reports add four Git queries through the same hardened
+  builder: `worktree list --porcelain -z`, `rev-parse --path-format=absolute
+  --git-common-dir`, and `status --porcelain=v1 -z --untracked-files=normal`
+  for `worktrees` (plus a single read-only active-process CWD probe per run so
+  active worktrees show `in-use` and a probe failure never claims `clean`), and
+  `check-ignore -q -- .scratch/` for the `.scratch` rows of `clean leftovers`
+  (run only when that folder exists; exit 0 is ignored, 1 is not, anything else
+  refuses). Before running `git status --ignore-submodules=all`,
+  `worktree_dirty_count` clears `GIT_CONFIG`, `GIT_CONFIG_PARAMETERS`, and
+  `GIT_CONFIG_COUNT`, isolates both Git calls with `GIT_CONFIG_NOSYSTEM=1` and
+  `GIT_CONFIG_GLOBAL=/dev/null`, verifies `has_git_marker` and pins
+  `--git-dir <worktree>/.git --work-tree <worktree>` so repository
+  `core.worktree` cannot redirect `git status`, disables `.gitattributes`,
+  system attributes, and `core.attributesFile` atomically via
+  `--attr-source=<empty-tree>` (SHA-1 or SHA-256) and `GIT_ATTR_NOSYSTEM=1`,
+  lists all effective config keys via `git config --includes --list -z`
+  (preserving raw non-UTF-8 bytes), and overrides every
+  `filter.*.{clean,smudge,process}`, `filter.*.required`,
+  `diff.*.{textconv,command}`, `diff.external`, and `core.attributesFile` via
+  `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_i`/`GIT_CONFIG_VALUE_i` environment
+  variables so untrusted repositories and their submodules never execute
+  content filters or diff drivers or inspect paths outside the validated
+  worktree. `clean leftovers` also surfaces Git `.git/objects/tmp_objdir-*`
+  folders (reading `.git`/`commondir` pointers with `O_NOFOLLOW | O_NONBLOCK`
+  capped at 4 KiB across `orphaned_worktree`, `leads_back`, and `leftovers`,
+  skipping `.scratch` and `tmp_objdir` for any out-of-scope gitfile, verifying
+  `gitdir` is symlink-free and inside the repository/scan roots before opening
+  `commondir` relative to the open `gitdir` descriptor via `openat`, and
+  rejecting symlinked ancestors or out-of-scope targets)
+  and local AI model stores (`~/.ollama/models`, `~/.lmstudio/models`) strictly
+  as `Action::Info`. A path
+  a worktree listing names is repository data: it is measured and inspected by
+  `worktree_dirty_count` / `repo_last_activity` only after `leads_back` proves
+  it is a real directory inside a scan root whose `.git` file names a real
+  `gitdir` in that repository's real (non-symlink) `worktrees` registry and
+  whose `commondir` (read via `openat`) resolves back to the same repository
+  common dir; Git never runs on an unverified listing path. Neither report
+  creates a finding
+  with a target action, a deletion-list entry, a command authority or a journal
+  record.
+- `clean docker` discovers local `docker-container` BuildKit builders via
+  `docker --host <host> buildx ls --format '{{json .}}'` and `docker context ls
+  --format '{{json .}}'`, deduplicates aliases sharing node IDs, refuses local
+  builders with node probe errors rather than silently shrinking the plan, and
+  emits `CommandAuthority::DockerBuildxPrune { host, builder, nodes }` only for
+  running builders whose every node resolves to an absolute local `unix://`
+  socket and whose builder name matches the strict
+  `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` rule. Note that `docker buildx ls` itself
+  inspects builders configured in the user's Docker CLI store before devtrim
+  filters the returned JSON; devtrim filters out non-local builders before
+  running `buildx du` (subject to the same-UID mutable-store window during
+  read-only preview) and never plans `buildx prune` for any non-local builder. Apply re-verifies the local host, builder
+  name, live local running state, and every previewed node's canonical
+  `(name, resolved socket, worker IDs)` fingerprint, then allocates an
+  exclusive per-attempt `0700` `DOCKER_CONFIG` directory
+  (`buildx-pin/attempt-<pid>-<seq>`) inside devtrim's state directory with
+  `O_CREAT | O_EXCL | O_NOFOLLOW` `0600` files containing only `config.json`
+  (CLI plugin discovery paths, no credentials) and
+  `buildx/instances/<builder>` pinned to `Driver: "docker-container"` and the
+  verified local `unix://` node endpoints (with no `contexts/` directory),
+  binding `DOCKER_CONFIG` to that attempt directory and `BUILDX_CONFIG` to its
+  `buildx` child while clearing `DOCKER_CONTEXT` and `BUILDX_BUILDER` before
+  running `docker --host <host> buildx prune --builder <builder> -a -f`. This
+  closes inherited `BUILDX_CONFIG`/`BUILDX_BUILDER` overrides, concurrent
+  builder/context rebinding to remote endpoints, and cross-apply pin
+  collisions; the residual window is the same local same-UID container-name
+  lookup (`buildx_buildkit_<node>`) that Docker Buildx's CLI driver performs on
+  the verified local Unix socket.
 - A permanent removal refuses, before removing anything, a tree holding a
   folder without write and search permission, since it would otherwise stop
   part-way. The one exception is a direct Trash child in `trash-empty`, whose
@@ -505,14 +562,19 @@ Non-negotiable boundaries:
   foreign-parent-device refusal using injected observed metadata; that test
   does not mount a volume or perform a real Trash move.
 
-- A cleanup category's sizes take one `lstat` and one `getattrlist` per file,
-  plus one `statfs` per device and one `diskutil apfs listSnapshots -plist` per
-  device per minute, for the lower bound beside the size; `getattrlistbulk` would
-  batch them but is not used. Report-only views take the `lstat` alone. The only
-  `unsafe` code is that one read-only `getattrlist` call, isolated in the
-  `crates/apfs-size` workspace crate (`#![deny(unsafe_code)]`, one reasoned
-  `allow`, a bounds-checked safe parser of its reply). The `devtrim` crate, which
-  deletes files, keeps `unsafe_code = "forbid"`.
+- On macOS, directory size walks batch `lstat` metadata and APFS private sizes
+  (`ATTR_CMNEXT_PRIVATESIZE`) per directory through `getattrlistbulk(2)`
+  (falling back to `walkdir` plus per-file `getattrlist(2)` if the filesystem
+  returns `ENOTSUP`/`EINVAL`/`ENOSYS`, and failing closed on real I/O or
+  per-entry kernel errors); single-file measurements also use `getattrlist(2)`.
+  Cleanup categories pair private sizes with one `statfs` per device and one
+  `diskutil apfs listSnapshots -plist` per device per minute for the lower
+  bound beside the size; report-only views skip the snapshot check and ignore
+  the private-size field. The only `unsafe` code is those two read-only macOS
+  FFI calls, isolated in the `crates/apfs-size` workspace crate
+  (`#![deny(unsafe_code)]`, reasoned `allow`s, bounds-checked safe parsers of
+  every kernel reply). The `devtrim` crate, which deletes files, keeps
+  `unsafe_code = "forbid"`.
 
 - Sizes are estimated allocated bytes (the blocks each file holds, each
   hard-linked file counted once), not guaranteed immediately reclaimable space,

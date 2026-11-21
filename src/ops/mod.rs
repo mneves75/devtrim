@@ -86,13 +86,21 @@ pub(crate) fn run_command_authority(
             ctx.journal_path.display()
         )
     })?;
-    let result = successful_output(
-        std::process::Command::new(program)
-            .args(&args)
-            .output_within(MUTATION_TIMEOUT),
-        &command,
-    )
-    .map(|_| note(&command));
+    let result = (|| -> Result<String> {
+        let mut child = std::process::Command::new(program);
+        child.args(&args);
+        if let crate::report::CommandAuthority::DockerBuildxPrune { builder, nodes, .. } = authority
+        {
+            let pinned_config =
+                crate::ops::docker::write_pinned_buildx_config(ctx, builder, nodes)?;
+            child
+                .env("DOCKER_CONFIG", &pinned_config)
+                .env("BUILDX_CONFIG", pinned_config.join("buildx"))
+                .env_remove("DOCKER_CONTEXT")
+                .env_remove("BUILDX_BUILDER");
+        }
+        successful_output(child.output_within(MUTATION_TIMEOUT), &command).map(|_| note(&command))
+    })();
     attempt.finish(ctx, result)
 }
 

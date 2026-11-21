@@ -18,7 +18,7 @@ fn docker_script(sandbox: &Sandbox, image_prune_exit: i32) {
     // a prune-failure test into a scan-failure test.
     let body = format!(
         "{}{image_prune_exit}{}",
-        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\t0\\n' ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') printf 'prune refused by daemon\\n' >&2; exit ",
+        "case \"$*\" in\n  'context inspect') printf '[{\"Endpoints\":{\"docker\":{\"Host\":\"unix:///var/run/docker.sock\"}}}]\\n' ;;\n  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\\n' ;;\n  '--host unix:///var/run/docker.sock system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\t0\\n' ;;\n  '--host unix:///var/run/docker.sock buildx ls'*) ;;\n  '--host unix:///var/run/docker.sock image prune -a -f') printf 'prune refused by daemon\\n' >&2; exit ",
         " ;;\n  *) exit 1 ;;\nesac"
     );
     sandbox.script("docker", &body);
@@ -716,7 +716,7 @@ fn an_interrupted_apply_kills_the_prune_and_leaves_an_interrupted_journal_entry(
     sandbox.script(
         "docker",
         &format!(
-            "case \"$*\" in\n  'context inspect') printf '[{{\"Endpoints\":{{\"docker\":{{\"Host\":\"{host}\"}}}}}}]\\n' ;;\n  '--host {host} version') printf 'Docker version 28.0.0\\n' ;;\n  '--host {host} system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\t0\\n' ;;\n  '--host {host} image prune -a -f')\n{}\n ;;\n  *) exit 1 ;;\nesac",
+            "case \"$*\" in\n  'context inspect') printf '[{{\"Endpoints\":{{\"docker\":{{\"Host\":\"{host}\"}}}}}}]\\n' ;;\n  '--host {host} version') printf 'Docker version 28.0.0\\n' ;;\n  '--host {host} system df'*) printf 'Images\\t2GB\\t1GB (50%%)\\t0\\n' ;;\n  '--host {host} buildx ls'*) ;;\n  '--host {host} image prune -a -f')\n{}\n ;;\n  *) exit 1 ;;\nesac",
             family.body()
         ),
     );
