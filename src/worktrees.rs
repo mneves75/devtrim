@@ -253,7 +253,7 @@ fn leads_back(path: &Path, scan_roots: &[PathBuf], common: (u64, u64)) -> Result
     if !scan_roots.iter().any(|root| canonical.starts_with(root)) {
         return Err("it is outside the scan roots");
     }
-    use rustix::fs::{AtFlags, Mode, OFlags, open, statat};
+    use rustix::fs::{Mode, OFlags, open};
 
     let marker = path.join(".git");
     let not_ours = "its .git does not lead back to this repository";
@@ -274,23 +274,18 @@ fn leads_back(path: &Path, scan_roots: &[PathBuf], common: (u64, u64)) -> Result
         std::fs::File::from(open(&gitdir, dir_flags, Mode::empty()).map_err(|_| not_ours)?);
     let parent_identity = registry.parent().and_then(identity).ok_or(not_ours)?;
     let commondir_path = gitdir.join("commondir");
-    if let Some(common_bytes) =
-        project::read_bounded_pointer_at(&gitdir_file, "commondir", &commondir_path)
-            .map_err(|_| not_ours)?
-    {
-        let mut common_target = common_bytes.as_slice();
-        while let [rest @ .., b'\n' | b'\r'] = common_target {
-            common_target = rest;
-        }
-        if common_target.is_empty() {
-            return Err(not_ours);
-        }
-        let resolved_common = gitdir.join(OsStr::from_bytes(common_target));
-        if identity(&resolved_common) != Some(parent_identity) {
-            return Err(not_ours);
-        }
-    } else if statat(&gitdir_file, "commondir", AtFlags::SYMLINK_NOFOLLOW).is_ok() {
-        // Reject a symlinked or non-regular commondir inside gitdir.
+    let common_bytes = project::read_bounded_pointer_at(&gitdir_file, "commondir", &commondir_path)
+        .map_err(|_| not_ours)?
+        .ok_or(not_ours)?;
+    let mut common_target = common_bytes.as_slice();
+    while let [rest @ .., b'\n' | b'\r'] = common_target {
+        common_target = rest;
+    }
+    if common_target.is_empty() {
+        return Err(not_ours);
+    }
+    let resolved_common = gitdir.join(OsStr::from_bytes(common_target));
+    if identity(&resolved_common) != Some(parent_identity) {
         return Err(not_ours);
     }
     match registry.parent().and_then(identity) {

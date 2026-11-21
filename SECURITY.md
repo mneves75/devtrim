@@ -248,12 +248,13 @@ Non-negotiable boundaries:
   rejecting symlinked ancestors or out-of-scope targets)
   and local AI model stores (`~/.ollama/models`, `~/.lmstudio/models`) strictly
   as `Action::Info`. A path
-  a worktree listing names is repository data: it is measured only when it is a
-  real directory inside a scan root whose `.git` file names a real `gitdir` in
-  that repository's real (non-symlink) `worktrees` registry (and whose
-  `commondir`, read via `openat` when present, resolves to the same repository
-  common dir), and Git runs only in folders the walk itself finds,
-  never in a path because a listing named it. Neither report creates a finding
+  a worktree listing names is repository data: it is measured and inspected by
+  `worktree_dirty_count` / `repo_last_activity` only after `leads_back` proves
+  it is a real directory inside a scan root whose `.git` file names a real
+  `gitdir` in that repository's real (non-symlink) `worktrees` registry and
+  whose `commondir` (read via `openat`) resolves back to the same repository
+  common dir; Git never runs on an unverified listing path. Neither report
+  creates a finding
   with a target action, a deletion-list entry, a command authority or a journal
   record.
 - `clean docker` discovers local `docker-container` BuildKit builders via
@@ -265,8 +266,9 @@ Non-negotiable boundaries:
   socket and whose builder name matches the strict
   `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` rule. Note that `docker buildx ls` itself
   inspects builders configured in the user's Docker CLI store before devtrim
-  filters the returned JSON; devtrim never runs `buildx du` or `buildx prune`
-  against any non-local builder. Apply re-verifies the local host, builder
+  filters the returned JSON; devtrim filters out non-local builders before
+  running `buildx du` (subject to the same-UID mutable-store window during
+  read-only preview) and never plans `buildx prune` for any non-local builder. Apply re-verifies the local host, builder
   name, live local running state, and every previewed node's canonical
   `(name, resolved socket, worker IDs)` fingerprint, then allocates an
   exclusive per-attempt `0700` `DOCKER_CONFIG` directory

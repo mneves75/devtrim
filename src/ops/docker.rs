@@ -731,7 +731,10 @@ fn docker_cli_plugin_dirs(home: &Path) -> Vec<String> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".docker"));
-    push_unique(source_config.join("cli-plugins"));
+    // Preserve Docker CLI's plugin lookup order (`cli-plugins/manager/manager.go`):
+    // configured `cliPluginsExtraDirs` first, then `$DOCKER_CONFIG/cli-plugins`,
+    // then standard system plugin directories, so prune runs the same plugin
+    // binary that `buildx ls` used.
     if let Ok(raw) = std::fs::read_to_string(source_config.join("config.json"))
         && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw)
         && let Some(extra) = parsed
@@ -746,6 +749,7 @@ fn docker_cli_plugin_dirs(home: &Path) -> Vec<String> {
             }
         }
     }
+    push_unique(source_config.join("cli-plugins"));
     for standard in [
         "/opt/homebrew/lib/docker/cli-plugins",
         "/usr/local/lib/docker/cli-plugins",

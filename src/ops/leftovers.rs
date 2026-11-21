@@ -267,9 +267,11 @@ fn in_scope_without_symlinks(
 
 /// Returns `true` when `repository/.git` is anything other than a real `.git`
 /// directory or a valid bounded gitfile whose `gitdir` (and `commondir`, when
-/// present) stays inside `repository` or `scoped_roots` without traversing
-/// symlinks. Fails closed on symlinks, oversized/unreadable pointers, or
-/// escaping `commondir` so `.scratch` never invokes Git on untrusted pointers.
+/// present — for BOTH directory-form and file-form `.git` markers, since Git's
+/// `setup.c` resolves `commondir` for both) stays inside `repository` or
+/// `scoped_roots` without traversing symlinks. Fails closed on symlinks,
+/// oversized/unreadable pointers, or escaping `commondir` so `.scratch` never
+/// invokes Git on untrusted pointers.
 fn has_out_of_scope_gitfile(repository: &Path, scoped_roots: &[(PathBuf, PathBuf)]) -> bool {
     use rustix::fs::{AtFlags, Mode, OFlags, open, statat};
 
@@ -277,19 +279,19 @@ fn has_out_of_scope_gitfile(repository: &Path, scoped_roots: &[(PathBuf, PathBuf
     let Ok(metadata) = std::fs::symlink_metadata(&dot_git) else {
         return true;
     };
-    if metadata.is_dir() {
-        return false;
-    }
-    if !metadata.is_file() {
-        return true;
-    }
-    let Ok(Some(bytes)) = project::read_bounded_pointer(&dot_git) else {
+    let gitdir = if metadata.is_dir() {
+        dot_git
+    } else if metadata.is_file() {
+        let Ok(Some(bytes)) = project::read_bounded_pointer(&dot_git) else {
+            return true;
+        };
+        let Some(target) = project::gitfile_target(&bytes) else {
+            return true;
+        };
+        repository.join(target)
+    } else {
         return true;
     };
-    let Some(target) = project::gitfile_target(&bytes) else {
-        return true;
-    };
-    let gitdir = repository.join(target);
     let canonical_repo = std::fs::canonicalize(repository).ok();
     if !std::fs::symlink_metadata(&gitdir).is_ok_and(|entry| entry.is_dir())
         || !in_scope_without_symlinks(&gitdir, repository, canonical_repo.as_deref(), scoped_roots)
