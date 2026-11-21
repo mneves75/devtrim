@@ -4238,14 +4238,25 @@ mod tests {
         std::fs::hard_link(&source, root.join("hardlink.bin")).unwrap();
         std::os::unix::fs::symlink(&source, root.join("symlink.bin")).unwrap();
 
-        let (bulk_size, bulk_newest) = walk_stats(&root, DiskUsage::estimating()).unwrap();
+        let mut bulk_usage = DiskUsage::estimating();
+        let (bulk_size, bulk_newest) = match walk_stats_bulk(&root, &mut bulk_usage) {
+            Ok(result) => result,
+            Err(BulkWalkError::Unsupported) => {
+                panic!("macOS APFS test root unexpectedly returned BulkWalkError::Unsupported")
+            }
+            Err(BulkWalkError::Failed(error)) => panic!("bulk walk failed: {error:#}"),
+        };
         let (ref_size, ref_newest) = walk_stats_walkdir(&root, DiskUsage::estimating()).unwrap();
         assert_eq!(bulk_size, ref_size);
         assert_eq!(bulk_newest, ref_newest);
 
         let sealed = crate::ops::Unreadable::new(&root.join("sealed"), 0o000);
-        let denied = walk_stats(&root, DiskUsage::default());
+        let mut denied_usage = DiskUsage::default();
+        let denied = walk_stats_bulk(&root, &mut denied_usage);
         drop(sealed);
-        assert!(denied.is_err(), "unreadable subdirectory must fail closed");
+        assert!(
+            matches!(denied, Err(BulkWalkError::Failed(_))),
+            "unreadable subdirectory must fail closed"
+        );
     }
 }

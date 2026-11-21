@@ -364,14 +364,50 @@ fn deduplicate_buildx_builders(builders: Vec<BuildxBuilder>) -> Vec<BuildxBuilde
     selected
 }
 
-#[cfg(test)]
-fn select_local_buildx_builders(
-    output: &str,
+fn builder_node_fingerprint(nodes: &[BuildxNode]) -> Vec<String> {
+    match builder_canonical_key(nodes) {
+        BuilderCanonicalKey::NodeIds(ids) => ids
+            .into_iter()
+            .map(|identifier| format!("id:{identifier}"))
+            .collect(),
+        BuilderCanonicalKey::NodeEndpoints(endpoints) => endpoints
+            .into_iter()
+            .map(|(name, endpoint)| format!("node:{name}@{endpoint}"))
+            .collect(),
+    }
+}
+
+fn local_buildx_probe_error(
+    builders: &[BuildxBuilder],
     local_contexts: &BTreeMap<String, String>,
-) -> Result<Vec<BuildxBuilder>> {
-    let parsed = parse_buildx_ls(output)?;
-    let local = local_buildx_builders(&parsed, local_contexts);
-    Ok(deduplicate_buildx_builders(local))
+) -> Option<String> {
+    for builder in builders {
+        if builder.driver.trim() != "docker-container" || !is_valid_builder_name(&builder.name) {
+            continue;
+        }
+        let Some(nodes) = builder.nodes.as_deref() else {
+            continue;
+        };
+        let all_local = !nodes.is_empty()
+            && nodes.iter().all(|node| {
+                let endpoint = node.endpoint.trim();
+                is_local_docker_host(endpoint) || local_contexts.contains_key(endpoint)
+            });
+        if !all_local {
+            continue;
+        }
+        for node in nodes {
+            let status = node.status.trim();
+            if !matches!(status, "running" | "stopped" | "inactive" | "") {
+                return Some(format!(
+                    "local Docker buildx builder `{}` node `{}` reported status `{status}`",
+                    builder.name,
+                    node.name.trim()
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn parse_buildx_du(output: &str, builder: &str) -> Result<BuildxUsage> {
@@ -414,6 +450,9 @@ fn scan_buildx_findings(host: &str) -> Result<Vec<Finding>> {
     } else {
         BTreeMap::new()
     };
+    if let Some(error) = local_buildx_probe_error(&parsed, &local_contexts) {
+        anyhow::bail!("{error}");
+    }
     let builders = deduplicate_buildx_builders(local_buildx_builders(&parsed, &local_contexts));
     let mut findings = Vec::new();
     for builder in builders {
@@ -452,6 +491,7 @@ fn scan_buildx_findings(host: &str) -> Result<Vec<Finding>> {
                 ),
             )
         };
+        let nodes = builder_node_fingerprint(builder.nodes.as_deref().unwrap_or(&[]));
         findings.push(Finding::command(
             format!("Docker buildx cache ({})", builder.name),
             bytes,
@@ -460,13 +500,19 @@ fn scan_buildx_findings(host: &str) -> Result<Vec<Finding>> {
             CommandAuthority::DockerBuildxPrune {
                 host: host.to_string(),
                 builder: builder.name,
+                nodes,
             },
         ));
     }
     Ok(findings)
 }
 
-fn verify_local_buildx_builder(host: &str, builder: &str) -> Result<()> {
+fn verify_local_buildx_builder(host: &str, builder: &str, expected_nodes: &[String]) -> Result<()> {
+    if expected_nodes.is_empty() {
+        anyhow::bail!(
+            "refusing buildx prune: builder `{builder}` carries no previewed node identity"
+        );
+    }
     let Some(output) = buildx_ls(host)? else {
         anyhow::bail!("refusing buildx prune: `docker buildx` is unavailable");
     };
@@ -483,9 +529,16 @@ fn verify_local_buildx_builder(host: &str, builder: &str) -> Result<()> {
     } else {
         BTreeMap::new()
     };
-    if local_buildx_builders(&single, &local_contexts).is_empty() {
+    let verified = local_buildx_builders(&single, &local_contexts);
+    let [verified_builder] = verified.as_slice() else {
         anyhow::bail!(
             "refusing buildx prune: builder `{builder}` is not a running local docker-container builder"
+        );
+    };
+    let current_nodes = builder_node_fingerprint(verified_builder.nodes.as_deref().unwrap_or(&[]));
+    if current_nodes != expected_nodes {
+        anyhow::bail!(
+            "refusing buildx prune: builder `{builder}` changed backing nodes since preview"
         );
     }
     Ok(())
@@ -696,11 +749,16 @@ impl Op for Docker {
                 if finding.action != authority.action() {
                     anyhow::bail!("refusing altered Docker action");
                 }
-                if let CommandAuthority::DockerBuildxPrune { host, builder } = authority {
+                if let CommandAuthority::DockerBuildxPrune {
+                    host,
+                    builder,
+                    nodes,
+                } = authority
+                {
                     if !is_valid_builder_name(builder) {
                         anyhow::bail!("refusing invalid Docker buildx builder name `{builder}`");
                     }
-                    verify_local_buildx_builder(host, builder)?;
+                    verify_local_buildx_builder(host, builder, nodes)?;
                 }
                 super::run_command_authority(
                     self.name(),
@@ -993,7 +1051,8 @@ mod tests {
             r#"{"Name":"-bad-name","Driver":"docker-container","Current":false,"Nodes":[{"Name":"b0","Endpoint":"orbstack","Status":"running","IDs":["id-bad"]}]}"#,
             "\n"
         );
-        let selected = select_local_buildx_builders(ndjson, &local_contexts).unwrap();
+        let parsed = parse_buildx_ls(ndjson).unwrap();
+        let selected = deduplicate_buildx_builders(local_buildx_builders(&parsed, &local_contexts));
         let names: Vec<&str> = selected
             .iter()
             .map(|builder| builder.name.as_str())
@@ -1019,6 +1078,7 @@ mod tests {
             CommandAuthority::DockerBuildxPrune {
                 host: "ssh://prod.example".into(),
                 builder: "kiri-build".into(),
+                nodes: vec!["id:node-1".into()],
             },
         );
         let outcome = Docker.apply(&[non_local], &ctx).unwrap();
@@ -1037,12 +1097,32 @@ mod tests {
             CommandAuthority::DockerBuildxPrune {
                 host: "unix:///var/run/docker.sock".into(),
                 builder: "--all".into(),
+                nodes: vec!["id:node-1".into()],
             },
         );
         let outcome = Docker.apply(&[bad_name], &ctx).unwrap();
         assert_eq!(outcome.summary.items_touched, 0);
         assert!(
             outcome.errors[0].contains("refusing invalid Docker buildx builder name"),
+            "{:?}",
+            outcome.errors
+        );
+
+        let missing_nodes = Finding::command(
+            "missing nodes",
+            1024,
+            "forged",
+            6,
+            CommandAuthority::DockerBuildxPrune {
+                host: "unix:///var/run/docker.sock".into(),
+                builder: "kiri-build".into(),
+                nodes: Vec::new(),
+            },
+        );
+        let outcome = Docker.apply(&[missing_nodes], &ctx).unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert!(
+            outcome.errors[0].contains("carries no previewed node identity"),
             "{:?}",
             outcome.errors
         );

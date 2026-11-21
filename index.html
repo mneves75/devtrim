@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="devtrim is a local-first disk cleaner for macOS developer machines. It measures, classifies and trims caches and build output, previews every action, scores its danger and moves files to the Trash first.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-FCkQVLBoloumJ4xVsGcwe4674eoqN/DEs0Mc5uS1nK8='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-1NNAy3HqErFuPhMGAGse6QSXJsvqJO97Re91qcplOZA='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>devtrim — measure · classify · trim</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -224,7 +224,7 @@
       </div>
       <div>
         <dt>Agent-era visibility</dt>
-        <dd>Tracks linked worktrees (in-use, dirty, idle), local Docker <code>buildx</code> caches, abandoned <code>tmp_objdir</code> debris, and local AI model stores.</dd>
+        <dd>Tracks linked worktrees (in-use, dirty, clean), local Docker <code>buildx</code> caches, Git <code>tmp_objdir</code> debris, and local AI model stores.</dd>
       </div>
       <div>
         <dt>Trash-first &amp; journaled</dt>
@@ -495,22 +495,21 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
     // The rail stands beside the screen on wide viewports and above it otherwise.
     const wide = matchMedia("(width >= 72rem)");
     const orient = () => tablist.setAttribute("aria-orientation", wide.matches ? "vertical" : "horizontal");
-    const show = (index, focus) => {
+    const show = (index, focus, scroll) => {
       tabs.forEach((tab, i) => {
         const on = i === index;
         tab.setAttribute("aria-selected", String(on));
         tab.tabIndex = on ? 0 : -1;
-        panels[i].inert = !on;
         panels[i].hidden = on ? false : "until-found";
         panels[i].classList.toggle("is-off", !on);
       });
-      if (!wide.matches) {
+      if (scroll && !wide.matches) {
         tabs[index].scrollIntoView({ block: "nearest", inline: "nearest" });
       }
       if (focus) tabs[index].focus();
     };
-    tabs.forEach((tab, i) => tab.addEventListener("click", () => show(i, false)));
-    panels.forEach((panel, i) => panel.addEventListener("beforematch", () => show(i, false)));
+    tabs.forEach((tab, i) => tab.addEventListener("click", () => show(i, false, true)));
+    panels.forEach((panel, i) => panel.addEventListener("beforematch", () => show(i, false, true)));
     tablist.addEventListener("keydown", event => {
       const at = tabs.indexOf(document.activeElement);
       const last = tabs.length - 1;
@@ -519,7 +518,7 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
       const next = { ...keys, Home: 0, End: last }[event.key];
       if (next === undefined || at < 0) return;
       event.preventDefault();
-      show(next < 0 ? last : next > last ? 0 : next, true);
+      show(next < 0 ? last : next > last ? 0 : next, true, true);
     });
     if (!CSS.supports("animation-timeline", "scroll(self inline)")) {
       const first = tabs[0], last = tabs[tabs.length - 1];
@@ -535,7 +534,7 @@ cp target/release/devtrim /usr/local/bin/</code></pre>
     orient();
     tablist.hidden = false;
     walk.classList.add("is-tabs");
-    show(0, false);
+    show(0, false, false);
   }
 
   const status = document.getElementById("copy-status");

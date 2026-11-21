@@ -465,8 +465,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "fc35f5061",
-  "text": "Tracks linked worktrees (in-use, dirty, idle), local Docker buildx caches, abandoned tmp_objdir debris, and local AI model stores.",
+  "id": "fb324a00b",
+  "text": "Tracks linked worktrees (in-use, dirty, clean), local Docker buildx caches, Git tmp_objdir debris, and local AI model stores.",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {

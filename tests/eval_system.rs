@@ -1735,7 +1735,7 @@ esac"#,
         !calls(&sandbox).iter().any(|call| call
             .iter()
             .any(|arg| arg == "prod-builder" || arg == "kiri-build")),
-        "remote or alias builders must never be queried or pruned"
+        "devtrim must never pass remote or alias builders to buildx du or prune"
     );
 
     let apply = run(

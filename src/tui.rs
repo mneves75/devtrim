@@ -936,9 +936,14 @@ impl App {
     }
 
     /// The actionable category operation for the highlighted Scan everything
-    /// row; read-only categories (`leftovers`) and diagnostic rows have none.
+    /// row; read-only categories (`leftovers`), informational findings inside
+    /// actionable categories, and diagnostic rows have none.
     fn scan_jump_operation(&self) -> Option<Operation> {
         if self.operation != Some(Operation::ScanAll) {
+            return None;
+        }
+        let finding = self.findings.get(self.cursor)?;
+        if !finding.action.is_actionable() {
             return None;
         }
         let entry = self.scan_section_entry()?;
@@ -3007,7 +3012,7 @@ fn outcome_entries(app: &App) -> Vec<(String, Style)> {
         }
         if summary.bytes_trashed_estimate > 0 {
             lines.push((
-                "Next: run `devtrim trash-empty --only-devtrim` to free disk space (or press b, then 0)."
+                "Next: run `devtrim trash-empty --only-devtrim` to purge only what devtrim moved (b, then 0 previews the whole Trash)."
                     .to_string(),
                 app.theme.style(Token::Accent),
             ));
@@ -5721,13 +5726,21 @@ mod tests {
     fn scan_all_o_jumps_to_actionable_category_and_refuses_read_only_or_diagnostics() {
         let findings = vec![
             trash("uv cache", 2 * GIB, 2),
+            Finding::new(
+                "unreadable cache",
+                None,
+                0,
+                "permission denied",
+                0,
+                Action::Info,
+            ),
             trash("stale node_modules", 4 * GIB, 5),
             Finding::new("agent leftover", None, 1024, "hint", 0, Action::Info),
         ];
         let sections = vec![
-            section("caches", 0..1),
-            section("node-modules", 1..2),
-            section("leftovers", 2..3),
+            section("caches", 0..2),
+            section("node-modules", 2..3),
+            section("leftovers", 3..4),
         ];
         let mut app = scan_everything(findings, sections);
 
@@ -5743,11 +5756,20 @@ mod tests {
             );
         }
 
-        // `o` jumps straight to Caches from row 0, and NodeModules from row 1.
+        // `o` jumps straight to Caches from row 0.
         assert_eq!(
             app.handle_key(key(KeyCode::Char('o'))),
             Intent::Load(Operation::Clean(Target::Caches))
         );
+        // Row 1 is an informational diagnostic inside the actionable Caches
+        // section: `o` must refuse and the footer must omit `o open category`.
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.handle_key(key(KeyCode::Char('o'))), Intent::None);
+        assert_eq!(app.status_token, Token::Muted);
+        assert!(app.status.contains("no actionable category view"));
+        assert!(!screen_rows(&app, 100, 30)[28].contains("o open category"));
+
+        // Row 2 is actionable NodeModules.
         app.handle_key(key(KeyCode::Down));
         assert_eq!(
             app.handle_key(key(KeyCode::Char('o'))),

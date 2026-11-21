@@ -2089,8 +2089,8 @@ CASES = (
     Case(
         name="size/snapshot-fallback",
         relative_path="src/safety.rs",
-        before="        trusted.then(|| private_or_nothing(metadata, path))",
-        after="        let _ = trusted;\n        true.then(|| private_or_nothing(metadata, path))",
+        before="            .or_insert_with(|| private_size_trusted(path, dev))",
+        after="            .or_insert_with(|| { let _ = (path, dev); true })",
         tests=("safety::tests::a_volume_with_a_snapshot_counts_allocated_blocks",),
         marker="PV size/snapshot-fallback",
     ),

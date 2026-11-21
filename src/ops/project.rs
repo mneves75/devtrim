@@ -469,9 +469,42 @@ pub(crate) fn worktree_listing(repo: &Path) -> Result<Vec<u8>> {
 
 /// Number of dirty entries (staged, unstaged, or untracked) in `worktree`.
 /// Uses `--no-optional-locks` through `hardened_git` so inspection never
-/// refreshes the index on disk.
+/// refreshes the index on disk, and neutralizes every repository-configured
+/// content filter (`filter.*.{clean,smudge,process,required}`) and external
+/// diff/textconv driver before `git status` hashes modified files.
 pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
+    let mut list_config = hardened_git(worktree, "git");
+    list_config.args(["config", "--includes", "--list", "--name-only", "-z"]);
+    let config_keys = hardened_output(list_config, || {
+        format!("cannot read Git config keys for {}", worktree.display())
+    })?;
     let mut command = hardened_git(worktree, "git");
+    command.args([
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-c",
+        "diff.external=",
+    ]);
+    for raw_key in config_keys
+        .split(|byte| *byte == 0)
+        .filter(|slice| !slice.is_empty())
+    {
+        let Ok(key) = std::str::from_utf8(raw_key) else {
+            continue;
+        };
+        let lowered = key.to_ascii_lowercase();
+        if lowered.starts_with("filter.")
+            && (lowered.ends_with(".clean")
+                || lowered.ends_with(".smudge")
+                || lowered.ends_with(".process"))
+            || lowered.starts_with("diff.")
+                && (lowered.ends_with(".textconv") || lowered.ends_with(".command"))
+        {
+            command.arg("-c").arg(format!("{key}="));
+        } else if lowered.starts_with("filter.") && lowered.ends_with(".required") {
+            command.arg("-c").arg(format!("{key}=false"));
+        }
+    }
     command.args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"]);
     let listed = hardened_output(command, || {
         format!("cannot check working-tree status of {}", worktree.display())
@@ -1382,5 +1415,43 @@ mod tests {
                 "accepted malformed status: {malformed:?}"
             );
         }
+    }
+
+    #[test]
+    fn worktree_dirty_count_never_runs_repository_configured_clean_filters() {
+        let fixture = crate::ops::TestFixture::new("dirty-clean-filter");
+        let base = fixture.path();
+        let repo = base.join("repo");
+        let marker = base.join("filter-ran");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(repo.join(".gitattributes"), "* filter=hostile\n").unwrap();
+        std::fs::write(repo.join("tracked.txt"), "before\n").unwrap();
+        git(&["add", ".gitattributes", "tracked.txt"]);
+        git(&["commit", "-q", "-m", "initial"]);
+        let filter_cmd = format!("touch '{}' && cat", marker.display());
+        git(&["config", "filter.hostile.clean", &filter_cmd]);
+        git(&["config", "filter.hostile.required", "true"]);
+        std::fs::write(repo.join("tracked.txt"), "after\n").unwrap();
+
+        let dirty = worktree_dirty_count(&repo).unwrap();
+        assert_eq!(dirty, 1);
+        assert!(
+            !marker.exists(),
+            "worktree_dirty_count executed repository-configured filter.clean"
+        );
     }
 }

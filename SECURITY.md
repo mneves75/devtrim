@@ -224,22 +224,32 @@ Non-negotiable boundaries:
   active worktrees show `in-use` and a probe failure never claims `clean`), and
   `check-ignore -q -- .scratch/` for the `.scratch` rows of `clean leftovers`
   (run only when that folder exists; exit 0 is ignored, 1 is not, anything else
-  refuses). `clean leftovers` also surfaces abandoned `.git/objects/tmp_objdir-*`
-  folders and local AI model stores (`~/.ollama/models`, `~/.lmstudio/models`)
-  strictly as `Action::Info`. None of those Git queries runs a configured
-  program even unhardened. A path a worktree listing names is repository data:
-  it is measured only when it is a real directory inside a scan root whose
-  `.git` file names a gitdir in that repository's `worktrees`, and Git runs
-  only in folders the walk itself finds, never in a path because a listing
-  named it. Neither report creates a finding with a target action, a
-  deletion-list entry, a command authority or a journal record.
+  refuses). Before running `git status`, `worktree_dirty_count` lists all
+  effective config keys via `git config --includes --list --name-only -z` and
+  overrides every `filter.*.{clean,smudge,process}`, `filter.*.required`,
+  `diff.*.{textconv,command}`, `diff.external`, and `core.attributesFile` on
+  the command line so untrusted repositories never execute content filters or
+  diff drivers during status inspection. `clean leftovers` also surfaces Git
+  `.git/objects/tmp_objdir-*` folders and local AI model stores
+  (`~/.ollama/models`, `~/.lmstudio/models`) strictly as `Action::Info`. A path
+  a worktree listing names is repository data: it is measured only when it is a
+  real directory inside a scan root whose `.git` file names a gitdir in that
+  repository's `worktrees`, and Git runs only in folders the walk itself finds,
+  never in a path because a listing named it. Neither report creates a finding
+  with a target action, a deletion-list entry, a command authority or a journal
+  record.
 - `clean docker` discovers local `docker-container` BuildKit builders via
   `docker --host <host> buildx ls --format '{{json .}}'` and `docker context ls
-  --format '{{json .}}'`, deduplicates aliases sharing node IDs, and emits
-  `CommandAuthority::DockerBuildxPrune { host, builder }` only for running
-  builders whose every node resolves to an absolute local `unix://` socket and
-  whose builder name matches the strict `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` rule.
-  Apply re-verifies the local host, builder name, and live local builder state
+  --format '{{json .}}'`, deduplicates aliases sharing node IDs, refuses local
+  builders with node probe errors rather than silently shrinking the plan, and
+  emits `CommandAuthority::DockerBuildxPrune { host, builder, nodes }` only for
+  running builders whose every node resolves to an absolute local `unix://`
+  socket and whose builder name matches the strict
+  `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` rule. Note that `docker buildx ls` itself
+  inspects builders configured in the user's Docker CLI store before devtrim
+  filters the returned JSON; devtrim never runs `buildx du` or `buildx prune`
+  against any non-local builder. Apply re-verifies the local host, builder
+  name, live local running state, and the exact previewed backing node identity
   before running `docker --host <host> buildx prune --builder <builder> -a -f`.
 - A permanent removal refuses, before removing anything, a tree holding a
   folder without write and search permission, since it would otherwise stop

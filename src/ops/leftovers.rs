@@ -306,9 +306,9 @@ fn tmp_objdir_findings(
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             push_measured(
                 findings,
-                format!("abandoned Git tmp_objdir `{name}`"),
+                format!("Git tmp_objdir `{name}`"),
                 &path,
-                "review manually; interrupted Git operations leave tmp_objdir-* — devtrim never modifies .git",
+                "review manually; interrupted Git operations can leave tmp_objdir-* — devtrim never modifies .git",
             );
         }
     }

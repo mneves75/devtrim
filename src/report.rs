@@ -18,10 +18,20 @@ pub enum Action {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandAuthority {
-    DockerImagePrune { host: String },
-    DockerBuilderPrune { host: String },
-    DockerBuildxPrune { host: String, builder: String },
-    DeleteSimulator { udid: String },
+    DockerImagePrune {
+        host: String,
+    },
+    DockerBuilderPrune {
+        host: String,
+    },
+    DockerBuildxPrune {
+        host: String,
+        builder: String,
+        nodes: Vec<String>,
+    },
+    DeleteSimulator {
+        udid: String,
+    },
     Maintenance(MaintenanceTask),
 }
 
@@ -108,7 +118,7 @@ impl CommandAuthority {
                     .map(String::from)
                     .collect(),
             ),
-            Self::DockerBuildxPrune { host, builder } => (
+            Self::DockerBuildxPrune { host, builder, .. } => (
                 "docker",
                 [
                     "--host",
