@@ -3,7 +3,11 @@
 
 use anyhow::{Context, Result};
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::fs::MetadataExt as _;
+use std::path::{Path, PathBuf};
 
 use super::project::{self, is_directory_if_present};
 use super::{Action, ApplyOutcome, Finding, Op};
@@ -11,6 +15,19 @@ use crate::safety::Ctx;
 use crate::safety::measure_lenient;
 
 pub(crate) struct Leftovers;
+
+const LOCAL_MODEL_STORES: &[(&str, &str, &str)] = &[
+    (
+        ".ollama/models",
+        "Ollama local models",
+        "local AI models (report-only); manage with `ollama rm`",
+    ),
+    (
+        ".lmstudio/models",
+        "LM Studio local models",
+        "local AI models (report-only); manage in LM Studio",
+    ),
+];
 
 fn is_agent_scratch(name: &str) -> bool {
     let Some((prefix, suffix)) = name.rsplit_once('.') else {
@@ -39,6 +56,7 @@ impl Op for Leftovers {
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         let mut unread = Vec::new();
+        let mut seen_objects_dirs = HashSet::new();
         for root in project::normalized_roots(&ctx.roots) {
             if !is_directory_if_present(root)? {
                 continue;
@@ -51,6 +69,15 @@ impl Op for Leftovers {
                 }
                 if let Err(error) = scratch_findings(&repository, &mut findings) {
                     findings.push(project::unjudged_finding(".scratch", &repository, &error));
+                }
+                if let Err(error) =
+                    tmp_objdir_findings(&repository, &mut seen_objects_dirs, &mut findings)
+                {
+                    findings.push(project::unjudged_finding(
+                        "Git tmp_objdir",
+                        &repository,
+                        &error,
+                    ));
                 }
             }
             for result in std::fs::read_dir(root)
@@ -112,6 +139,7 @@ impl Op for Leftovers {
                 }
             }
         }
+        local_model_store_findings(&ctx.home, &mut findings);
         if !unread.is_empty() {
             findings.push(project::unread_folders_finding("leftovers", &unread));
         }
@@ -177,6 +205,166 @@ fn scratch_findings(repository: &Path, findings: &mut Vec<Finding>) -> Result<()
         );
     }
     Ok(())
+}
+
+/// Direct `tmp_objdir-*` directories under a repository's `<gitdir>/objects`
+/// (and its common objects directory when a linked worktree has `commondir`).
+/// Deduplicated by `(dev, ino)` so linked worktrees sharing one object store
+/// report each debris directory once. Never follows symlinks or modifies `.git`.
+fn tmp_objdir_findings(
+    repository: &Path,
+    seen_objects_dirs: &mut HashSet<(u64, u64)>,
+    findings: &mut Vec<Finding>,
+) -> Result<()> {
+    let dot_git = repository.join(".git");
+    let metadata = match std::fs::symlink_metadata(&dot_git) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", dot_git.display()));
+        }
+    };
+    let mut objects_dirs: Vec<PathBuf> = Vec::new();
+    if metadata.is_dir() {
+        objects_dirs.push(dot_git.join("objects"));
+    } else if metadata.is_file() {
+        let bytes = std::fs::read(&dot_git)
+            .with_context(|| format!("cannot read {}", dot_git.display()))?;
+        let Some(target) = project::gitfile_target(&bytes) else {
+            return Ok(());
+        };
+        let gitdir = repository.join(target);
+        objects_dirs.push(gitdir.join("objects"));
+        let commondir_file = gitdir.join("commondir");
+        match std::fs::symlink_metadata(&commondir_file) {
+            Ok(common_metadata) if common_metadata.is_file() => {
+                let common_bytes = std::fs::read(&commondir_file)
+                    .with_context(|| format!("cannot read {}", commondir_file.display()))?;
+                let mut common_target = common_bytes.as_slice();
+                while let [rest @ .., b'\n' | b'\r'] = common_target {
+                    common_target = rest;
+                }
+                if !common_target.is_empty() {
+                    objects_dirs.push(
+                        gitdir
+                            .join(OsStr::from_bytes(common_target))
+                            .join("objects"),
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("cannot inspect {}", commondir_file.display()));
+            }
+        }
+    } else {
+        return Ok(());
+    }
+
+    for objects_dir in objects_dirs {
+        let objects_metadata = match std::fs::symlink_metadata(&objects_dir) {
+            Ok(objects_metadata) => objects_metadata,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("cannot inspect {}", objects_dir.display()));
+            }
+        };
+        if !objects_metadata.is_dir() {
+            continue;
+        }
+        if !seen_objects_dirs.insert((objects_metadata.dev(), objects_metadata.ino())) {
+            continue;
+        }
+        let mut debris = Vec::new();
+        for entry in std::fs::read_dir(&objects_dir)
+            .with_context(|| format!("cannot read {}", objects_dir.display()))?
+        {
+            let entry = entry.with_context(|| format!("cannot read {}", objects_dir.display()))?;
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("cannot inspect {}", entry.path().display()))?;
+            if file_type.is_dir() && entry.file_name().as_bytes().starts_with(b"tmp_objdir-") {
+                debris.push(entry.path());
+            }
+        }
+        debris.sort();
+        for path in debris {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            push_measured(
+                findings,
+                format!("Git tmp_objdir `{name}`"),
+                &path,
+                "review manually; interrupted Git operations can leave tmp_objdir-* — devtrim never modifies .git",
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Report-only visibility for local AI model stores under `home`.
+fn local_model_store_findings(home: &Path, findings: &mut Vec<Finding>) {
+    for (relative, label, note) in LOCAL_MODEL_STORES {
+        let path = home.join(relative);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                findings.push(project::unjudged_finding(
+                    label,
+                    &path,
+                    &anyhow::Error::from(error),
+                ));
+                continue;
+            }
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+        let measured = measure_lenient(&path, &Default::default());
+        if measured.bytes == 0 && measured.unread == 0 {
+            continue;
+        }
+        let mut full_note = (*note).to_owned();
+        if let Some(lower_bound) = measured.lower_bound_note() {
+            full_note.push_str(&format!("; {lower_bound}"));
+        }
+        let error = measured.partial_read_error(&path);
+        findings.push(Finding::new(
+            *label,
+            Some(path),
+            measured.bytes,
+            &full_note,
+            1,
+            Action::Info,
+        ));
+        if let Some(error) = error {
+            findings.push(project::error_finding(
+                format!("{label}: partial size"),
+                error,
+            ));
+        }
+    }
 }
 
 /// One report-only row for `path`, measured leniently: a folder read only in
@@ -290,5 +478,76 @@ mod tests {
             1,
             "{errors:?}"
         );
+    }
+
+    #[test]
+    fn tmp_objdir_findings_deduplicate_shared_objects_and_skip_symlinks() {
+        let fixture = crate::ops::TestFixture::new("devtrim-leftovers-tmp-objdir");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let root = home.join("dev");
+        let main_repo = root.join("app");
+        let objects = main_repo.join(".git/objects");
+        let debris = objects.join("tmp_objdir-incoming-123456");
+        std::fs::create_dir_all(&debris).unwrap();
+        std::fs::write(debris.join("pack"), "abandoned pack bytes").unwrap();
+        std::fs::create_dir_all(objects.join("pack")).unwrap();
+        let outside = home.join("outside-dir");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, objects.join("tmp_objdir-symlink")).unwrap();
+
+        // A linked worktree pointing back to the same repository's objects store
+        // must not report the shared `tmp_objdir-*` a second time.
+        let worktree_gitdir = main_repo.join(".git/worktrees/feature");
+        std::fs::create_dir_all(&worktree_gitdir).unwrap();
+        std::fs::write(worktree_gitdir.join("commondir"), "../..\n").unwrap();
+        let linked = root.join("app-feature");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(
+            linked.join(".git"),
+            format!("gitdir: {}\n", worktree_gitdir.display()),
+        )
+        .unwrap();
+
+        let ctx = Ctx {
+            roots: vec![root],
+            roots_origin: crate::safety::RootsOrigin::Flag,
+            ..Ctx::for_test(home)
+        };
+        let findings = Leftovers.scan(&ctx, &Default::default()).unwrap();
+        let reported: Vec<_> = findings.iter().filter_map(Finding::target).collect();
+        assert_eq!(reported, vec![debris.as_path()], "{findings:?}");
+        assert_eq!(findings[0].action, Action::Info);
+        assert!(findings[0].size_bytes > 0);
+    }
+
+    #[test]
+    fn local_model_stores_report_non_empty_real_directories_only() {
+        let fixture = crate::ops::TestFixture::new("devtrim-leftovers-models");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+
+        let ollama = home.join(".ollama/models");
+        std::fs::create_dir_all(&ollama).unwrap();
+        std::fs::write(ollama.join("weights.bin"), "weights").unwrap();
+
+        // Symlinked LM Studio store must be ignored.
+        let external = home.join("external-models");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("weights.bin"), "weights").unwrap();
+        std::fs::create_dir_all(home.join(".lmstudio")).unwrap();
+        std::os::unix::fs::symlink(&external, home.join(".lmstudio/models")).unwrap();
+
+        let ctx = Ctx {
+            roots: vec![home.join("empty-root")],
+            roots_origin: crate::safety::RootsOrigin::Flag,
+            ..Ctx::for_test(home)
+        };
+        let findings = Leftovers.scan(&ctx, &Default::default()).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].target(), Some(ollama.as_path()));
+        assert_eq!(findings[0].label, "Ollama local models");
+        assert_eq!(findings[0].action, Action::Info);
+        assert!(findings[0].size_bytes > 0);
     }
 }

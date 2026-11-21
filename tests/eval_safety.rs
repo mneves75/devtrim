@@ -933,6 +933,7 @@ fn eval_noninteractive_apply_requires_explicit_consent() {
       '--host unix:///var/run/docker.sock version') printf 'Docker 28\n' ;;
       '--host unix:///var/run/docker.sock system df'*)
         printf 'Images\t2GB\t1GB\t0\nBuild Cache\t3GB\t1GB\t0\n' ;;
+      '--host unix:///var/run/docker.sock buildx ls'*) ;;
       '--host unix:///var/run/docker.sock image prune -a -f' | '--host unix:///var/run/docker.sock builder prune -a -f')
         printf '%s\n' "$*" >> "$HOME/pruned.log" ;;
       *) exit 1 ;;

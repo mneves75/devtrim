@@ -1,13 +1,15 @@
-# DESIGN.md — devtrim site visual world (v5, replaces v4)
+# DESIGN.md — devtrim site visual world (v6, replaces v5)
 
-v5 (2026-11-17) keeps v4's world (tokens, palette, real frames, one accent)
-and changes how the landing page tells the story, for the 0.15.0 interface
-(plan 019): the disk overview, live scan progress, apply progress with a stop
-between items, and `analyze`'s culprit line and verdicts. v4's rendered page
-put a 24-row frame at a 1.25rem cap under a row of tabs, so the screen fell
-below the fold and its blank rows filled the first viewport. v5 sets the steps
-as a rail beside the screen and makes room for screens that do not exist yet
-without ever showing an empty box.
+v6 (2026-11-21) keeps v5's visual world (dark ground, one lime accent, real
+binary frames, zero external fonts/JS deps, hash-only CSP) and applies 2026+
+web platform craft for 0.16.0 (plan 020): single-row horizontal tab scrolling
+with `@property` scroll-driven edge fades and forced-colors-safe border
+underlines (with progressive `anchor-name` sliding underline), `hidden="until-found"`
++ `beforematch` so inactive walkthrough steps stay searchable, a container-queried
+`.table-wrapper` for the commands table, `color-scheme: only dark` on `.term`,
+sticky translucent top bar with architectural hairlines, a `subgrid`-aligned
+pillars strip, and fixed `frames.py` captures (`tui:overview` 54 columns with
+category sizes visible, `tui:progress` live mid-apply progress bar).
 
 Kept deliberately: the headline, the pitch, the palette and every token. The
 two reference products studied for ideas (fix-storage, poo) contributed ideas
@@ -76,8 +78,10 @@ built binary before the frame is regenerated.
      activation; `aria-orientation` follows the layout.
      The selected step carries the TUI's own cursor `›` in the accent, set on
      the tab outside the span that names it, so it is never read aloud.
-   - All panels share one grid cell; the inactive ones are `inert` and
-     `visibility: hidden`, so the rail never moves when a shorter screen shows.
+   - All panels share one grid cell; inactive ones use `hidden="until-found"`
+     with a `beforematch` listener (no `inert`) and `visibility: hidden` so
+     find-in-page can reveal them while the rail never moves when a shorter
+     screen shows.
    - The Apply step needs an apply, and `frames.py` never applies a plan.
      Open question: whether to capture one, for instance a permanent-mode
      apply of the disposable demo home, which would keep anything out of the

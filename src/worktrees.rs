@@ -17,8 +17,8 @@ use crate::report::{Action, Finding};
 use crate::safety::{Ctx, measure_lenient};
 
 /// What the report cannot see, stated once with every run.
-pub(crate) const NOT_ASSESSED: &str = "not assessed: uncommitted or untracked work, ignored \
-     files, open files and running processes. `git worktree remove <path>` runs the \
+pub(crate) const NOT_ASSESSED: &str = "not assessed: ignored files, submodule changes, open files \
+     by other users, or whether work is still wanted. `git worktree remove <path>` runs the \
      repository's configured programs: use it only in a repository you trust, after your own \
      review";
 
@@ -34,6 +34,15 @@ pub(crate) fn report(ctx: &Ctx) -> WorktreesReport {
         findings: Vec::new(),
         errors: Vec::new(),
         notes: Vec::new(),
+    };
+    let process_cwds = match crate::safety::build_process_cwds() {
+        Ok(cwds) => Some(cwds),
+        Err(error) => {
+            report
+                .errors
+                .push(format!("cannot verify active processes: {error:#}"));
+            None
+        }
     };
     let mut scan_roots = Vec::with_capacity(roots.len());
     for root in &roots {
@@ -78,7 +87,14 @@ pub(crate) fn report(ctx: &Ctx) -> WorktreesReport {
                     continue;
                 }
             }
-            match list_repository(&repository, &scan_roots, &mut listed, &mut report.errors) {
+            match list_repository(
+                &repository,
+                &scan_roots,
+                process_cwds.as_deref(),
+                &ctx.home,
+                &mut listed,
+                &mut report.errors,
+            ) {
                 Ok(rows) => report.findings.extend(rows),
                 Err(error) => report.errors.push(format!("{error:#}")),
             }
@@ -106,6 +122,8 @@ pub(crate) fn report(ctx: &Ctx) -> WorktreesReport {
 fn list_repository(
     repository: &Path,
     scan_roots: &[PathBuf],
+    process_cwds: Option<&[PathBuf]>,
+    home: &Path,
     listed: &mut HashSet<(u64, u64)>,
     errors: &mut Vec<String>,
 ) -> Result<Vec<Finding>> {
@@ -142,6 +160,40 @@ fn list_repository(
         let size = match leads_back(&record.path, scan_roots, common) {
             Ok(()) => {
                 listed.extend(identity(&record.path));
+                let active = match process_cwds {
+                    Some(cwds) => match project::repo_has_active_build(&record.path, cwds, home) {
+                        Ok(in_use) => Some(in_use),
+                        Err(error) => {
+                            errors.push(format!("{error:#}"));
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                let dirty = match project::worktree_dirty_count(&record.path) {
+                    Ok(count) => Some(count),
+                    Err(error) => {
+                        errors.push(format!("{error:#}"));
+                        None
+                    }
+                };
+                let activity = match project::repo_last_activity(&record.path) {
+                    Ok(date) => Some(format!("last active {date} UTC")),
+                    Err(error) => {
+                        if project::unborn_branch(&record.path) {
+                            Some("no commits yet".to_owned())
+                        } else {
+                            errors.push(format!("{error:#}"));
+                            None
+                        }
+                    }
+                };
+                if let Some(state) = format_worktree_state(active, dirty) {
+                    note.push_str(&format!("; {state}"));
+                }
+                if let Some(activity) = activity {
+                    note.push_str(&format!("; {activity}"));
+                }
                 let nested: BTreeSet<PathBuf> = paths
                     .iter()
                     .filter(|path| *path != &record.path)
@@ -169,6 +221,24 @@ fn list_repository(
         ));
     }
     Ok(rows)
+}
+
+/// Factual worktree state from active-process and `git status` probes.
+/// Never emits `clean` unless both probes succeeded, so a failed process check
+/// cannot read as an idle worktree.
+fn format_worktree_state(active: Option<bool>, dirty: Option<usize>) -> Option<String> {
+    if active == Some(true) {
+        return Some("in-use".to_owned());
+    }
+    match (active, dirty) {
+        (_, Some(count)) if count > 0 => Some(if count == 1 {
+            "dirty (1 change)".to_owned()
+        } else {
+            format!("dirty ({count} changes)")
+        }),
+        (Some(false), Some(0)) => Some("clean".to_owned()),
+        _ => None,
+    }
 }
 
 /// Whether a listed worktree may be measured: a real directory inside a scan

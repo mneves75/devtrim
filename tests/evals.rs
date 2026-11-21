@@ -1817,6 +1817,7 @@ fn finding_at<'a>(document: &'a serde_json::Value, path: &Path) -> &'a serde_jso
 fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_repository() {
     let sandbox = Sandbox::in_target("eval-worktrees");
     sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    sandbox.script("pgrep", "exit 1");
     let dev = sandbox.path().join("dev");
     let app = dev.join("app");
     write(&app.join("README"), "readme");
@@ -1991,12 +1992,178 @@ fn eval_worktrees_lists_and_sizes_only_worktrees_that_lead_back_to_their_reposit
     );
 }
 
+#[test]
+fn eval_worktrees_reports_dirty_clean_activity_and_in_use_state() {
+    let sandbox = Sandbox::in_target("eval-worktrees-state");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let dev = sandbox.path().join("dev");
+    let app = dev.join("app");
+    write(&app.join("README"), "readme");
+    repo(&sandbox, &app, STALE, &["README"]);
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "quiet-branch",
+            "../app-clean",
+        ],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "dirty-branch",
+            "../app-dirty",
+        ],
+    );
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "active-branch",
+            "../app-active",
+        ],
+    );
+    let clean = dev.join("app-clean");
+    let dirty = dev.join("app-dirty");
+    let active = dev.join("app-active");
+    write(&dirty.join("untracked-a.txt"), "a");
+    write(&dirty.join("untracked-b.txt"), "b");
+
+    let active_real = active.canonicalize().unwrap();
+    sandbox.script("pgrep", "printf '4242\\n'");
+    sandbox.script(
+        "lsof",
+        &format!("printf 'p4242\\nfcwd\\nn{}\\n'", active_real.display()),
+    );
+
+    let output = run(
+        &sandbox,
+        &["worktrees", "--root", dev.to_str().unwrap(), "--json"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document = json(&output);
+    let note = |path: &Path| {
+        finding_at(&document, path)["note"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert!(note(&clean).contains("clean"), "{document}");
+    assert!(note(&clean).contains("last active "), "{document}");
+    assert!(note(&dirty).contains("dirty (2 changes)"), "{document}");
+    assert!(note(&active).contains("in-use"), "{document}");
+    assert!(
+        document["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|finding| finding["action"]["type"] == "info"),
+        "worktrees must remain strictly read-only: {document}"
+    );
+
+    // Fail-closed: if the process probe fails, clean must not be claimed and
+    // the error must be reported with nonzero status.
+    sandbox.script("pgrep", "printf 'pgrep failed\\n' >&2; exit 2");
+    let failed_probe = run(
+        &sandbox,
+        &["worktrees", "--root", dev.to_str().unwrap(), "--json"],
+    );
+    assert!(!failed_probe.status.success());
+    let failed_doc = json(&failed_probe);
+    assert!(
+        !finding_at(&failed_doc, &clean)["note"]
+            .as_str()
+            .unwrap()
+            .contains("clean"),
+        "a failed process probe must never claim clean: {failed_doc}"
+    );
+    assert!(
+        !failed_doc["errors"].as_array().unwrap().is_empty(),
+        "a failed process probe must record an error: {failed_doc}"
+    );
+}
+
+#[test]
+fn eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only() {
+    let sandbox = Sandbox::in_target("eval-leftovers-new");
+    sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    let dev = sandbox.path().join("dev");
+    let app = dev.join("app");
+    write(&app.join("README"), "readme");
+    repo(&sandbox, &app, STALE, &["README"]);
+    let tmp_objdir = app.join(".git/objects/tmp_objdir-incoming-abc");
+    write(&tmp_objdir.join("pack.tmp"), &"x".repeat(4096));
+    let ollama_models = sandbox.path().join(".ollama/models");
+    write(&ollama_models.join("blobs/sha256-model"), &"m".repeat(4096));
+    let lmstudio_models = sandbox.path().join(".lmstudio/models");
+    write(&lmstudio_models.join("org/model.gguf"), &"g".repeat(4096));
+
+    let before = Tree::snapshot(sandbox.path());
+    let preview = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            dev.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(preview.status.success(), "{}", json(&preview));
+    let document = json(&preview);
+    for expected in [&tmp_objdir, &ollama_models, &lmstudio_models] {
+        let finding = finding_at(&document, expected);
+        assert_eq!(finding["action"]["type"], "info", "{document}");
+        assert!(finding["size_bytes"].as_u64().unwrap() > 0, "{document}");
+    }
+
+    let apply = run(
+        &sandbox,
+        &[
+            "clean",
+            "leftovers",
+            "--root",
+            dev.to_str().unwrap(),
+            "--apply",
+            "--yolo",
+            "--json",
+        ],
+    );
+    assert_eq!(apply.status.code(), Some(2), "{}", json(&apply));
+    before.assert_only(
+        &Tree::snapshot(sandbox.path()),
+        &Allowed::default(),
+        "eval/leftovers-read-only",
+    );
+}
+
 /// A worktree that cannot be read in full is still listed with its
 /// lower-bound size, and the partial read is an error: the run exits nonzero.
 #[test]
 fn eval_worktrees_partial_read_keeps_the_row_and_fails_the_run() {
     let sandbox = Sandbox::in_target("eval-worktrees-partial");
     sandbox.script("git", &format!("exec '{}' \"$@\"", real_git().display()));
+    sandbox.script("pgrep", "exit 1");
     let dev = sandbox.path().join("dev");
     let app = dev.join("app");
     write(&app.join("README"), "readme");

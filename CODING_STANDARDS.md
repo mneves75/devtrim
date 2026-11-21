@@ -229,7 +229,7 @@ exactly four:
   trusted only inside that owner's cache namespace.
 - `hardened_git` in `src/ops/project.rs` — `"git"`, from `repo_last_activity`
   through `hardened_git_log`, and as a literal from `TrackedIndex::list`,
-  `unborn_branch`, `worktree_listing`, `git_common_dir`, `ignores_path` and `records_submodule`, its
+  `unborn_branch`, `worktree_listing`, `worktree_dirty_count`, `git_common_dir`, `ignores_path` and `records_submodule`, its
   only production callers.
 
 The only other variable programs in the tree are inside `#[cfg(test)] mod

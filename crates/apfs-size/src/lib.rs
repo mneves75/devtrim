@@ -6,10 +6,10 @@
 //! APFS reports the part that is the file's alone as
 //! `ATTR_CMNEXT_PRIVATESIZE`: "the number of bytes that are not trapped inside
 //! a clone or snapshot, and which would be freed immediately if the file were
-//! deleted" (getattrlist(2)). This crate reads it, with the file's clone
-//! family, through one `getattrlist(2)` call, the only `unsafe` code in
-//! devtrim, and names the volume holding a file (`statfs(2)`), so the caller
-//! uses the private size only where it is true.
+//! deleted" (getattrlist(2)). This crate reads it through `getattrlist(2)` and
+//! batches whole directories through `getattrlistbulk(2)`, the only `unsafe`
+//! FFI calls in devtrim, and names the volume holding a file (`statfs(2)`), so
+//! the caller uses the private size only where it is true.
 
 #![deny(unsafe_code)]
 #![cfg_attr(
@@ -22,7 +22,9 @@
     )
 )]
 
+use std::ffi::OsString;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// One regular file's blocks, as APFS accounts for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,20 +33,40 @@ pub struct FileBlocks {
     pub allocated: u64,
     /// The bytes deleting this file frees now (`ATTR_CMNEXT_PRIVATESIZE`).
     pub private: u64,
-    /// The clone family, when the file has full clones.
-    pub clone: Option<CloneFamily>,
 }
 
-/// Files that are full clones of one another share one data stream.
+/// Entry type reported by [`read_dir_bulk`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CloneFamily {
-    /// The data stream's identity on its volume (`ATTR_CMNEXT_CLONEID`).
-    pub id: u64,
-    /// Files in the family, this one included (`ATTR_CMNEXT_CLONE_REFCNT`).
-    pub refcount: u32,
-    /// Bytes this file shares with the family: `allocated - private`. They are
-    /// freed only once every member is deleted.
-    pub shared: u64,
+pub enum EntryKind {
+    File,
+    Directory,
+    Other,
+}
+
+/// One directory entry returned by [`read_dir_bulk`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkEntry {
+    pub name: OsString,
+    pub kind: EntryKind,
+    pub dev: u64,
+    pub ino: u64,
+    pub nlink: u32,
+    pub allocated: u64,
+    /// APFS private bytes for an uncompressed regular file, or `None` when
+    /// APFS withholds it (compressed file, non-APFS volume, or non-regular entry).
+    pub private: Option<u64>,
+    pub modified: Option<SystemTime>,
+}
+
+/// Why [`read_dir_bulk`] could not read a directory.
+#[derive(Debug)]
+pub enum BulkError {
+    /// The platform or filesystem does not support `getattrlistbulk(2)` for
+    /// this attribute set; callers should fall back to `readdir` + `lstat`.
+    Unsupported,
+    /// A real filesystem error (e.g. `EACCES`, `EIO`) that callers must
+    /// surface rather than silently dropping.
+    Io(std::io::Error),
 }
 
 /// Reads the blocks of the regular file at `path` without following a link.
@@ -71,6 +93,16 @@ pub fn file_blocks(path: &Path, dev: u64, ino: u64) -> Option<FileBlocks> {
         let _ = (path, dev, ino);
         None
     }
+}
+
+/// Reads every entry of `directory` in batched `getattrlistbulk(2)` calls
+/// without following symlinks. Returns [`BulkError::Unsupported`] off macOS or
+/// when the filesystem cannot serve the requested attribute set, and
+/// [`BulkError::Io`] on real I/O errors so callers fail closed.
+#[cfg(not(target_os = "macos"))]
+pub fn read_dir_bulk(directory: &Path) -> Result<Vec<BulkEntry>, BulkError> {
+    let _ = directory;
+    Err(BulkError::Unsupported)
 }
 
 /// The mounted volume holding a file.
@@ -120,40 +152,41 @@ fn c_string(chars: &[std::ffi::c_char]) -> Option<Vec<u8>> {
 }
 
 // Constants from the macOS SDK's <sys/attr.h>, <sys/stat.h> and <sys/vnode.h>
-// (checked against MacOSX27 SDK and libc 0.2.191; libc lacks
-// ATTR_CMNEXT_CLONE_REFCNT and VREG). Declared here so `parse` and its tests
-// build on every target.
+// (checked against MacOSX27 SDK and libc 0.2.191; libc lacks ATTR_CMN_ERROR and VREG/VDIR).
+// Declared here so `parse` and `parse_bulk_batch` build and test on every target.
 const ATTR_BIT_MAP_COUNT: u16 = 5;
+const ATTR_CMN_NAME: u32 = 0x0000_0001;
 const ATTR_CMN_DEVID: u32 = 0x0000_0002;
 const ATTR_CMN_OBJTYPE: u32 = 0x0000_0008;
+const ATTR_CMN_MODTIME: u32 = 0x0000_0400;
 const ATTR_CMN_FLAGS: u32 = 0x0004_0000;
 const ATTR_CMN_FILEID: u32 = 0x0200_0000;
+const ATTR_CMN_ERROR: u32 = 0x2000_0000;
 const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
 const ATTR_FILE_LINKCOUNT: u32 = 0x0000_0001;
 const ATTR_FILE_ALLOCSIZE: u32 = 0x0000_0004;
 const ATTR_CMNEXT_PRIVATESIZE: u32 = 0x0000_0008;
-const ATTR_CMNEXT_CLONEID: u32 = 0x0000_0100;
-const ATTR_CMNEXT_CLONE_REFCNT: u32 = 0x0000_1000;
 const FSOPT_NOFOLLOW: u32 = 0x0000_0001;
 const FSOPT_PACK_INVAL_ATTRS: u32 = 0x0000_0008;
 const FSOPT_ATTR_CMN_EXTENDED: u32 = 0x0000_0020;
-/// `VREG` in `enum vtype`: a regular file.
+/// `VREG` and `VDIR` in `enum vtype`.
 const VREG: u32 = 1;
+const VDIR: u32 = 2;
 const UF_COMPRESSED: u32 = 0x0000_0020;
 
 const COMMON: u32 = ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_FLAGS | ATTR_CMN_FILEID;
 const FILE: u32 = ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE;
 /// With `FSOPT_ATTR_CMN_EXTENDED` the fork group is read as extended common
 /// attributes.
-const EXTENDED: u32 = ATTR_CMNEXT_PRIVATESIZE | ATTR_CMNEXT_CLONEID | ATTR_CMNEXT_CLONE_REFCNT;
+const EXTENDED: u32 = ATTR_CMNEXT_PRIVATESIZE;
 /// `FSOPT_PACK_INVAL_ATTRS` gives every requested attribute its slot, so the
 /// layout below is fixed and the returned bitmaps say which slots hold values.
 #[cfg(target_os = "macos")]
 const OPTIONS: u32 = FSOPT_NOFOLLOW | FSOPT_PACK_INVAL_ATTRS | FSOPT_ATTR_CMN_EXTENDED;
 
-// Buffer layout: a u32 length, the returned `attribute_set_t` (common, vol,
-// dir, file, fork), then each value in group and bit order, each aligned to
-// 4 bytes, 64-bit values included (getattrlist(2), "Attribute buffer").
+// Single-file `getattrlist` buffer layout: a u32 length, the returned
+// `attribute_set_t` (common, vol, dir, file, fork), then each value in group
+// and bit order, each aligned to 4 bytes, 64-bit values included.
 const RETURNED_COMMON: usize = 4;
 const RETURNED_FILE: usize = 16;
 const RETURNED_EXTENDED: usize = 20;
@@ -164,15 +197,45 @@ const FILEID: usize = 36; // u64
 // LINKCOUNT (u32) at 44 is requested to keep the reference layout and unused.
 const ALLOCSIZE: usize = 48; // off_t
 const PRIVATESIZE: usize = 56; // off_t
-const CLONEID: usize = 64; // u64
-const CLONE_REFCNT: usize = 72; // u32
-const END: usize = 76;
+const END: usize = 64;
 const BUFFER_SIZE: usize = 128;
+
+// Batched `getattrlistbulk` record layout (with FSOPT_PACK_INVAL_ATTRS |
+// FSOPT_ATTR_CMN_EXTENDED). `ATTR_CMN_ERROR` immediately follows
+// `ATTR_CMN_RETURNED_ATTRS` per `getattrlistbulk(2)`; the remaining fixed
+// slots appear in strict bit order within each group, aligned to 4 bytes,
+// followed by variable-length name bytes.
+const BULK_COMMON: u32 = ATTR_CMN_NAME
+    | ATTR_CMN_DEVID
+    | ATTR_CMN_OBJTYPE
+    | ATTR_CMN_MODTIME
+    | ATTR_CMN_FLAGS
+    | ATTR_CMN_FILEID
+    | ATTR_CMN_ERROR;
+#[cfg(target_os = "macos")]
+const BULK_OPTIONS: u64 = (FSOPT_PACK_INVAL_ATTRS | FSOPT_ATTR_CMN_EXTENDED) as u64;
+const BULK_ERROR: usize = 24; // u32 (immediately after ATTR_CMN_RETURNED_ATTRS)
+const BULK_NAME_REF: usize = 28; // attrreference_t (i32 offset, u32 length)
+const BULK_DEVID: usize = 36; // dev_t (i32)
+const BULK_OBJTYPE: usize = 40; // fsobj_type_t (u32)
+const BULK_MODTIME_SEC: usize = 44; // timespec.tv_sec (i64 on 64-bit Darwin)
+const BULK_MODTIME_NSEC: usize = 52; // timespec.tv_nsec (i64 on 64-bit Darwin)
+const BULK_FLAGS: usize = 60; // u32
+const BULK_FILEID: usize = 64; // u64
+const BULK_COMMON_END: usize = 72;
+// `fileattr` (linkcount + allocsize) is packed only for regular files (`VREG`);
+// directories and symlinks omit the file group even with `FSOPT_PACK_INVAL_ATTRS`.
+const BULK_LINKCOUNT: usize = 72; // u32
+const BULK_ALLOCSIZE: usize = 76; // off_t (i64)
+const BULK_PRIVATESIZE: usize = 84; // off_t (i64)
+const BULK_FILE_END: usize = 92;
+#[cfg(target_os = "macos")]
+const BULK_BUFFER_SIZE: usize = 64 * 1024;
 
 #[cfg(target_os = "macos")]
 #[allow(
     unsafe_code,
-    reason = "getattrlist(2) has no safe wrapper; this is the one FFI call in devtrim"
+    reason = "getattrlist(2) has no safe wrapper; isolated inside apfs-size"
 )]
 fn read_attributes(path: &Path) -> Option<[u8; BUFFER_SIZE]> {
     use std::os::unix::ffi::OsStrExt;
@@ -205,6 +268,70 @@ fn read_attributes(path: &Path) -> Option<[u8; BUFFER_SIZE]> {
     (status == 0).then_some(buffer)
 }
 
+/// Reads every entry of `directory` in batched `getattrlistbulk(2)` calls
+/// without following symlinks. Returns [`BulkError::Unsupported`] when the
+/// filesystem cannot serve the requested attribute set, and [`BulkError::Io`]
+/// on real I/O errors so callers fail closed.
+#[cfg(target_os = "macos")]
+#[allow(
+    unsafe_code,
+    reason = "getattrlistbulk(2) has no safe wrapper; isolated inside apfs-size"
+)]
+pub fn read_dir_bulk(directory: &Path) -> Result<Vec<BulkEntry>, BulkError> {
+    use rustix::fs::{Mode, OFlags, open};
+    use std::os::fd::AsRawFd;
+
+    let handle = open(
+        directory,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|errno| BulkError::Io(std::io::Error::from_raw_os_error(errno.raw_os_error())))?;
+
+    let mut request = libc::attrlist {
+        bitmapcount: ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: ATTR_CMN_RETURNED_ATTRS | BULK_COMMON,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: FILE,
+        forkattr: EXTENDED,
+    };
+    let mut buffer = vec![0u8; BULK_BUFFER_SIZE];
+    let mut entries = Vec::new();
+    loop {
+        // SAFETY: `handle` is an open directory fd that outlives the call;
+        // `request` is a valid initialized `struct attrlist`; `buffer` is
+        // writable for `buffer.len()` bytes and the kernel writes at most that
+        // many bytes. The call reads directory metadata only and retains no
+        // pointer after it returns.
+        let count = unsafe {
+            libc::getattrlistbulk(
+                handle.as_raw_fd(),
+                (&raw mut request).cast(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                BULK_OPTIONS,
+            )
+        };
+        if count == 0 {
+            return Ok(entries);
+        }
+        if count < 0 {
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::EINTR) => continue,
+                Some(libc::ENOTSUP | libc::EOPNOTSUPP | libc::EINVAL | libc::ENOSYS) => {
+                    return Err(BulkError::Unsupported);
+                }
+                _ => return Err(BulkError::Io(error)),
+            }
+        }
+        let expected = usize::try_from(count).map_err(|_| BulkError::Unsupported)?;
+        parse_bulk_batch(&buffer, expected, &mut entries)?;
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Parsed {
     dev: u64,
@@ -212,71 +339,216 @@ struct Parsed {
     blocks: FileBlocks,
 }
 
-fn bytes<const N: usize>(buf: &[u8], offset: usize) -> Option<[u8; N]> {
-    buf.get(offset..offset.checked_add(N)?)?.try_into().ok()
+fn bytes<const N: usize>(buffer: &[u8], offset: usize) -> Option<[u8; N]> {
+    buffer.get(offset..offset.checked_add(N)?)?.try_into().ok()
 }
 
-fn u32_at(buf: &[u8], offset: usize) -> Option<u32> {
-    bytes(buf, offset).map(u32::from_ne_bytes)
+fn u32_at(buffer: &[u8], offset: usize) -> Option<u32> {
+    bytes(buffer, offset).map(u32::from_ne_bytes)
 }
 
-fn u64_at(buf: &[u8], offset: usize) -> Option<u64> {
-    bytes(buf, offset).map(u64::from_ne_bytes)
+fn i32_at(buffer: &[u8], offset: usize) -> Option<i32> {
+    bytes(buffer, offset).map(i32::from_ne_bytes)
 }
 
-fn size_at(buf: &[u8], offset: usize) -> Option<u64> {
-    bytes(buf, offset)
-        .map(i64::from_ne_bytes)
-        .and_then(|size| u64::try_from(size).ok())
+fn u64_at(buffer: &[u8], offset: usize) -> Option<u64> {
+    bytes(buffer, offset).map(u64::from_ne_bytes)
+}
+
+fn i64_at(buffer: &[u8], offset: usize) -> Option<i64> {
+    bytes(buffer, offset).map(i64::from_ne_bytes)
+}
+
+fn size_at(buffer: &[u8], offset: usize) -> Option<u64> {
+    i64_at(buffer, offset).and_then(|size| u64::try_from(size).ok())
+}
+
+fn system_time_from_timespec(seconds: i64, nanoseconds: i64) -> Option<SystemTime> {
+    let nanos = u32::try_from(nanoseconds)
+        .ok()
+        .filter(|&ns| ns < 1_000_000_000)?;
+    if seconds >= 0 {
+        UNIX_EPOCH.checked_add(Duration::new(seconds as u64, nanos))
+    } else if nanos == 0 {
+        UNIX_EPOCH.checked_sub(Duration::new(seconds.unsigned_abs(), 0))
+    } else {
+        // Negative `tv_sec` with positive `tv_nsec`: `-1s + 200ms = -0.8s`.
+        let whole_before = seconds.unsigned_abs().checked_sub(1)?;
+        let nanos_before = 1_000_000_000u32.checked_sub(nanos)?;
+        UNIX_EPOCH.checked_sub(Duration::new(whole_before, nanos_before))
+    }
+}
+
+#[cfg(unix)]
+fn os_string_from_bytes(raw: &[u8]) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    OsString::from_vec(raw.to_vec())
+}
+
+#[cfg(not(unix))]
+fn os_string_from_bytes(raw: &[u8]) -> OsString {
+    OsString::from(String::from_utf8_lossy(raw).into_owned())
+}
+
+/// Parses `expected` packed `getattrlistbulk` records from `buffer`. Every
+/// slice read is bounds-checked; a malformed or unsupported reply triggers a
+/// safe fallback (`BulkError::Unsupported`), while a per-entry kernel error
+/// (`ATTR_CMN_ERROR`) propagates as `BulkError::Io` so callers fail closed.
+fn parse_bulk_batch(
+    buffer: &[u8],
+    expected: usize,
+    output: &mut Vec<BulkEntry>,
+) -> Result<(), BulkError> {
+    let mut cursor = 0usize;
+    for _ in 0..expected {
+        let length = u32_at(buffer, cursor)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(BulkError::Unsupported)?;
+        if length < BULK_COMMON_END {
+            return Err(BulkError::Unsupported);
+        }
+        let end = cursor.checked_add(length).ok_or(BulkError::Unsupported)?;
+        let record = buffer.get(cursor..end).ok_or(BulkError::Unsupported)?;
+        cursor = end;
+
+        let common = u32_at(record, RETURNED_COMMON).ok_or(BulkError::Unsupported)?;
+        let file = u32_at(record, RETURNED_FILE).ok_or(BulkError::Unsupported)?;
+        let extended = u32_at(record, RETURNED_EXTENDED).ok_or(BulkError::Unsupported)?;
+
+        if common & ATTR_CMN_ERROR != 0 {
+            let code = u32_at(record, BULK_ERROR).ok_or(BulkError::Unsupported)?;
+            if code != 0 {
+                let errno = i32::try_from(code).unwrap_or(libc_eio());
+                return Err(BulkError::Io(std::io::Error::from_raw_os_error(errno)));
+            }
+        }
+        if common & (ATTR_CMN_NAME | ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_FILEID)
+            != (ATTR_CMN_NAME | ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_FILEID)
+        {
+            return Err(BulkError::Unsupported);
+        }
+
+        let name_offset = i32_at(record, BULK_NAME_REF)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(BulkError::Unsupported)?;
+        let name_length = u32_at(record, BULK_NAME_REF + 4)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(BulkError::Unsupported)?;
+        let name_start = BULK_NAME_REF
+            .checked_add(name_offset)
+            .ok_or(BulkError::Unsupported)?;
+        let name_end = name_start
+            .checked_add(name_length)
+            .ok_or(BulkError::Unsupported)?;
+        let raw_name = record
+            .get(name_start..name_end)
+            .ok_or(BulkError::Unsupported)?;
+        let nul_pos = raw_name
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(raw_name.len());
+        let name_bytes = &raw_name[..nul_pos];
+        if name_bytes.is_empty() {
+            return Err(BulkError::Unsupported);
+        }
+        if name_bytes == b"." || name_bytes == b".." {
+            continue;
+        }
+
+        let dev_signed = i32_at(record, BULK_DEVID).ok_or(BulkError::Unsupported)?;
+        let dev = i64::from(dev_signed) as u64;
+        let ino = u64_at(record, BULK_FILEID).ok_or(BulkError::Unsupported)?;
+        let objtype = u32_at(record, BULK_OBJTYPE).ok_or(BulkError::Unsupported)?;
+        let kind = match objtype {
+            VREG => EntryKind::File,
+            VDIR => EntryKind::Directory,
+            _ => EntryKind::Other,
+        };
+        let modified = if common & ATTR_CMN_MODTIME != 0 {
+            let seconds = i64_at(record, BULK_MODTIME_SEC).ok_or(BulkError::Unsupported)?;
+            let nanoseconds = i64_at(record, BULK_MODTIME_NSEC).ok_or(BulkError::Unsupported)?;
+            system_time_from_timespec(seconds, nanoseconds)
+        } else {
+            None
+        };
+
+        let (nlink, allocated, private) = if kind == EntryKind::File {
+            if record.len() < BULK_FILE_END
+                || file & (ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE)
+                    != (ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE)
+            {
+                return Err(BulkError::Unsupported);
+            }
+            let nlink = u32_at(record, BULK_LINKCOUNT).ok_or(BulkError::Unsupported)?;
+            let allocated = size_at(record, BULK_ALLOCSIZE).ok_or(BulkError::Unsupported)?;
+            let compressed = common & ATTR_CMN_FLAGS != 0
+                && u32_at(record, BULK_FLAGS).is_some_and(|flags| flags & UF_COMPRESSED != 0);
+            let private = if !compressed && extended & ATTR_CMNEXT_PRIVATESIZE != 0 {
+                size_at(record, BULK_PRIVATESIZE).filter(|&value| value <= allocated)
+            } else {
+                None
+            };
+            (nlink, allocated, private)
+        } else {
+            (0, 0, None)
+        };
+
+        output.push(BulkEntry {
+            name: os_string_from_bytes(name_bytes),
+            kind,
+            dev,
+            ino,
+            nlink,
+            allocated,
+            private,
+            modified,
+        });
+    }
+    Ok(())
+}
+
+fn libc_eio() -> i32 {
+    #[cfg(target_os = "macos")]
+    {
+        libc::EIO
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        5
+    }
 }
 
 /// Reads a `getattrlist` reply. Every read is bounds-checked, so no input
 /// panics; anything missing or inconsistent is `None`.
-fn parse(buf: &[u8]) -> Option<Parsed> {
-    let length = usize::try_from(u32_at(buf, 0)?).ok()?;
+fn parse(buffer: &[u8]) -> Option<Parsed> {
+    let length = usize::try_from(u32_at(buffer, 0)?).ok()?;
     if length < END {
         return None;
     }
-    let buf = buf.get(..length)?;
-    let common = u32_at(buf, RETURNED_COMMON)?;
-    let file = u32_at(buf, RETURNED_FILE)?;
-    let extended = u32_at(buf, RETURNED_EXTENDED)?;
+    let buffer = buffer.get(..length)?;
+    let common = u32_at(buffer, RETURNED_COMMON)?;
+    let file = u32_at(buffer, RETURNED_FILE)?;
+    let extended = u32_at(buffer, RETURNED_EXTENDED)?;
     if common & COMMON != COMMON
         || file & ATTR_FILE_ALLOCSIZE == 0
         || extended & ATTR_CMNEXT_PRIVATESIZE == 0
     {
         return None;
     }
-    if u32_at(buf, OBJTYPE)? != VREG || u32_at(buf, FLAGS)? & UF_COMPRESSED != 0 {
+    if u32_at(buffer, OBJTYPE)? != VREG || u32_at(buffer, FLAGS)? & UF_COMPRESSED != 0 {
         return None;
     }
     // `st_dev` is a signed `dev_t` that std widens with sign extension.
-    let dev = bytes(buf, DEVID).map(i32::from_ne_bytes)?;
-    let allocated = size_at(buf, ALLOCSIZE)?;
-    let private = size_at(buf, PRIVATESIZE)?;
+    let dev = bytes(buffer, DEVID).map(i32::from_ne_bytes)?;
+    let allocated = size_at(buffer, ALLOCSIZE)?;
+    let private = size_at(buffer, PRIVATESIZE)?;
     if private > allocated {
         return None;
     }
-    let refcount = u32_at(buf, CLONE_REFCNT)?;
-    let clone = (extended & ATTR_CMNEXT_CLONEID != 0
-        && extended & ATTR_CMNEXT_CLONE_REFCNT != 0
-        && refcount > 1)
-        .then(|| {
-            u64_at(buf, CLONEID).map(|id| CloneFamily {
-                id,
-                refcount,
-                shared: allocated - private,
-            })
-        })
-        .flatten();
     Some(Parsed {
         dev: i64::from(dev) as u64,
-        ino: u64_at(buf, FILEID)?,
-        blocks: FileBlocks {
-            allocated,
-            private,
-            clone,
-        },
+        ino: u64_at(buffer, FILEID)?,
+        blocks: FileBlocks { allocated, private },
     })
 }
 
@@ -295,8 +567,6 @@ mod tests {
         fileid: u64,
         allocated: i64,
         private: i64,
-        clone_id: u64,
-        refcount: u32,
     }
 
     impl Default for Reply {
@@ -312,17 +582,15 @@ mod tests {
                 fileid: 42,
                 allocated: 8 << 20,
                 private: 4096,
-                clone_id: 7,
-                refcount: 2,
             }
         }
     }
 
     impl Reply {
         fn encode(&self) -> Vec<u8> {
-            let mut buf = vec![0u8; BUFFER_SIZE];
+            let mut buffer = vec![0u8; BUFFER_SIZE];
             let mut put = |offset: usize, value: &[u8]| {
-                buf[offset..offset + value.len()].copy_from_slice(value);
+                buffer[offset..offset + value.len()].copy_from_slice(value);
             };
             put(0, &self.length.to_ne_bytes());
             put(RETURNED_COMMON, &self.common.to_ne_bytes());
@@ -335,14 +603,12 @@ mod tests {
             put(44, &1u32.to_ne_bytes());
             put(ALLOCSIZE, &self.allocated.to_ne_bytes());
             put(PRIVATESIZE, &self.private.to_ne_bytes());
-            put(CLONEID, &self.clone_id.to_ne_bytes());
-            put(CLONE_REFCNT, &self.refcount.to_ne_bytes());
-            buf
+            buffer
         }
     }
 
     #[test]
-    fn a_complete_reply_gives_private_size_and_family() {
+    fn a_complete_reply_gives_private_size() {
         let parsed = parse(&Reply::default().encode()).unwrap();
         assert_eq!(parsed.dev, 16_777_234);
         assert_eq!(parsed.ino, 42);
@@ -351,11 +617,6 @@ mod tests {
             FileBlocks {
                 allocated: 8 << 20,
                 private: 4096,
-                clone: Some(CloneFamily {
-                    id: 7,
-                    refcount: 2,
-                    shared: (8 << 20) - 4096,
-                }),
             }
         );
     }
@@ -370,46 +631,35 @@ mod tests {
         assert_eq!(parse(&reply.encode()).unwrap().dev, u64::MAX - 1);
     }
 
-    #[test]
-    fn a_file_without_clones_has_no_family() {
-        for (refcount, extended) in [
-            (1, EXTENDED),
-            (0, EXTENDED),
-            (2, ATTR_CMNEXT_PRIVATESIZE | ATTR_CMNEXT_CLONEID),
-            (2, ATTR_CMNEXT_PRIVATESIZE | ATTR_CMNEXT_CLONE_REFCNT),
-        ] {
-            let reply = Reply {
-                refcount,
-                extended,
-                ..Reply::default()
-            };
-            let parsed = parse(&reply.encode()).unwrap();
-            assert_eq!(parsed.blocks.private, 4096);
-            assert_eq!(parsed.blocks.clone, None, "refcount {refcount}");
-        }
-    }
-
     type Change = fn(&mut Reply);
 
     #[test]
     fn missing_or_inconsistent_attributes_give_none() {
         let cases: [(&str, Change); 14] = [
-            ("length below the layout", |r| r.length = END as u32 - 1),
-            ("length past the buffer", |r| {
-                r.length = BUFFER_SIZE as u32 + 1
+            ("length below the layout", |reply| {
+                reply.length = END as u32 - 1;
             }),
-            ("no device", |r| r.common &= !ATTR_CMN_DEVID),
-            ("no type", |r| r.common &= !ATTR_CMN_OBJTYPE),
-            ("no flags", |r| r.common &= !ATTR_CMN_FLAGS),
-            ("no file id", |r| r.common &= !ATTR_CMN_FILEID),
-            ("no allocated size", |r| r.file = ATTR_FILE_LINKCOUNT),
-            ("no private size", |r| r.extended = ATTR_CMNEXT_CLONEID),
-            ("a directory", |r| r.objtype = 2),
-            ("a symlink", |r| r.objtype = 5),
-            ("compressed", |r| r.flags = UF_COMPRESSED | 0x8000),
-            ("private above allocated", |r| r.private = (8 << 20) + 1),
-            ("negative private", |r| r.private = -1),
-            ("negative allocated", |r| (r.allocated, r.private) = (-1, 0)),
+            ("length past the buffer", |reply| {
+                reply.length = BUFFER_SIZE as u32 + 1;
+            }),
+            ("no device", |reply| reply.common &= !ATTR_CMN_DEVID),
+            ("no type", |reply| reply.common &= !ATTR_CMN_OBJTYPE),
+            ("no flags", |reply| reply.common &= !ATTR_CMN_FLAGS),
+            ("no file id", |reply| reply.common &= !ATTR_CMN_FILEID),
+            ("no allocated size", |reply| {
+                reply.file = ATTR_FILE_LINKCOUNT
+            }),
+            ("no private size", |reply| reply.extended = 0),
+            ("a directory", |reply| reply.objtype = 2),
+            ("a symlink", |reply| reply.objtype = 5),
+            ("compressed", |reply| reply.flags = UF_COMPRESSED | 0x8000),
+            ("private above allocated", |reply| {
+                reply.private = (8 << 20) + 1;
+            }),
+            ("negative private", |reply| reply.private = -1),
+            ("negative allocated", |reply| {
+                (reply.allocated, reply.private) = (-1, 0);
+            }),
         ];
         for (name, change) in cases {
             let mut reply = Reply::default();
@@ -427,36 +677,62 @@ mod tests {
         }
         assert_eq!(parse(&[]), None);
         assert_eq!(parse(&u32::MAX.to_ne_bytes()), None);
-        // Every byte value at every position, on a short buffer.
         let mut state = 0x9e37_79b9_7f4a_7c15u64;
         for _ in 0..20_000 {
-            let mut buf = vec![0u8; (state % 96) as usize];
-            for byte in &mut buf {
+            let mut buffer = vec![0u8; (state % 96) as usize];
+            for byte in &mut buffer {
                 state ^= state << 13;
                 state ^= state >> 7;
                 state ^= state << 17;
                 *byte = state as u8;
             }
-            if buf.len() >= 4 {
-                buf[..4].copy_from_slice(&(state as u32 % 100).to_ne_bytes());
+            if buffer.len() >= 4 {
+                buffer[..4].copy_from_slice(&(state as u32 % 100).to_ne_bytes());
             }
-            let _ = parse(&buf);
+            let _ = parse(&buffer);
+            let mut out = Vec::new();
+            let _ = parse_bulk_batch(&buffer, 1, &mut out);
         }
+    }
+
+    #[test]
+    fn bulk_parser_surfaces_entry_error_and_rejects_malformed_offsets() {
+        let mut record = vec![0u8; BULK_FILE_END + 8];
+        let total = record.len() as u32;
+        record[0..4].copy_from_slice(&total.to_ne_bytes());
+        record[RETURNED_COMMON..RETURNED_COMMON + 4]
+            .copy_from_slice(&(ATTR_CMN_RETURNED_ATTRS | BULK_COMMON).to_ne_bytes());
+        record[BULK_ERROR..BULK_ERROR + 4].copy_from_slice(&13u32.to_ne_bytes());
+        let mut out = Vec::new();
+        assert!(matches!(
+            parse_bulk_batch(&record, 1, &mut out),
+            Err(BulkError::Io(error)) if error.raw_os_error() == Some(13)
+        ));
+
+        // Clear error, plant an out-of-bounds name reference -> Unsupported.
+        record[BULK_ERROR..BULK_ERROR + 4].copy_from_slice(&0u32.to_ne_bytes());
+        record[BULK_NAME_REF..BULK_NAME_REF + 4].copy_from_slice(&500i32.to_ne_bytes());
+        record[BULK_NAME_REF + 4..BULK_NAME_REF + 8].copy_from_slice(&4u32.to_ne_bytes());
+        assert!(matches!(
+            parse_bulk_batch(&record, 1, &mut out),
+            Err(BulkError::Unsupported)
+        ));
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn constants_match_libc() {
         assert_eq!(ATTR_BIT_MAP_COUNT, libc::ATTR_BIT_MAP_COUNT);
+        assert_eq!(ATTR_CMN_NAME, libc::ATTR_CMN_NAME);
         assert_eq!(ATTR_CMN_DEVID, libc::ATTR_CMN_DEVID);
         assert_eq!(ATTR_CMN_OBJTYPE, libc::ATTR_CMN_OBJTYPE);
+        assert_eq!(ATTR_CMN_MODTIME, libc::ATTR_CMN_MODTIME);
         assert_eq!(ATTR_CMN_FLAGS, libc::ATTR_CMN_FLAGS);
         assert_eq!(ATTR_CMN_FILEID, libc::ATTR_CMN_FILEID);
         assert_eq!(ATTR_CMN_RETURNED_ATTRS, libc::ATTR_CMN_RETURNED_ATTRS);
         assert_eq!(ATTR_FILE_LINKCOUNT, libc::ATTR_FILE_LINKCOUNT);
         assert_eq!(ATTR_FILE_ALLOCSIZE, libc::ATTR_FILE_ALLOCSIZE);
         assert_eq!(ATTR_CMNEXT_PRIVATESIZE, libc::ATTR_CMNEXT_PRIVATESIZE);
-        assert_eq!(ATTR_CMNEXT_CLONEID, libc::ATTR_CMNEXT_CLONEID);
         assert_eq!(FSOPT_NOFOLLOW, libc::FSOPT_NOFOLLOW);
         assert_eq!(FSOPT_PACK_INVAL_ATTRS, libc::FSOPT_PACK_INVAL_ATTRS);
         assert_eq!(FSOPT_ATTR_CMN_EXTENDED, libc::FSOPT_ATTR_CMN_EXTENDED);
@@ -469,13 +745,13 @@ mod tests {
     fn a_volume_is_identified_by_its_mount_point_device() {
         use std::os::unix::fs::MetadataExt;
 
-        let dir = std::env::temp_dir();
-        let dev = std::fs::symlink_metadata(&dir).unwrap().dev();
-        let found = volume(&dir, dev).unwrap();
+        let directory = std::env::temp_dir();
+        let dev = std::fs::symlink_metadata(&directory).unwrap().dev();
+        let found = volume(&directory, dev).unwrap();
         assert!(found.apfs);
         assert!(found.mount.is_absolute());
         assert_eq!(std::fs::symlink_metadata(&found.mount).unwrap().dev(), dev);
-        assert_eq!(volume(&dir, dev + 1), None);
+        assert_eq!(volume(&directory, dev + 1), None);
         assert_eq!(volume(Path::new("/dev/null"), dev), None);
         let devfs = std::fs::symlink_metadata("/dev/null").unwrap().dev();
         assert!(!volume(Path::new("/dev/null"), devfs).unwrap().apfs);
@@ -483,18 +759,20 @@ mod tests {
         assert_eq!(c_string(&[97, 98]), None);
     }
 
-    /// The real kernel reply, which synthetic buffers cannot check: a wrong
-    /// offset would read the wrong device or inode and give `None` here.
+    /// The real kernel reply for both `file_blocks` and `read_dir_bulk`,
+    /// proving exact parity with `lstat` across regular files, clones, hard
+    /// links, symlinks, and subdirectories.
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_real_file_and_its_clone() {
+    fn a_real_file_clone_and_bulk_directory_match_lstat() {
         use std::os::unix::fs::MetadataExt;
         use std::process::Command;
 
-        let dir = std::env::temp_dir().join(format!("apfs-size-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir(&dir).unwrap();
-        let source = dir.join("source");
+        let directory = std::env::temp_dir().join(format!("apfs-size-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::create_dir(directory.join("nested")).unwrap();
+        let source = directory.join("source");
         let mut state = 0x2545_f491_4f6c_dd1du64;
         let data = (0..(8usize << 20))
             .map(|_| {
@@ -519,7 +797,6 @@ mod tests {
         let alone = alone.expect("APFS reports a private size");
         assert_eq!(alone.allocated, blocks);
         assert_eq!(alone.private, blocks);
-        assert_eq!(alone.clone, None);
         assert_eq!(
             file_blocks(&source, metadata.dev(), metadata.ino() + 1),
             None
@@ -528,9 +805,12 @@ mod tests {
             file_blocks(&source, metadata.dev() + 1, metadata.ino()),
             None
         );
-        assert_eq!(file_blocks(&dir, metadata.dev(), metadata.ino()), None);
+        assert_eq!(
+            file_blocks(&directory, metadata.dev(), metadata.ino()),
+            None
+        );
 
-        let clone = dir.join("clone");
+        let clone = directory.join("clone");
         let status = Command::new("/bin/cp")
             .arg("-c")
             .arg(&source)
@@ -538,29 +818,56 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        let (_, original, _) = measure(&source);
-        let (_, copy, _) = measure(&clone);
-        let (original, copy) = (original.unwrap(), copy.unwrap());
-        assert!(copy.private < blocks / 10, "clone private {copy:?}");
-        let (family, copy_family) = (original.clone.unwrap(), copy.clone.unwrap());
-        assert_eq!(family.id, copy_family.id);
-        assert_eq!(family.refcount, 2);
-        assert_eq!(copy_family.shared, copy.allocated - copy.private);
-
-        let link = dir.join("link");
+        let hardlink = directory.join("hardlink");
+        std::fs::hard_link(&source, &hardlink).unwrap();
+        let link = directory.join("link");
         std::os::unix::fs::symlink(&clone, &link).unwrap();
+
+        let bulk = read_dir_bulk(&directory).expect("APFS supports getattrlistbulk");
+        assert_eq!(bulk.len(), 5, "{bulk:?}");
+        let by_name = |name: &str| {
+            bulk.iter()
+                .find(|entry| entry.name == name)
+                .unwrap_or_else(|| panic!("missing {name} in {bulk:?}"))
+        };
+
+        let bulk_source = by_name("source");
+        let source_meta = std::fs::symlink_metadata(&source).unwrap();
+        assert_eq!(bulk_source.kind, EntryKind::File);
+        assert_eq!(bulk_source.dev, source_meta.dev());
+        assert_eq!(bulk_source.ino, source_meta.ino());
+        assert_eq!(bulk_source.nlink, 2);
+        assert_eq!(bulk_source.allocated, source_meta.blocks() * 512);
+        assert_eq!(bulk_source.modified, Some(source_meta.modified().unwrap()));
+
+        let bulk_clone = by_name("clone");
+        let (_, clone_single, clone_meta) = measure(&clone);
+        let clone_single = clone_single.unwrap();
+        assert_eq!(bulk_clone.kind, EntryKind::File);
+        assert_eq!(bulk_clone.nlink, 1);
+        assert_eq!(bulk_clone.allocated, clone_meta.blocks() * 512);
+        assert_eq!(bulk_clone.private, Some(clone_single.private));
+        assert!(
+            clone_single.private < blocks / 10,
+            "clone private {clone_single:?}"
+        );
+
+        assert_eq!(by_name("nested").kind, EntryKind::Directory);
+        assert_eq!(by_name("link").kind, EntryKind::Other);
+        assert_eq!(by_name("hardlink").ino, source_meta.ino());
+        assert_eq!(by_name("hardlink").nlink, 2);
+
         let link_metadata = std::fs::symlink_metadata(&link).unwrap();
         assert_eq!(
             file_blocks(&link, link_metadata.dev(), link_metadata.ino()),
             None
         );
 
+        std::fs::remove_file(&hardlink).unwrap();
         std::fs::remove_file(&source).unwrap();
-        // The last member owns every block again.
         let (_, survivor, _) = measure(&clone);
         let survivor = survivor.unwrap();
         assert_eq!(survivor.private, survivor.allocated);
-        assert_eq!(survivor.clone, None);
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 }

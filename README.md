@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.15.0.
+This source tree and its packaged documentation describe devtrim v0.16.0.
 
 ## Install
 
@@ -92,12 +92,12 @@ devtrim clean node-modules --apply -y     # exact paths in Git repos with no rec
 devtrim clean artifacts --apply -y        # corroborated build artifacts in stale Git repos
 devtrim clean simulators --apply -y       # delete exact previewed unavailable devices; working ones are only reported; no Xcode, nothing to do
 devtrim clean xcode --apply -y            # exact iOS/watchOS/tvOS/visionOS DeviceSupport and DerivedData children; package checkouts stay
-devtrim clean docker --apply -y           # local daemon images + build cache; never volumes
+devtrim clean docker --apply -y           # local daemon images, build cache, and local buildx builders; never volumes
 devtrim clean toolchains --apply -y       # only swift.org toolchains no symlink or swiftly references
 devtrim clean installers --apply -y       # stale installer archives in Downloads/Desktop
 devtrim clean agents --apply -y           # agent caches + older Codex releases + stale session history
-devtrim clean leftovers                   # report-only hints and ignored .scratch folders
-devtrim worktrees                         # report-only: linked worktrees and their sizes
+devtrim clean leftovers                   # report-only hints, ignored .scratch, abandoned tmp_objdir, local AI models
+devtrim worktrees                         # report-only: linked worktrees with size, dirty/in-use/clean state, and activity
 devtrim app-storage                       # report-only: WhatsApp storage, metadata only
 devtrim app-storage --root ~/Movies       # also find saved Screen Studio projects here
 devtrim icloud                            # large iCloud Drive files and local allocation

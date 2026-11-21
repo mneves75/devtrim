@@ -1,13 +1,14 @@
 //! Docker/OrbStack pruning: unused images + build cache. Volumes are never pruned.
 
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Component, Path};
 use std::process::Command;
 
 use super::{Action, ApplyOutcome, Finding, Op, command_stdout, optional_command_stdout};
 use crate::process::{BoundedCommand as _, QUERY_TIMEOUT};
-use crate::report::CommandAuthority;
+use crate::report::{BuildxNodeIdentity, CommandAuthority};
 use crate::safety::{Ctx, escalate};
 
 pub(crate) struct Docker;
@@ -52,6 +53,47 @@ struct DockerEndpoints {
 struct DockerEndpoint {
     #[serde(rename = "Host")]
     host: String,
+}
+
+#[derive(serde::Deserialize)]
+struct DockerContextListRow {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "DockerEndpoint", default)]
+    docker_endpoint: String,
+}
+
+// Go's `encoding/json` marshals nil slices as `null`, so `nodes` and `ids`
+// use `Option<Vec<...>>` with `#[serde(default)]`.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BuildxBuilder {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Driver", default)]
+    driver: String,
+    #[serde(rename = "Current", default)]
+    current: bool,
+    #[serde(rename = "Nodes", default)]
+    nodes: Option<Vec<BuildxNode>>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BuildxNode {
+    #[serde(rename = "Name", default)]
+    name: String,
+    #[serde(rename = "Endpoint", default)]
+    endpoint: String,
+    #[serde(rename = "Status", default)]
+    status: String,
+    #[serde(rename = "IDs", default)]
+    ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuildxUsage {
+    total_bytes: u64,
+    total_text: String,
+    reclaimable_bytes: u64,
 }
 
 fn docker(host: &str, args: &[&str]) -> Result<String> {
@@ -102,6 +144,406 @@ fn is_local_docker_host(host: &str) -> bool {
         && path
             .components()
             .all(|component| !matches!(component, Component::CurDir | Component::ParentDir))
+}
+
+fn is_valid_builder_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    let Some((first, rest)) = bytes.split_first() else {
+        return false;
+    };
+    bytes.len() <= 128
+        && first.is_ascii_alphanumeric()
+        && rest
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+}
+
+fn local_docker_contexts() -> Result<BTreeMap<String, String>> {
+    let output = command_stdout(
+        Command::new("docker")
+            .args(["context", "ls", "--format", "{{json .}}"])
+            .output_within(QUERY_TIMEOUT),
+        "`docker context ls --format '{{json .}}'`",
+    )?;
+    parse_local_docker_contexts(&output)
+}
+
+fn parse_local_docker_contexts(output: &str) -> Result<BTreeMap<String, String>> {
+    let mut contexts = BTreeMap::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let row: DockerContextListRow =
+            serde_json::from_str(trimmed).context("docker context ls returned invalid JSON")?;
+        let name = row.name.trim();
+        let endpoint = row.docker_endpoint.trim();
+        if !name.is_empty() && is_local_docker_host(endpoint) {
+            contexts.insert(name.to_string(), endpoint.to_string());
+        }
+    }
+    Ok(contexts)
+}
+
+fn is_buildx_unavailable(stderr: &str) -> bool {
+    let lowered = stderr.to_ascii_lowercase();
+    lowered.contains("is not a docker command")
+        || lowered.contains("unknown command")
+        || lowered.contains("unknown shorthand flag")
+}
+
+fn buildx_ls(host: &str) -> Result<Option<String>> {
+    let output = Command::new("docker")
+        .arg("--host")
+        .arg(host)
+        .args(["buildx", "ls", "--format", "{{json .}}"])
+        .output_within(QUERY_TIMEOUT);
+    let output = match output {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("cannot run `docker --host {host} buildx ls --format '{{{{json .}}}}'`")
+            });
+        }
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_buildx_unavailable(&stderr) {
+            return Ok(None);
+        }
+        let detail = stderr.trim();
+        if detail.is_empty() {
+            anyhow::bail!(
+                "`docker --host {host} buildx ls --format '{{{{json .}}}}'` failed with {}",
+                output.status
+            );
+        }
+        anyhow::bail!(
+            "`docker --host {host} buildx ls --format '{{{{json .}}}}'` failed with {}: {detail}",
+            output.status
+        );
+    }
+    String::from_utf8(output.stdout).map(Some).with_context(|| {
+        format!(
+            "`docker --host {host} buildx ls --format '{{{{json .}}}}'` returned non-UTF-8 output"
+        )
+    })
+}
+
+/// Parses NDJSON from `docker buildx ls --format '{{json .}}'`, collapsing
+/// duplicate rows emitted per builder/node by builder name.
+fn parse_buildx_ls(output: &str) -> Result<Vec<BuildxBuilder>> {
+    let mut by_name: BTreeMap<String, BuildxBuilder> = BTreeMap::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed: BuildxBuilder =
+            serde_json::from_str(trimmed).context("docker buildx ls returned invalid JSON")?;
+        match by_name.get_mut(&parsed.name) {
+            Some(existing) => {
+                existing.current |= parsed.current;
+                if existing.driver.trim().is_empty() && !parsed.driver.trim().is_empty() {
+                    existing.driver = parsed.driver;
+                }
+                let existing_empty = existing.nodes.as_ref().is_none_or(Vec::is_empty);
+                let parsed_non_empty = parsed.nodes.as_ref().is_some_and(|nodes| !nodes.is_empty());
+                if existing_empty && parsed_non_empty {
+                    existing.nodes = parsed.nodes;
+                }
+            }
+            None => {
+                by_name.insert(parsed.name.clone(), parsed);
+            }
+        }
+    }
+    Ok(by_name.into_values().collect())
+}
+
+fn is_local_buildx_node(node: &BuildxNode, local_contexts: &BTreeMap<String, String>) -> bool {
+    if node.status.trim() != "running" {
+        return false;
+    }
+    let has_worker_id = node
+        .ids
+        .as_deref()
+        .is_some_and(|ids| ids.iter().any(|identifier| !identifier.trim().is_empty()));
+    if !has_worker_id {
+        return false;
+    }
+    let endpoint = node.endpoint.trim();
+    is_local_docker_host(endpoint) || local_contexts.contains_key(endpoint)
+}
+
+fn needs_context_lookup(builders: &[BuildxBuilder]) -> bool {
+    builders.iter().any(|builder| {
+        builder.driver.trim() == "docker-container"
+            && is_valid_builder_name(&builder.name)
+            && builder.nodes.as_deref().is_some_and(|nodes| {
+                !nodes.is_empty()
+                    && nodes.iter().any(|node| {
+                        let endpoint = node.endpoint.trim();
+                        !is_local_docker_host(endpoint) && !endpoint.contains("://")
+                    })
+            })
+    })
+}
+
+/// Canonical per-node identity combining each node's name, resolved local
+/// socket endpoint, and sorted worker IDs structurally so neither an un-ID'd
+/// node, a delimiter character, nor a retargeted context alias can slip past
+/// apply re-verification.
+fn builder_node_fingerprint(
+    nodes: &[BuildxNode],
+    local_contexts: &BTreeMap<String, String>,
+) -> Vec<BuildxNodeIdentity> {
+    let mut entries: Vec<BuildxNodeIdentity> = nodes
+        .iter()
+        .map(|node| {
+            let endpoint = node.endpoint.trim();
+            let resolved = local_contexts
+                .get(endpoint)
+                .map(String::as_str)
+                .unwrap_or(endpoint);
+            let mut ids: Vec<String> = node
+                .ids
+                .iter()
+                .flatten()
+                .map(|identifier| identifier.trim().to_string())
+                .filter(|identifier| !identifier.is_empty())
+                .collect();
+            ids.sort();
+            ids.dedup();
+            BuildxNodeIdentity {
+                name: node.name.trim().to_string(),
+                endpoint: resolved.to_string(),
+                ids,
+            }
+        })
+        .collect();
+    entries.sort();
+    entries.dedup();
+    entries
+}
+
+/// Filter to running local `docker-container` builders and collapse aliases
+/// pointing at the exact same backing BuildKit nodes, preferring `Current == true`
+/// then lexicographically smallest builder name.
+fn deduplicate_local_buildx_builders(
+    builders: &[BuildxBuilder],
+    local_contexts: &BTreeMap<String, String>,
+) -> Vec<BuildxBuilder> {
+    let mut winners: BTreeMap<Vec<BuildxNodeIdentity>, BuildxBuilder> = BTreeMap::new();
+    for candidate in builders {
+        if candidate.driver.trim() != "docker-container" || !is_valid_builder_name(&candidate.name)
+        {
+            continue;
+        }
+        let Some(nodes) = candidate.nodes.as_deref() else {
+            continue;
+        };
+        if nodes.is_empty()
+            || !nodes
+                .iter()
+                .all(|node| is_local_buildx_node(node, local_contexts))
+        {
+            continue;
+        }
+        let key = builder_node_fingerprint(nodes, local_contexts);
+        match winners.get_mut(&key) {
+            Some(existing) => {
+                if (!candidate.current, candidate.name.as_str())
+                    < (!existing.current, existing.name.as_str())
+                {
+                    *existing = candidate.clone();
+                }
+            }
+            None => {
+                winners.insert(key, candidate.clone());
+            }
+        }
+    }
+    let mut selected: Vec<BuildxBuilder> = winners.into_values().collect();
+    selected.sort_by(|left, right| left.name.cmp(&right.name));
+    selected
+}
+
+fn local_buildx_probe_error(
+    builders: &[BuildxBuilder],
+    local_contexts: &BTreeMap<String, String>,
+) -> Option<String> {
+    for builder in builders {
+        if builder.driver.trim() != "docker-container" || !is_valid_builder_name(&builder.name) {
+            continue;
+        }
+        let Some(nodes) = builder.nodes.as_deref() else {
+            continue;
+        };
+        let all_local = !nodes.is_empty()
+            && nodes.iter().all(|node| {
+                let endpoint = node.endpoint.trim();
+                is_local_docker_host(endpoint) || local_contexts.contains_key(endpoint)
+            });
+        if !all_local {
+            continue;
+        }
+        for node in nodes {
+            let status = node.status.trim();
+            if !matches!(status, "running" | "stopped" | "inactive" | "") {
+                return Some(format!(
+                    "local Docker buildx builder `{}` node `{}` reported status `{status}`",
+                    builder.name,
+                    node.name.trim()
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn parse_buildx_du(output: &str, builder: &str) -> Result<BuildxUsage> {
+    let mut total: Option<(u64, String)> = None;
+    let mut reclaimable: Option<u64> = None;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("Reclaimable:") {
+            let value = value.trim();
+            reclaimable = Some(parse_size(value).with_context(|| {
+                format!("invalid Docker buildx reclaimable size for `{builder}`: {value}")
+            })?);
+        } else if let Some(value) = trimmed.strip_prefix("Total:") {
+            let value = value.trim();
+            let parsed = parse_size(value).with_context(|| {
+                format!("invalid Docker buildx total size for `{builder}`: {value}")
+            })?;
+            total = Some((parsed, value.to_string()));
+        }
+    }
+    let (Some((total_bytes, total_text)), Some(reclaimable_bytes)) = (total, reclaimable) else {
+        anyhow::bail!(
+            "docker buildx du for builder `{builder}` returned no Total/Reclaimable summary"
+        );
+    };
+    Ok(BuildxUsage {
+        total_bytes,
+        total_text,
+        reclaimable_bytes,
+    })
+}
+
+fn scan_buildx_findings(host: &str) -> Result<Vec<Finding>> {
+    let Some(output) = buildx_ls(host)? else {
+        return Ok(Vec::new());
+    };
+    let parsed = parse_buildx_ls(&output)?;
+    let local_contexts = if needs_context_lookup(&parsed) {
+        local_docker_contexts()?
+    } else {
+        BTreeMap::new()
+    };
+    if let Some(error) = local_buildx_probe_error(&parsed, &local_contexts) {
+        anyhow::bail!("{error}");
+    }
+    let builders = deduplicate_local_buildx_builders(&parsed, &local_contexts);
+    let mut findings = Vec::new();
+    for builder in builders {
+        let du_output = docker(host, &["buildx", "du", "--builder", &builder.name])?;
+        let usage = parse_buildx_du(&du_output, &builder.name)?;
+        if usage.total_bytes == 0 && usage.reclaimable_bytes == 0 {
+            continue;
+        }
+        let (bytes, detail) = if usage.reclaimable_bytes == usage.total_bytes {
+            (
+                usage.total_bytes,
+                format!(
+                    "{} total in local buildx builder `{}` on endpoint {host}; \
+                     `buildx prune -a` removes every unused cache record; volumes are never touched",
+                    usage.total_text, builder.name
+                ),
+            )
+        } else if usage.reclaimable_bytes > 0 {
+            (
+                usage.reclaimable_bytes,
+                format!(
+                    "at least this much ({} total) in local buildx builder `{}` on endpoint {host}; \
+                     in-use records stay while `buildx prune -a` removes every unused cache record; \
+                     volumes are never touched",
+                    usage.total_text, builder.name
+                ),
+            )
+        } else {
+            (
+                usage.total_bytes,
+                format!(
+                    "up to {} in local buildx builder `{}` on endpoint {host}; \
+                     `buildx prune -a` removes unused cache records while keeping in-use records; \
+                     volumes are never touched",
+                    usage.total_text, builder.name
+                ),
+            )
+        };
+        let nodes =
+            builder_node_fingerprint(builder.nodes.as_deref().unwrap_or(&[]), &local_contexts);
+        findings.push(Finding::command(
+            format!("Docker buildx cache ({})", builder.name),
+            bytes,
+            detail,
+            escalate(6, bytes),
+            CommandAuthority::DockerBuildxPrune {
+                host: host.to_string(),
+                builder: builder.name,
+                nodes,
+            },
+        ));
+    }
+    Ok(findings)
+}
+
+fn verify_local_buildx_builder(
+    host: &str,
+    builder: &str,
+    expected_nodes: &[BuildxNodeIdentity],
+) -> Result<()> {
+    if expected_nodes.is_empty() {
+        anyhow::bail!(
+            "refusing buildx prune: builder `{builder}` carries no previewed node identity"
+        );
+    }
+    let Some(output) = buildx_ls(host)? else {
+        anyhow::bail!("refusing buildx prune: `docker buildx` is unavailable");
+    };
+    let parsed = parse_buildx_ls(&output)?;
+    let Some(candidate) = parsed
+        .into_iter()
+        .find(|candidate| candidate.name == builder)
+    else {
+        anyhow::bail!("refusing buildx prune: builder `{builder}` no longer exists");
+    };
+    let single = [candidate];
+    let local_contexts = if needs_context_lookup(&single) {
+        local_docker_contexts()?
+    } else {
+        BTreeMap::new()
+    };
+    let verified = deduplicate_local_buildx_builders(&single, &local_contexts);
+    let [verified_builder] = verified.as_slice() else {
+        anyhow::bail!(
+            "refusing buildx prune: builder `{builder}` is not a running local docker-container builder"
+        );
+    };
+    let current_nodes = builder_node_fingerprint(
+        verified_builder.nodes.as_deref().unwrap_or(&[]),
+        &local_contexts,
+    );
+    if current_nodes != expected_nodes {
+        anyhow::bail!(
+            "refusing buildx prune: builder `{builder}` changed backing nodes since preview"
+        );
+    }
+    Ok(())
 }
 
 /// Blocks actually allocated on the host, not the logical length.
@@ -274,6 +716,7 @@ impl Op for Docker {
             ],
         )?;
         findings.extend(parse_system_df(&output, &host)?);
+        findings.extend(scan_buildx_findings(&host)?);
         Ok(findings)
     }
 
@@ -295,6 +738,7 @@ impl Op for Docker {
                     authority,
                     CommandAuthority::DockerImagePrune { .. }
                         | CommandAuthority::DockerBuilderPrune { .. }
+                        | CommandAuthority::DockerBuildxPrune { .. }
                 ) {
                     anyhow::bail!("refusing unexpected Docker action");
                 }
@@ -306,6 +750,17 @@ impl Op for Docker {
                 }
                 if finding.action != authority.action() {
                     anyhow::bail!("refusing altered Docker action");
+                }
+                if let CommandAuthority::DockerBuildxPrune {
+                    host,
+                    builder,
+                    nodes,
+                } = authority
+                {
+                    if !is_valid_builder_name(builder) {
+                        anyhow::bail!("refusing invalid Docker buildx builder name `{builder}`");
+                    }
+                    verify_local_buildx_builder(host, builder, nodes)?;
                 }
                 super::run_command_authority(
                     self.name(),
@@ -386,6 +841,12 @@ pub(crate) fn parse_size(value: &str) -> Result<u64> {
         "tb" => 1e12,
         "pb" => 1e15,
         "eb" => 1e18,
+        "kib" => 1024.0,
+        "mib" => 1_048_576.0,
+        "gib" => 1_073_741_824.0,
+        "tib" => 1_099_511_627_776.0,
+        "pib" => 1_125_899_906_842_624.0,
+        "eib" => 1_152_921_504_606_846_976.0,
         unit => anyhow::bail!("unsupported size unit `{unit}`"),
     };
     let bytes = (number * multiplier).round();
@@ -534,5 +995,147 @@ mod tests {
             let document = format!(r#"[{{"Endpoints":{{"docker":{{"Host":"{host}"}}}}}}]"#);
             assert!(parse_docker_host(&document).is_err(), "accepted {host}");
         }
+    }
+
+    #[test]
+    fn local_docker_contexts_keep_only_absolute_unix_sockets() {
+        let output = concat!(
+            r#"{"Name":"orbstack","DockerEndpoint":"unix:///Users/example/.orbstack/run/docker.sock"}"#,
+            "\n",
+            r#"{"Name":"prod","DockerEndpoint":"ssh://root@prod.example"}"#,
+            "\n",
+            r#"{"Name":"tcp","DockerEndpoint":"tcp://127.0.0.1:2375"}"#,
+            "\n",
+            r#"{"Name":"relative","DockerEndpoint":"unix://docker.sock"}"#,
+            "\n"
+        );
+        let contexts = parse_local_docker_contexts(output).unwrap();
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(
+            contexts.get("orbstack").map(String::as_str),
+            Some("unix:///Users/example/.orbstack/run/docker.sock")
+        );
+        assert!(parse_local_docker_contexts("not-json\n").is_err());
+    }
+
+    #[test]
+    fn buildx_selection_deduplicates_aliases_and_rejects_non_local_or_non_container_builders() {
+        let mut local_contexts = BTreeMap::new();
+        local_contexts.insert(
+            "orbstack".to_string(),
+            "unix:///Users/example/.orbstack/run/docker.sock".to_string(),
+        );
+        let ndjson = concat!(
+            // Duplicate rows for alias `kiri` and `kiri-build` sharing the same node ID;
+            // `kiri-build` is Current == true so it must win over lexicographically smaller `kiri`.
+            r#"{"Name":"kiri","Driver":"docker-container","Current":false,"Nodes":[{"Name":"kiri-build0","Endpoint":"orbstack","Status":"running","IDs":["zmazdby6v31ni8m0iz6hq923g"]}]}"#,
+            "\n",
+            r#"{"Name":"kiri","Driver":"docker-container","Current":false,"Nodes":[{"Name":"kiri-build0","Endpoint":"orbstack","Status":"running","IDs":["zmazdby6v31ni8m0iz6hq923g"]}]}"#,
+            "\n",
+            r#"{"Name":"kiri-build","Driver":"docker-container","Current":true,"Nodes":[{"Name":"kiri-build0","Endpoint":"orbstack","Status":"running","IDs":["zmazdby6v31ni8m0iz6hq923g"]}]}"#,
+            "\n",
+            // Two non-current aliases sharing `(name, endpoint, ID)`: smallest name `alpha` wins.
+            r#"{"Name":"zeta","Driver":"docker-container","Current":false,"Nodes":[{"Name":"shared0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":["id-shared"]}]}"#,
+            "\n",
+            r#"{"Name":"alpha","Driver":"docker-container","Current":false,"Nodes":[{"Name":"shared0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":["id-shared"]}]}"#,
+            "\n",
+            // Rejected: missing worker IDs, non-container drivers, remote node, stopped node, malformed name.
+            r#"{"Name":"no-ids","Driver":"docker-container","Current":false,"Nodes":[{"Name":"n0","Endpoint":"unix:///var/run/docker.sock","Status":"running","IDs":[]}]}"#,
+            "\n",
+            r#"{"Name":"default","Driver":"docker","Current":false,"Nodes":[{"Name":"default","Endpoint":"orbstack","Status":"running","IDs":null}]}"#,
+            "\n",
+            r#"{"Name":"remote-builder","Driver":"remote","Current":false,"Nodes":[{"Name":"r0","Endpoint":"tls://remote:1234","Status":"running","IDs":null}]}"#,
+            "\n",
+            r#"{"Name":"cloud-builder","Driver":"cloud","Current":false,"Nodes":[{"Name":"c0","Endpoint":"cloud://org/b","Status":"running","IDs":null}]}"#,
+            "\n",
+            r#"{"Name":"mixed-remote","Driver":"docker-container","Current":false,"Nodes":[{"Name":"n0","Endpoint":"orbstack","Status":"running","IDs":["id-local"]},{"Name":"n1","Endpoint":"prod-ssh","Status":"running","IDs":["id-remote"]}]}"#,
+            "\n",
+            r#"{"Name":"stopped-builder","Driver":"docker-container","Current":false,"Nodes":[{"Name":"s0","Endpoint":"orbstack","Status":"stopped","IDs":["id-stopped"]}]}"#,
+            "\n",
+            r#"{"Name":"-bad-name","Driver":"docker-container","Current":false,"Nodes":[{"Name":"b0","Endpoint":"orbstack","Status":"running","IDs":["id-bad"]}]}"#,
+            "\n"
+        );
+        let parsed = parse_buildx_ls(ndjson).unwrap();
+        let selected = deduplicate_local_buildx_builders(&parsed, &local_contexts);
+        let names: Vec<&str> = selected
+            .iter()
+            .map(|builder| builder.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["alpha", "kiri-build"]);
+    }
+
+    #[test]
+    fn rejects_forged_buildx_actions_before_running_docker() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-docker-buildx-forged")
+            .tempdir()
+            .unwrap();
+        let mut ctx = test_ctx();
+        ctx.home = home.path().to_path_buf();
+        ctx.journal_path = home.path().join("journal.jsonl");
+
+        let sample_node = || {
+            vec![BuildxNodeIdentity {
+                name: "kiri-build0".into(),
+                endpoint: "unix:///var/run/docker.sock".into(),
+                ids: vec!["node-1".into()],
+            }]
+        };
+        let non_local = Finding::command(
+            "remote buildx",
+            1024,
+            "forged",
+            6,
+            CommandAuthority::DockerBuildxPrune {
+                host: "ssh://prod.example".into(),
+                builder: "kiri-build".into(),
+                nodes: sample_node(),
+            },
+        );
+        let outcome = Docker.apply(&[non_local], &ctx).unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert!(
+            outcome.errors[0].contains("refusing non-local Docker endpoint"),
+            "{:?}",
+            outcome.errors
+        );
+
+        let bad_name = Finding::command(
+            "bad builder",
+            1024,
+            "forged",
+            6,
+            CommandAuthority::DockerBuildxPrune {
+                host: "unix:///var/run/docker.sock".into(),
+                builder: "--all".into(),
+                nodes: sample_node(),
+            },
+        );
+        let outcome = Docker.apply(&[bad_name], &ctx).unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert!(
+            outcome.errors[0].contains("refusing invalid Docker buildx builder name"),
+            "{:?}",
+            outcome.errors
+        );
+
+        let missing_nodes = Finding::command(
+            "missing nodes",
+            1024,
+            "forged",
+            6,
+            CommandAuthority::DockerBuildxPrune {
+                host: "unix:///var/run/docker.sock".into(),
+                builder: "kiri-build".into(),
+                nodes: Vec::new(),
+            },
+        );
+        let outcome = Docker.apply(&[missing_nodes], &ctx).unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert!(
+            outcome.errors[0].contains("carries no previewed node identity"),
+            "{:?}",
+            outcome.errors
+        );
     }
 }

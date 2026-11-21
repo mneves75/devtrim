@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-XG9Pb3ntIyZoHGmTP6E/68yl0iScgzc/A0o1SQn/ZC0='; script-src 'sha256-zvGG5ifHmmR1CNzSGHAaKUAhSpOsKLpUKORivqqSNkk=' 'sha256-raW12eF+201QhYBide0DcynKxZzCAKmYZzKqJy9BYdo='; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-H9CA6OXA2JIR3UNZ/SCI3zC5OaNm3G4TVLGIdW8OAF8='; script-src 'sha256-zvGG5ifHmmR1CNzSGHAaKUAhSpOsKLpUKORivqqSNkk=' 'sha256-raW12eF+201QhYBide0DcynKxZzCAKmYZzKqJy9BYdo='; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="description" content="devtrim manual — measure, classify, trim. Safe disk hygiene for macOS developer machines.">
 <title>devtrim — Manual</title>
@@ -51,7 +51,7 @@ try { const s = localStorage.getItem("devtrim-theme");
   --space-section: clamp(4rem, 2.5rem + 5vw, 7.5rem);
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 
-  scroll-padding-block-start: 1rem;
+  scroll-padding-block-start: 4.5rem;
   accent-color: var(--accent);
   scrollbar-color: var(--surface-high) transparent;
 }
@@ -83,7 +83,7 @@ figure { margin: 0; }
 a { color: inherit; text-underline-offset: 0.2em; text-decoration-thickness: from-font; }
 a.text-link { color: var(--accent); text-decoration: underline; }
 
-code, kbd, pre { font-family: var(--mono); font-size: 0.875em; }
+code, kbd, pre { font-family: var(--mono); font-size: 0.875em; font-variant-numeric: tabular-nums; }
 code { background: color-mix(in oklch, var(--accent) 11%, transparent); padding: 0.1em 0.35em; border-radius: var(--radius); }
 pre { margin: 0; padding: 1rem 1.125rem; border-radius: var(--radius); background: var(--surface-raised); overflow-x: auto; line-height: 1.55; }
 pre code { background: none; padding: 0; font-size: 1em; }
@@ -92,6 +92,7 @@ pre code { background: none; padding: 0; font-size: 1em; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 [hidden] { display: none !important; }
+[hidden="until-found"] { display: block !important; content-visibility: hidden; }
 .wrap { inline-size: var(--page); margin-inline: auto; }
 .sr-only { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
@@ -104,7 +105,14 @@ pre code { background: none; padding: 0; font-size: 1em; }
 .skip-link:focus-visible { transform: none; outline-color: var(--text); }
 
 /* ---------- top bar (both pages) ---------- */
-.bar { padding-block: 1rem; }
+.bar {
+  position: sticky; inset-block-start: 0; z-index: 30;
+  padding-block: 0.75rem;
+  background: color-mix(in oklch, var(--bg) 88%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-block-end: 1px solid var(--rule);
+}
 .bar-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .wordmark { font-weight: 800; font-size: 1.2rem; letter-spacing: -0.02em; text-decoration: none; }
 .bar-links { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin: 0; padding: 0; list-style: none; color: var(--muted); }
@@ -390,7 +398,7 @@ pre code { background: none; padding: 0; font-size: 1em; }
 <div class="wrap manual">
 <header class="manual-title">
   <h1>devtrim manual</h1>
-    <span class="chip g">v0.15.0</span>
+    <span class="chip g">v0.16.0</span>
 </header>
 <nav class="toc" aria-label="Table of contents">
   <div class="toc-tools">
@@ -507,7 +515,7 @@ devtrim clean caches</code></pre>
 
   <details class="card" id="cmd-tui">
     <summary><span class="cmd-name">tui</span><span class="cmd-desc">interactive keyboard interface; also the bare-command default</span></summary>
-    <div class="card-body"><p>Runs only when stdin and stdout are terminals. It calls the same scanners and apply owners as the CLI, shows textual risk labels, refuses CLI bypass flags, and requires a matching confirmation for the current preview. Bare <code>devtrim</code> prints help and exits nonzero instead when piped.</p><p>The menu shows the home volume's free space and how many local APFS snapshots it keeps, which hold space no scan can see; after a scan each operation names what its last scan offered, as a range such as <code>1.9–21.8 GB</code> where APFS clones share blocks, and asks for a rescan once an apply has changed it. Scan everything lists the ten categories as each finishes. An apply shows the item it is on and how many items and bytes are done; <code>x</code> stops after the current item or command, and nothing later is attempted or journaled.</p></div>
+    <div class="card-body"><p>Runs only when stdin and stdout are terminals. It calls the same scanners and apply owners as the CLI, shows textual risk labels, refuses CLI bypass flags, and requires a matching confirmation for the current preview. Bare <code>devtrim</code> prints help and exits nonzero instead when piped.</p><p>The menu shows the home volume's free space and how many local APFS snapshots it keeps, which hold space no scan can see; after a scan each operation names what its last scan offered, as a range such as <code>1.9–21.8 GB</code> where APFS clones share blocks, summarizes total reclaimable space in the Selected pane, and asks for a rescan once an apply has changed a category. Scan everything and applies display a live progress bar; pressing <code>o</code> on a finding in Scan everything jumps straight into its actionable category preview. Wide terminals (&ge; 96 cols) show proportional inline share bars beside finding sizes, and Trash-first outcomes name <code>devtrim trash-empty --only-devtrim</code> as the next step. During apply, <code>x</code> stops after the current item or command, and nothing later is attempted or journaled.</p></div>
   </details>
   <h3 class="group" id="g-inspect">Report only</h3>
   <details class="card" id="cmd-scan">
@@ -531,8 +539,8 @@ devtrim clean caches</code></pre>
     <div class="card-body"><p>Prints <code>home volume: &lt;free&gt; free of &lt;total&gt;</code>. With <code>--warn-below SIZE</code> (<code>20GiB</code>, <code>500MB</code>, <code>1.5T</code>; K/M/G/T and KiB–TiB are powers of 1024, KB–TB powers of 1000) it prints a warning only when free space is below SIZE and nothing otherwise, exiting 0 either way, so it can run as a Claude Code <code>SessionStart</code> hook. A blank, negative, non-numeric, unknown-unit or oversized SIZE is a usage error (exit 2); an unreadable volume exits 1. <code>--json</code> emits one <code>{"operation":"disk","available_bytes":…,"total_bytes":…,"warn_below_bytes":…,"below":…,"errors":[]}</code> document.</p></div>
   </details>
   <details class="card" id="cmd-worktrees">
-    <summary><span class="cmd-name">worktrees</span><span class="cmd-desc">linked worktrees and their sizes</span><span class="pill g">READ-ONLY</span></summary>
-    <div class="card-body"><p>Read-only list of every repository's linked worktrees under your scan roots, from one <code>git worktree list --porcelain -z</code> per repository through the same hardened Git invocation the scans use: branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is the repository's own claim, so it is measured only when it is a real directory inside a scan root whose <code>.git</code> file leads back to that repository; anything else is listed unsized with the reason. The main worktree is listed but not measured. Sizes follow no link, stay on one device, never count a nested worktree twice, and are lower bounds when entries cannot be read; such a row stays listed and the run exits 1. The report never says safe, stale or removable and shows no date: uncommitted, untracked and ignored work leave none. A bare repository has no <code>.git</code> marker and is found only through one of its worktrees. <code>git worktree remove &lt;path&gt;</code> runs the repository's configured programs, so use it only in a repository you trust, after your own review.</p></div>
+    <summary><span class="cmd-name">worktrees</span><span class="cmd-desc">linked worktrees with sizes, liveness, dirty state and activity</span><span class="pill g">READ-ONLY</span></summary>
+    <div class="card-body"><p>Read-only list of every repository's linked worktrees under your scan roots (including <code>~/.codex/worktrees</code> and <code>~/.t3/worktrees</code> by default), from one <code>git worktree list --porcelain -z</code> per repository through the same hardened Git invocation the scans use: branch or detached HEAD, and the lock and prune reasons Git reports. A listed path is the repository's own claim, so it is measured only when it is a real directory inside a scan root whose <code>.git</code> file leads back to that repository; anything else is listed unsized with the reason. For each verified linked worktree, devtrim also reports running-process liveness (<code>in-use</code> when a current-user build or agent process works inside it), working-tree cleanliness (<code>dirty (N changes)</code> vs <code>clean</code> via hardened <code>git status --porcelain=v1 -z</code>), and last Git activity date (or <code>no commits yet</code>); a failed probe records an error rather than claiming idle or clean. The main worktree is listed but not measured. Sizes follow no link, stay on one device, never count a nested worktree twice, and are lower bounds when entries cannot be read; such a row stays listed and the run exits 1. The report never says safe, stale or removable and adds no deletion authority. A bare repository has no <code>.git</code> marker and is found only through one of its worktrees. <code>git worktree remove &lt;path&gt;</code> runs the repository's configured programs, so use it only in a repository you trust, after your own review.</p></div>
   </details>
   <details class="card" id="cmd-icloud">
     <summary><span class="cmd-name">icloud</span><span class="cmd-desc">large files and locally allocated storage</span><span class="pill g">READ-ONLY</span></summary>
@@ -560,8 +568,8 @@ devtrim app-storage --root ~/Movies --json</code></pre></div>
     <div class="card-body"><p>Uptime, load, memory, disk, battery, thermals, cumulative network, and the busiest processes, read through fixed-argv system tools whose parsers fail closed. A metric that cannot be read is reported as unavailable with its reason, never as a zero, and the health score <strong>names every input it was missing</strong> instead of scoring over the gap. A present Data volume with a failed or malformed disk metric stays unavailable. Root fallback requires a positively absent Data layout; an unreadable or non-directory layout is unavailable. Tools run in the C locale, because a <code>pt_BR</code> decimal comma would otherwise make load and processes unreadable. Memory used is stated as <code>active + wired + compressed</code>, because counting macOS's reclaimable inactive pages reports a healthy machine at 96%.</p></div>
   </details>
   <details class="card" id="cmd-leftovers">
-    <summary><span class="cmd-name">leftovers</span><span class="cmd-desc">report-only review hints</span><span class="pill g">READ-ONLY</span></summary>
-    <div class="card-body"><p>Lists possible agent scratch and <code>.supergoal</code> paths for manual review, and the folders inside a repository's top-level <code>.scratch</code> when Git ignores that folder (<code>git check-ignore</code>) and tracks nothing in it; a <code>.scratch</code> child that is a linked worktree is labelled as one. It never deletes any of them: worktree or mission staleness cannot be proven from a name, and ignored files are still somebody's data.</p></div>
+    <summary><span class="cmd-name">leftovers</span><span class="cmd-desc">report-only review hints, Git tmp_objdir debris and local AI models</span><span class="pill g">READ-ONLY</span></summary>
+    <div class="card-body"><p>Lists possible agent scratch and <code>.supergoal</code> paths for manual review, folders inside a repository's top-level <code>.scratch</code> when Git ignores that folder (<code>git check-ignore</code>) and tracks nothing in it (labelling linked worktrees there as such), abandoned <code>.git/objects/tmp_objdir-*</code> directories left by interrupted Git operations (deduplicated per objects directory), and non-empty local AI model stores under <code>~/.ollama/models</code> and <code>~/.lmstudio/models</code>. It never deletes any of them: worktree or mission staleness cannot be proven from a name, devtrim never modifies <code>.git</code>, and local models are managed by their own runtimes.</p></div>
   </details>
   <h3 class="group" id="g-reclaim">Trash-first</h3>
   <p>After every apply that changes something, the summary adds the home volume&rsquo;s free space read just before the first change and after the last: <code>free space on the home volume: &lt;before&gt; → &lt;after&gt; (&lt;±change&gt;), measured; other processes also write</code>. It is an observation beside the estimate, not what devtrim freed: Trash moves, APFS clones, snapshots and other programs move it too. <code>--json</code> carries it as <code>summary.home_volume</code>.</p>
@@ -605,8 +613,8 @@ devtrim app-storage --root ~/Movies --json</code></pre></div>
     <div class="card-body"><p>Three typed commands with fixed arguments: QuickLook thumbnail cache, user font caches, and the Launch Services database. <code>--apply</code> <strong>requires</strong> an explicit <code>--task quicklook|fonts|launch-services</code>, because one confirmation must not authorize unrelated work — <code>plan_danger</code> takes the maximum, so a cheap task would otherwise ride in on an expensive one's prompt. A task that cannot do what its name says is not offered: those needing root or hours of CPU, and DNS, because <code>dscacheutil -flushcache</code> does not clear the <code>mDNSResponder</code> resolver cache it would advertise. Preview by default; every run is journaled.</p></div>
   </details>
   <details class="card" id="cmd-docker">
-    <summary><span class="cmd-name">docker</span><span class="cmd-desc">unused images + build cache</span><span class="pill r">PERMANENT</span></summary>
-    <div class="card-body"><p><code>image prune -a</code> + <code>builder prune</code> on the exact previewed local Unix-socket endpoint. Remote Docker contexts are refused. <strong>Volumes are never touched</strong> — a volume can hold your live database. The scan also reports the host-side VM disk image as a non-actionable finding measured in allocated blocks: <code>docker system df</code> measures inside the guest, while that sparse image is what the host actually pays for, and pruning does not shrink it. Restart the VM to trigger compaction. The disclosure appears even when the daemon is stopped, which is the one state where the cost is invisible to <code>docker</code> and still present.</p></div>
+    <summary><span class="cmd-name">docker</span><span class="cmd-desc">unused images, daemon build cache + local buildx builders</span><span class="pill r">PERMANENT</span></summary>
+    <div class="card-body"><p><code>image prune -a</code> + <code>builder prune</code> on the exact previewed local Unix-socket endpoint, plus per-builder <code>buildx prune --builder &lt;name&gt; -a -f</code> for local running <code>docker-container</code> buildx builders (deduplicated by backing BuildKit node so alias builders sharing one container are never double-counted or double-pruned). Remote Docker contexts and buildx builders with any non-local node endpoint are refused, and builder names are strictly validated and rechecked at apply. <strong>Volumes are never touched</strong> — a volume can hold your live database. The scan also reports the host-side VM disk image as a non-actionable finding measured in allocated blocks: <code>docker system df</code> measures inside the guest, while that sparse image is what the host actually pays for, and pruning does not shrink it. Restart the VM to trigger compaction. The disclosure appears even when the daemon is stopped, which is the one state where the cost is invisible to <code>docker</code> and still present.</p></div>
   </details>
   <details class="card" id="cmd-simulators">
     <summary><span class="cmd-name">simulators</span><span class="cmd-desc">delete exact previewed unavailable devices</span><span class="pill r">PERMANENT</span></summary>
@@ -812,11 +820,11 @@ codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by agents like ~/.c
   <div class="wrap">
     <ul>
       <li class="foot-name">
-  <span>devtrim <b>v0.15.0</b></span>
+  <span>devtrim <b>v0.16.0</b></span>
       </li>
       <li><a href="index.html">Home</a></li>
       <li><a href="https://github.com/mneves75/devtrim">GitHub</a></li>
-      <li><a href="https://github.com/mneves75/devtrim/releases/tag/v0.15.0">Releases</a></li>
+      <li><a href="https://github.com/mneves75/devtrim/releases/tag/v0.16.0">Releases</a></li>
       <li><a href="https://github.com/mneves75/devtrim/blob/main/SECURITY.md">Security</a></li>
       <li>Apache-2.0</li>
     </ul>
