@@ -467,6 +467,48 @@ pub(crate) fn worktree_listing(repo: &Path) -> Result<Vec<u8>> {
     })
 }
 
+/// Number of dirty entries (staged, unstaged, or untracked) in `worktree`.
+/// Uses `--no-optional-locks` through `hardened_git` so inspection never
+/// refreshes the index on disk.
+pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
+    let mut command = hardened_git(worktree, "git");
+    command.args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"]);
+    let listed = hardened_output(command, || {
+        format!("cannot check working-tree status of {}", worktree.display())
+    })?;
+    parse_porcelain_status_count(&listed)
+        .with_context(|| format!("invalid Git status output for {}", worktree.display()))
+}
+
+/// Counts NUL-delimited `git status --porcelain=v1 -z` records.
+/// A rename or copy record carries a second NUL-terminated field for the
+/// original path, which must be consumed so one rename counts as one change.
+fn parse_porcelain_status_count(output: &[u8]) -> Result<usize> {
+    if output.is_empty() {
+        return Ok(0);
+    }
+    let Some(entries) = output.strip_suffix(b"\0") else {
+        anyhow::bail!("porcelain status output did not end with a NUL");
+    };
+    let mut count = 0usize;
+    let mut fields = entries.split(|byte| *byte == 0);
+    while let Some(entry) = fields.next() {
+        if entry.len() < 4 || entry[2] != b' ' {
+            anyhow::bail!("malformed porcelain status entry");
+        }
+        count = count.saturating_add(1);
+        if matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C') {
+            let Some(original) = fields.next() else {
+                anyhow::bail!("truncated rename or copy entry in porcelain status");
+            };
+            if original.is_empty() {
+                anyhow::bail!("empty original path in porcelain status");
+            }
+        }
+    }
+    Ok(count)
+}
+
 /// The absolute common directory (`.git` of the main worktree) of the
 /// repository holding `repo`.
 pub(crate) fn git_common_dir(repo: &Path) -> Result<PathBuf> {
@@ -1316,5 +1358,29 @@ mod tests {
             "PV git/utc-dates: activity was read in a local zone, not the cutoff's UTC"
         );
         crate::ops::remove_test_path(base);
+    }
+
+    #[test]
+    fn porcelain_status_counts_renames_and_copies_once_and_refuses_truncation() {
+        assert_eq!(parse_porcelain_status_count(b"").unwrap(), 0);
+        assert_eq!(
+            parse_porcelain_status_count(
+                b" M src/lib.rs\0?? notes.txt\0R  new name.rs\0old name.rs\0CM copy\nfile.rs\0orig\nfile.rs\0"
+            )
+            .unwrap(),
+            4
+        );
+        for malformed in [
+            &b" M missing-nul.rs"[..],
+            &b"M\0"[..],
+            &b"MMno-space.rs\0"[..],
+            &b"R  only-destination.rs\0"[..],
+            &b"C  copy.rs\0\0"[..],
+        ] {
+            assert!(
+                parse_porcelain_status_count(malformed).is_err(),
+                "accepted malformed status: {malformed:?}"
+            );
+        }
     }
 }
