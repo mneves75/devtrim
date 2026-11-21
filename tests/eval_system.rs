@@ -1641,10 +1641,15 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
     assert!(preview.status.success(), "{document}");
     let before = calls(&sandbox).len();
 
-    let apply = run(
-        &sandbox,
-        &["clean", "docker", "--apply", "--yolo", "--json"],
-    );
+    let apply = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["clean", "docker", "--apply", "--yolo", "--json"])
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("BUILDX_CONFIG", "/nonexistent/hostile-buildx")
+        .env("BUILDX_BUILDER", "prod-builder")
+        .output()
+        .unwrap();
     let document = json(&apply);
     pristine.assert_only(
         &Tree::snapshot(sandbox.path()),
@@ -1707,7 +1712,8 @@ fn eval_clean_docker_buildx_prunes_deduplicated_local_builder_and_skips_remote()
   '--host unix:///var/run/docker.sock buildx du --builder prod-builder')
     printf 'Reclaimable:\t1GiB\nTotal:\t1GiB\n' ;;
   '--host unix:///var/run/docker.sock buildx prune --builder kiri -a -f')
-    [ -n "${DOCKER_CONFIG:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ] || exit 4
+    [ -n "${DOCKER_CONFIG:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ] && [ -z "${BUILDX_BUILDER:-}" ] || exit 4
+    [ "${BUILDX_CONFIG:-}" = "$DOCKER_CONFIG/buildx" ] || exit 8
     [ ! -e "$DOCKER_CONFIG/contexts" ] || exit 5
     IFS= read -r pinned_json < "$DOCKER_CONFIG/buildx/instances/kiri" || [ -n "$pinned_json" ] || exit 6
     case "$pinned_json" in
@@ -1745,10 +1751,15 @@ esac"#,
         "devtrim must never pass remote or alias builders to buildx du or prune"
     );
 
-    let apply = run(
-        &sandbox,
-        &["clean", "docker", "--apply", "--yolo", "--json"],
-    );
+    let apply = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["clean", "docker", "--apply", "--yolo", "--json"])
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("BUILDX_CONFIG", "/nonexistent/hostile-buildx")
+        .env("BUILDX_BUILDER", "prod-builder")
+        .output()
+        .unwrap();
     let document = json(&apply);
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], 1, "{document}");
@@ -1837,10 +1848,15 @@ esac"#,
         "-f",
     ]);
 
-    let apply = run(
-        &sandbox,
-        &["clean", "docker", "--apply", "--yolo", "--json"],
-    );
+    let apply = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["clean", "docker", "--apply", "--yolo", "--json"])
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("BUILDX_CONFIG", "/nonexistent/hostile-buildx")
+        .env("BUILDX_BUILDER", "prod-builder")
+        .output()
+        .unwrap();
     assert!(
         !apply.status.success(),
         "a failed prune must make the run nonzero: {}",

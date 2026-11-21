@@ -619,7 +619,51 @@ pub(crate) fn write_pinned_buildx_config(
             .map_err(std::io::Error::from)
             .with_context(|| format!("cannot open state directory {}", state_dir.display()))?,
     );
-    let pin_root = open_private_child(&state_file, "buildx-pin")?;
+    let pin_base = open_private_child(&state_file, "buildx-pin")?;
+    // Allocate a fresh per-attempt subdirectory (`O_EXCL` via `mkdirat`) so
+    // concurrent applies never share or overwrite each other's pinned builder
+    // endpoints, and write files with `O_CREAT | O_EXCL` (never `O_TRUNC`).
+    static PIN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let pid = std::process::id();
+    let (attempt_name, pin_root) = {
+        let mut chosen = None;
+        for _ in 0..64 {
+            let sequence = PIN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let candidate = format!("attempt-{pid}-{sequence}");
+            match mkdirat(&pin_base, &candidate, Mode::from(0o700)) {
+                Ok(()) => {
+                    let descriptor = openat(&pin_base, &candidate, dir_flags, Mode::empty())
+                        .map_err(std::io::Error::from)
+                        .with_context(|| {
+                            format!("cannot open private buildx directory `{candidate}`")
+                        })?;
+                    let directory = std::fs::File::from(descriptor);
+                    let metadata = directory.metadata().with_context(|| {
+                        format!("cannot inspect private buildx directory `{candidate}`")
+                    })?;
+                    if !metadata.is_dir() || metadata.uid() != current_uid {
+                        anyhow::bail!(
+                            "private buildx directory `{candidate}` is not owned by the current user"
+                        );
+                    }
+                    fchmod(&directory, Mode::from(0o700))
+                        .map_err(std::io::Error::from)
+                        .with_context(|| format!("cannot tighten permissions on `{candidate}`"))?;
+                    chosen = Some((candidate, directory));
+                    break;
+                }
+                Err(rustix::io::Errno::EXIST) => continue,
+                Err(errno) => {
+                    return Err(std::io::Error::from(errno)).with_context(|| {
+                        format!("cannot create private buildx directory `{candidate}`")
+                    });
+                }
+            }
+        }
+        chosen.ok_or_else(|| {
+            anyhow::anyhow!("cannot allocate unique private buildx directory under state dir")
+        })?
+    };
     let buildx_dir = open_private_child(&pin_root, "buildx")?;
     let instances_dir = open_private_child(&buildx_dir, "instances")?;
 
@@ -643,37 +687,35 @@ pub(crate) fn write_pinned_buildx_config(
         "Dynamic": false,
     });
 
-    let write_private_json = |parent: &std::fs::File,
-                              name: &str,
-                              payload: &serde_json::Value|
-     -> Result<()> {
-        let file_flags =
-            OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let descriptor = openat(parent, name, file_flags, Mode::from(0o600))
-            .map_err(std::io::Error::from)
-            .with_context(|| format!("cannot write private buildx file `{name}`"))?;
-        let mut file = std::fs::File::from(descriptor);
-        let metadata = file
-            .metadata()
-            .with_context(|| format!("cannot inspect private buildx file `{name}`"))?;
-        if !metadata.is_file() || metadata.uid() != current_uid {
-            anyhow::bail!("private buildx file `{name}` is not owned by the current user");
-        }
-        fchmod(&file, Mode::from(0o600))
-            .map_err(std::io::Error::from)
-            .with_context(|| format!("cannot tighten permissions on `{name}`"))?;
-        let encoded =
-            serde_json::to_vec(payload).with_context(|| format!("cannot serialize `{name}`"))?;
-        file.write_all(&encoded)
-            .with_context(|| format!("cannot write `{name}`"))?;
-        file.sync_all()
-            .with_context(|| format!("cannot sync `{name}`"))?;
-        Ok(())
-    };
+    let write_private_json =
+        |parent: &std::fs::File, name: &str, payload: &serde_json::Value| -> Result<()> {
+            let file_flags =
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let descriptor = openat(parent, name, file_flags, Mode::from(0o600))
+                .map_err(std::io::Error::from)
+                .with_context(|| format!("cannot write private buildx file `{name}`"))?;
+            let mut file = std::fs::File::from(descriptor);
+            let metadata = file
+                .metadata()
+                .with_context(|| format!("cannot inspect private buildx file `{name}`"))?;
+            if !metadata.is_file() || metadata.uid() != current_uid {
+                anyhow::bail!("private buildx file `{name}` is not owned by the current user");
+            }
+            fchmod(&file, Mode::from(0o600))
+                .map_err(std::io::Error::from)
+                .with_context(|| format!("cannot tighten permissions on `{name}`"))?;
+            let encoded = serde_json::to_vec(payload)
+                .with_context(|| format!("cannot serialize `{name}`"))?;
+            file.write_all(&encoded)
+                .with_context(|| format!("cannot write `{name}`"))?;
+            file.sync_all()
+                .with_context(|| format!("cannot sync `{name}`"))?;
+            Ok(())
+        };
 
     write_private_json(&pin_root, "config.json", &config_payload)?;
     write_private_json(&instances_dir, builder, &instance_payload)?;
-    Ok(state_dir.join("buildx-pin"))
+    Ok(state_dir.join("buildx-pin").join(attempt_name))
 }
 
 fn docker_cli_plugin_dirs(home: &Path) -> Vec<String> {

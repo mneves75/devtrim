@@ -490,6 +490,10 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
     if !dot_git_metadata.is_dir() && !dot_git_metadata.is_file() {
         anyhow::bail!("refusing non-regular Git marker {}", dot_git.display());
     }
+    const SHA1_EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const SHA256_EMPTY_TREE: &str =
+        "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321";
+
     let mut list_config = hardened_git(worktree, "git");
     list_config
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -498,18 +502,11 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
         .arg(&dot_git)
         .arg("--work-tree")
         .arg(worktree)
-        .args(["config", "--includes", "--list", "--name-only", "-z"]);
-    let config_keys = hardened_output(list_config, || {
+        .args(["config", "--includes", "--list", "-z"]);
+    let config_entries = hardened_output(list_config, || {
         format!("cannot read Git config keys for {}", worktree.display())
     })?;
-    let mut command = hardened_git(worktree, "git");
-    command
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .arg("--git-dir")
-        .arg(&dot_git)
-        .arg("--work-tree")
-        .arg(worktree);
+    let mut empty_tree = SHA1_EMPTY_TREE;
     let starts_ascii = |bytes: &[u8], prefix: &[u8]| {
         bytes.len() >= prefix.len() && bytes[..prefix.len()].eq_ignore_ascii_case(prefix)
     };
@@ -517,8 +514,13 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
         bytes.len() >= suffix.len()
             && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
     };
-    // Use GIT_CONFIG_COUNT/KEY_i/VALUE_i instead of `-c key=val` because `-c`
-    // splits at the first `=`, which fails when a subsection name contains `=`.
+    // Use `--attr-source=<empty-tree>` + `GIT_ATTR_NOSYSTEM=1` +
+    // `core.attributesFile=/dev/null` so `.gitattributes`, system attributes,
+    // and global attributes are disabled atomically inside `git status` itself
+    // with zero two-process race, and also neutralize every configured
+    // `filter.*` / `diff.*` key via `GIT_CONFIG_COUNT` for defense in depth
+    // (including `.git/info/attributes` and subsections containing `=` or
+    // non-UTF-8 bytes).
     let mut overrides: Vec<(OsString, OsString)> = vec![
         (
             OsString::from("core.attributesFile"),
@@ -526,10 +528,19 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
         ),
         (OsString::from("diff.external"), OsString::new()),
     ];
-    for raw_key in config_keys
+    for entry in config_entries
         .split(|byte| *byte == 0)
         .filter(|slice| !slice.is_empty())
     {
+        let (raw_key, raw_value) = match entry.iter().position(|byte| *byte == b'\n') {
+            Some(newline) => (&entry[..newline], Some(&entry[newline + 1..])),
+            None => (entry, None),
+        };
+        if raw_key.eq_ignore_ascii_case(b"extensions.objectformat")
+            && raw_value.is_some_and(|value| value.eq_ignore_ascii_case(b"sha256"))
+        {
+            empty_tree = SHA256_EMPTY_TREE;
+        }
         if starts_ascii(raw_key, b"filter.")
             && (ends_ascii(raw_key, b".clean")
                 || ends_ascii(raw_key, b".smudge")
@@ -545,6 +556,17 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
             ));
         }
     }
+    let mut command = hardened_git(worktree, "git");
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .arg("--git-dir")
+        .arg(&dot_git)
+        .arg("--work-tree")
+        .arg(worktree)
+        .arg("--attr-source")
+        .arg(empty_tree);
     command.env("GIT_CONFIG_COUNT", overrides.len().to_string());
     for (index, (key, value)) in overrides.into_iter().enumerate() {
         command
@@ -730,7 +752,6 @@ pub(crate) const MAX_GIT_POINTER_BYTES: u64 = 4096;
 /// the path is absent, a symlink, or not a regular file.
 pub(crate) fn read_bounded_pointer(path: &Path) -> Result<Option<Vec<u8>>> {
     use rustix::fs::{Mode, OFlags, open};
-    use std::io::Read as _;
 
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
     let descriptor = match open(path, flags, Mode::empty()) {
@@ -743,21 +764,50 @@ pub(crate) fn read_bounded_pointer(path: &Path) -> Result<Option<Vec<u8>>> {
                 .with_context(|| format!("cannot read {}", path.display()));
         }
     };
-    let file = std::fs::File::from(descriptor);
+    read_bounded_pointer_file(std::fs::File::from(descriptor), path)
+}
+
+/// Same as `read_bounded_pointer`, opened relative to an already-open directory
+/// descriptor via `openat` so ancestor components cannot be swapped between
+/// containment validation and the read.
+pub(crate) fn read_bounded_pointer_at(
+    directory: &std::fs::File,
+    name: &str,
+    display_path: &Path,
+) -> Result<Option<Vec<u8>>> {
+    use rustix::fs::{Mode, OFlags, openat};
+
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let descriptor = match openat(directory, name, flags, Mode::empty()) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
+            return Ok(None);
+        }
+        Err(errno) => {
+            return Err(std::io::Error::from(errno))
+                .with_context(|| format!("cannot read {}", display_path.display()));
+        }
+    };
+    read_bounded_pointer_file(std::fs::File::from(descriptor), display_path)
+}
+
+fn read_bounded_pointer_file(file: std::fs::File, display_path: &Path) -> Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+
     let metadata = file
         .metadata()
-        .with_context(|| format!("cannot inspect {}", path.display()))?;
+        .with_context(|| format!("cannot inspect {}", display_path.display()))?;
     if !metadata.is_file() {
         return Ok(None);
     }
     let mut buffer = Vec::new();
     file.take(MAX_GIT_POINTER_BYTES + 1)
         .read_to_end(&mut buffer)
-        .with_context(|| format!("cannot read {}", path.display()))?;
+        .with_context(|| format!("cannot read {}", display_path.display()))?;
     if buffer.len() as u64 > MAX_GIT_POINTER_BYTES {
         anyhow::bail!(
             "Git pointer {} exceeds {MAX_GIT_POINTER_BYTES} bytes",
-            path.display()
+            display_path.display()
         );
     }
     Ok(Some(buffer))

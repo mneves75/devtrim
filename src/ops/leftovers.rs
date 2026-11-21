@@ -76,6 +76,12 @@ impl Op for Leftovers {
                 if project::orphaned_worktree(&repository).unwrap_or(false) {
                     continue;
                 }
+                // Refuse to run Git (`.scratch` check-ignore) or inspect
+                // `tmp_objdir` on a `.git` file pointing outside the repository
+                // or normalized scan roots, or through a symlinked ancestor.
+                if has_out_of_scope_gitfile(&repository, &scoped_roots) {
+                    continue;
+                }
                 if let Err(error) = scratch_findings(&repository, &mut findings) {
                     findings.push(project::unjudged_finding(".scratch", &repository, &error));
                 }
@@ -259,12 +265,36 @@ fn in_scope_without_symlinks(
             .any(|(_, root_real)| canonical.starts_with(root_real))
 }
 
+/// Returns `true` when `repository/.git` is a regular gitfile whose target
+/// escapes `repository` and `scoped_roots` or traverses a symlinked ancestor.
+fn has_out_of_scope_gitfile(repository: &Path, scoped_roots: &[(PathBuf, PathBuf)]) -> bool {
+    let dot_git = repository.join(".git");
+    let Ok(metadata) = std::fs::symlink_metadata(&dot_git) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    let Ok(Some(bytes)) = project::read_bounded_pointer(&dot_git) else {
+        return false;
+    };
+    let Some(target) = project::gitfile_target(&bytes) else {
+        return false;
+    };
+    let gitdir = repository.join(target);
+    let canonical_repo = std::fs::canonicalize(repository).ok();
+    !std::fs::symlink_metadata(&gitdir).is_ok_and(|entry| entry.is_dir())
+        || !in_scope_without_symlinks(&gitdir, repository, canonical_repo.as_deref(), scoped_roots)
+}
+
 fn tmp_objdir_findings(
     repository: &Path,
     scoped_roots: &[(PathBuf, PathBuf)],
     seen_objects_dirs: &mut HashSet<(u64, u64)>,
     findings: &mut Vec<Finding>,
 ) -> Result<()> {
+    use rustix::fs::{Mode, OFlags, open};
+
     let dot_git = repository.join(".git");
     let metadata = match std::fs::symlink_metadata(&dot_git) {
         Ok(metadata) => metadata,
@@ -285,22 +315,23 @@ fn tmp_objdir_findings(
             return Ok(());
         };
         let gitdir = repository.join(target);
-        // Validate `gitdir` containment and symlink freedom BEFORE opening
-        // `commondir` so an untrusted `.git` pointer cannot read files outside
-        // the repository or normalized scan roots.
-        if !std::fs::symlink_metadata(&gitdir).is_ok_and(|entry| entry.is_dir())
-            || !in_scope_without_symlinks(
-                &gitdir,
-                repository,
-                canonical_repo.as_deref(),
-                scoped_roots,
-            )
+        // Open `gitdir` without following a leaf symlink and validate its
+        // containment BEFORE opening `commondir` relative to that open handle
+        // via `openat`, eliminating ancestor-substitution TOCTOU.
+        if !in_scope_without_symlinks(&gitdir, repository, canonical_repo.as_deref(), scoped_roots)
         {
             return Ok(());
         }
+        let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let Ok(gitdir_fd) = open(&gitdir, dir_flags, Mode::empty()) else {
+            return Ok(());
+        };
+        let gitdir_file = std::fs::File::from(gitdir_fd);
         objects_dirs.push(gitdir.join("objects"));
         let commondir_file = gitdir.join("commondir");
-        if let Some(common_bytes) = project::read_bounded_pointer(&commondir_file)? {
+        if let Some(common_bytes) =
+            project::read_bounded_pointer_at(&gitdir_file, "commondir", &commondir_file)?
+        {
             let mut common_target = common_bytes.as_slice();
             while let [rest @ .., b'\n' | b'\r'] = common_target {
                 common_target = rest;

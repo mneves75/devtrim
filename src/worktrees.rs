@@ -253,6 +253,8 @@ fn leads_back(path: &Path, scan_roots: &[PathBuf], common: (u64, u64)) -> Result
     if !scan_roots.iter().any(|root| canonical.starts_with(root)) {
         return Err("it is outside the scan roots");
     }
+    use rustix::fs::{AtFlags, Mode, OFlags, open, statat};
+
     let marker = path.join(".git");
     let not_ours = "its .git does not lead back to this repository";
     let bytes = project::read_bounded_pointer(&marker)
@@ -260,21 +262,21 @@ fn leads_back(path: &Path, scan_roots: &[PathBuf], common: (u64, u64)) -> Result
         .ok_or(not_ours)?;
     let gitdir = project::gitfile_target(&bytes).ok_or(not_ours)?;
     let gitdir = path.join(gitdir);
-    let gitdir_metadata = std::fs::symlink_metadata(&gitdir).map_err(|_| not_ours)?;
-    if !gitdir_metadata.is_dir() {
-        return Err(not_ours);
-    }
     let registry = gitdir.parent().ok_or(not_ours)?;
     if registry.file_name() != Some(OsStr::new("worktrees")) {
         return Err(not_ours);
     }
-    match registry.parent().and_then(identity) {
-        Some(found) if found == common => {}
-        _ => return Err(not_ours),
+    if !std::fs::symlink_metadata(registry).is_ok_and(|entry| entry.is_dir()) {
+        return Err(not_ours);
     }
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let gitdir_file =
+        std::fs::File::from(open(&gitdir, dir_flags, Mode::empty()).map_err(|_| not_ours)?);
+    let parent_identity = registry.parent().and_then(identity).ok_or(not_ours)?;
     let commondir_path = gitdir.join("commondir");
     if let Some(common_bytes) =
-        project::read_bounded_pointer(&commondir_path).map_err(|_| not_ours)?
+        project::read_bounded_pointer_at(&gitdir_file, "commondir", &commondir_path)
+            .map_err(|_| not_ours)?
     {
         let mut common_target = common_bytes.as_slice();
         while let [rest @ .., b'\n' | b'\r'] = common_target {
@@ -284,14 +286,17 @@ fn leads_back(path: &Path, scan_roots: &[PathBuf], common: (u64, u64)) -> Result
             return Err(not_ours);
         }
         let resolved_common = gitdir.join(OsStr::from_bytes(common_target));
-        if identity(&resolved_common) != Some(common) {
+        if identity(&resolved_common) != Some(parent_identity) {
             return Err(not_ours);
         }
-    } else if std::fs::symlink_metadata(&commondir_path).is_ok() {
+    } else if statat(&gitdir_file, "commondir", AtFlags::SYMLINK_NOFOLLOW).is_ok() {
         // Reject a symlinked or non-regular commondir inside gitdir.
         return Err(not_ours);
     }
-    Ok(())
+    match registry.parent().and_then(identity) {
+        Some(found) if found == common => Ok(()),
+        _ => Err(not_ours),
+    }
 }
 
 fn identity(path: &Path) -> Option<(u64, u64)> {

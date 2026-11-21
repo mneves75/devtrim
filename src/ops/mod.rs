@@ -94,8 +94,10 @@ pub(crate) fn run_command_authority(
             let pinned_config =
                 crate::ops::docker::write_pinned_buildx_config(ctx, builder, nodes)?;
             child
-                .env("DOCKER_CONFIG", pinned_config)
-                .env_remove("DOCKER_CONTEXT");
+                .env("DOCKER_CONFIG", &pinned_config)
+                .env("BUILDX_CONFIG", pinned_config.join("buildx"))
+                .env_remove("DOCKER_CONTEXT")
+                .env_remove("BUILDX_BUILDER");
         }
         successful_output(child.output_within(MUTATION_TIMEOUT), &command).map(|_| note(&command))
     })();

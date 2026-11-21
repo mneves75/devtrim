@@ -2103,7 +2103,19 @@ fn eval_worktrees_reports_dirty_clean_activity_and_in_use_state() {
             &format!("touch '{}'; cat", marker.display()),
         ],
     );
-    write(&clean.join("README"), "modified-to-trigger-clean-filter\n");
+    // Keep the exact 6-byte size (`"readme"` -> `"README"`) and shift mtime so
+    // Git's stat/size shortcut cannot decide dirtiness without entering content
+    // conversion (which would execute `filter.hostile=eq.clean` if not blocked).
+    write(&clean.join("README"), "README");
+    let readme_file = std::fs::File::options()
+        .write(true)
+        .open(clean.join("README"))
+        .unwrap();
+    readme_file
+        .set_modified(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+        )
+        .unwrap();
     let with_git_config = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
         .args(["worktrees", "--root", dev.to_str().unwrap(), "--json"])
         .env_clear()
@@ -2173,6 +2185,7 @@ fn eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only() {
     let outside_commondir = outside_git.join("commondir");
     write(&outside_commondir, "..\n");
     write(&dev.join("escape-repo/.git"), "gitdir: ../../outside-git\n");
+    write(&dev.join("escape-repo/.scratch/probe/file.txt"), "probe");
     let symlink_target = dev.join("real-gitdir");
     let symlink_tmp = symlink_target.join("objects/tmp_objdir-via-link");
     write(&symlink_tmp.join("pack.tmp"), &"s".repeat(4096));

@@ -229,9 +229,11 @@ Non-negotiable boundaries:
   `GIT_CONFIG_COUNT`, isolates both Git calls with `GIT_CONFIG_NOSYSTEM=1` and
   `GIT_CONFIG_GLOBAL=/dev/null`, verifies `has_git_marker` and pins
   `--git-dir <worktree>/.git --work-tree <worktree>` so repository
-  `core.worktree` cannot redirect `git status`, lists all effective config keys
-  via `git config --includes --list --name-only -z` (preserving raw non-UTF-8
-  bytes), and overrides every
+  `core.worktree` cannot redirect `git status`, disables `.gitattributes`,
+  system attributes, and `core.attributesFile` atomically via
+  `--attr-source=<empty-tree>` (SHA-1 or SHA-256) and `GIT_ATTR_NOSYSTEM=1`,
+  lists all effective config keys via `git config --includes --list -z`
+  (preserving raw non-UTF-8 bytes), and overrides every
   `filter.*.{clean,smudge,process}`, `filter.*.required`,
   `diff.*.{textconv,command}`, `diff.external`, and `core.attributesFile` via
   `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_i`/`GIT_CONFIG_VALUE_i` environment
@@ -240,15 +242,17 @@ Non-negotiable boundaries:
   worktree. `clean leftovers` also surfaces Git `.git/objects/tmp_objdir-*`
   folders (reading `.git`/`commondir` pointers with `O_NOFOLLOW | O_NONBLOCK`
   capped at 4 KiB across `orphaned_worktree`, `leads_back`, and `leftovers`,
-  verifying `gitdir` is symlink-free and inside the repository/scan roots before
-  opening `commondir`, and rejecting symlinked ancestors or out-of-scope targets)
+  skipping `.scratch` and `tmp_objdir` for any out-of-scope gitfile, verifying
+  `gitdir` is symlink-free and inside the repository/scan roots before opening
+  `commondir` relative to the open `gitdir` descriptor via `openat`, and
+  rejecting symlinked ancestors or out-of-scope targets)
   and local AI model stores (`~/.ollama/models`, `~/.lmstudio/models`) strictly
   as `Action::Info`. A path
   a worktree listing names is repository data: it is measured only when it is a
   real directory inside a scan root whose `.git` file names a real `gitdir` in
-  that repository's `worktrees` (and whose `commondir`, when present, resolves
-  to the same repository common dir), and Git runs only in folders the walk
-  itself finds,
+  that repository's real (non-symlink) `worktrees` registry (and whose
+  `commondir`, read via `openat` when present, resolves to the same repository
+  common dir), and Git runs only in folders the walk itself finds,
   never in a path because a listing named it. Neither report creates a finding
   with a target action, a deletion-list entry, a command authority or a journal
   record.
@@ -264,14 +268,18 @@ Non-negotiable boundaries:
   filters the returned JSON; devtrim never runs `buildx du` or `buildx prune`
   against any non-local builder. Apply re-verifies the local host, builder
   name, live local running state, and every previewed node's canonical
-  `(name, resolved socket, worker IDs)` fingerprint, then writes a private
-  `0700` `DOCKER_CONFIG` inside devtrim's state directory containing only
-  `config.json` (CLI plugin discovery paths, no credentials) and
+  `(name, resolved socket, worker IDs)` fingerprint, then allocates an
+  exclusive per-attempt `0700` `DOCKER_CONFIG` directory
+  (`buildx-pin/attempt-<pid>-<seq>`) inside devtrim's state directory with
+  `O_CREAT | O_EXCL | O_NOFOLLOW` `0600` files containing only `config.json`
+  (CLI plugin discovery paths, no credentials) and
   `buildx/instances/<builder>` pinned to `Driver: "docker-container"` and the
-  verified local `unix://` node endpoints (with no `contexts/` directory and
-  `DOCKER_CONTEXT` cleared) before running
-  `docker --host <host> buildx prune --builder <builder> -a -f`, so a
-  concurrent builder or context rebind cannot redirect the prune to a remote or
+  verified local `unix://` node endpoints (with no `contexts/` directory),
+  binding both `DOCKER_CONFIG` and `BUILDX_CONFIG` to that attempt directory
+  and clearing `DOCKER_CONTEXT` and `BUILDX_BUILDER` before running
+  `docker --host <host> buildx prune --builder <builder> -a -f`, so neither a
+  concurrent builder/context rebind, an inherited `BUILDX_CONFIG`/`BUILDX_BUILDER`,
+  nor a concurrent devtrim apply can redirect the prune to a remote or
   unpreviewed worker.
 - A permanent removal refuses, before removing anything, a tree holding a
   folder without write and search permission, since it would otherwise stop
