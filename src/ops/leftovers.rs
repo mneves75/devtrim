@@ -223,41 +223,40 @@ fn scratch_findings(repository: &Path, findings: &mut Vec<Finding>) -> Result<()
 /// (and its common objects directory when a linked worktree has `commondir`).
 /// Deduplicated by `(dev, ino)` so linked worktrees sharing one object store
 /// report each debris directory once. Never follows symlinks or modifies `.git`.
-const MAX_GIT_POINTER_BYTES: u64 = 4096;
-
-fn read_bounded_pointer(path: &Path) -> Result<Option<Vec<u8>>> {
-    use std::io::Read as _;
-
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            return Ok(None);
-        }
-        Err(error) => {
-            return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
-        }
+/// Returns `true` iff `path` resolves without traversing symlinks below
+/// `repository` or any normalized scan root and stays inside `canonical_repo`
+/// or `scoped_roots`.
+fn in_scope_without_symlinks(
+    path: &Path,
+    repository: &Path,
+    canonical_repo: Option<&Path>,
+    scoped_roots: &[(PathBuf, PathBuf)],
+) -> bool {
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return false;
     };
-    if !metadata.is_file() {
-        return Ok(None);
+    let lexical_matches = canonical == crate::safety::clean(path)
+        || canonical_repo.is_some_and(|repo_real| {
+            path.strip_prefix(repository)
+                .ok()
+                .map(|relative| crate::safety::clean(&repo_real.join(relative)))
+                .as_ref()
+                == Some(&canonical)
+        })
+        || scoped_roots.iter().any(|(root, root_real)| {
+            path.strip_prefix(root)
+                .ok()
+                .map(|relative| crate::safety::clean(&root_real.join(relative)))
+                .as_ref()
+                == Some(&canonical)
+        });
+    if !lexical_matches {
+        return false;
     }
-    let file =
-        std::fs::File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let mut buffer = Vec::new();
-    file.take(MAX_GIT_POINTER_BYTES + 1)
-        .read_to_end(&mut buffer)
-        .with_context(|| format!("cannot read {}", path.display()))?;
-    if buffer.len() as u64 > MAX_GIT_POINTER_BYTES {
-        anyhow::bail!(
-            "Git pointer {} exceeds {MAX_GIT_POINTER_BYTES} bytes",
-            path.display()
-        );
-    }
-    Ok(Some(buffer))
+    canonical_repo.is_some_and(|repo_real| canonical.starts_with(repo_real))
+        || scoped_roots
+            .iter()
+            .any(|(_, root_real)| canonical.starts_with(root_real))
 }
 
 fn tmp_objdir_findings(
@@ -274,20 +273,34 @@ fn tmp_objdir_findings(
             return Err(error).with_context(|| format!("cannot inspect {}", dot_git.display()));
         }
     };
+    let canonical_repo = std::fs::canonicalize(repository).ok();
     let mut objects_dirs: Vec<PathBuf> = Vec::new();
     if metadata.is_dir() {
         objects_dirs.push(dot_git.join("objects"));
     } else if metadata.is_file() {
-        let Some(bytes) = read_bounded_pointer(&dot_git)? else {
+        let Some(bytes) = project::read_bounded_pointer(&dot_git)? else {
             return Ok(());
         };
         let Some(target) = project::gitfile_target(&bytes) else {
             return Ok(());
         };
         let gitdir = repository.join(target);
+        // Validate `gitdir` containment and symlink freedom BEFORE opening
+        // `commondir` so an untrusted `.git` pointer cannot read files outside
+        // the repository or normalized scan roots.
+        if !std::fs::symlink_metadata(&gitdir).is_ok_and(|entry| entry.is_dir())
+            || !in_scope_without_symlinks(
+                &gitdir,
+                repository,
+                canonical_repo.as_deref(),
+                scoped_roots,
+            )
+        {
+            return Ok(());
+        }
         objects_dirs.push(gitdir.join("objects"));
         let commondir_file = gitdir.join("commondir");
-        if let Some(common_bytes) = read_bounded_pointer(&commondir_file)? {
+        if let Some(common_bytes) = project::read_bounded_pointer(&commondir_file)? {
             let mut common_target = common_bytes.as_slice();
             while let [rest @ .., b'\n' | b'\r'] = common_target {
                 common_target = rest;
@@ -304,7 +317,6 @@ fn tmp_objdir_findings(
         return Ok(());
     }
 
-    let canonical_repo = std::fs::canonicalize(repository).ok();
     for objects_dir in objects_dirs {
         let objects_metadata = match std::fs::symlink_metadata(&objects_dir) {
             Ok(objects_metadata) => objects_metadata,
@@ -324,39 +336,12 @@ fn tmp_objdir_findings(
         if !objects_metadata.is_dir() {
             continue;
         }
-        // Reject symlinked ancestors and pointers escaping the repository or
-        // normalized scan roots so an untrusted `.git` or `commondir` cannot
-        // inspect arbitrary host directories.
-        let Ok(canonical_objects) = std::fs::canonicalize(&objects_dir) else {
-            continue;
-        };
-        let lexical_matches = canonical_objects == crate::safety::clean(&objects_dir)
-            || canonical_repo.as_ref().is_some_and(|repo_real| {
-                objects_dir
-                    .strip_prefix(repository)
-                    .ok()
-                    .map(|relative| crate::safety::clean(&repo_real.join(relative)))
-                    .as_ref()
-                    == Some(&canonical_objects)
-            })
-            || scoped_roots.iter().any(|(root, root_real)| {
-                objects_dir
-                    .strip_prefix(root)
-                    .ok()
-                    .map(|relative| crate::safety::clean(&root_real.join(relative)))
-                    .as_ref()
-                    == Some(&canonical_objects)
-            });
-        if !lexical_matches {
-            continue;
-        }
-        let in_scope = canonical_repo
-            .as_ref()
-            .is_some_and(|repo_real| canonical_objects.starts_with(repo_real))
-            || scoped_roots
-                .iter()
-                .any(|(_, root_real)| canonical_objects.starts_with(root_real));
-        if !in_scope {
+        if !in_scope_without_symlinks(
+            &objects_dir,
+            repository,
+            canonical_repo.as_deref(),
+            scoped_roots,
+        ) {
             continue;
         }
         if !seen_objects_dirs.insert((objects_metadata.dev(), objects_metadata.ino())) {

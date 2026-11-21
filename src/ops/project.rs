@@ -485,6 +485,11 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
         anyhow::bail!("not a Git worktree: {}", worktree.display());
     }
     let dot_git = worktree.join(".git");
+    let dot_git_metadata = std::fs::symlink_metadata(&dot_git)
+        .with_context(|| format!("cannot inspect Git marker {}", dot_git.display()))?;
+    if !dot_git_metadata.is_dir() && !dot_git_metadata.is_file() {
+        anyhow::bail!("refusing non-regular Git marker {}", dot_git.display());
+    }
     let mut list_config = hardened_git(worktree, "git");
     list_config
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -717,25 +722,56 @@ pub(crate) fn listed_repositories(repos: &[PathBuf]) -> String {
 /// query there, so the scanners leave such a worktree out and name it, rather
 /// than let one orphan — common under `~/.codex/worktrees` once a repository
 /// is deleted — fail the whole category. Nothing in it is offered; apply would
+pub(crate) const MAX_GIT_POINTER_BYTES: u64 = 4096;
+
+/// Reads a Git pointer file (`.git` or `commondir`) without following symlinks
+/// or blocking on non-regular files, checking the already-open descriptor and
+/// refusing files larger than `MAX_GIT_POINTER_BYTES`. Returns `Ok(None)` when
+/// the path is absent, a symlink, or not a regular file.
+pub(crate) fn read_bounded_pointer(path: &Path) -> Result<Option<Vec<u8>>> {
+    use rustix::fs::{Mode, OFlags, open};
+    use std::io::Read as _;
+
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let descriptor = match open(path, flags, Mode::empty()) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
+            return Ok(None);
+        }
+        Err(errno) => {
+            return Err(std::io::Error::from(errno))
+                .with_context(|| format!("cannot read {}", path.display()));
+        }
+    };
+    let file = std::fs::File::from(descriptor);
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("cannot inspect {}", path.display()))?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let mut buffer = Vec::new();
+    file.take(MAX_GIT_POINTER_BYTES + 1)
+        .read_to_end(&mut buffer)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    if buffer.len() as u64 > MAX_GIT_POINTER_BYTES {
+        anyhow::bail!(
+            "Git pointer {} exceeds {MAX_GIT_POINTER_BYTES} bytes",
+            path.display()
+        );
+    }
+    Ok(Some(buffer))
+}
+
 /// refuse it anyway, because its activity cannot be read. Any other shape is
 /// not an orphan and goes to Git as before.
 pub(crate) fn orphaned_worktree(repo: &Path) -> Result<bool> {
     let marker = repo.join(".git");
-    let metadata = match std::fs::symlink_metadata(&marker) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("cannot inspect Git marker {}", marker.display()));
-        }
-    };
-    if !metadata.file_type().is_file() {
-        return Ok(false);
-    }
     // Anything Git would reject is not an orphan: it goes to Git, which
     // refuses it.
-    let bytes = std::fs::read(&marker)
-        .with_context(|| format!("cannot read Git marker {}", marker.display()))?;
+    let Some(bytes) = read_bounded_pointer(&marker)? else {
+        return Ok(false);
+    };
     let Some(target) = gitfile_target(&bytes) else {
         return Ok(false);
     };

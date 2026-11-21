@@ -82,10 +82,9 @@ built binary before the frame is regenerated.
      with a `beforematch` listener (no `inert`) and `visibility: hidden` so
      find-in-page can reveal them while the rail never moves when a shorter
      screen shows.
-   - The Apply step needs an apply, and `frames.py` never applies a plan.
-     Open question: whether to capture one, for instance a permanent-mode
-     apply of the disposable demo home, which would keep anything out of the
-     developer's Trash. Until that is decided and built, the step stays out.
+   - The Apply step (`tui:progress`) is captured by `frames.py` mid-apply
+     (waiting for `"1 of 4"`) in permanent mode inside a disposable demo home,
+     keeping anything out of the developer's Trash while showing live progress.
 3. **Demo video**, secondary, with its transcript; no autoplay.
 4. **Find where the space went** (`#analyze`, slot `tui:analyze`): the
    `analyze` screen beside two sentences and the four verdicts as a `<dl>`

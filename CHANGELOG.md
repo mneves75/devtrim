@@ -2,8 +2,6 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
-
 ## [0.16.0] - 2026-11-21
 
 ### Added
@@ -18,8 +16,6 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - Redesigned `index.html`, `MANUAL.html`, `styles.css`, and `DESIGN.md` (v6) using 2026+ web standards: single-row scrollable walkthrough tabs with scroll-driven fade masks and progressive CSS Anchor Positioning underline, `hidden="until-found"` with `beforematch`, container-queried `.table-wrapper`, CSS `subgrid` architectural pillars, `color-scheme: only dark` on terminal frames, and fixed `tui:overview` (54 cols) and `tui:progress` (live mid-apply capture) frames with regenerated `video/film/facts.json`.
 - Retired the `GHSA-g3hv-75wg-m249` npm audit waiver (`video/audit-waivers.json` is now `[]`) by upgrading `eslint` to `10.15.0` and pinning `minimatch` `11.0.8` in `video/package.json`.
 - This release's local gates ran TruffleHog 3.100.0, Gitleaks 8.30.1, actionlint 1.7.12, ShellCheck 0.11.0, Node 26.13.1 and npm 12.2.2; the hosted run on the pinned versions is the authoritative one.
-- The landing page links the verified immutable 0.15.0 release after production
-  promotion, with regenerated film facts.
 
 ### Fixed
 - `scripts/site/frames.py` now captures `tui:overview` at 54 columns (so category sizes and footer controls are not truncated) and waits for `"1 of 4"` before capturing `tui:progress` mid-apply.

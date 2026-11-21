@@ -238,13 +238,17 @@ Non-negotiable boundaries:
   variables so untrusted repositories and their submodules never execute
   content filters or diff drivers or inspect paths outside the validated
   worktree. `clean leftovers` also surfaces Git `.git/objects/tmp_objdir-*`
-  folders (bounding `.git`/`commondir` pointer reads to 4 KiB and refusing
-  symlinked ancestors or targets outside the repository/scan roots) and local AI
-  model stores (`~/.ollama/models`, `~/.lmstudio/models`) strictly as
-  `Action::Info`. A path
+  folders (reading `.git`/`commondir` pointers with `O_NOFOLLOW | O_NONBLOCK`
+  capped at 4 KiB across `orphaned_worktree`, `leads_back`, and `leftovers`,
+  verifying `gitdir` is symlink-free and inside the repository/scan roots before
+  opening `commondir`, and rejecting symlinked ancestors or out-of-scope targets)
+  and local AI model stores (`~/.ollama/models`, `~/.lmstudio/models`) strictly
+  as `Action::Info`. A path
   a worktree listing names is repository data: it is measured only when it is a
-  real directory inside a scan root whose `.git` file names a gitdir in that
-  repository's `worktrees`, and Git runs only in folders the walk itself finds,
+  real directory inside a scan root whose `.git` file names a real `gitdir` in
+  that repository's `worktrees` (and whose `commondir`, when present, resolves
+  to the same repository common dir), and Git runs only in folders the walk
+  itself finds,
   never in a path because a listing named it. Neither report creates a finding
   with a target action, a deletion-list entry, a command authority or a journal
   record.
@@ -260,10 +264,15 @@ Non-negotiable boundaries:
   filters the returned JSON; devtrim never runs `buildx du` or `buildx prune`
   against any non-local builder. Apply re-verifies the local host, builder
   name, live local running state, and every previewed node's canonical
-  `(name, resolved socket, worker IDs)` fingerprint before running
-  `docker --host <host> buildx prune --builder <builder> -a -f` (with the same
-  residual CLI-resolution window between pre-apply verification and subprocess
-  execution as other external-tool commands).
+  `(name, resolved socket, worker IDs)` fingerprint, then writes a private
+  `0700` `DOCKER_CONFIG` inside devtrim's state directory containing only
+  `config.json` (CLI plugin discovery paths, no credentials) and
+  `buildx/instances/<builder>` pinned to `Driver: "docker-container"` and the
+  verified local `unix://` node endpoints (with no `contexts/` directory and
+  `DOCKER_CONTEXT` cleared) before running
+  `docker --host <host> buildx prune --builder <builder> -a -f`, so a
+  concurrent builder or context rebind cannot redirect the prune to a remote or
+  unpreviewed worker.
 - A permanent removal refuses, before removing anything, a tree holding a
   folder without write and search permission, since it would otherwise stop
   part-way. The one exception is a direct Trash child in `trash-empty`, whose

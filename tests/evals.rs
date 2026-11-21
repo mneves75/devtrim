@@ -2082,7 +2082,8 @@ fn eval_worktrees_reports_dirty_clean_activity_and_in_use_state() {
     );
 
     // Hostile repository clean filter with `=` in subsection name plus an
-    // inherited `GIT_CONFIG=/dev/null` must never execute filters during scan.
+    // inherited `GIT_CONFIG=/dev/null` must never execute filters during scan,
+    // even when the filtered tracked file is modified so Git must hash it.
     let marker = sandbox.path().join("filter-ran");
     write(&clean.join(".gitattributes"), "README filter=hostile=eq\n");
     git(&sandbox, &clean, STALE, &["add", ".gitattributes"]);
@@ -2102,6 +2103,7 @@ fn eval_worktrees_reports_dirty_clean_activity_and_in_use_state() {
             &format!("touch '{}'; cat", marker.display()),
         ],
     );
+    write(&clean.join("README"), "modified-to-trigger-clean-filter\n");
     let with_git_config = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
         .args(["worktrees", "--root", dev.to_str().unwrap(), "--json"])
         .env_clear()
@@ -2124,9 +2126,10 @@ fn eval_worktrees_reports_dirty_clean_activity_and_in_use_state() {
         finding_at(&with_git_config_doc, &clean)["note"]
             .as_str()
             .unwrap()
-            .contains("clean"),
+            .contains("dirty (1 change)"),
         "{with_git_config_doc}"
     );
+    write(&clean.join("README"), "readme");
 
     // Fail-closed: if the process probe fails, clean must not be claimed and
     // the error must be reported with nonzero status.
@@ -2162,8 +2165,13 @@ fn eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only() {
     write(&tmp_objdir.join("pack.tmp"), &"x".repeat(4096));
     // Hostile `.git` pointers: one escaping the scan root and one traversing a
     // symlinked ancestor must both be ignored.
-    let outside_tmp = sandbox.path().join("outside-git/objects/tmp_objdir-escape");
+    let outside_git = sandbox.path().join("outside-git");
+    let outside_tmp = outside_git.join("objects/tmp_objdir-escape");
     write(&outside_tmp.join("pack.tmp"), &"e".repeat(4096));
+    // An unreadable `commondir` outside scan roots must never be opened;
+    // opening it would raise a permission error and fail the scan.
+    let outside_commondir = outside_git.join("commondir");
+    write(&outside_commondir, "..\n");
     write(&dev.join("escape-repo/.git"), "gitdir: ../../outside-git\n");
     let symlink_target = dev.join("real-gitdir");
     let symlink_tmp = symlink_target.join("objects/tmp_objdir-via-link");
@@ -2176,6 +2184,7 @@ fn eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only() {
     write(&lmstudio_models.join("org/model.gguf"), &"g".repeat(4096));
 
     let before = Tree::snapshot(sandbox.path());
+    let outside_commondir_guard = ModeGuard::unreadable(outside_commondir);
     let preview = run(
         &sandbox,
         &[
@@ -2188,6 +2197,10 @@ fn eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only() {
     );
     assert!(preview.status.success(), "{}", json(&preview));
     let document = json(&preview);
+    assert!(
+        document["errors"].as_array().unwrap().is_empty(),
+        "out-of-scope unreadable commondir must never be opened: {document}"
+    );
     for expected in [&tmp_objdir, &ollama_models, &lmstudio_models] {
         let finding = finding_at(&document, expected);
         assert_eq!(finding["action"]["type"], "info", "{document}");
@@ -2218,6 +2231,7 @@ fn eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only() {
             "--json",
         ],
     );
+    drop(outside_commondir_guard);
     assert_eq!(apply.status.code(), Some(2), "{}", json(&apply));
     before.assert_only(
         &Tree::snapshot(sandbox.path()),

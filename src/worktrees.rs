@@ -255,21 +255,43 @@ fn leads_back(path: &Path, scan_roots: &[PathBuf], common: (u64, u64)) -> Result
     }
     let marker = path.join(".git");
     let not_ours = "its .git does not lead back to this repository";
-    let is_file = std::fs::symlink_metadata(&marker).is_ok_and(|metadata| metadata.is_file());
-    if !is_file {
-        return Err(not_ours);
-    }
-    let bytes = std::fs::read(&marker).map_err(|_| not_ours)?;
+    let bytes = project::read_bounded_pointer(&marker)
+        .map_err(|_| not_ours)?
+        .ok_or(not_ours)?;
     let gitdir = project::gitfile_target(&bytes).ok_or(not_ours)?;
     let gitdir = path.join(gitdir);
+    let gitdir_metadata = std::fs::symlink_metadata(&gitdir).map_err(|_| not_ours)?;
+    if !gitdir_metadata.is_dir() {
+        return Err(not_ours);
+    }
     let registry = gitdir.parent().ok_or(not_ours)?;
     if registry.file_name() != Some(OsStr::new("worktrees")) {
         return Err(not_ours);
     }
     match registry.parent().and_then(identity) {
-        Some(found) if found == common => Ok(()),
-        _ => Err(not_ours),
+        Some(found) if found == common => {}
+        _ => return Err(not_ours),
     }
+    let commondir_path = gitdir.join("commondir");
+    if let Some(common_bytes) =
+        project::read_bounded_pointer(&commondir_path).map_err(|_| not_ours)?
+    {
+        let mut common_target = common_bytes.as_slice();
+        while let [rest @ .., b'\n' | b'\r'] = common_target {
+            common_target = rest;
+        }
+        if common_target.is_empty() {
+            return Err(not_ours);
+        }
+        let resolved_common = gitdir.join(OsStr::from_bytes(common_target));
+        if identity(&resolved_common) != Some(common) {
+            return Err(not_ours);
+        }
+    } else if std::fs::symlink_metadata(&commondir_path).is_ok() {
+        // Reject a symlinked or non-regular commondir inside gitdir.
+        return Err(not_ours);
+    }
+    Ok(())
 }
 
 fn identity(path: &Path) -> Option<(u64, u64)> {

@@ -1707,6 +1707,13 @@ fn eval_clean_docker_buildx_prunes_deduplicated_local_builder_and_skips_remote()
   '--host unix:///var/run/docker.sock buildx du --builder prod-builder')
     printf 'Reclaimable:\t1GiB\nTotal:\t1GiB\n' ;;
   '--host unix:///var/run/docker.sock buildx prune --builder kiri -a -f')
+    [ -n "${DOCKER_CONFIG:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ] || exit 4
+    [ ! -e "$DOCKER_CONFIG/contexts" ] || exit 5
+    IFS= read -r pinned_json < "$DOCKER_CONFIG/buildx/instances/kiri" || [ -n "$pinned_json" ] || exit 6
+    case "$pinned_json" in
+      *'"Driver":"docker-container"'*'"Endpoint":"unix:///tmp/kiri.sock"'*|*'"Endpoint":"unix:///tmp/kiri.sock"'*'"Driver":"docker-container"'*) ;;
+      *) exit 7 ;;
+    esac
     printf 'Total:\t2.05GiB\n' ;;
   *) exit 1 ;;
 esac"#,
