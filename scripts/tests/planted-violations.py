@@ -1872,8 +1872,8 @@ CASES = (
         name="eval/docker-buildx",
         relative_path="src/ops/docker.rs",
         # Non-local buildx endpoints are no longer filtered out.
-        before="    is_local_docker_host(endpoint) || local_contexts.contains_key(endpoint)",
-        after="    let _ = (endpoint, local_contexts); true",
+        before="    let endpoint = node.endpoint.trim();\n    is_local_docker_host(endpoint) || local_contexts.contains_key(endpoint)\n}",
+        after="    let _ = (node, local_contexts);\n    true\n}",
         tests=("eval_clean_docker_buildx_prunes_deduplicated_local_builder_and_skips_remote",),
         marker="PV eval/docker-buildx",
         target="eval_system",

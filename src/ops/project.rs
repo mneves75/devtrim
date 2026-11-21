@@ -469,10 +469,15 @@ pub(crate) fn worktree_listing(repo: &Path) -> Result<Vec<u8>> {
 
 /// Number of dirty entries (staged, unstaged, or untracked) in `worktree`.
 /// Uses `--no-optional-locks` through `hardened_git` so inspection never
-/// refreshes the index on disk, and neutralizes every repository-configured
+/// refreshes the index on disk, skips submodule status recursion
+/// (`--ignore-submodules=all`), and neutralizes every repository-configured
 /// content filter (`filter.*.{clean,smudge,process,required}`) and external
-/// diff/textconv driver before `git status` hashes modified files.
+/// diff/textconv driver — including non-UTF-8 config keys — before `git status`
+/// hashes modified files.
 pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
     let mut list_config = hardened_git(worktree, "git");
     list_config.args(["config", "--includes", "--list", "--name-only", "-z"]);
     let config_keys = hardened_output(list_config, || {
@@ -485,27 +490,44 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
         "-c",
         "diff.external=",
     ]);
+    let starts_ascii = |bytes: &[u8], prefix: &[u8]| {
+        bytes.len() >= prefix.len() && bytes[..prefix.len()].eq_ignore_ascii_case(prefix)
+    };
+    let ends_ascii = |bytes: &[u8], suffix: &[u8]| {
+        bytes.len() >= suffix.len()
+            && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    };
     for raw_key in config_keys
         .split(|byte| *byte == 0)
         .filter(|slice| !slice.is_empty())
     {
-        let Ok(key) = std::str::from_utf8(raw_key) else {
-            continue;
-        };
-        let lowered = key.to_ascii_lowercase();
-        if lowered.starts_with("filter.")
-            && (lowered.ends_with(".clean")
-                || lowered.ends_with(".smudge")
-                || lowered.ends_with(".process"))
-            || lowered.starts_with("diff.")
-                && (lowered.ends_with(".textconv") || lowered.ends_with(".command"))
+        let suffix: Option<&[u8]> = if starts_ascii(raw_key, b"filter.")
+            && (ends_ascii(raw_key, b".clean")
+                || ends_ascii(raw_key, b".smudge")
+                || ends_ascii(raw_key, b".process"))
+            || starts_ascii(raw_key, b"diff.")
+                && (ends_ascii(raw_key, b".textconv") || ends_ascii(raw_key, b".command"))
         {
-            command.arg("-c").arg(format!("{key}="));
-        } else if lowered.starts_with("filter.") && lowered.ends_with(".required") {
-            command.arg("-c").arg(format!("{key}=false"));
+            Some(b"=")
+        } else if starts_ascii(raw_key, b"filter.") && ends_ascii(raw_key, b".required") {
+            Some(b"=false")
+        } else {
+            None
+        };
+        if let Some(value) = suffix {
+            let mut override_arg = Vec::with_capacity(raw_key.len() + value.len());
+            override_arg.extend_from_slice(raw_key);
+            override_arg.extend_from_slice(value);
+            command.arg("-c").arg(OsString::from_vec(override_arg));
         }
     }
-    command.args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"]);
+    command.args([
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=normal",
+        "--ignore-submodules=all",
+    ]);
     let listed = hardened_output(command, || {
         format!("cannot check working-tree status of {}", worktree.display())
     })?;

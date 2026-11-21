@@ -1203,10 +1203,12 @@ impl App {
                 if let Some(target_operation) = self.scan_jump_operation() {
                     return Intent::Load(target_operation);
                 }
-                let reason = if self.scan_section_entry().is_some() {
-                    "Read-only category: no actionable category view to open."
-                } else {
-                    "This row has no actionable category view to open."
+                let reason = match self.scan_section_entry() {
+                    Some(entry) if entry.operation.read_only() => {
+                        "Read-only category: no actionable category view to open."
+                    }
+                    Some(_) => "Informational row: no actionable category view to open.",
+                    None => "This row has no actionable category view to open.",
                 };
                 self.say(Token::Muted, reason);
                 Intent::None
@@ -3012,7 +3014,7 @@ fn outcome_entries(app: &App) -> Vec<(String, Style)> {
         }
         if summary.bytes_trashed_estimate > 0 {
             lines.push((
-                "Next: run `devtrim trash-empty --only-devtrim` to purge only what devtrim moved (b, then 0 previews the whole Trash)."
+                "Next: run `devtrim trash-empty --only-devtrim` to preview purging only what devtrim moved (b, then 0 previews the whole Trash)."
                     .to_string(),
                 app.theme.style(Token::Accent),
             ));

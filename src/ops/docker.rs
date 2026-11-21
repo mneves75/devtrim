@@ -89,12 +89,6 @@ struct BuildxNode {
     ids: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum BuilderCanonicalKey {
-    NodeIds(Vec<String>),
-    NodeEndpoints(Vec<(String, String)>),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BuildxUsage {
     total_bytes: u64,
@@ -283,7 +277,6 @@ fn needs_context_lookup(builders: &[BuildxBuilder]) -> bool {
             && is_valid_builder_name(&builder.name)
             && builder.nodes.as_deref().is_some_and(|nodes| {
                 !nodes.is_empty()
-                    && nodes.iter().all(|node| node.status.trim() == "running")
                     && nodes.iter().any(|node| {
                         let endpoint = node.endpoint.trim();
                         !is_local_docker_host(endpoint) && !endpoint.contains("://")
@@ -292,89 +285,79 @@ fn needs_context_lookup(builders: &[BuildxBuilder]) -> bool {
     })
 }
 
-fn local_buildx_builders(
+/// Canonical per-node identity combining each node's name, resolved local
+/// socket endpoint, and sorted worker IDs so neither an un-ID'd node nor a
+/// retargeted context alias can slip past apply re-verification.
+fn builder_node_fingerprint(
+    nodes: &[BuildxNode],
+    local_contexts: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut entries: Vec<String> = nodes
+        .iter()
+        .map(|node| {
+            let endpoint = node.endpoint.trim();
+            let resolved = local_contexts
+                .get(endpoint)
+                .map(String::as_str)
+                .unwrap_or(endpoint);
+            let mut node_ids: Vec<&str> = node
+                .ids
+                .iter()
+                .flatten()
+                .map(String::as_str)
+                .map(str::trim)
+                .filter(|identifier| !identifier.is_empty())
+                .collect();
+            node_ids.sort_unstable();
+            node_ids.dedup();
+            format!("{}@{}#{}", node.name.trim(), resolved, node_ids.join(","))
+        })
+        .collect();
+    entries.sort();
+    entries.dedup();
+    entries
+}
+
+/// Filter to running local `docker-container` builders and collapse aliases
+/// pointing at the exact same backing BuildKit nodes, preferring `Current == true`
+/// then lexicographically smallest builder name.
+fn deduplicate_local_buildx_builders(
     builders: &[BuildxBuilder],
     local_contexts: &BTreeMap<String, String>,
 ) -> Vec<BuildxBuilder> {
-    builders
-        .iter()
-        .filter(|builder| {
-            builder.driver.trim() == "docker-container"
-                && is_valid_builder_name(&builder.name)
-                && builder.nodes.as_deref().is_some_and(|nodes| {
-                    !nodes.is_empty()
-                        && nodes
-                            .iter()
-                            .all(|node| is_local_buildx_node(node, local_contexts))
-                })
-        })
-        .cloned()
-        .collect()
-}
-
-/// Multiple builder aliases can point to the exact same BuildKit daemon
-/// container; collapse aliases sharing node IDs (or `(name, endpoint)` when
-/// IDs are absent), preferring `Current == true` then lexicographically
-/// smallest builder name.
-fn builder_canonical_key(nodes: &[BuildxNode]) -> BuilderCanonicalKey {
-    let mut node_ids: Vec<String> = nodes
-        .iter()
-        .flat_map(|node| node.ids.iter().flatten())
-        .map(|identifier| identifier.trim().to_string())
-        .filter(|identifier| !identifier.is_empty())
-        .collect();
-    if !node_ids.is_empty() {
-        node_ids.sort();
-        node_ids.dedup();
-        return BuilderCanonicalKey::NodeIds(node_ids);
-    }
-    let mut endpoints: Vec<(String, String)> = nodes
-        .iter()
-        .map(|node| {
-            (
-                node.name.trim().to_string(),
-                node.endpoint.trim().to_string(),
-            )
-        })
-        .collect();
-    endpoints.sort();
-    endpoints.dedup();
-    BuilderCanonicalKey::NodeEndpoints(endpoints)
-}
-
-fn deduplicate_buildx_builders(builders: Vec<BuildxBuilder>) -> Vec<BuildxBuilder> {
-    let mut winners: BTreeMap<BuilderCanonicalKey, BuildxBuilder> = BTreeMap::new();
+    let mut winners: BTreeMap<Vec<String>, BuildxBuilder> = BTreeMap::new();
     for candidate in builders {
-        let key = builder_canonical_key(candidate.nodes.as_deref().unwrap_or_default());
+        if candidate.driver.trim() != "docker-container" || !is_valid_builder_name(&candidate.name)
+        {
+            continue;
+        }
+        let Some(nodes) = candidate.nodes.as_deref() else {
+            continue;
+        };
+        if nodes.is_empty()
+            || !nodes
+                .iter()
+                .all(|node| is_local_buildx_node(node, local_contexts))
+        {
+            continue;
+        }
+        let key = builder_node_fingerprint(nodes, local_contexts);
         match winners.get_mut(&key) {
             Some(existing) => {
                 if (!candidate.current, candidate.name.as_str())
                     < (!existing.current, existing.name.as_str())
                 {
-                    *existing = candidate;
+                    *existing = candidate.clone();
                 }
             }
             None => {
-                winners.insert(key, candidate);
+                winners.insert(key, candidate.clone());
             }
         }
     }
     let mut selected: Vec<BuildxBuilder> = winners.into_values().collect();
     selected.sort_by(|left, right| left.name.cmp(&right.name));
     selected
-}
-
-fn builder_node_fingerprint(nodes: &[BuildxNode]) -> Vec<String> {
-    match builder_canonical_key(nodes) {
-        BuilderCanonicalKey::NodeIds(ids) => ids
-            .into_iter()
-            .map(|identifier| format!("id:{identifier}"))
-            .collect(),
-        BuilderCanonicalKey::NodeEndpoints(endpoints) => endpoints
-            .into_iter()
-            .map(|(name, endpoint)| format!("node:{name}@{endpoint}"))
-            .collect(),
-    }
 }
 
 fn local_buildx_probe_error(
@@ -453,7 +436,7 @@ fn scan_buildx_findings(host: &str) -> Result<Vec<Finding>> {
     if let Some(error) = local_buildx_probe_error(&parsed, &local_contexts) {
         anyhow::bail!("{error}");
     }
-    let builders = deduplicate_buildx_builders(local_buildx_builders(&parsed, &local_contexts));
+    let builders = deduplicate_local_buildx_builders(&parsed, &local_contexts);
     let mut findings = Vec::new();
     for builder in builders {
         let du_output = docker(host, &["buildx", "du", "--builder", &builder.name])?;
@@ -491,7 +474,8 @@ fn scan_buildx_findings(host: &str) -> Result<Vec<Finding>> {
                 ),
             )
         };
-        let nodes = builder_node_fingerprint(builder.nodes.as_deref().unwrap_or(&[]));
+        let nodes =
+            builder_node_fingerprint(builder.nodes.as_deref().unwrap_or(&[]), &local_contexts);
         findings.push(Finding::command(
             format!("Docker buildx cache ({})", builder.name),
             bytes,
@@ -529,13 +513,16 @@ fn verify_local_buildx_builder(host: &str, builder: &str, expected_nodes: &[Stri
     } else {
         BTreeMap::new()
     };
-    let verified = local_buildx_builders(&single, &local_contexts);
+    let verified = deduplicate_local_buildx_builders(&single, &local_contexts);
     let [verified_builder] = verified.as_slice() else {
         anyhow::bail!(
             "refusing buildx prune: builder `{builder}` is not a running local docker-container builder"
         );
     };
-    let current_nodes = builder_node_fingerprint(verified_builder.nodes.as_deref().unwrap_or(&[]));
+    let current_nodes = builder_node_fingerprint(
+        verified_builder.nodes.as_deref().unwrap_or(&[]),
+        &local_contexts,
+    );
     if current_nodes != expected_nodes {
         anyhow::bail!(
             "refusing buildx prune: builder `{builder}` changed backing nodes since preview"
@@ -1052,7 +1039,7 @@ mod tests {
             "\n"
         );
         let parsed = parse_buildx_ls(ndjson).unwrap();
-        let selected = deduplicate_buildx_builders(local_buildx_builders(&parsed, &local_contexts));
+        let selected = deduplicate_local_buildx_builders(&parsed, &local_contexts);
         let names: Vec<&str> = selected
             .iter()
             .map(|builder| builder.name.as_str())
