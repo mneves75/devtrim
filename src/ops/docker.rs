@@ -738,8 +738,14 @@ fn docker_cli_plugin_dirs(home: &Path) -> Vec<String> {
     // unchanged so prune runs the exact same plugin binary that `buildx ls` used.
     if let Ok(raw) = std::fs::read_to_string(source_config.join("config.json"))
         && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw)
-        && let Some(extra) = parsed
+        && let Some(map) = parsed.as_object()
+        && let Some(extra) = map
             .get("cliPluginsExtraDirs")
+            .or_else(|| {
+                map.iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("cliPluginsExtraDirs"))
+                    .map(|(_, value)| value)
+            })
             .and_then(|value| value.as_array())
     {
         for entry in extra {
