@@ -167,10 +167,10 @@ curl -fsSL https://mneves75.github.io/devtrim/llms.txt
 ```
 
 Core contract for automated callers:
-- Every `--json` call emits exactly one JSON document to stdout (`0` = clean, `1` = partial/runtime error, `2` = usage/flag refusal).
-- Report-only commands reject mutation flags with exit `2`.
-- Non-TTY applies require `-y` (danger ≤ 8) or `--yolo` (danger ≥ 9) and write a per-item `results` array plus `summary.home_volume` delta.
-- Prefer Trash-first (`--apply --yolo --json`) and `devtrim trash-empty --only-devtrim` over `--shred` unless permanent deletion is explicitly requested.
+- Every `--json` call emits one JSON document to stdout (`0` = clean, `1` = partial/runtime error including unknown `optimize --task`, `2` = CLI usage or capability-scoped flag refusal).
+- Report-only commands reject mutation flags (`--apply`, `-y`, `--yolo`, `--shred`) with exit `2`.
+- Non-TTY applies require `-y` (danger ≤ 8) or `--yolo` (danger ≥ 9). Each CLI `--apply` invocation scans fresh and applies that invocation's plan (an earlier `--json` preview does not pin a later process); when actions run, apply JSON includes per-action `results` and `summary` (with `home_volume` when measured).
+- Prefer Trash-first filesystem commands over `--shred`, `trash-empty --only-devtrim --apply`, or permanent command-based cleanups (`clean docker`, `clean simulators`) unless permanent removal is explicitly requested.
 
 `devtrim explain <PATH>` answers why a path is or is not offered: whether
 built-in protection or a `protect` entry refuses it (and which rule), and every
