@@ -224,20 +224,31 @@ Non-negotiable boundaries:
   active worktrees show `in-use` and a probe failure never claims `clean`), and
   `check-ignore -q -- .scratch/` for the `.scratch` rows of `clean leftovers`
   (run only when that folder exists; exit 0 is ignored, 1 is not, anything else
-  refuses). Before running `git status --ignore-submodules=all`,
-  `worktree_dirty_count` clears `GIT_CONFIG`, `GIT_CONFIG_PARAMETERS`, and
-  `GIT_CONFIG_COUNT`, isolates both Git calls with `GIT_CONFIG_NOSYSTEM=1` and
-  `GIT_CONFIG_GLOBAL=/dev/null`, verifies `has_git_marker` and pins
-  `--git-dir <worktree>/.git --work-tree <worktree>` so repository
-  `core.worktree` cannot redirect `git status`, disables `.gitattributes`,
-  system attributes, and `core.attributesFile` atomically via
-  `--attr-source=<empty-tree>` (SHA-1 or SHA-256) and `GIT_ATTR_NOSYSTEM=1`,
-  lists all effective config keys via `git config --includes --list -z`
-  (preserving raw non-UTF-8 bytes), and overrides every
-  `filter.*.{clean,smudge,process}`, `filter.*.required`,
-  `diff.*.{textconv,command}`, `diff.external`, and `core.attributesFile` via
-  `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_i`/`GIT_CONFIG_VALUE_i` environment
-  variables so untrusted repositories and their submodules never execute
+  refuses). `worktree_dirty_count` verifies `has_git_marker`, isolates every
+  Git call with `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, and
+  pins `--git-dir <worktree>/.git --work-tree <worktree>` so repository
+  `core.worktree` cannot redirect it. `git status` hashes a modified file
+  through any content filter an attribute selects and the configuration
+  defines, and the repository's configuration and `info/attributes` can change
+  while devtrim reads them, so no key list read beforehand can neutralize them
+  (CORE-GIT-1, found by the 0.17.0 gate). The worktree side of the count
+  therefore runs `git status --porcelain=v1 -z --untracked-files=normal
+  --ignore-submodules=all` through a Git directory devtrim owns
+  (`isolated_git_dir`: `$TMPDIR/devtrim-git-probe-<uid>-<format>`, created once
+  with mode 0700, refused unless every part belongs to the current user and no
+  one else may write it, holding only the format configuration devtrim writes,
+  an unborn HEAD and empty `refs` and `objects`, never an `info`). Git reads the
+  repository's index through `GIT_INDEX_FILE` and its `info/exclude` through
+  `core.excludesFile`, both as data, with `--attr-source=<empty-tree>`,
+  `GIT_ATTR_NOSYSTEM=1` and `core.attributesFile=/dev/null`; no configuration
+  defines a filter or diff driver there, so none can run. The staged side comes
+  from the repository through `diff-index --cached --name-only --no-ext-diff
+  --no-textconv`, which compares the index with HEAD's tree and converts no
+  content; with no commit yet, every index entry counts as staged. The two sets
+  are counted once per path. A Git directory under another user's control, or
+  holding anything devtrim did not write, refuses the count, which reports as
+  unavailable rather than clean. The other read-only queries never convert
+  file content, so untrusted repositories and their submodules never execute
   content filters or diff drivers or inspect paths outside the validated
   worktree. `clean leftovers` also surfaces Git `.git/objects/tmp_objdir-*`
   folders (reading `.git`/`commondir` pointers with `O_NOFOLLOW | O_NONBLOCK`

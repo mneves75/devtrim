@@ -4,6 +4,17 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+### Security
+- `worktrees` no longer reads a repository's configuration in the `git status`
+  behind its dirty count. A filter driver and an `info/attributes` line added
+  while devtrim read the repository could run as the invoking user, because
+  the probe neutralized only the filter keys it had listed a moment earlier
+  (CORE-GIT-1, pre-existing, found by the 0.17.0 security gate). Status now runs
+  through a Git directory devtrim owns, reading the repository's index and
+  `info/exclude` as data, and the staged side comes from `diff-index --cached`,
+  which converts no content. A planted violation and a feature eval with a
+  stubbed `git` that plants the driver mid-probe prove it.
+
 ### Added
 - Added `llms.txt` (served at `https://mneves75.github.io/devtrim/llms.txt`) and a `For AI agents` section in `README.md` with exact `--json` envelope contracts, exit codes, and safe Trash-first workflows.
 
