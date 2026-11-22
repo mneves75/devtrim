@@ -86,6 +86,10 @@ one key away (`v`).
   with the largest actionable size; no PERMANENT or read-only operation is ever placed there;
   with nothing offered the cursor stays on Scan everything. A headline names the total and the
   largest category. Proof: unit test and a PTY flow.
+  *Recorded deviation (phase 1):* at 64×18 the headline shares one row with the free space;
+  the largest category's name outranks the free space and the category count, but when the
+  total is a range and a category failed, the name yields to the total and the failure count
+  (the highlight still marks the row). Proven both ways by the AC1 unit test.
 - **AC2** Scan everything ends on the home. Each failed category reads `failed` on its row and
   the status says how to see why and retry; `v` opens the full read-only report of that scan,
   which still lists unjudged findings, diagnostics and failures. Proof: PTY flow with a stubbed

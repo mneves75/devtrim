@@ -925,40 +925,6 @@ def verify_outcome_rescans(binary):
             session.quit()
 
 
-def verify_row_numbers_past_999(binary):
-    """With more than 999 findings the row numbers widen, so the last rows keep
-    their columns aligned with row 999."""
-    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
-        home = Path(directory).resolve()
-        downloads = home / "Downloads"
-        downloads.mkdir()
-        old = time.time() - 400 * 86400
-        for index in range(1001):
-            installer = downloads / f"setup-{index:04}.dmg"
-            installer.write_bytes(b"x")
-            os.utime(installer, (old, old))
-        with Session(binary, home) as session:
-            session.deadline = time.monotonic() + 60
-            session.wait_for("Scan everything")
-            session.send(b"d")
-            session.wait_for_screen("Review every finding")
-            session.send(b"G")
-            session.wait_for_screen("1001.", " 999.")
-            lines = render_screen(session.output, session.rows, session.columns)
-            column = {}
-            for line in lines:
-                match = re.search(r"(\d+)\. (danger-)", line)
-                if match:
-                    column[int(match.group(1))] = match.start(2)
-            if 999 not in column or 1001 not in column:
-                raise AssertionError(f"rows 999 and 1001 not both visible: {sorted(column)}")
-            if column[999] != column[1001]:
-                raise AssertionError(
-                    f"PV tui/row-number-width: row 999 at column {column[999]}, row 1001 at {column[1001]}"
-                )
-            session.quit()
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -976,7 +942,6 @@ def main():
         verify_confirmation_feedback_at_minimum_size(binary)
         verify_too_small_screen_quits_only_on_q(binary)
         verify_outcome_rescans(binary)
-        verify_row_numbers_past_999(binary)
         verify_scan_error_exit(binary)
         stop_seconds = verify_slow_scan_stops(binary)
         verify_blocked_apply_refuses_quit(binary)
@@ -990,7 +955,7 @@ def main():
         "tui: menu, help, cancel, quit, terminal restoration, type-ahead discard,"
         " pasted and Alt-modified answers refused, selection, action-key explanations, Scan everything landing on the home, project purge, the minimum-size"
         " detail pane and view, confirmation feedback and answer limit at 64×18, Esc on the too-small"
-        " screen, rescanning from the outcome, row numbers past 999, stopping a scan blocked on its probe, and refusing to"
+        " screen, rescanning from the outcome, stopping a scan blocked on its probe, and refusing to"
         " quit an apply blocked on its probe, the Scan everything category list, and stopping an apply"
         " with x between targets and during a typed command passed"
     )

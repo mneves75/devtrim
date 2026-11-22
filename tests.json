@@ -15,10 +15,27 @@
     {
       "id": "phase1",
       "what": "tui unit tests (73), tui.py (incl. new Scan everything landing flow with a stubbed failing docker), read-only-views.py, fmt, clippy -D warnings",
-      "commit": "phase-1 commit",
+      "commit": "2ace2ca",
       "result": "pass",
       "negative_control": "verify_scan_lands_on_the_home times out against the shipped 0.16.0 binary",
       "evidence": ".scratch/tui-clarity/p1-tui.log, .scratch/tui-clarity/p1-rov.log, .scratch/tui-clarity/phase1/"
+    },
+    {
+      "id": "phase1-focused",
+      "what": "bash scripts/verify.sh focused on the phase 1 tree (2ace2ca plus the merged-headline and fresh-scan fixes)",
+      "result": "pass after rerun",
+      "detail": "every gate exit 0 except tui.py, which timed out in verify_outcome_rescans at load 611 (keys dropped by the known settle race, memory tui-settle-race); tui.py alone exit 0 at load 653; read-only-views exit 0",
+      "evidence": ".scratch/tui-clarity/p1-focused.log, .scratch/tui-clarity/p1-tui-rerun.log, .scratch/tui-clarity/p1-rov-rerun.log"
+    },
+    {
+      "id": "phase2-4-unit",
+      "what": "tui unit tests (75, incl. AC4 row tail, AC4 row order, AC5 confirmation order), tests/cli.rs (21, incl. help order and examples), tests/lockfiles.rs",
+      "result": "pass",
+      "negative_controls": [
+        "lockfiles: fuzz/Cargo.lock devtrim set to 0.15.0 fails with the update command named; restored",
+        "help order: 0.16.0 --help lists tui first, which the exact-order assertion rejects"
+      ],
+      "evidence": ".scratch/tui-clarity/phase2/"
     }
   ]
 }

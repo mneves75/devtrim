@@ -361,12 +361,12 @@ CASES = (
         marker="PV report/quotes-literal",
     ),
     Case(
-        name="tui/row-number-width",
+        name="tui/row-keeps-effect",
         relative_path="src/tui.rs",
-        before="    let number = app.findings.len().to_string().len().max(3);\n",
-        after="    let number = 3;\n",
-        tests=("tui::tests::row_numbers_keep_every_column_aligned_past_999_findings",),
-        marker="PV tui/row-number-width",
+        before="    let room = width.saturating_sub(used + tail_width);\n",
+        after="    let room = width.saturating_sub(used);\n",
+        tests=("tui::tests::every_result_row_ends_with_its_danger_and_effect_whole",),
+        marker="PV tui/row-keeps-effect",
     ),
     Case(
         name="status/health-missing",

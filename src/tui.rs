@@ -207,6 +207,15 @@ impl Effect {
         }
     }
 
+    /// What a finding's action does, in the same words.
+    fn of_action(action: &Action) -> Self {
+        match action {
+            Action::Trash => Self::Trash,
+            Action::Shred | Action::Command { .. } => Self::Permanent,
+            Action::Info | Action::None => Self::ReadOnly,
+        }
+    }
+
     fn word(self) -> &'static str {
         match self {
             Self::Trash => "to Trash",
@@ -741,7 +750,6 @@ impl App {
         if let (Some(overview), Some(operation)) = (self.overview.as_mut(), self.operation) {
             overview.mark_applied(operation);
         }
-        self.last_scan = None;
         self.screen = Screen::Loading;
         self.say(Token::Muted, "Applying only the exact previewed findings…");
         self.working = Some((Work::Apply, Instant::now()));
@@ -1229,10 +1237,20 @@ impl App {
         Intent::None
     }
 
-    /// `v` on the home: the last Scan everything's full report, while no
-    /// apply has changed what it measured.
+    /// The last Scan everything's full report while no apply has changed a
+    /// category it measured: the same condition that keeps the headline.
+    fn fresh_scan(&self) -> Option<&ScanReport> {
+        self.last_scan.as_ref().filter(|_| {
+            self.overview
+                .as_ref()
+                .is_some_and(|overview| overview.applied.is_empty())
+        })
+    }
+
+    /// `v` on the home: the last Scan everything's full report, while it is
+    /// fresh.
     fn open_last_scan(&mut self) {
-        match self.last_scan.clone() {
+        match self.fresh_scan().cloned() {
             Some(report) => self.show_results(
                 Operation::ScanAll,
                 report.findings,
@@ -1299,7 +1317,7 @@ impl App {
                 if self.shred {
                     self.say(
                         Token::Warning,
-                        "Permanent mode: every action is SHRED; danger is critical.",
+                        "Permanent mode: deletes for good; danger is critical.",
                     );
                 } else {
                     self.say(Token::Muted, "Trash-first mode restored.");
@@ -2285,14 +2303,16 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     match headline {
         Some(headline) if spare == 1 => {
             let short = disk_parts(app).0.pop();
-            let merged: Vec<Parts> = short
+            // Each headline form with the free space, then without it, so a
+            // fuller headline outranks the free space.
+            let merged: Vec<Parts> = headline
                 .iter()
-                .flat_map(|short| {
-                    headline
+                .flat_map(|form| {
+                    short
                         .iter()
-                        .map(move |form| [vec![short.clone()], form.clone()].concat())
+                        .map(|short| [vec![short.clone()], form.clone()].concat())
+                        .chain([form.clone()])
                 })
-                .chain(headline.iter().cloned())
                 .collect();
             lines.push(fitted_line(app, &merged, width));
         }
@@ -2756,68 +2776,68 @@ fn result_row_with_max(app: &App, row: usize, width: usize, largest_bytes: u64) 
         (true, true) => "[ ] ",
         (true, false) => "[x] ",
     };
-    // Wide enough for the last row's number, so every column stays aligned.
-    let number = app.findings.len().to_string().len().max(3);
-    let danger = format!("{:>number$}. danger-{} ", row + 1, finding.danger);
-    let danger_width = danger.len();
     let size_column = format!("{:>8}", report::gb(finding.size_bytes));
-    let size_width = size_column.len();
-    let action_column = format!("  {:<8} ", action_label(&finding.action));
-    let action_width = action_column.len();
-    let label = report::terminal_safe(&finding.label);
-    let label_width = Span::raw(label.as_str()).width();
-    let path = report::terminal_safe(&short_place(app, &finding));
     let mut spans = vec![
         marker,
         Span::raw(check),
-        // `style`, not `bold`: adding BOLD to every level collapses the monochrome
-        // ladder, because moderate carries no modifier and high carries BOLD. The
-        // theme's test pins the ladder `style()` draws; BOLD added here would
-        // collapse it where that test cannot see.
-        Span::styled(danger, app.theme.style(danger_token(finding.danger))),
+        Span::styled(size_column, app.theme.style(Token::AccentSecondary)),
     ];
-    let show_share_bar = width >= SHARE_BAR_MIN_WIDTH && largest_bytes > 0;
-    let fixed = if show_share_bar {
+    let mut used = 2 + check.len() + 8;
+    if width >= SHARE_BAR_MIN_WIDTH && largest_bytes > 0 {
         let filled = crate::analyze::bar(finding.size_bytes, largest_bytes, SHARE_BAR_WIDTH);
         let rest = SHARE_BAR_WIDTH.saturating_sub(filled.chars().count());
-        spans.push(Span::styled(
-            format!("{size_column} "),
-            app.theme.style(Token::AccentSecondary),
-        ));
+        spans.push(Span::raw(" "));
         spans.push(Span::styled(filled, app.theme.style(Token::Accent)));
         spans.push(Span::styled(
             "·".repeat(rest),
             app.theme.style(Token::Muted),
         ));
-        spans.push(Span::styled(
-            action_column,
-            app.theme.style(Token::AccentSecondary),
-        ));
-        2 + check.len() + danger_width + size_width + 1 + SHARE_BAR_WIDTH + action_width
-    } else {
-        spans.push(Span::styled(
-            format!("{size_column}{action_column}"),
-            app.theme.style(Token::AccentSecondary),
-        ));
-        2 + check.len() + danger_width + size_width + action_width
-    };
-    let room = width.saturating_sub(fixed);
+        used += 1 + SHARE_BAR_WIDTH;
+    }
+    spans.push(Span::raw("  "));
+    used += 2;
+    // The danger and the effect are fixed columns at the right end, where a
+    // row is cut: the label, then the path, give way to them.
+    let effect = Effect::of_action(&finding.action);
+    let danger = format!("{:>9}", format!("danger-{}", finding.danger));
+    let tail_width = 2 + danger.len() + 2 + EFFECT_WIDTH;
+    let room = width.saturating_sub(used + tail_width);
+    let label = report::terminal_safe(&finding.label);
+    let path = report::terminal_safe(&short_place(app, &finding));
+    let label_width = Span::raw(label.as_str()).width();
+    let mut middle = Vec::new();
     if label_width > room {
-        spans.push(Span::styled(
+        middle.push(Span::styled(
             truncate_right(&label, room),
             app.theme.style(Token::Strong),
         ));
-        return Line::from(spans);
+    } else {
+        middle.push(Span::styled(label, app.theme.style(Token::Strong)));
+        // Two columns of gap, then at least the ellipsis and one character.
+        let path_room = room - label_width;
+        if !path.is_empty() && path_room >= 4 {
+            middle.push(Span::styled(
+                format!("  {}", truncate_left(&path, path_room - 2)),
+                app.theme.style(Token::Muted),
+            ));
+        }
     }
-    spans.push(Span::styled(label, app.theme.style(Token::Strong)));
-    // Two columns of gap, then at least the ellipsis and one character.
-    let path_room = room - label_width;
-    if !path.is_empty() && path_room >= 4 {
-        spans.push(Span::styled(
-            format!("  {}", truncate_left(&path, path_room - 2)),
-            app.theme.style(Token::Muted),
-        ));
-    }
+    let shown: usize = middle.iter().map(Span::width).sum();
+    spans.extend(middle);
+    spans.push(Span::raw(" ".repeat(room.saturating_sub(shown) + 2)));
+    // `style`, not `bold`: adding BOLD to every level collapses the monochrome
+    // ladder, because moderate carries no modifier and high carries BOLD. The
+    // theme's test pins the ladder `style()` draws; BOLD added here would
+    // collapse it where that test cannot see.
+    spans.push(Span::styled(
+        danger,
+        app.theme.style(danger_token(finding.danger)),
+    ));
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!("{:>EFFECT_WIDTH$}", effect.word()),
+        app.theme.style(effect.token()),
+    ));
     Line::from(spans)
 }
 
@@ -3172,7 +3192,7 @@ fn footer_keys(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.screen {
         Screen::Menu => {
             keys.extend([("↑↓", "move"), ("Enter", "open")]);
-            if app.last_scan.is_some() {
+            if app.fresh_scan().is_some() {
                 keys.push(("v", "report"));
             }
         }
@@ -3310,13 +3330,27 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App, shown: &Shown) 
     };
     let width = area.width.saturating_sub(4).min(100);
     let inner = usize::from(width.saturating_sub(2));
-    let mut lines = vec![Line::styled(
-        "DATA-LOSS WARNING",
-        app.theme.bold(Token::Critical),
-    )];
-    for row in wrap_words(&plan_effect(&shown.plan), inner) {
-        lines.push(Line::styled(row, app.theme.style(Token::Strong)));
-    }
+    // What the plan does, then whether it can be undone, which the plan's
+    // worst item decides: one permanent item makes the whole plan permanent.
+    let mut lines: Vec<Line> = wrap_words(&plan_effect(&shown.plan), inner)
+        .into_iter()
+        .map(|row| Line::styled(row, app.theme.style(Token::Strong)))
+        .collect();
+    let permanent = shown
+        .plan
+        .iter()
+        .any(|finding| Effect::of_action(&finding.action) == Effect::Permanent);
+    lines.push(if permanent {
+        Line::styled(
+            "PERMANENT: this cannot be undone.",
+            app.theme.bold(Token::Critical),
+        )
+    } else {
+        Line::styled(
+            "Recoverable from the Trash until it is emptied.",
+            app.theme.style(Token::Muted),
+        )
+    });
     // Consent is given here, so this screen — not only the title behind it —
     // says how much of the preview the approval covers.
     let choices = app.choice_count();
@@ -3327,8 +3361,13 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App, shown: &Shown) 
             app.excluded.len()
         )));
     }
+    let notice = if permanent {
+        Style::default()
+    } else {
+        app.theme.style(Token::Muted)
+    };
     for row in wrap_words(safety::DATA_LOSS_NOTICE, inner) {
-        lines.push(Line::raw(row));
+        lines.push(Line::styled(row, notice));
     }
     // The answer and, under it, the feedback on it: a mismatch or a refused
     // key. The footer blanks its status on this screen, so the popup must say
@@ -3376,16 +3415,6 @@ fn render_confirmation(frame: &mut Frame, area: Rect, app: &App, shown: &Shown) 
             .block(Block::bordered().title(format!(" Confirm exact plan · danger-{danger} "))),
         popup,
     );
-}
-
-fn action_label(action: &Action) -> &'static str {
-    match action {
-        Action::Trash => "TRASH",
-        Action::Shred => "SHRED",
-        Action::Command { .. } => "COMMAND",
-        Action::Info => "INFO",
-        Action::None => "EXCLUDED",
-    }
 }
 
 #[cfg(test)]
@@ -3870,7 +3899,8 @@ mod tests {
 
         let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
 
-        assert!(output.contains("DATA-LOSS WARNING"));
+        assert!(output.contains("PERMANENT: this cannot be undone."));
+        assert!(output.contains("Applying this plan can delete data."));
         assert!(output.contains("Type PURGE 0"));
         assert!(output.contains("> "));
         assert!(!output.contains("terminal too small"));
@@ -3995,43 +4025,117 @@ mod tests {
         }
     }
 
-    #[test]
-    fn row_numbers_keep_every_column_aligned_past_999_findings() {
-        let mut app = App::default();
-        let findings = (0..1200)
-            .map(|index| {
-                Finding::new(
-                    format!("item{index}"),
-                    Some(std::path::PathBuf::from(format!("/Users/example/x{index}"))),
-                    1,
-                    "test",
-                    3,
-                    Action::Trash,
-                )
-            })
-            .collect();
-        app.finish_results(
-            Operation::Clean(Target::Caches),
-            findings,
-            Vec::new(),
-            Vec::new(),
-        );
-        let text = |row| {
-            result_row(&app, row, 120)
-                .spans
-                .iter()
-                .map(|span| span.content.to_string())
-                .collect::<String>()
-        };
+    /// A results row as plain text.
+    fn row_text(app: &App, row: usize, width: usize) -> String {
+        result_row(app, row, width)
+            .spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect()
+    }
 
-        let (first, last) = (text(0), text(1199));
-        let column = |line: &str| line.find("danger-").map(|end| line[..end].chars().count());
-        assert_eq!(
-            column(&first),
-            column(&last),
-            "PV tui/row-number-width: {first:?} vs {last:?}"
+    /// Rows are cut on the right, so the danger and the effect, the safety
+    /// words at the right end, are fixed columns there: the label and then
+    /// the path give way, never they, in Trash mode and in permanent mode.
+    #[test]
+    fn every_result_row_ends_with_its_danger_and_effect_whole() {
+        let long = "a cache whose label is far longer than any terminal row can hold";
+        let mut findings = vec![
+            trash(long, 3 * GIB, 3),
+            trash("short", 1 << 20, 10),
+            Finding::new(
+                "report row",
+                Some(std::path::PathBuf::from(format!(
+                    "/tmp/{}",
+                    "deep/".repeat(30)
+                ))),
+                1,
+                "test",
+                0,
+                Action::None,
+            ),
+        ];
+        findings[1].path = Some(format!("/tmp/{}", "nested/".repeat(40)));
+        let mut app = cleanup(findings);
+        for shred in [false, true] {
+            if shred {
+                app.handle_key(key(KeyCode::Char('s')));
+                assert!(app.shred);
+            }
+            for width in [usize::from(MIN_WIDTH) - 2, 78, 118] {
+                for row in 0..3 {
+                    let finding = effective_finding(&app, &app.findings[row]);
+                    let text = row_text(&app, row, width);
+                    let tail = format!(
+                        "danger-{}  {:>EFFECT_WIDTH$}",
+                        finding.danger,
+                        Effect::of_action(&finding.action).word()
+                    );
+                    // Within the row, whole: a row wider than its pane is cut
+                    // by the widget, which would take the tail first.
+                    assert!(
+                        text.ends_with(&tail) && text.chars().count() <= width,
+                        "PV tui/row-keeps-effect: {width} cols, shred={shred}: {text:?}"
+                    );
+                }
+            }
+        }
+        let words: Vec<String> = (0..3).map(|row| row_text(&app, row, 118)).collect();
+        assert!(words[0].ends_with("PERMANENT") && words[2].ends_with("read-only"));
+    }
+
+    /// The decision inputs lead: the size, then the name, then the path; the
+    /// danger and the effect close the row, and no row number is spent.
+    #[test]
+    fn a_result_row_reads_size_then_name_then_path() {
+        let app = cleanup(vec![trash("uv package cache", 3 << 20, 3)]);
+        let text = row_text(&app, 0, 118);
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("{needle} missing from {text:?}"))
+        };
+        assert!(text.starts_with("› [x]"), "{text:?}");
+        assert!(at("3 MB") < at("uv package cache"), "{text:?}");
+        assert!(
+            at("uv package cache") < at("/tmp/uv package cache"),
+            "{text:?}"
         );
-        assert!(last.contains("1200. danger-3"), "{last:?}");
+        assert!(at("/tmp/uv package cache") < at("danger-3"), "{text:?}");
+        assert!(text.ends_with("danger-3   to Trash"), "{text:?}");
+        assert!(!text.contains("1."), "no row number: {text:?}");
+    }
+
+    /// The decision point says what the plan does, then whether it can be
+    /// undone, before the data-loss notice, which stays for every plan.
+    #[test]
+    fn the_confirmation_leads_with_the_effect_and_says_whether_it_can_be_undone() {
+        let row_of = |rows: &[String], needle: &str| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} missing: {rows:#?}"))
+        };
+        let mut app = cleanup(vec![
+            trash("first", 3 << 20, 3),
+            trash("second", 1 << 20, 3),
+        ]);
+        app.begin_confirmation();
+        let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
+        let effect = row_of(&rows, "Moves 2 items (4 MB) to the Trash.");
+        let undo = row_of(&rows, "Recoverable from the Trash until it is emptied.");
+        let notice = row_of(&rows, "Applying this plan can delete data.");
+        assert!(effect < undo && undo < notice, "{rows:#?}");
+        assert!(!rows.concat().contains("DATA-LOSS WARNING"), "{rows:#?}");
+        assert!(!rows.concat().contains("cannot be undone"), "{rows:#?}");
+
+        let mut permanent = cleanup(vec![trash("first", 3 << 20, 3)]);
+        permanent.handle_key(key(KeyCode::Char('s')));
+        permanent.begin_confirmation();
+        let rows = screen_rows(&permanent, MIN_WIDTH, MIN_HEIGHT);
+        let effect = row_of(&rows, "Permanently deletes 1 item (3 MB).");
+        let undo = row_of(&rows, "PERMANENT: this cannot be undone.");
+        let notice = row_of(&rows, "Applying this plan can delete data.");
+        assert!(effect < undo && undo < notice, "{rows:#?}");
+        assert!(!rows.concat().contains("Recoverable"), "{rows:#?}");
     }
 
     #[test]
@@ -4327,6 +4431,29 @@ mod tests {
             "docker failed to scan: v shows why; 1 scans again.",
             "the failure is said once on landing"
         );
+        // At the minimum size the name outranks the free space and the count;
+        // only a range beside a failure leaves it no room.
+        let mut plain = disk_menu();
+        plain.finish_scan(
+            ops::ScanResult {
+                findings: vec![sized("caches", 2 * GIB, None), sized("nm", 3 * GIB, None)],
+                sections: ops::all()
+                    .iter()
+                    .map(|op| match op.name() {
+                        "caches" => section("caches", 0..1),
+                        "node-modules" => section("node-modules", 1..2),
+                        name => section(name, 2..2),
+                    })
+                    .collect(),
+                errors: Vec::new(),
+            },
+            Vec::new(),
+        );
+        let rows = screen_rows(&plain, MIN_WIDTH, MIN_HEIGHT);
+        assert!(
+            rows[1].contains("Reclaimable: 5.0 GB · largest to Trash: node_modules"),
+            "{rows:#?}"
+        );
     }
 
     #[test]
@@ -4428,10 +4555,24 @@ mod tests {
         assert_eq!(app.screen, Screen::Menu);
         assert_eq!(app.selected, suggested, "back keeps the highlight");
 
+        // Emptying the Trash changes no category the scan measured.
+        app.operation = Some(Operation::TrashEmpty);
+        app.begin_apply(std::sync::Arc::new(crate::journal::ApplyMonitor::new(0, 0)));
+        app.back_to_menu();
+        let rows = screen_rows(&app, 120, 40).concat();
+        assert!(
+            rows.contains("v report") && rows.contains("Reclaimable: "),
+            "{rows}"
+        );
+
         app.operation = Some(Operation::Clean(Target::Caches));
         app.begin_apply(std::sync::Arc::new(crate::journal::ApplyMonitor::new(0, 0)));
         app.back_to_menu();
-        assert!(!screen_rows(&app, 120, 40).concat().contains("v report"));
+        let rows = screen_rows(&app, 120, 40).concat();
+        assert!(
+            !rows.contains("v report") && !rows.contains("Reclaimable: "),
+            "{rows}"
+        );
         assert_eq!(app.handle_key(key(KeyCode::Char('v'))), Intent::None);
         assert_eq!(app.screen, Screen::Menu);
         assert!(app.status.contains("out of date"), "{}", app.status);
@@ -5149,7 +5290,7 @@ mod tests {
     }
 
     /// Permanent mode raises every Trash finding to critical; a row that kept
-    /// its Trash-mode danger beside SHRED understated what `a` would do.
+    /// its Trash-mode danger beside PERMANENT understated what `a` would do.
     #[test]
     fn permanent_mode_rows_show_the_danger_the_plan_carries() {
         let mut app = cleanup(vec![trash("cache", 1, 3)]);
@@ -5157,8 +5298,8 @@ mod tests {
 
         let output = rendered(&app, 100, 30);
 
-        assert!(output.contains("1. danger-9"), "{output}");
-        assert!(!output.contains("1. danger-3"), "{output}");
+        assert!(output.contains("danger-9  PERMANENT"), "{output}");
+        assert!(!output.contains("danger-3"), "{output}");
         assert!(output.contains("danger-9 · permanently delete"), "{output}");
     }
 
