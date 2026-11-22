@@ -54,7 +54,8 @@ Two prototypes rendered from the same data at 64×18, 80×24, 120×40
 
 Scenarios, keys from launch: clean the largest category — baseline `1`, ↓×k, `o`, `a`, `y`
 (4 + k); A `1`, `Enter`, `a`, `y` (4); C `1`, `Enter`, `a`, `y` (4). Clean a known category —
-baseline 3, A 3, C 5. Empty Trash — baseline 1 + typed, A same, C 2 + typed. A failed category —
+baseline 3, A 3, C 5. Empty Trash — baseline 2 + typed (`0`, `a`), A same, C 3 + typed
+(corrected from the verifier's capture; the first draft counted 1). A failed category —
 baseline: find its error row in the flat list; A and C: the row says `failed`, `Enter` opens
 the category, which reports the reason and `r` retries.
 
@@ -101,6 +102,9 @@ one key away (`v`).
 - **AC4** Result rows show size, then name, then path, then danger and action; no row number;
   the NO_COLOR danger ladder stays ordered; long paths keep whole characters. Proof: render
   tests; `tui.py` flows.
+  Recorded after verification: a name longer than the row keeps a 9-column tail of the
+  path (`a_long_name_leaves_room_for_the_path_tail`); a name that fits but leaves under four
+  columns drops the path, which the detail pane shows whole.
 - **AC5** The confirmation shows the effect sentence first and says whether the plan can be
   undone (Trash) or not (permanent, typed command); the data-loss notice stays on screen; keys,
   typed answers, the 32-character cap, type-ahead, paste and modified-key refusals are

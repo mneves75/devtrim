@@ -235,6 +235,8 @@ impl Effect {
 
 /// Columns of the effect word, the widest of them.
 const EFFECT_WIDTH: usize = 9;
+/// Columns a long name leaves for the end of the path: `…` and eight more.
+const PATH_TAIL_WIDTH: usize = 9;
 
 /// The last Scan everything's full result, kept for `v` on the home until an
 /// apply makes it stale.
@@ -2803,22 +2805,31 @@ fn result_row_with_max(app: &App, row: usize, width: usize, largest_bytes: u64) 
     let label = report::terminal_safe(&finding.label);
     let path = report::terminal_safe(&short_place(app, &finding));
     let label_width = Span::raw(label.as_str()).width();
-    let mut middle = Vec::new();
-    if label_width > room {
-        middle.push(Span::styled(
-            truncate_right(&label, room),
-            app.theme.style(Token::Strong),
-        ));
+    let path_width = Span::raw(path.as_str()).width();
+    // A name that fits leaves the path the rest of the room; a name too long
+    // for it gives way to a short tail of the path, so the row keeps its place.
+    // Two columns of gap, then at least the ellipsis and one character.
+    let path_room = if path.is_empty() {
+        0
+    } else if label_width > room {
+        PATH_TAIL_WIDTH.min(path_width).min(room / 2)
     } else {
-        middle.push(Span::styled(label, app.theme.style(Token::Strong)));
-        // Two columns of gap, then at least the ellipsis and one character.
-        let path_room = room - label_width;
-        if !path.is_empty() && path_room >= 4 {
-            middle.push(Span::styled(
-                format!("  {}", truncate_left(&path, path_room - 2)),
-                app.theme.style(Token::Muted),
-            ));
-        }
+        room.saturating_sub(label_width + 2).min(path_width)
+    };
+    let label_room = if path_room >= 2 {
+        room - path_room - 2
+    } else {
+        room
+    };
+    let mut middle = vec![Span::styled(
+        truncate_right(&label, label_room),
+        app.theme.style(Token::Strong),
+    )];
+    if path_room >= 2 {
+        middle.push(Span::styled(
+            format!("  {}", truncate_left(&path, path_room)),
+            app.theme.style(Token::Muted),
+        ));
     }
     let shown: usize = middle.iter().map(Span::width).sum();
     spans.extend(middle);
@@ -4101,6 +4112,25 @@ mod tests {
         assert!(at("/tmp/uv package cache") < at("danger-3"), "{text:?}");
         assert!(text.ends_with("danger-3   to Trash"), "{text:?}");
         assert!(!text.contains("1."), "no row number: {text:?}");
+    }
+
+    /// A name too long for the row gives way to the path's tail, which still
+    /// shows at the minimum width, so a row never drops its place.
+    #[test]
+    fn a_long_name_leaves_room_for_the_path_tail() {
+        let long = "a cache whose label is far longer than any terminal row can hold";
+        let app = cleanup(vec![trash(long, 3 << 20, 3)]);
+        for width in [62, 78] {
+            let text = row_text(&app, 0, width);
+            let at = |needle: &str| {
+                text.find(needle)
+                    .unwrap_or_else(|| panic!("{needle} missing from {text:?}"))
+            };
+            assert!(at("a cache") < at("…"), "{text:?}");
+            assert!(at("can hold") < at("danger-3"), "the path tail: {text:?}");
+            assert!(text.ends_with("danger-3   to Trash"), "{text:?}");
+            assert!(text.chars().count() <= width, "{text:?}");
+        }
     }
 
     /// The decision point says what the plan does, then whether it can be
