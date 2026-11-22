@@ -1,97 +1,16 @@
 {
-  "plan": "plans/020-agent-era-perf-ux.md",
-  "target_version": "0.16.0",
-  "base_commit": "f3818c2",
-  "branch": "main",
-  "release_commit": "45daa25cd62f23e2b05e470ddd1eaec22165686b",
-  "release_tree": "e11ec50c8462698c32490ed187ffdc8cd4c3a417",
+  "plan": "plans/021-tui-clarity.md",
+  "target_version": "0.17.0",
+  "base_commit": "3310ef3",
+  "branch": "feat/tui-clarity",
   "updated_at": "2026-11-22",
-  "tasks": [
+  "checks": [
     {
-      "id": "T1",
-      "title": "APFS getattrlistbulk(2) batching + remove unused clone fields + .t3/worktrees default root",
-      "status": "passed",
-      "verified_by": [
-        "rustup run 1.98.1 cargo test --locked -p apfs-size",
-        "rustup run 1.98.1 cargo test --locked --all-targets --all-features",
-        "8000-file A/B benchmark: 35.5ms vs 37.3ms (0.15.0)"
-      ]
-    },
-    {
-      "id": "T2",
-      "title": "Docker buildx local builder cache discovery and safe pruning",
-      "status": "passed",
-      "verified_by": [
-        "eval_clean_docker_buildx_prunes_deduplicated_local_builder_and_skips_remote",
-        "PV eval/docker-buildx in scripts/tests/planted-violations.py"
-      ]
-    },
-    {
-      "id": "T3",
-      "title": "Enriched worktrees (dirty/in-use/clean + activity) and leftovers (tmp_objdir, Ollama/LM Studio models)",
-      "status": "passed",
-      "verified_by": [
-        "eval_worktrees_reports_dirty_clean_activity_and_in_use_state",
-        "eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only"
-      ]
-    },
-    {
-      "id": "T4",
-      "title": "Mole-inspired TUI UX (overview summary, inline share bars, progress bar, o jump, next-step hint)",
-      "status": "passed",
-      "verified_by": [
-        "python3 scripts/tests/tui.py target/debug/devtrim",
-        "python3 scripts/tests/read-only-views.py target/debug/devtrim",
-        "unit tests in src/tui.rs"
-      ]
-    },
-    {
-      "id": "T5",
-      "title": "Retire video/audit-waivers.json (GHSA-g3hv-75wg-m249)",
-      "status": "passed",
-      "verified_by": [
-        "video-audit.py on Node 24 & Node 26 (no advisories, waivers=[])",
-        "scripts/tests/video-audit-controls.py (28 cases)"
-      ]
-    },
-    {
-      "id": "T6",
-      "title": "2026+ Site redesign (index.html, MANUAL.html, styles.css, DESIGN.md) and frames.py fixes",
-      "status": "passed",
-      "verified_by": [
-        "scripts/site/frames.py (9 frames, 5 widths)",
-        "scripts/site/csp.py --check + csp-controls.py (52 cases)",
-        "check_facts.py (37/37) + film-controls.py (0 failures)",
-        "Chrome CDP 390x844 & 1440x900 (scrollWidth == innerWidth, 0 console exceptions)"
-      ]
-    },
-    {
-      "id": "T7",
-      "title": "cccc <= 5 test rule and mneves-prune-tests pass",
-      "status": "passed",
-      "verified_by": [
-        "cccc 1.8.0 audit on all modified Rust files; pruned 3 <=5 non-regex unit tests"
-      ]
-    },
-    {
-      "id": "T8",
-      "title": "Version bump 0.16.0 and full documentation sync",
-      "status": "passed",
-      "verified_by": [
-        "Cargo.toml, Cargo.lock, fuzz/Cargo.lock, README.md, MANUAL.html, CHANGELOG.md, SECURITY.md, CODING_STANDARDS.md, DESIGN.md, AGENTS.md == CLAUDE.md"
-      ]
-    },
-    {
-      "id": "T9",
-      "title": "Full offline/online gates, cross-model review, mneves-verify, mneves-security gate, staging beta & prod release",
-      "status": "passed",
-      "verified_by": [
-        "CI PR #101 green + main CI 44959210183 green",
-        "Immutable v0.16.0-beta1 (run 44968377996) + v0.16.0 (run 44970344995) verified live",
-        "Homebrew tap 7656d47 upgraded /opt/homebrew/bin/devtrim to 0.16.0",
-        "mneves-security gate PASS (0 waivers) in .scratch/security-gate/45daa25cd62f23e2b05e470ddd1eaec22165686b/",
-        "Post-promotion index.html v0.16.0 + llms.txt + README AI-agent guide"
-      ]
+      "id": "baseline",
+      "what": "PTY captures of the 0.16.0 TUI at 64x18, 80x24, 120x40 and CLI help/scan/clean",
+      "commit": "3310ef3",
+      "result": "captured",
+      "evidence": ".scratch/tui-clarity/baseline/"
     }
   ]
 }

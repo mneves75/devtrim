@@ -1,3 +1,15 @@
+# Progress — 0.17.0 (plans/021)
+
+Current phase: 1, home and scan landing. Branch `feat/tui-clarity` from `3310ef3`, worktree
+`../devtrim-wt-tui`. Baseline captures and prototypes in `.scratch/tui-clarity/` (untracked).
+
+- Decision: overview home (prototype A) over a Mole-style intent menu (C); evidence and
+  scenarios in the plan. Keys and launch behaviour unchanged.
+- Phase boundary: the film quotes result rows, details and the confirmation, not the home;
+  phase 2 (row format) therefore re-renders the film. A draft render of the unchanged film is
+  the probe for that cost.
+- Next action: failing tests for AC1-AC3, then the home in `src/tui.rs`.
+
 # Progress — 0.16.0 (plans/020)
 
 Shipped 2026-11-22: PR #101 squash-merged to `main` `45daa25cd62f23e2b05e470ddd1eaec22165686b` (tree `e11ec50c8462698c32490ed187ffdc8cd4c3a417`), immutable `v0.16.0-beta1` (run `44968377996`) and `v0.16.0` (run `44970344995`, ZIP SHA-256 `912cc97a446d208de15a52323cf5c4fc5e031ab3c7c1f586a05c93d756c61c9b`), Homebrew tap `7656d47`, `/opt/homebrew/bin/devtrim` `0.16.0` (SHA-256 `b5906877ea47963f8eb235e59e05d6aabde24ec7dc1334da03e9cea5903a8791`). Security gate: **PASS** for staging, GitHub Pages, and production with **zero waivers** (`GHSA-g3hv-75wg-m249` retired); records in `.scratch/security-gate/45daa25cd62f23e2b05e470ddd1eaec22165686b/`. Post-promotion closeout updated `index.html` to `v0.16.0`, regenerated `video/film/facts.json`, and added `llms.txt` + README AI-agent guide.
