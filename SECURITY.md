@@ -235,16 +235,20 @@ Non-negotiable boundaries:
   therefore runs `git status --porcelain=v1 -z --untracked-files=normal
   --ignore-submodules=all` through a Git directory devtrim owns
   (`isolated_git_dir`: `$TMPDIR/devtrim-git-probe-<uid>-<format>`, created once
-  with mode 0700, refused unless every part belongs to the current user and no
-  one else may write it, holding only the format configuration devtrim writes,
-  an unborn HEAD and empty `refs` and `objects`, never an `info`). Git reads the
+  with mode 0700 and reused). It is refused unless its folder belongs to the
+  current user with no group or other write, every folder above that belongs to
+  the user or root and is writable by others only when sticky, so no other
+  account can create, rename or replace any part of it, and it holds exactly
+  `HEAD`, `config`, an empty `objects` and an empty `refs`, each owned by the user
+  with no group or other access, `HEAD` naming an unborn branch and `config`
+  only the object format, byte for byte as devtrim writes them. Git reads the
   repository's index through `GIT_INDEX_FILE` and its `info/exclude` through
   `core.excludesFile`, both as data, with `--attr-source=<empty-tree>`,
   `GIT_ATTR_NOSYSTEM=1` and `core.attributesFile=/dev/null`; no configuration
   defines a filter or diff driver there, so none can run. The staged side comes
   from the repository through `diff-index --cached --name-only --no-ext-diff
   --no-textconv`, which compares the index with HEAD's tree and converts no
-  content; with no commit yet, every index entry counts as staged. The two sets
+  content; with no commit yet, which `project::unborn_branch` must confirm, every index entry counts as staged, and a HEAD that fails to resolve for any other reason refuses. The two sets
   are counted once per path. A Git directory under another user's control, or
   holding anything devtrim did not write, refuses the count, which reports as
   unavailable rather than clean. The other read-only queries never convert

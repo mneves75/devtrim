@@ -1082,10 +1082,26 @@ CASES = (
     Case(
         name="git/isolated-status",
         relative_path="src/ops/project.rs",
-        before="        .arg(isolated_git_dir(sha256)?)\n",
+        before="        .arg(isolated_git_dir(&std::env::temp_dir(), sha256)?)\n",
         after="        .arg(&dot_git)\n",
         tests=("eval_worktrees_dirty_count_never_runs_a_filter_added_during_the_probe",),
         marker="PV git/isolated-status", target="evals",
+    ),
+    Case(
+        name="git/probe-parent",
+        relative_path="src/ops/project.rs",
+        before="            metadata.is_dir() && metadata.uid() == uid && !others_write\n",
+        after="            metadata.is_dir() && metadata.uid() == uid\n",
+        tests=("ops::project::tests::the_isolated_git_dir_refuses_anything_it_did_not_write_alone",),
+        marker="PV git/probe-parent",
+    ),
+    Case(
+        name="git/damaged-head",
+        relative_path="src/ops/project.rs",
+        before=" && unborn_branch(worktree)",
+        after="",
+        tests=("ops::project::tests::worktree_dirty_count_counts_each_path_once_and_refuses_a_damaged_head",),
+        marker="PV git/damaged-head",
     ),
     Case(
         name="git/utc-dates",

@@ -614,8 +614,10 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
                 .split(|byte| *byte == 0)
                 .filter(|path| !path.is_empty()),
         );
-    } else if born.status.code() == Some(1) && born.stdout.is_empty() {
-        // No commit yet: everything the index holds is staged.
+    } else if born.status.code() == Some(1) && born.stdout.is_empty() && unborn_branch(worktree) {
+        // No commit yet: everything the index holds is staged. A HEAD that
+        // fails to resolve for any other reason (a branch naming a missing
+        // commit) is damage, and the count refuses.
         dirty.extend(
             entries
                 .iter()
@@ -632,13 +634,37 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
 /// here, an unborn HEAD, and empty `refs` and `objects`: `git status` run
 /// through it reads no repository's config, hooks or attributes. It lives in
 /// the per-user temporary folder, is created once per object format and kept,
-/// and is refused unless every part of it belongs to the current user and no
-/// one else may write to it, so another account cannot plant a configuration.
+/// and is refused unless every part of it belongs to the current user, no one
+/// else may write to it, and it holds exactly those four entries. Its folder
+/// must belong to the current user with no group or other write, and every
+/// folder above it to that user or root, writable by others only when sticky,
+/// so no other account can create, rename or replace any part of it.
 fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
     use std::io::Write as _;
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
 
     let uid = rustix::process::getuid().as_raw();
+    let base = base
+        .canonicalize()
+        .with_context(|| format!("cannot resolve {}", base.display()))?;
+    for (depth, folder) in base.ancestors().enumerate() {
+        let metadata = std::fs::symlink_metadata(folder)
+            .with_context(|| format!("cannot inspect {}", folder.display()))?;
+        let others_write = metadata.mode() & 0o022 != 0;
+        let trusted = if depth == 0 {
+            metadata.is_dir() && metadata.uid() == uid && !others_write
+        } else {
+            metadata.is_dir()
+                && (metadata.uid() == uid || metadata.uid() == 0)
+                && (!others_write || metadata.mode() & 0o1000 != 0)
+        };
+        if !trusted {
+            anyhow::bail!(
+                "refusing Git probe parent {}: another account could change it",
+                folder.display()
+            );
+        }
+    }
     let format = if sha256 { "sha256" } else { "sha1" };
     let dir = base.join(format!("devtrim-git-probe-{uid}-{format}"));
     let config: &[u8] = if sha256 {
@@ -699,14 +725,27 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
             );
         }
     }
-    // Git would read attributes and excludes from `info`; devtrim never writes one.
-    match std::fs::symlink_metadata(dir.join("info")) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(dir),
-        _ => anyhow::bail!(
-            "refusing Git probe directory {} holding info",
+    // Git would read attributes and excludes from `info`, packed references
+    // and alternates from their own files: anything devtrim did not write.
+    let entries = |folder: &Path| -> Result<Vec<std::ffi::OsString>> {
+        let mut names = std::fs::read_dir(folder)
+            .with_context(|| format!("cannot list {}", folder.display()))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()
+            .with_context(|| format!("cannot list {}", folder.display()))?;
+        names.sort();
+        Ok(names)
+    };
+    if entries(&dir)? != ["HEAD", "config", "objects", "refs"]
+        || !entries(&dir.join("objects"))?.is_empty()
+        || !entries(&dir.join("refs"))?.is_empty()
+    {
+        anyhow::bail!(
+            "refusing Git probe directory {} holding entries devtrim did not write",
             dir.display()
-        ),
+        );
     }
+    Ok(dir)
 }
 
 /// `O_NOFOLLOW` for [`std::os::unix::fs::OpenOptionsExt::custom_flags`].
@@ -1723,11 +1762,96 @@ mod tests {
         std::fs::create_dir(dir.join("info")).unwrap();
         assert!(isolated_git_dir(base, false).is_err(), "an info folder");
         crate::ops::remove_test_path(dir.join("info"));
+        std::fs::write(dir.join("packed-refs"), "").unwrap();
+        assert!(isolated_git_dir(base, false).is_err(), "a packed-refs file");
+        crate::ops::remove_test_path(dir.join("packed-refs"));
+        std::fs::create_dir(dir.join("objects/info")).unwrap();
+        assert!(
+            isolated_git_dir(base, false).is_err(),
+            "an objects/info folder"
+        );
+        crate::ops::remove_test_path(dir.join("objects/info"));
+        assert_eq!(isolated_git_dir(base, false).unwrap(), dir, "restored");
+
+        std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(
+            isolated_git_dir(base, false).is_err(),
+            "PV git/probe-parent: a world-writable parent"
+        );
+        std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        assert!(
+            isolated_git_dir(base, false).is_err(),
+            "a sticky parent is still shared: the probe's own folder must be private"
+        );
+        std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let shared = base.join("shared");
+        let private = shared.join("private");
+        std::fs::create_dir_all(&private).unwrap();
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(
+            isolated_git_dir(&private, false).is_err(),
+            "a folder above it others may rename entries in"
+        );
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        assert!(
+            isolated_git_dir(&private, false).is_ok(),
+            "a sticky folder above it"
+        );
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
 
         std::fs::write(dir.join("config"), "[filter \"x\"]\n\tclean = touch\n").unwrap();
         assert!(
             isolated_git_dir(base, false).is_err(),
             "a config it did not write"
+        );
+    }
+
+    #[test]
+    fn worktree_dirty_count_counts_each_path_once_and_refuses_a_damaged_head() {
+        let fixture = crate::ops::TestFixture::new("dirty-count-heads");
+        let repo = fixture.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        git(&["add", "staged.txt"]);
+        std::fs::write(repo.join("untracked.txt"), "new\n").unwrap();
+        assert_eq!(
+            worktree_dirty_count(&repo).unwrap(),
+            2,
+            "no commit yet: the staged file and the untracked one"
+        );
+
+        git(&["commit", "-q", "-m", "initial"]);
+        std::fs::write(repo.join("staged.txt"), "changed\n").unwrap();
+        git(&["add", "staged.txt"]);
+        std::fs::write(repo.join("staged.txt"), "changed again\n").unwrap();
+        assert_eq!(
+            worktree_dirty_count(&repo).unwrap(),
+            2,
+            "a path staged and changed again counts once, beside the untracked one"
+        );
+
+        let missing = "0123456789abcdef0123456789abcdef01234567\n";
+        std::fs::write(repo.join(".git/refs/heads/main"), missing).unwrap();
+        assert!(
+            worktree_dirty_count(&repo).is_err(),
+            "PV git/damaged-head: a branch naming a missing commit is damage, not a repository with no commit"
         );
     }
 
