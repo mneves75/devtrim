@@ -1,6 +1,6 @@
 # 020 — Agent-era visibility, APFS bulk speed, Mole-grade TUI & 2026+ site
 
-Status: IN PROGRESS (target `0.16.0`, base `f3818c2`).
+Status: SHIPPED in 0.16.0 (2026-11-22, main `45daa25`). Base `f3818c2`. Target `0.16.0`.
 
 ## Sharpened framing (deeper, not bigger)
 

@@ -30,6 +30,7 @@ Ratatui interface and its shared safety/release boundaries.
 | [017](017-comment-prune-and-audit.md) | Prune comments, plan workaround refactors, fix the audit | P1 | M | 016 | DONE in 0.13.1 |
 | [018](018-measured-space-and-explain.md) | Measure what an apply frees, size APFS clones, explain a path | P1 | L | 017 | DONE in 0.14.0 |
 | [019](019-overview-and-explorer.md) | Overview on open, scan and apply progress, stop between targets, culprit and verdicts in analyze | P2 | L | 018 | SHIPPED 0.15.0 |
+| [020](020-agent-era-perf-ux.md) | APFS `getattrlistbulk` walks, local Docker buildx pruning, enriched worktrees/leftovers, Mole-inspired TUI & 2026+ site | P1 | L | 019 | SHIPPED 0.16.0 |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 
