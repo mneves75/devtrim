@@ -13,10 +13,10 @@
 2. **Never invent flags.** Mutation flags (`--apply`, `-y`, `--yolo`, `--shred`) are rejected with exit `2` on report-only commands (`worktrees`, `clean leftovers`, `app-storage`, `icloud`, `largest`, `explain`, `disk`, `history`, `status`, `analyze`, `dashboard`, `uninstall`).
 3. **Prefer Trash-first for filesystem cleanup.** Default filesystem cleanup (`clean caches`, `purge`, `clean xcode`, `clean toolchains`, `clean installers`, `clean agents`) moves targets to macOS Trash (reversible). Only pass `--shred`, run `trash-empty --apply`, or run permanent command-based cleanups (`clean docker`, `clean simulators`) when the human explicitly authorizes permanent removal.
 4. **Understand invocation boundaries.** Within a single invocation, apply consumes only that invocation's scanned plan (never rescans after confirmation), rechecks device/inode identity and build/Xcode/Docker liveness, and journals every attempt write-ahead to `~/.local/state/devtrim/journal.jsonl`. However:
-   - A **separate** `--apply -y` or `--apply --yolo` CLI invocation scans fresh and skips interactive confirmation — an earlier `--json` preview does not pin or constrain a later CLI process.
+   - A **separate** `--apply -y` (skips y/N prompts for danger ≤ 8) or `--apply --yolo` (also skips typed confirmation for danger ≥ 9) CLI invocation scans fresh — an earlier `--json` preview does not pin or constrain a later CLI process.
    - For `clean docker`, apply binds the previewed prune command and local endpoint (plus verified builder/nodes for Buildx), while Docker/BuildKit itself selects eligible unused images or cache records at execution time.
    - For `trash-empty`, `--confirm=<gb>` computes the integer by dividing the sum of **actionable** bytes from the new scan by `1 GiB` (`1024^3`) and truncating (flooring) to an integer, then accepts `±2` around that value.
-5. **Respect what devtrim never deletes.** Docker volumes, Xcode Archives, Git repositories/worktrees, active builds, Solana keypairs, tracked files, and `~/.ollama/models` / `~/.lmstudio/models` are never auto-deleted.
+5. **Respect what devtrim protects.** Docker volumes, Xcode Archives, Git repositories/worktrees, active builds, and `~/.ollama/models` / `~/.lmstudio/models` are never auto-deleted. Project cleanups (`purge`, `clean node-modules`, `clean artifacts`) skip directories holding Git-tracked files, and `clean artifacts` / `purge` additionally skip directories holding a Solana program keypair (`*-keypair.json`).
 
 ## Recommended Agent Workflows
 
@@ -96,7 +96,7 @@ devtrim history --limit 20 --json
 | `devtrim clean installers [--apply]` | Trash-first | Stale `.dmg`/`.pkg` installers in Downloads/Desktop |
 | `devtrim clean agents [--apply]` | Trash-first | Agent caches, superseded Codex releases, and stale session history |
 | `devtrim optimize --task <NAME> [--apply]` | Command | macOS maintenance (`quicklook`, `fonts`, `launch-services`); `--apply` requires an explicit `--task` |
-| `devtrim trash-empty [--only-devtrim] --confirm=<gb> [--apply]` | Permanent | Permanent Trash purge; `--only-devtrim` restricts to items journaled by devtrim |
+| `devtrim trash-empty [--only-devtrim] [--confirm=<gb>] [--apply]` | Permanent | Permanent Trash purge (`--confirm=<gb>` is required only when `--apply` has actionable items; `--only-devtrim` restricts to items journaled by devtrim) |
 
 ## JSON Envelopes (`--json`)
 
@@ -104,8 +104,8 @@ Cleanup and finding-list `--json` responses (`clean`, `purge`, `trash-empty`, `o
 - `operation` (string): category or command name
 - `applied` (bool): `false` on preview or pre-apply refusal, `true` once apply starts
 - `findings` (array): `{ label, path, size_bytes, frees_at_least_bytes?, danger, action: { type, ... }, note, project? }`
-- `results` (array, apply only, actionable findings only; `[]` on an empty successful apply): `{ finding, path?, status: "ok" | "error" | "not_attempted", error? }`
-- `summary` (object, apply only; zero-valued on an empty successful apply, omitted on pre-apply refusal): `{ op, items_touched, bytes_freed_estimate, bytes_trashed_estimate, home_volume?, notes }`, where `home_volume` (present only when something was mutated) is `{ free_before, free_after, gained_bytes }` or `{ error }`
+- `results` (array, apply only, actionable findings only; `[]` on an empty successful apply; may still appear without `summary` if apply aborts with a fatal error): `{ finding, path?, status: "ok" | "error" | "not_attempted", error? }`
+- `summary` (object, apply only; zero-valued on an empty successful apply, omitted on pre-apply refusal or fatal apply error): `{ op, items_touched, bytes_freed_estimate, bytes_trashed_estimate, home_volume?, notes }`, where `home_volume` (present whenever volume measurement ran around the apply) is `{ free_before, free_after, gained_bytes }` or `{ error }`
 - `errors` (array of strings): non-empty causes nonzero exit status
 
 Specialized read-only `--json` documents (on normal execution; CLI/flag refusals on these commands can still return the generic `{ operation, applied: false, findings: [], errors }` error envelope):
