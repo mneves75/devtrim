@@ -92,13 +92,15 @@ devtrim history --limit 20 --json
 
 ## JSON Envelope (`--json`)
 
-Every `--json` response contains:
+Cleanup and finding-list `--json` responses (`clean`, `purge`, `trash-empty`, `optimize`, `scan`, `worktrees`, `app-storage`, `icloud`, `largest`, `uninstall`) contain:
 - `operation` (string): category or command name
 - `applied` (bool): `false` on preview or pre-apply refusal, `true` once apply starts
-- `findings` (array): `{ label, path, size_bytes, frees_at_least_bytes?, danger, action: { type, ... }, note }`
+- `findings` (array): `{ label, path, size_bytes, frees_at_least_bytes?, danger, action: { type, ... }, note, project? }`
 - `results` (array, apply only): per-finding `{ finding, path?, status: "ok" | "error" | "not_attempted", error? }`
 - `summary` (object, apply only): `{ op, items_touched, bytes_freed_estimate, bytes_trashed_estimate, home_volume: { free_before, free_after, gained_bytes }, notes }`
 - `errors` (array of strings): non-empty causes nonzero exit status
+
+Specialized read-only commands (`disk`, `status`, `analyze`, `explain`, `history`) emit their own single JSON document with `operation` and `errors` (e.g., `disk --json` returns `{ operation, available_bytes, total_bytes, warn_below_bytes, below, errors }`).
 
 ## Default Project Scan Roots
 
