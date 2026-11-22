@@ -2,6 +2,14 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
+## [Unreleased]
+
+### Added
+- Added `llms.txt` (served at `https://mneves75.github.io/devtrim/llms.txt`) and a `For AI agents` section in `README.md` with exact `--json` envelope contracts, exit codes, and safe Trash-first workflows.
+
+### Changed
+- Updated `index.html` release links and version headings to verified immutable `v0.16.0` and regenerated `video/film/facts.json`.
+
 ## [0.16.0] - 2026-11-21
 
 ### Added

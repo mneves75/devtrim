@@ -1,0 +1,106 @@
+# devtrim
+
+> Safe macOS developer-machine disk hygiene CLI & TUI (`v0.16.0`): measure, classify, and trim caches, stale build artifacts, `node_modules`, Xcode DerivedData/DeviceSupport, simulators, Docker/Buildx caches, Swift toolchains, installers, and agent caches — preview-by-default, Trash-first, identity-verified, and write-ahead journaled.
+
+- Website: https://mneves75.github.io/devtrim/
+- Full Manual: https://mneves75.github.io/devtrim/MANUAL.html
+- Source & Security Model: https://github.com/mneves75/devtrim
+- Install (macOS arm64): `brew install mneves75/devtrim/devtrim`
+
+## Rules for AI Agents
+
+1. **Always preview first with `--json`.** Every `--json` invocation prints exactly one JSON document to stdout and returns exit `0` on clean success, `1` on partial/scan/apply errors, or `2` on invalid flags/usage.
+2. **Never invent flags.** Mutation flags (`--apply`, `-y`, `--yolo`, `--shred`) are rejected with exit `2` on report-only commands (`worktrees`, `clean leftovers`, `app-storage`, `icloud`, `largest`, `explain`, `disk`, `history`, `status`, `analyze`, `dashboard`, `uninstall`).
+3. **Prefer Trash-first (`--apply -y` or `--apply --yolo`).** Default filesystem cleanup moves exact previewed targets to macOS Trash (reversible). Only pass `--shred` or run `trash-empty` when the human explicitly authorizes permanent deletion.
+4. **Never rescan silently.** Each apply consumes only the exact previewed plan, rechecks device/inode identity (and build-process/Xcode/Docker liveness), and journals every attempt write-ahead to `~/.local/state/devtrim/journal.jsonl`.
+5. **Respect what devtrim never deletes.** Docker volumes, Xcode Archives, Git repositories/worktrees, active builds, Solana keypairs, tracked files, and `~/.ollama/models` / `~/.lmstudio/models` are never auto-deleted.
+
+## Recommended Agent Workflows
+
+### 1. Check free space (fast, read-only, exit 0)
+```bash
+devtrim disk --json
+devtrim disk --warn-below 20GiB
+```
+
+### 2. Full read-only disk inventory
+```bash
+devtrim scan --json
+devtrim worktrees --json
+devtrim clean leftovers --json
+devtrim largest --top 20 --json
+devtrim explain /path/to/target --json
+```
+
+### 3. Safe Trash-first cleanup (non-TTY requires `-y` for danger <= 8, `--yolo` for danger >= 9)
+```bash
+# Preview exact plan
+devtrim clean caches --json
+devtrim purge --json
+
+# Apply exact plan (moves targets to macOS Trash; reversible)
+devtrim clean caches --apply --yolo --json
+devtrim purge --apply --yolo --json
+```
+
+### 4. Reclaim disk space from Trash (only items devtrim moved)
+```bash
+# Read exact `--confirm=<gb>` integer from preview first
+devtrim trash-empty --only-devtrim --json
+# Only with explicit human confirmation for permanent purge:
+devtrim trash-empty --only-devtrim --confirm=<gb> --apply --yolo --json
+```
+
+### 5. Docker & local Buildx cache cleanup (never touches volumes)
+```bash
+devtrim clean docker --json
+devtrim clean docker --apply --yolo --json
+```
+
+### 6. Audit what was changed
+```bash
+devtrim history --limit 20 --json
+```
+
+## Command Reference
+
+| Command | Mutates? | Notes |
+|---|---|---|
+| `devtrim scan [--all] [--json]` | Read-only | All categories + largest findings (`--shred` previews permanent actions) |
+| `devtrim disk [--warn-below SIZE] [--json]` | Read-only | Home volume free space & APFS snapshot count |
+| `devtrim explain <PATH> [--json]` | Read-only | Explains why a path is offered or protected |
+| `devtrim worktrees [--root DIR] [--json]` | Read-only | Linked worktrees with size, `in-use`/`dirty`/`clean`, and UTC activity |
+| `devtrim clean leftovers [--root DIR] [--json]` | Read-only | Ignored `.scratch`, abandoned `.git/objects/tmp_objdir-*`, `~/.ollama/models`, `~/.lmstudio/models` |
+| `devtrim app-storage [--root DIR] [--json]` | Read-only | Metadata-only WhatsApp & Screen Studio inventory |
+| `devtrim icloud [--json]` | Read-only | Large iCloud Drive files and local allocation |
+| `devtrim largest [--top N] [--root DIR] [--json]` | Read-only | Largest directories under scan roots |
+| `devtrim analyze [PATH] [--json]` | Read-only | Directory breakdown with offer/protection verdicts |
+| `devtrim status [--json]` | Read-only | Machine vitals and health score |
+| `devtrim history [--limit N] [--json]` | Read-only | Write-ahead apply journal records |
+| `devtrim purge [--root DIR] [--apply]` | Trash-first | Stale `node_modules` + corroborated build artifacts |
+| `devtrim clean caches [--apply]` | Trash-first | Regenerable caches (HF, uv, npm, brew, cargo, bun, gh, pip, pnpm, CocoaPods, SwiftPM, Gradle, Go) |
+| `devtrim clean node-modules [--root DIR] [--apply]` | Trash-first | Stale project `node_modules` |
+| `devtrim clean artifacts [--root DIR] [--apply]` | Trash-first | Corroborated stale build directories (`target`, `.next`, `.turbo`, etc.) |
+| `devtrim clean xcode [--apply]` | Trash-first | Idle `DerivedData` (preserving `SourcePackages`) & `DeviceSupport` |
+| `devtrim clean docker [--apply]` | Command | Unused local images, build cache, and local `docker-container` Buildx builders (never volumes) |
+| `devtrim clean simulators [--apply]` | Command | Unavailable simulator devices by exact UDID |
+| `devtrim clean toolchains [--apply]` | Trash-first | Unreferenced `swift.org` toolchains |
+| `devtrim clean installers [--apply]` | Trash-first | Stale `.dmg`/`.pkg` installers in Downloads/Desktop |
+| `devtrim clean agents [--apply]` | Trash-first | Agent caches, superseded Codex releases, and stale session history |
+| `devtrim optimize [--task NAME] [--apply]` | Command | macOS maintenance (`quicklook`, `fonts`, `launch-services`) |
+| `devtrim trash-empty [--only-devtrim] --confirm=<gb> [--apply]` | Permanent | Permanent Trash purge; `--only-devtrim` restricts to items journaled by devtrim |
+
+## JSON Envelope (`--json`)
+
+Every `--json` response contains:
+- `operation` (string): category or command name
+- `applied` (bool): `false` on preview or pre-apply refusal, `true` once apply starts
+- `findings` (array): `{ label, path, size_bytes, frees_at_least_bytes?, danger, action: { type, ... }, note }`
+- `results` (array, apply only): per-finding `{ finding, path?, status: "ok" | "error" | "not_attempted", error? }`
+- `summary` (object, apply only): `{ op, items_touched, bytes_freed_estimate, bytes_trashed_estimate, home_volume: { free_before, free_after, gained_bytes }, notes }`
+- `errors` (array of strings): non-empty causes nonzero exit status
+
+## Default Project Scan Roots
+
+Without `--root` or `~/.config/devtrim.toml` `roots = [...]`, project scans inspect only existing directories among:
+`~/dev`, `~/Developer`, `~/Development`, `~/Projects`, `~/Code`, `~/GitHub`, `~/Repos`, `~/Workspace`, `~/www`, `~/.codex/worktrees`, `~/.t3/worktrees`.

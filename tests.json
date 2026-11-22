@@ -2,8 +2,10 @@
   "plan": "plans/020-agent-era-perf-ux.md",
   "target_version": "0.16.0",
   "base_commit": "f3818c2",
-  "branch": "plan/020-agent-era-perf-ux",
-  "updated_at": "2026-11-21",
+  "branch": "main",
+  "release_commit": "45daa25cd62f23e2b05e470ddd1eaec22165686b",
+  "release_tree": "e11ec50c8462698c32490ed187ffdc8cd4c3a417",
+  "updated_at": "2026-11-22",
   "tasks": [
     {
       "id": "T1",
@@ -82,10 +84,13 @@
     {
       "id": "T9",
       "title": "Full offline/online gates, cross-model review, mneves-verify, mneves-security gate, staging beta & prod release",
-      "status": "in_progress",
+      "status": "passed",
       "verified_by": [
-        "scripts/verify.sh offline (227/227 planted-violations, MSRV 1.88.0, film-controls)",
-        "Sol autoreview SCOPED-CLEAN; Sol security findings GIT-FILTER-CONFIG/GIT-WORKTREE-ROOT/LEFTOVERS-GITDIR-SCOPE fixed"
+        "CI PR #101 green + main CI 44959210183 green",
+        "Immutable v0.16.0-beta1 (run 44968377996) + v0.16.0 (run 44970344995) verified live",
+        "Homebrew tap 7656d47 upgraded /opt/homebrew/bin/devtrim to 0.16.0",
+        "mneves-security gate PASS (0 waivers) in .scratch/security-gate/45daa25cd62f23e2b05e470ddd1eaec22165686b/",
+        "Post-promotion index.html v0.16.0 + llms.txt + README AI-agent guide"
       ]
     }
   ]

@@ -6,7 +6,7 @@ Born from a cleanup session that reclaimed 250+ GB across model caches, stale
 `node_modules`, simulator storage, Xcode support files, Docker bloat, and old
 Swift toolchains.
 
-**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
+**[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[llms.txt](https://mneves75.github.io/devtrim/llms.txt)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
 This source tree and its packaged documentation describe devtrim v0.16.0.
 
@@ -156,6 +156,22 @@ either way, so it fits a Claude Code `SessionStart` hook:
 
 An unreadable volume exits 1; a malformed SIZE is a usage error (exit 2).
 
+## For AI agents
+
+`devtrim` ships an agent-ready reference at [`llms.txt`](llms.txt) (also served live at [`https://mneves75.github.io/devtrim/llms.txt`](https://mneves75.github.io/devtrim/llms.txt)) summarizing every command, `--json` envelope field, exit code, safety boundary, and safe Trash-first workflow in one compact file.
+
+Point coding agents or MCP/tool prompts to it directly:
+
+```bash
+curl -fsSL https://mneves75.github.io/devtrim/llms.txt
+```
+
+Core contract for automated callers:
+- Every `--json` call emits exactly one JSON document to stdout (`0` = clean, `1` = partial/runtime error, `2` = usage/flag refusal).
+- Report-only commands reject mutation flags with exit `2`.
+- Non-TTY applies require `-y` (danger ≤ 8) or `--yolo` (danger ≥ 9) and write a per-item `results` array plus `summary.home_volume` delta.
+- Prefer Trash-first (`--apply --yolo --json`) and `devtrim trash-empty --only-devtrim` over `--shred` unless permanent deletion is explicitly requested.
+
 `devtrim explain <PATH>` answers why a path is or is not offered: whether
 built-in protection or a `protect` entry refuses it (and which rule), and every
 finding from one fresh, read-only scan whose target is the path, holds it or
@@ -181,8 +197,7 @@ kept as a repository at `~`.
 disk or the whole home folder. Without configured roots those are the
 conventional project folders that exist: `~/dev`, `~/Developer`,
 `~/Development`, `~/Projects`, `~/Code`, `~/GitHub`, `~/Repos`, `~/Workspace`,
-`~/www`, and `~/.codex/worktrees`, where Codex creates its worktrees — Mole's
-`mo purge` defaults plus the folder Finder marks as `Developer`. Claude Code
+`~/www`, `~/.codex/worktrees`, and `~/.t3/worktrees` — Mole's `mo purge` defaults plus Finder's `Developer` and Codex/T3 worktree directories. Claude Code
 puts its worktrees inside the repository (`.claude/worktrees/`), which the
 repository's own root already covers. `--root` or `roots` in the config replaces them. A root only says
 where to look; roots at or below `.git`, or below `node_modules` (in any ASCII

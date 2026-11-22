@@ -1,6 +1,15 @@
 # Project Memory
 
-## Current production state (0.13.1)
+## Current production state (0.16.0)
+
+0.16.0 ships APFS `getattrlistbulk(2)` batched directory walks (removing unused `CloneFamily` fields), `~/.t3/worktrees` default root discovery, verified local Docker `buildx` container builder cache pruning with per-attempt `0700` `DOCKER_CONFIG`/`BUILDX_CONFIG` isolation, enriched read-only `worktrees` (`in-use`/`dirty`/`clean` + UTC activity with atomic `--attr-source=<empty-tree>` and `GIT_CONFIG_COUNT` filter neutralization) and `leftovers` (`.git/objects/tmp_objdir-*` + `~/.ollama/models`, `~/.lmstudio/models`), Mole-inspired TUI upgrades (overview card, 6-cell share bars at >=96 cols, live progress bar, `o` category jump, post-apply Trash hint), 2026+ landing-page/manual redesign, and permanent retirement of the `GHSA-g3hv-75wg-m249` npm audit waiver (`video/audit-waivers.json` is `[]`). Plan: `plans/020-agent-era-perf-ux.md` (PR #101).
+
+Source `45daa25cd62f23e2b05e470ddd1eaec22165686b`, tree `e11ec50c8462698c32490ed187ffdc8cd4c3a417`.
+Immutable `v0.16.0-beta1` (run `44968377996`) and stable `v0.16.0` (run `44970344995`, published 2026-11-22) carry the ZIP SHA-256 `912cc97a446d208de15a52323cf5c4fc5e031ab3c7c1f586a05c93d756c61c9b`; both pass `scripts/verify-live.sh`. Homebrew tap `7656d47` publishes `0.16.0`; `/opt/homebrew/bin/devtrim` is `0.16.0` (SHA-256 `b5906877ea47963f8eb235e59e05d6aabde24ec7dc1334da03e9cea5903a8791`).
+
+Security gate: **PASS** with **zero waivers** (`.scratch/security-gate/45daa25cd62f23e2b05e470ddd1eaec22165686b/`, reused by exact tree from `fbdc52f33439912ba01068ce24f89da6f0c182f4`). Independent cross-model GPT-6.2 Sol audits closed all repository-controlled findings (0 Critical, 0 High, 0 Medium, 0 Low). Pre-existing follow-ups: `CORE-PARSE-1` (`lsof` omitted-name hypothesis) and TruffleHog default output flag in CI/release workflows. Post-promotion closeout updates `index.html` links to `v0.16.0`, regenerates `video/film/facts.json`, and adds `llms.txt` for AI agents.
+
+## Previous production state (0.13.1)
 
 0.13.1 is the comment prune and whole-project audit (#89, #91): journal
 rotation only at apply start, scoped fail-closed in `leftovers` and
