@@ -410,11 +410,9 @@ impl Overview {
             Operation::Purge => vec![Target::NodeModules.as_str(), Target::Artifacts.as_str()],
             Operation::ScanAll | Operation::Icloud | Operation::TrashEmpty => Vec::new(),
         };
-        for name in &names {
-            if let Some(total) = self.totals.iter().find(|total| total.category == *name) {
-                self.applied.insert(total.category);
-            }
-        }
+        // A category that failed in the scan has no total, yet an apply still
+        // changes it, so the scan it failed in is out of date all the same.
+        self.applied.extend(names);
     }
 
     fn offers(at_least: u64, bytes: u64, findings: usize) -> RowSize {
@@ -5287,6 +5285,31 @@ mod tests {
         // The first row now ends a cell early, so its padding is not part of
         // the path: trimming each row's right edge reads the path back exactly.
         assert!(detail_pane_text(&rows).contains(&path), "{rows:#?}");
+    }
+
+    /// A category that failed in Scan everything has no total, but applying
+    /// it after opening it still makes that scan's report out of date.
+    #[test]
+    fn applying_a_category_that_failed_in_the_scan_makes_its_report_stale() {
+        let mut app = App::default();
+        app.finish_scan(
+            ops::ScanResult {
+                findings: vec![sized("nm", 2 * GIB, None)],
+                sections: vec![section("node-modules", 0..1)],
+                errors: vec!["caches: probe timed out".into()],
+            },
+            Vec::new(),
+        );
+        app.finish_results(
+            Operation::Clean(Target::Caches),
+            vec![trash("uv", GIB, 3)],
+            Vec::new(),
+            Vec::new(),
+        );
+        app.begin_apply(std::sync::Arc::new(crate::journal::ApplyMonitor::new(0, 0)));
+        app.back_to_menu();
+        app.handle_key(key(KeyCode::Char('v')));
+        assert_ne!(app.screen, Screen::Results);
     }
 
     /// Permanent mode raises every Trash finding to critical; a row that kept
