@@ -41,7 +41,7 @@ devtrim explain /path/to/target --json
 devtrim clean caches --json
 devtrim purge --json
 
-# Non-TTY apply requires -y (danger <= 8) or --yolo (danger >= 9).
+# Non-TTY apply with actionable findings requires -y (danger <= 8) or --yolo (danger >= 9); empty plans skip confirmation.
 # Note: this is a fresh scan and skips interactive confirmation; targets move to macOS Trash (reversible).
 devtrim clean caches --apply -y --json
 devtrim purge --apply --yolo --json
