@@ -2253,6 +2253,72 @@ fn eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only() {
     );
 }
 
+/// A repository's configuration can change while devtrim reads it: a filter
+/// driver and an `info/attributes` line selecting it appear right after the
+/// dirty-count probe's first Git query and before its `git status`. The
+/// probe's status reads no repository configuration, so the driver never runs,
+/// while a same-size edit still forces Git to hash the tracked file.
+#[test]
+fn eval_worktrees_dirty_count_never_runs_a_filter_added_during_the_probe() {
+    let sandbox = Sandbox::in_target("eval-worktrees-filter-race");
+    let dev = sandbox.path().join("dev");
+    let app = dev.join("app");
+    write(&app.join("README"), "readme");
+    repo(&sandbox, &app, STALE, &["README"]);
+    git(
+        &sandbox,
+        &app,
+        STALE,
+        &["worktree", "add", "-q", "-b", "edited", "../app-edited"],
+    );
+    let edited = dev.join("app-edited");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write(&edited.join("README"), "README");
+
+    let marker = sandbox.path().join("filter-ran");
+    let planted = sandbox.path().join("planted");
+    let real = real_git().display().to_string();
+    // The probe's first query: the configuration listing before the fix, the
+    // index location after it. Either way the driver appears before status.
+    sandbox.script(
+        "git",
+        &format!(
+            "'{real}' \"$@\"\n\
+             case \" $* \" in *' config --includes --list '*|*' --show-object-format '*)\n\
+             if [ ! -e '{planted}' ]; then\n\
+             : > '{planted}'\n\
+             '{real}' -C '{app}' config filter.late.clean \"/bin/sh -c '/usr/bin/touch {marker}; /bin/cat'\"\n\
+             printf '* filter=late\\n' > '{app}/.git/info/attributes'\n\
+             fi;;\n\
+             esac",
+            planted = planted.display(),
+            app = app.display(),
+            marker = marker.display(),
+        ),
+    );
+
+    let output = run(
+        &sandbox,
+        &["worktrees", "--root", dev.to_str().unwrap(), "--json"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document = json(&output);
+    assert!(planted.exists(), "the driver was never planted: {document}");
+    assert!(
+        !marker.exists(),
+        "PV git/isolated-status: a filter added during the probe ran"
+    );
+    let note = finding_at(&document, &edited)["note"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(note.contains("dirty (1 change)"), "{document}");
+}
+
 /// A worktree that cannot be read in full is still listed with its
 /// lower-bound size, and the partial read is an error: the run exits nonzero.
 #[test]

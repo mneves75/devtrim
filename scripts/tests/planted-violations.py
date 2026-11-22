@@ -1077,6 +1077,16 @@ CASES = (
         tests=("tui::tests::every_results_footer_fits_the_minimum_width",),
         marker="PV tui/shred-off",
     ),
+    # CORE-GIT-1: the dirty count's `git status` reads no repository config,
+    # so a filter added while devtrim reads the repository can never run.
+    Case(
+        name="git/isolated-status",
+        relative_path="src/ops/project.rs",
+        before="        .arg(isolated_git_dir(sha256)?)\n",
+        after="        .arg(&dot_git)\n",
+        tests=("eval_worktrees_dirty_count_never_runs_a_filter_added_during_the_probe",),
+        marker="PV git/isolated-status", target="evals",
+    ),
     Case(
         name="git/utc-dates",
         relative_path="src/ops/project.rs",
