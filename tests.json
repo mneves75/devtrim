@@ -36,6 +36,20 @@
         "help order: 0.16.0 --help lists tui first, which the exact-order assertion rejects"
       ],
       "evidence": ".scratch/tui-clarity/phase2/"
+    },
+    {
+      "id": "film",
+      "what": "python3 -B film/scripts/build.py (facts fresh, facts trace 37/37, lint, contrast, music, loudness, render, mux, media checks, sync, contact sheets)",
+      "result": "pass",
+      "detail": "sync worst offset 7.0 ms of 16.7 ms; stills at frames 320, 760, 1000 show every row and the undo line whole after the font resize",
+      "evidence": ".scratch/tui-clarity/film-build.log, video/out/film/contact-0*.png, .scratch/tui-clarity/stills/"
+    },
+    {
+      "id": "cccc-prune",
+      "what": "cccc on src/tui.rs, src/cli.rs, tests/lockfiles.rs; mneves-prune-tests over the tests this branch added or changed",
+      "result": "no deletions",
+      "detail": "directly tested functions score above 5 (headline_forms 11, result_row_with_max 10, Overview::of 9, render_confirmation 8, RowSize::text 6) or fall under an exception: suggestion (0) guards that a PERMANENT category is never suggested, lockfiles is a regression test, the disk-line tests rewrite guards that existed in 0.16 and carry the 64x18 and unreadable-metric standards; removed tests guarded removed code (row numbers, badges, Selected pane)",
+      "evidence": ".scratch/tui-clarity/cccc.json"
     }
   ]
 }
