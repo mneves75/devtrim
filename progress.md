@@ -1,14 +1,20 @@
 # Progress — 0.17.0 (plans/021)
 
-Current phase: 1, home and scan landing. Branch `feat/tui-clarity` from `3310ef3`, worktree
-`../devtrim-wt-tui`. Baseline captures and prototypes in `.scratch/tui-clarity/` (untracked).
+Current phase: 2, decision-first rows and effect-first confirmation. Branch `feat/tui-clarity`
+from `3310ef3`, worktree `../devtrim-wt-tui`. Baseline captures and prototypes in
+`.scratch/tui-clarity/` (untracked).
 
 - Decision: overview home (prototype A) over a Mole-style intent menu (C); evidence and
   scenarios in the plan. Keys and launch behaviour unchanged.
-- Phase boundary: the film quotes result rows, details and the confirmation, not the home;
-  phase 2 (row format) therefore re-renders the film. A draft render of the unchanged film is
-  the probe for that cost.
-- Next action: failing tests for AC1-AC3, then the home in `src/tui.rs`.
+- Phase 1 done: one-column home (disk line, headline after a scan, an effect word on every
+  row, the highlighted row's description in the status row); Scan everything lands there
+  with the highlight on the largest category that moves to the Trash; `v` opens the last
+  scan's report until an apply makes it stale. The headline says "largest to Trash", so a
+  larger PERMANENT category is never misnamed. `r` on the home was dropped from the plan:
+  the landing status already says `1 scans again`, and one key per action is simpler.
+- Film probe: the unchanged film renders end to end (sync worst offset 7.0 ms of 16.7 ms),
+  so phase 2 can re-render it.
+- Next action: failing tests for AC4 and AC5, then rows and the confirmation.
 
 # Progress — 0.16.0 (plans/020)
 

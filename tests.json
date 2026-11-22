@@ -11,6 +11,14 @@
       "commit": "3310ef3",
       "result": "captured",
       "evidence": ".scratch/tui-clarity/baseline/"
+    },
+    {
+      "id": "phase1",
+      "what": "tui unit tests (73), tui.py (incl. new Scan everything landing flow with a stubbed failing docker), read-only-views.py, fmt, clippy -D warnings",
+      "commit": "phase-1 commit",
+      "result": "pass",
+      "negative_control": "verify_scan_lands_on_the_home times out against the shipped 0.16.0 binary",
+      "evidence": ".scratch/tui-clarity/p1-tui.log, .scratch/tui-clarity/p1-rov.log, .scratch/tui-clarity/phase1/"
     }
   ]
 }

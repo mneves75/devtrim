@@ -68,7 +68,7 @@ one key away (`v`).
 1. **Home and scan landing** (`src/tui.rs` only): single column, header + disk line +
    headline; effect word per row; status row carries the description; Scan everything ends
    on the home with the cursor on the largest Trash category; `v` opens the last scan's full
-   report; `r` on the home rescans everything.
+   report. (`r` on the home was dropped: `1` already rescans, and the landing status says so.)
 2. **Decision-first rows and effect-first confirmation**: rows lead with size and name, the
    row number goes, danger and action move to the end; the confirmation says the effect and
    whether it can be undone before the data-loss notice, which stays. Film copy, site frames

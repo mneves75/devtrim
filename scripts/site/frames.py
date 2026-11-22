@@ -387,15 +387,13 @@ def main():
             (b"a", ("This plan:",)),
         ])
         frames["tui:confirm"] = block("confirm exact plan", 84, to_html(confirm, box_rows(confirm)[0]))
-        # The menu after Scan everything, cropped to the 54-column menu +
-        # category-sizes area: the pane beside it shows the real volume's free
-        # space, which belongs to the machine running this script, not to the demo.
+        # The home after Scan everything without its disk line, which reads
+        # the volume of the machine running this script, not the demo's.
         overview = capture(binary, home, rows, columns, [
             (None, ("Scan everything",)),
-            (b"1", ("Read-only result",)),
-            (b"b", ("Operations", "GB")),
+            (b"1", ("Reclaimable:", "v report")),
         ])
-        frames["tui:overview"] = block("menu after a scan", 54, to_html(overview, 0, rows, 54))
+        frames["tui:overview"] = block("home after a scan", columns, to_html([overview[0]] + overview[2:]))
         frames["tui:analyze"] = block("analyze with verdicts", 80, to_html(analyze(binary, home, 18, 80)))
         frames["tui:scanning"] = block("scan in progress", columns, to_html(scanning(binary, home, rows, columns)))
         scan, scan_columns = scan_summary(binary, home)

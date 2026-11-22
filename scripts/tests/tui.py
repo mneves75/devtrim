@@ -389,6 +389,8 @@ def verify_action_keys_explain_themselves(binary):
         with Session(binary, home) as session:
             session.wait_for("Scan everything")
             session.send(b"1")
+            session.wait_for_screen("Reclaimable: ", "v report")
+            session.send(b"v")
             session.wait_for_screen("Read-only result", "uv package cache")
             session.send(b"A")
             session.wait_for_screen("Read-only scan. To act on it: b, then 2 (caches).")
@@ -399,6 +401,44 @@ def verify_action_keys_explain_themselves(binary):
                 "0/2 selected", "A all", "Every item is left out; A selects them all again."
             )
             session.quit()
+
+
+def verify_scan_lands_on_the_home(binary):
+    """Scan everything ends on the home: the highlight on the largest category
+    that moves to the Trash, a failed category named on its row and in the
+    status, and the full report one key away with its error rows. The stubbed
+    `docker` fails; the caches category is the only one offering anything, so
+    the highlight has exactly one right answer, and the run exits nonzero."""
+    with tempfile.TemporaryDirectory(prefix="devtrim-tui-", dir=binary.parent) as directory:
+        home = Path(directory).resolve()
+        (home / "bin").mkdir()
+        write_script(home / "bin" / "pgrep", "exit 1")
+        write_script(
+            home / "bin" / "docker",
+            "echo 'Cannot connect to the Docker daemon at unix:///nowhere' >&2\nexit 1",
+        )
+        cache = home / ".cache" / "uv"
+        cache.mkdir(parents=True)
+        (cache / "blob").write_bytes(b"x" * 300_000)
+        with Session(binary, home) as session:
+            session.wait_for("Scan everything")
+            session.send(b"1")
+            session.wait_for_screen(
+                "Reclaimable: ", "1 failed", "docker failed to scan: v shows why; 1 scans again."
+            )
+            lines = render_screen(session.output, session.rows, session.columns)
+            highlighted = [line for line in lines if line.startswith("▶ ")]
+            if len(highlighted) != 1 or not highlighted[0].startswith("▶ 2  Caches"):
+                raise AssertionError(f"the highlight is not on Caches: {highlighted}")
+            docker = [line for line in lines if "  Docker " in line]
+            if len(docker) != 1 or " failed " not in docker[0] or not docker[0].rstrip().endswith("PERMANENT"):
+                raise AssertionError(f"the Docker row does not say it failed: {docker}")
+            session.send(b"v")
+            session.wait_for_screen("READ-ONLY", "docker failed to scan: error rows say why; r retries.")
+            session.send(b"b")
+            # The status describes the highlighted row: back keeps it on Caches.
+            session.wait_for_screen("Regenerable package and model download caches.", "v report")
+            session.quit(expected_status=1)
 
 
 def write_script(path, body):
@@ -930,6 +970,7 @@ def main():
         verify_paste_and_modified_keys_never_approve(binary)
         verify_selection(binary)
         verify_action_keys_explain_themselves(binary)
+        verify_scan_lands_on_the_home(binary)
         verify_purge(binary)
         verify_minimum_size(binary)
         verify_confirmation_feedback_at_minimum_size(binary)
@@ -947,7 +988,7 @@ def main():
         return 1
     print(
         "tui: menu, help, cancel, quit, terminal restoration, type-ahead discard,"
-        " pasted and Alt-modified answers refused, selection, action-key explanations, project purge, the minimum-size"
+        " pasted and Alt-modified answers refused, selection, action-key explanations, Scan everything landing on the home, project purge, the minimum-size"
         " detail pane and view, confirmation feedback and answer limit at 64×18, Esc on the too-small"
         " screen, rescanning from the outcome, row numbers past 999, stopping a scan blocked on its probe, and refusing to"
         " quit an apply blocked on its probe, the Scan everything category list, and stopping an apply"
