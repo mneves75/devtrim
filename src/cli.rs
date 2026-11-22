@@ -9,7 +9,8 @@ use clap_complete::Shell;
     author = "Marcus Neves",
     version,
     about = "Developer-machine disk hygiene: measure, classify, trim — safely.",
-    long_about = None
+    long_about = None,
+    after_help = "Examples:\n  devtrim                           open the interactive interface\n  devtrim scan                      preview every category; nothing changes\n  devtrim clean caches              preview one category\n  devtrim clean caches --apply      ask, then move exactly the previewed items to the Trash\n  devtrim explain ~/Library/Caches  why a path is or is not offered\n  devtrim history                   what earlier applies changed\n  devtrim scan --json               one JSON document for scripts"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -42,13 +43,55 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
-    /// Open the interactive terminal interface
-    Tui,
+    // Listed in the order a cleanup runs: preview and clean, then the
+    // reports, then maintenance and utilities. `--help` shows this order.
     /// Read-only report of every reclaimable category with sizes and risk
     Scan {
         /// List every finding instead of the largest few in each category
         #[arg(long)]
         all: bool,
+    },
+    /// Clean one category
+    Clean {
+        /// caches | node-modules | artifacts | simulators | xcode | docker | toolchains | installers | agents | leftovers
+        #[arg(value_enum)]
+        target: Target,
+    },
+    /// Remove stale node_modules and build artifacts across projects, largest first (Trash unless --shred)
+    Purge,
+    /// Purge macOS Trash permanently; requires --apply and --confirm=<gb>
+    TrashEmpty {
+        /// Approximate Trash size in GB as acknowledgment (e.g. --confirm=14)
+        #[arg(long = "confirm")]
+        confirm_gb: Option<u64>,
+        /// Purge only items devtrim itself moved to the Trash, recognized by
+        /// the file identity its journal recorded; everything else stays
+        #[arg(long = "only-devtrim")]
+        only_devtrim: bool,
+    },
+    /// Say why a path is or is not offered: its protection and every finding that covers it (report-only)
+    Explain {
+        /// Path to explain, relative to the current directory; its last component is not followed
+        path: std::path::PathBuf,
+    },
+    /// Show recent apply results from the local write-ahead journal
+    History {
+        /// Maximum entries to show (default 20, clamped to 1..=1000)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Open the interactive terminal interface
+    Tui,
+    /// Explore disk usage interactively, largest first; never deletes anything
+    Analyze {
+        /// Directory to start from (default: your home directory)
+        path: Option<String>,
+    },
+    /// Show the largest directories one and two levels below scan roots
+    Largest {
+        /// Number of entries to show (clamped 1..=100)
+        #[arg(long)]
+        top: Option<usize>,
     },
     /// Read-only machine vitals: load, memory, disk, battery, thermals, processes
     Status {
@@ -68,16 +111,6 @@ pub(crate) enum Command {
         )]
         warn_below: Option<crate::volume::ByteSize>,
     },
-    /// List files named for an app's exact bundle identifier (report-only)
-    Uninstall {
-        /// Application name or bundle path (e.g. AltTab, "Visual Studio Code")
-        app: String,
-    },
-    /// Explore disk usage interactively, largest first; never deletes anything
-    Analyze {
-        /// Directory to start from (default: your home directory)
-        path: Option<String>,
-    },
     /// Create a private, offline HTML disk inventory and category-preview dashboard
     Dashboard {
         /// Directory to map (default: your home directory)
@@ -89,40 +122,22 @@ pub(crate) enum Command {
         #[arg(long)]
         no_open: bool,
     },
-    /// Show the largest directories one and two levels below scan roots
-    Largest {
-        /// Number of entries to show (clamped 1..=100)
-        #[arg(long)]
-        top: Option<usize>,
-    },
-    /// Say why a path is or is not offered: its protection and every finding that covers it (report-only)
-    Explain {
-        /// Path to explain, relative to the current directory; its last component is not followed
-        path: std::path::PathBuf,
-    },
     /// List each repository's linked worktrees with their sizes (report-only)
     Worktrees,
     /// Measure WhatsApp data and Screen Studio projects; never deletes anything
     AppStorage,
+    /// Show large iCloud Drive files and their locally allocated storage
+    Icloud,
+    /// List files named for an app's exact bundle identifier (report-only)
+    Uninstall {
+        /// Application name or bundle path (e.g. AltTab, "Visual Studio Code")
+        app: String,
+    },
     /// Run macOS maintenance tasks: caches the system rebuilds on demand
     Optimize {
         /// Task to run; repeatable. Default: every task
         #[arg(long = "task")]
         tasks: Vec<String>,
-    },
-    /// Remove stale node_modules and build artifacts across projects, largest first (Trash unless --shred)
-    Purge,
-    /// Clean one category
-    Clean {
-        /// caches | node-modules | artifacts | simulators | xcode | docker | toolchains | installers | agents | leftovers
-        #[arg(value_enum)]
-        target: Target,
-    },
-    /// Show recent apply results from the local write-ahead journal
-    History {
-        /// Maximum entries to show (default 20, clamped to 1..=1000)
-        #[arg(long)]
-        limit: Option<usize>,
     },
     /// Print a shell completion script
     Completions {
@@ -132,18 +147,6 @@ pub(crate) enum Command {
     },
     /// Print the devtrim man page in roff format
     Manpage,
-    /// Show large iCloud Drive files and their locally allocated storage
-    Icloud,
-    /// Purge macOS Trash permanently; requires --apply and --confirm=<gb>
-    TrashEmpty {
-        /// Approximate Trash size in GB as acknowledgment (e.g. --confirm=14)
-        #[arg(long = "confirm")]
-        confirm_gb: Option<u64>,
-        /// Purge only items devtrim itself moved to the Trash, recognized by
-        /// the file identity its journal recorded; everything else stays
-        #[arg(long = "only-devtrim")]
-        only_devtrim: bool,
-    },
 }
 
 impl Target {
