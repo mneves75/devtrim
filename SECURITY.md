@@ -241,7 +241,7 @@ Non-negotiable boundaries:
   account can create, rename or replace any part of it, and it holds exactly
   `HEAD`, `config`, an empty `objects` and an empty `refs`, each owned by the user
   with no group or other access, `HEAD` naming an unborn branch and `config`
-  only the object format, byte for byte as devtrim writes them. Git reads the
+  only the object format, byte for byte as devtrim writes them. Since an ACL `allow` entry can let another account write where the mode bits deny it, one bounded `/bin/ls -lde` over that folder chain and the probe's parts must show no `allow` entry; `deny` entries, such as the home folder's own, only narrow access. Git reads the
   repository's index through `GIT_INDEX_FILE` and its `info/exclude` through
   `core.excludesFile`, both as data, with `--attr-source=<empty-tree>`,
   `GIT_ATTR_NOSYSTEM=1` and `core.attributesFile=/dev/null`; no configuration

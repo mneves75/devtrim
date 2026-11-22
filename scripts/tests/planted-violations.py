@@ -1096,6 +1096,14 @@ CASES = (
         marker="PV git/probe-parent",
     ),
     Case(
+        name="git/probe-acl",
+        relative_path="src/ops/project.rs",
+        before="    if listed.stdout.split(|byte| *byte == b'\\n').any(acl_allows) {\n",
+        after="    if false {\n",
+        tests=("ops::project::tests::the_isolated_git_dir_refuses_anything_it_did_not_write_alone",),
+        marker="PV git/probe-acl",
+    ),
+    Case(
         name="git/damaged-head",
         relative_path="src/ops/project.rs",
         before=" && unborn_branch(worktree)",

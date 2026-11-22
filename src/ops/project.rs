@@ -745,7 +745,44 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
             dir.display()
         );
     }
+    // Mode bits are not the whole story on macOS: an ACL `allow` entry can let
+    // another account write to or replace a folder its mode denies. `ls -e`
+    // lists every entry; a `deny` entry, such as the home folder's own
+    // `group:everyone deny delete`, only narrows access and is accepted.
+    let mut acl = Command::new("/bin/ls");
+    acl.arg("-lde").arg("--").args(base.ancestors());
+    for part in ["HEAD", "config", "objects", "refs"] {
+        acl.arg(dir.join(part));
+    }
+    acl.arg(&dir);
+    let listed = acl
+        .output_within(QUERY_TIMEOUT)
+        .with_context(|| format!("cannot read the ACLs above {}", dir.display()))?;
+    if !listed.status.success() {
+        anyhow::bail!("cannot read the ACLs above {}", dir.display());
+    }
+    if listed.stdout.split(|byte| *byte == b'\n').any(acl_allows) {
+        anyhow::bail!(
+            "refusing Git probe directory {}: an ACL lets another account change it",
+            dir.display()
+        );
+    }
     Ok(dir)
+}
+
+/// Whether one `ls -le` line is an ACL entry that grants access: an index,
+/// `: `, then `allow` among its words. Any other line is a file's own line.
+fn acl_allows(line: &[u8]) -> bool {
+    let entry = line.trim_ascii_start();
+    let digits = entry
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    digits > 0
+        && entry[digits..].starts_with(b": ")
+        && entry
+            .split(|byte| *byte == b' ')
+            .any(|word| word == b"allow")
 }
 
 /// `O_NOFOLLOW` for [`std::os::unix::fs::OpenOptionsExt::custom_flags`].
@@ -1799,6 +1836,45 @@ mod tests {
             "a sticky folder above it"
         );
         std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let chmod = |entry: &str, path: &Path| {
+            let status = Command::new("/bin/chmod")
+                .arg(entry)
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success(), "chmod {entry} failed");
+        };
+        let acl = |entry: &str, path: &Path| {
+            let status = Command::new("/bin/chmod")
+                .args(["+a", entry])
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success(), "chmod +a {entry} failed");
+        };
+        acl("group:everyone deny delete", &shared);
+        assert!(
+            isolated_git_dir(&private, false).is_ok(),
+            "a deny entry only narrows access"
+        );
+        acl(
+            "group:everyone allow add_file,add_subdirectory,delete_child",
+            &shared,
+        );
+        assert!(
+            isolated_git_dir(&private, false).is_err(),
+            "PV git/probe-acl: an ACL above it lets another account change it"
+        );
+        chmod("-N", &shared);
+        let probe = isolated_git_dir(&private, false).unwrap();
+        acl("group:everyone allow write", &probe.join("config"));
+        assert!(
+            isolated_git_dir(&private, false).is_err(),
+            "an ACL on a part of the probe itself"
+        );
+        chmod("-N", &probe.join("config"));
+        assert!(isolated_git_dir(&private, false).is_ok(), "ACLs removed");
 
         std::fs::write(dir.join("config"), "[filter \"x\"]\n\tclean = touch\n").unwrap();
         assert!(

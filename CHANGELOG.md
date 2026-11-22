@@ -43,8 +43,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   which converts no content. A planted violation and a feature eval with a
   stubbed `git` that plants the driver mid-probe prove it.
 - The Git directory behind that count is refused unless it holds exactly what
-  devtrim wrote and no other account can change the folders above it (CORE-GIT-2,
-  found by the same gate), and a HEAD naming a missing commit now leaves the
+  devtrim wrote and no other account can change the folders above it, by mode
+  bits or by an ACL `allow` entry (CORE-GIT-2, found by the same gate and the
+  release autoreview), and a HEAD naming a missing commit now leaves the
   count unavailable instead of counting every tracked file as staged.
 
 ### Added
