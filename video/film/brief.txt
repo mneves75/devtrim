@@ -69,3 +69,14 @@ Pauses
   music are unchanged. The results title still begins "TRASH-FIRST", as it did
   before; the film keeps quoting from "4/4 selected", and the one-row header
   is not shown, as before.
+- Rows and confirmation redesign (2026-11-22, TUI 0.17): result rows read
+  size, name, path, then the danger and the effect ("to Trash") as fixed
+  right columns, and the row number is gone. The start shots (select,
+  confirm) quote size and name; the end shots (preview, trash) quote path,
+  danger and effect, right-aligned as the TUI aligns them. Both are longer
+  than the old cuts, so the start panel drops from 76 px to 64 and the end
+  panel from 64 to 54, the size every line fits whole in the stills. The
+  confirmation no longer opens with a red "DATA-LOSS WARNING": it states the
+  effect, then "Recoverable from the Trash until it is emptied." (muted,
+  0.8 em so its 47 cells fit), then the plan line. Keystrokes, timing and
+  music are unchanged.

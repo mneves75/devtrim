@@ -53,7 +53,7 @@
           <figure>
             <figcaption><strong>Scan.</strong> Each category is listed as it finishes, with its size and count; the rest show as waiting.</figcaption>
 <!-- tui:scanning -->
-<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: scan in progress"><code><span class="v b"> devtrim </span><span class="v">v0.16.0 · Scan everything                                                                  </span>
+<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: scan in progress"><code><span class="v b"> devtrim </span><span class="v">v0.17.0 · Scan everything                                                                  </span>
 ┌ Working ─────────────────────────────────────────────────────────────────────────────────────────┐
 │                                       Scanning everything…                                       │
 │                                   <span class="g">████████████████▊</span><span class="k">······· 70%</span>                                   │
@@ -84,30 +84,29 @@
           <figure>
             <figcaption><strong>Overview.</strong> A scan ends on the home: the total it found, what each category can give back, and the highlight on the largest one that moves to the Trash.</figcaption>
 <!-- tui:overview -->
-<div class="term-frame" data-cols="54" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: menu after a scan"><code><span class="v b"> devtrim </span><span class="v">v0.16.0 · Menu                               </span>
-<span class="k"> Operations</span>
-<span class="b">▶ </span><span class="k b">1 </span><span class="u b">READ-ONLY </span><span class="b">Scan everything               </span><span class="g b">7.8 GB · 4</span>
-  <span class="k">2 </span><span class="g">TRASH     </span>Caches                              <span class="k">none</span>
-  <span class="k">3 </span><span class="g">TRASH     </span>node_modules                  <span class="g">1.1 GB · 1</span>
-  <span class="k">4 </span><span class="g">TRASH     </span>Build artifacts               <span class="g">6.7 GB · 3</span>
-  <span class="k">p </span><span class="g">TRASH     </span>Project purge
-  <span class="k">5 </span><span class="r">PERMANENT </span>Simulators                          <span class="k">none</span>
-  <span class="k">6 </span><span class="g">TRASH     </span>Xcode                               <span class="k">none</span>
-  <span class="k">7 </span><span class="r">PERMANENT </span>Docker                              <span class="k">none</span>
-  <span class="k">8 </span><span class="g">TRASH     </span>Swift toolchains                    <span class="k">none</span>
-  <span class="k">d </span><span class="g">TRASH     </span>Installers                          <span class="k">none</span>
-  <span class="k">a </span><span class="g">TRASH     </span>Agent caches &amp; history              <span class="k">none</span>
-  <span class="k">9 </span><span class="u">READ-ONLY </span>Agent leftovers                     <span class="k">none</span>
-  <span class="k">i </span><span class="u">READ-ONLY </span>iCloud status
-  <span class="k">0 </span><span class="r">PERMANENT </span>Empty Trash
+<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: home after a scan"><code><span class="v b"> devtrim </span><span class="v">v0.17.0 · Menu                                                                             </span>
+  <span class="b">Reclaimable: 7.8 GB in 2 categories</span><span class="k"> · </span><span class="g">largest to Trash: Build artifacts 6.7 GB</span>
+
+  <span class="c">1</span>  Scan everything                                                     <span class="g">7.8 GB · 4 items</span>  <span class="u">read-only</span>
+  <span class="c">2</span>  <span class="k">Caches</span>                                                                          <span class="k">none</span>  <span class="k"> to Trash</span>
+  <span class="c">3</span>  node_modules                                                         <span class="g">1.1 GB · 1 item</span>  <span class="k"> to Trash</span>
+<span class="b">▶ </span><span class="c b">4</span><span class="b">  Build artifacts                                                     </span><span class="g b">6.7 GB · 3 items</span><span class="b">  </span><span class="k b"> to Trash</span>
+  <span class="c">p</span>  Project purge                                                                         <span class="k"> to Trash</span>
+  <span class="c">5</span>  <span class="k">Simulators</span>                                                                      <span class="k">none</span>  <span class="r">PERMANENT</span>
+  <span class="c">6</span>  <span class="k">Xcode</span>                                                                           <span class="k">none</span>  <span class="k"> to Trash</span>
+  <span class="c">7</span>  <span class="k">Docker</span>                                                                          <span class="k">none</span>  <span class="r">PERMANENT</span>
+  <span class="c">8</span>  <span class="k">Swift toolchains</span>                                                                <span class="k">none</span>  <span class="k"> to Trash</span>
+  <span class="c">d</span>  <span class="k">Installers</span>                                                                      <span class="k">none</span>  <span class="k"> to Trash</span>
+  <span class="c">a</span>  <span class="k">Agent caches &amp; history</span>                                                          <span class="k">none</span>  <span class="k"> to Trash</span>
+  <span class="c">9</span>  <span class="k">Agent leftovers</span>                                                                 <span class="k">none</span>  <span class="u">read-only</span>
+  <span class="c">i</span>  iCloud status                                                                         <span class="u">read-only</span>
+  <span class="c">0</span>  Empty Trash                                                                           <span class="r">PERMANENT</span>
 
 
 
 
-
-
- <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">Enter</span> open<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
- <span class="k">Preview first. Nothing changes until you explicitly a</span></code></pre></div>
+ <span class="c">↑↓</span> move<span class="k"> · </span><span class="c">Enter</span> open<span class="k"> · </span><span class="c">v</span> report<span class="k"> · </span><span class="c">q</span> quit<span class="k"> · </span><span class="c">?</span> keys
+ <span class="k">Regenerable outputs in conclusively stale Git repositories.</span></code></pre></div>
 <!-- /tui:overview -->
           </figure>
         </li>
@@ -116,10 +115,10 @@
             <figcaption><strong>Preview.</strong> Two stale demo projects: every finding with its danger, size and path, before anything changes.</figcaption>
 <!-- tui:results -->
 <div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: purge preview"><code>┌ TRASH-FIRST · 4/4 selected · 7.8 GB · danger-5 ──────────────────────────────────────────────────┐
-│<span class="g b">› </span>[x] <span class="y">  1. danger-5 </span><span class="c">  5.9 GB </span><span class="g">██████</span><span class="c">  TRASH    </span><span class="b">stale target artifacts</span><span class="k">  payments-api/target</span>         │
-│  [x] <span class="y">  2. danger-5 </span><span class="c">  1.1 GB </span><span class="g">█</span><span class="k">·····</span><span class="c">  TRASH    </span><span class="b">stale node_modules</span><span class="k">  storefront/node_modules</span>         │
-│  [x] <span class="y">  3. danger-5 </span><span class="c">  614 MB </span><span class="g">▌</span><span class="k">·····</span><span class="c">  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>             │
-│  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB </span><span class="g">▏</span><span class="k">·····</span><span class="c">  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>           │
+│<span class="g b">› </span>[x] <span class="c">  5.9 GB</span> <span class="g">██████</span>  <span class="b">stale target artifacts</span><span class="k">  payments-api/target</span>            <span class="y"> danger-5</span>  <span class="k"> to Trash</span>│
+│  [x] <span class="c">  1.1 GB</span> <span class="g">█</span><span class="k">·····</span>  <span class="b">stale node_modules</span><span class="k">  storefront/node_modules</span>            <span class="y"> danger-5</span>  <span class="k"> to Trash</span>│
+│  [x] <span class="c">  614 MB</span> <span class="g">▌</span><span class="k">·····</span>  <span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>                <span class="y"> danger-5</span>  <span class="k"> to Trash</span>│
+│  [x] <span class="c">  205 MB</span> <span class="g">▏</span><span class="k">·····</span>  <span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>              <span class="y"> danger-5</span>  <span class="k"> to Trash</span>│
 │  <span class="k">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.config/devtrim.toml r…</span>│
 │                                                                                                  │
 │                                                                                                  │
@@ -146,10 +145,10 @@
             <figcaption><strong>Leave one out.</strong> <kbd>Space</kbd> empties a finding's box and the title recounts the plan.</figcaption>
 <!-- tui:select -->
 <div class="term-frame" data-cols="84" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: one finding left out"><code>┌ TRASH-FIRST · 3/4 selected · 7.2 GB · danger-5 ──────────────────────────────────┐
-│  [x] <span class="y">  1. danger-5 </span><span class="c">  5.9 GB  TRASH    </span><span class="b">stale target artifacts</span><span class="k">  payments-api/target</span>│
-│  [x] <span class="y">  2. danger-5 </span><span class="c">  1.1 GB  TRASH    </span><span class="b">stale node_modules</span><span class="k">  storefront/node_modules</span>│
-│<span class="g b">› </span>[ ] <span class="y">  3. danger-5 </span><span class="c">  614 MB  TRASH    </span><span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>    │
-│  [x] <span class="y">  4. danger-5 </span><span class="c">  205 MB  TRASH    </span><span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>  │
+│  [x] <span class="c">  5.9 GB</span>  <span class="b">stale target artifacts</span><span class="k">  payments-api/target</span>   <span class="y"> danger-5</span>  <span class="k"> to Trash</span>│
+│  [x] <span class="c">  1.1 GB</span>  <span class="b">stale node_modules</span><span class="k">  storefront/node_modules</span>   <span class="y"> danger-5</span>  <span class="k"> to Trash</span>│
+│<span class="g b">› </span>[ ] <span class="c">  614 MB</span>  <span class="b">stale .next artifacts</span><span class="k">  storefront/.next</span>       <span class="y"> danger-5</span>  <span class="k"> to Trash</span>│
+│  [x] <span class="c">  205 MB</span>  <span class="b">stale .turbo artifacts</span><span class="k">  storefront/.turbo</span>     <span class="y"> danger-5</span>  <span class="k"> to Trash</span>│
 │  <span class="k">info: scan roots: ~/dev (default project folders; --root or `roots` in ~/.confi…</span>│
 │                                                                                  │
 │                                                                                  │
@@ -168,12 +167,12 @@
 
 
   ┌ Confirm exact plan · danger-5 ───────────────────────────────────────────────┐
-  │<span class="r b">DATA-LOSS WARNING</span>                                                             │
   │<span class="b">Moves 3 items (7.2 GB) to the Trash.</span>                                          │
+  │<span class="k">Recoverable from the Trash until it is emptied.</span>                               │
   │This plan: 3 of 4 selected · 1 left out                                       │
-  │Applying this plan can delete data. devtrim is provided AS IS, without        │
-  │warranties; you assume the risk for the exact targets shown. Keep backups and │
-  │grant macOS permissions manually only when you understand the request.        │
+  │<span class="k">Applying this plan can delete data. devtrim is provided AS IS, without</span>        │
+  │<span class="k">warranties; you assume the risk for the exact targets shown. Keep backups and</span> │
+  │<span class="k">grant macOS permissions manually only when you understand the request.</span>        │
   └──────────────────────────────────────────────────────────────────────────────┘
 
 
@@ -187,7 +186,7 @@
           <figure>
             <figcaption><strong>Apply.</strong> The plan runs one finding at a time with its count and size, and a stop key ends it after the current item, never inside one.</figcaption>
 <!-- tui:progress -->
-<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: apply stopping after this item"><code><span class="v b"> devtrim </span><span class="v">v0.16.0 · Project purge                                                                    </span>
+<div class="term-frame" data-cols="100" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: apply stopping after this item"><code><span class="v b"> devtrim </span><span class="v">v0.17.0 · Project purge                                                                    </span>
 ┌ Working ─────────────────────────────────────────────────────────────────────────────────────────┐
 │                                 Stopping after the current item…                                 │
 │                                   <span class="g">██████</span><span class="k">·················· 25%</span>                                   │
@@ -247,10 +246,10 @@
       </video>
       <div class="video-body">
         <ol class="transcript" id="demo-transcript">
-          <li>The purge preview of two stale demo projects lists four build folders by size and name, each moving to the Trash: 4 of 4 selected, 7.8 GB, danger-5.</li>
+          <li>The purge preview of two stale demo projects lists four build folders, each danger-5 and moving to the Trash: 4 of 4 selected, 7.8 GB.</li>
           <li>The details pane shows the evidence for the first finding: the repository was last active on 2020-01-01, and a sibling <code>Cargo.toml</code> corroborates the Rust target.</li>
           <li>Each finding is danger-5. <kbd>j</kbd> moves down twice and <kbd>Space</kbd> leaves the third finding out: 3 of 4 selected, 7.2 GB.</li>
-          <li>Pressing <kbd>a</kbd> raises the data-loss warning for that exact plan, 3 of 4 selected and 1 left out; <kbd>y</kbd> approves it.</li>
+          <li>Pressing <kbd>a</kbd> shows that exact plan: it moves 3 items (7.2 GB) to the Trash, recoverable until the Trash is emptied, with 1 left out; <kbd>y</kbd> approves it.</li>
           <li>The approved findings move to the Trash, recoverable until you empty it; the one left out stays.</li>
           <li>Install with <code>brew install mneves75/devtrim/devtrim</code>.</li>
         </ol>
@@ -266,7 +265,7 @@
     <div class="analyze-split">
       <figure>
 <!-- tui:analyze -->
-<div class="term-frame" data-cols="80" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: analyze with verdicts"><code><span class="v b"> devtrim </span><span class="v">v0.16.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB                 </span>
+<div class="term-frame" data-cols="80" data-ui><pre class="term" role="region" tabindex="0" aria-label="devtrim screen: analyze with verdicts"><code><span class="v b"> devtrim </span><span class="v">v0.17.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB                 </span>
 ┌ Contents ────────────────────────────────────────────────────────────────────┐
 │<span class="g b">▶    7.8 GB ████████████████████████ HOLDS 4     dev/                         </span>│
 │  <span class="c">    28 KB </span><span class="k">                         </span><span class="k b">NOT OFFERED </span>unused-a-project-whose-direct│

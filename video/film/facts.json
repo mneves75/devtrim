@@ -55,8 +55,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-scan"
  },
  {
-  "id": "f73b6d9b8",
-  "text": " devtrim v0.16.0 · Scan everything",
+  "id": "fd8423668",
+  "text": " devtrim v0.17.0 · Scan everything",
   "link": "https://mneves75.github.io/devtrim/#step-scan"
  },
  {
@@ -150,98 +150,98 @@
   "link": "https://mneves75.github.io/devtrim/#step-scan"
  },
  {
-  "id": "fbe9f470c",
-  "text": "Overview. The menu opens on the volume’s free space, and after a scan each category shows what it can give back.",
+  "id": "f3b7a493d",
+  "text": "Overview. A scan ends on the home: the total it found, what each category can give back, and the highlight on the largest one that moves to the Trash.",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f9ec551db",
-  "text": " devtrim v0.16.0 · Menu",
+  "id": "fc263190f",
+  "text": " devtrim v0.17.0 · Menu",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "fd9d63cc7",
-  "text": " Operations",
+  "id": "f61ad7e53",
+  "text": "  Reclaimable: 7.8 GB in 2 categories · largest to Trash: Build artifacts 6.7 GB",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "ff35e59c7",
-  "text": "▶ 1 READ-ONLY Scan everything               7.8 GB · 4",
+  "id": "f6b3a6a14",
+  "text": "  1  Scan everything                                                     7.8 GB · 4 items  read-only",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f3efe0e81",
-  "text": "  2 TRASH     Caches                              none",
+  "id": "fbe5523ab",
+  "text": "  2  Caches                                                                          none   to Trash",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f3e7c7ee5",
-  "text": "  3 TRASH     node_modules                  1.1 GB · 1",
+  "id": "f06a95528",
+  "text": "  3  node_modules                                                         1.1 GB · 1 item   to Trash",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f02edff4a",
-  "text": "  4 TRASH     Build artifacts               6.7 GB · 3",
+  "id": "f82e8a763",
+  "text": "▶ 4  Build artifacts                                                     6.7 GB · 3 items   to Trash",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "fcbff209c",
-  "text": "  p TRASH     Project purge",
+  "id": "f7da4141c",
+  "text": "  p  Project purge                                                                          to Trash",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f792542ca",
-  "text": "  5 PERMANENT Simulators                          none",
+  "id": "f3a31457f",
+  "text": "  5  Simulators                                                                      none  PERMANENT",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f9372cb0d",
-  "text": "  6 TRASH     Xcode                               none",
+  "id": "ffc2ab2d3",
+  "text": "  6  Xcode                                                                           none   to Trash",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "fd9905e49",
-  "text": "  7 PERMANENT Docker                              none",
+  "id": "f4555db83",
+  "text": "  7  Docker                                                                          none  PERMANENT",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f7bf96e78",
-  "text": "  8 TRASH     Swift toolchains                    none",
+  "id": "f76d1bb82",
+  "text": "  8  Swift toolchains                                                                none   to Trash",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f5d3f8d12",
-  "text": "  d TRASH     Installers                          none",
+  "id": "f24cdb15f",
+  "text": "  d  Installers                                                                      none   to Trash",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f0fc61420",
-  "text": "  a TRASH     Agent caches & history              none",
+  "id": "f21a045e0",
+  "text": "  a  Agent caches & history                                                          none   to Trash",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f1d743e55",
-  "text": "  9 READ-ONLY Agent leftovers                     none",
+  "id": "f8febfebf",
+  "text": "  9  Agent leftovers                                                                 none  read-only",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f38166908",
-  "text": "  i READ-ONLY iCloud status",
+  "id": "fbae84dc1",
+  "text": "  i  iCloud status                                                                         read-only",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f9685123d",
-  "text": "  0 PERMANENT Empty Trash",
+  "id": "f9be051bb",
+  "text": "  0  Empty Trash                                                                           PERMANENT",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f4a167bd4",
-  "text": " ↑↓ move · Enter open · q quit · ? keys",
+  "id": "fc54badec",
+  "text": " ↑↓ move · Enter open · v report · q quit · ? keys",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
-  "id": "f02445560",
-  "text": " Preview first. Nothing changes until you explicitly a",
+  "id": "f34e5ee65",
+  "text": " Regenerable outputs in conclusively stale Git repositories.",
   "link": "https://mneves75.github.io/devtrim/#step-overview"
  },
  {
@@ -255,23 +255,23 @@
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "f3e479258",
-  "text": "│› [x]   1. danger-5   5.9 GB ██████  TRASH    stale target artifacts  payments-api/target         │",
+  "id": "feaf426af",
+  "text": "│› [x]   5.9 GB ██████  stale target artifacts  payments-api/target             danger-5   to Trash│",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "ff640a029",
-  "text": "│  [x]   2. danger-5   1.1 GB █·····  TRASH    stale node_modules  storefront/node_modules         │",
+  "id": "f331023c9",
+  "text": "│  [x]   1.1 GB █·····  stale node_modules  storefront/node_modules             danger-5   to Trash│",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "fc81aebe2",
-  "text": "│  [x]   3. danger-5   614 MB ▌·····  TRASH    stale .next artifacts  storefront/.next             │",
+  "id": "f0425ca20",
+  "text": "│  [x]   614 MB ▌·····  stale .next artifacts  storefront/.next                 danger-5   to Trash│",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
-  "id": "f77610383",
-  "text": "│  [x]   4. danger-5   205 MB ▏·····  TRASH    stale .turbo artifacts  storefront/.turbo           │",
+  "id": "f65c7c92e",
+  "text": "│  [x]   205 MB ▏·····  stale .turbo artifacts  storefront/.turbo               danger-5   to Trash│",
   "link": "https://mneves75.github.io/devtrim/#step-preview"
  },
  {
@@ -330,23 +330,23 @@
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
-  "id": "fbaf38f7f",
-  "text": "│  [x]   1. danger-5   5.9 GB  TRASH    stale target artifacts  payments-api/target│",
+  "id": "fd3ac7552",
+  "text": "│  [x]   5.9 GB  stale target artifacts  payments-api/target    danger-5   to Trash│",
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
-  "id": "ff36b0a9f",
-  "text": "│  [x]   2. danger-5   1.1 GB  TRASH    stale node_modules  storefront/node_modules│",
+  "id": "f947f42eb",
+  "text": "│  [x]   1.1 GB  stale node_modules  storefront/node_modules    danger-5   to Trash│",
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
-  "id": "f5fad5d17",
-  "text": "│› [ ]   3. danger-5   614 MB  TRASH    stale .next artifacts  storefront/.next    │",
+  "id": "f62618f02",
+  "text": "│› [ ]   614 MB  stale .next artifacts  storefront/.next        danger-5   to Trash│",
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
-  "id": "f01a57ddd",
-  "text": "│  [x]   4. danger-5   205 MB  TRASH    stale .turbo artifacts  storefront/.turbo  │",
+  "id": "fde11f6ef",
+  "text": "│  [x]   205 MB  stale .turbo artifacts  storefront/.turbo      danger-5   to Trash│",
   "link": "https://mneves75.github.io/devtrim/#step-select"
  },
  {
@@ -375,13 +375,13 @@
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "f1d5f6ea8",
-  "text": "  │DATA-LOSS WARNING                                                             │",
+  "id": "f37ec6626",
+  "text": "  │Moves 3 items (7.2 GB) to the Trash.                                          │",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
-  "id": "f37ec6626",
-  "text": "  │Moves 3 items (7.2 GB) to the Trash.                                          │",
+  "id": "f3dd5a0df",
+  "text": "  │Recoverable from the Trash until it is emptied.                               │",
   "link": "https://mneves75.github.io/devtrim/#step-confirm"
  },
  {
@@ -420,8 +420,8 @@
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
-  "id": "f52fc66f9",
-  "text": " devtrim v0.16.0 · Project purge",
+  "id": "fd117867b",
+  "text": " devtrim v0.17.0 · Project purge",
   "link": "https://mneves75.github.io/devtrim/#step-progress"
  },
  {
@@ -495,8 +495,8 @@
   "link": "https://mneves75.github.io/devtrim/#demo-h"
  },
  {
-  "id": "f3c71268a",
-  "text": "The purge preview of two stale demo projects lists four build folders by size and name, each moving to the Trash: 4 of 4 selected, 7.8 GB, danger-5.",
+  "id": "f16397a31",
+  "text": "The purge preview of two stale demo projects lists four build folders, each danger-5 and moving to the Trash: 4 of 4 selected, 7.8 GB.",
   "link": "https://mneves75.github.io/devtrim/#demo-transcript"
  },
  {
@@ -510,8 +510,8 @@
   "link": "https://mneves75.github.io/devtrim/#demo-transcript"
  },
  {
-  "id": "f70daa285",
-  "text": "Pressing a raises the data-loss warning for that exact plan, 3 of 4 selected and 1 left out; y approves it.",
+  "id": "fcee37b65",
+  "text": "Pressing a shows that exact plan: it moves 3 items (7.2 GB) to the Trash, recoverable until the Trash is emptied, with 1 left out; y approves it.",
   "link": "https://mneves75.github.io/devtrim/#demo-transcript"
  },
  {
@@ -535,8 +535,8 @@
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
-  "id": "fad2e2d7c",
-  "text": " devtrim v0.16.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB",
+  "id": "f0c222c2f",
+  "text": " devtrim v0.17.0 · analyze · /private/tmp/devtrim-demo · 7.8 GB",
   "link": "https://mneves75.github.io/devtrim/#analyze-h"
  },
  {
@@ -1265,8 +1265,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html"
  },
  {
-  "id": "f6f7ed818",
-  "text": "v0.16.0 Filter sections Theme: Dark",
+  "id": "f0a2211fa",
+  "text": "v0.17.0 Filter sections Theme: Dark",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#toc-contents"
  },
  {
@@ -1415,18 +1415,18 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
  },
  {
-  "id": "fca2e8672",
-  "text": "Choose an operation, inspect its exact findings, and press a only when you intend to apply.",
+  "id": "fafdedf0e",
+  "text": "Press 1 to scan everything first: it changes nothing, sizes every category on the home, and highlights the largest one that moves to the Trash, so Enter previews it. Inspect its exact findings, and press a only when you intend to apply.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
  },
  {
-  "id": "f7d6570bc",
-  "text": "A preview lists one finding per line with the highlighted one shown whole below; a terminal too short to hold it says how many lines it hides, and Enter shows the finding in full in a view that scrolls, where no key changes the plan and Esc returns to it.",
+  "id": "f7b049feb",
+  "text": "A preview lists one finding per line: its size, name and path, then its danger and what applying it does, which stay whole however long the name or path. The highlighted finding is shown whole below; a terminal too short to hold it says how many lines it hides, and Enter shows the finding in full in a view that scrolls, where no key changes the plan and Esc returns to it.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
  },
  {
-  "id": "f9a69a800",
-  "text": "Each operation's badge is explained beside the menu: READ-ONLY reports and never changes anything, TRASH changes nothing until you press a and approve, then moves what you kept selected to the Trash, and PERMANENT deletes for good after a typed size acknowledgment. \"Scan everything\" is read-only: its selection and apply keys name the category view that can act on the highlighted finding, such as \"b, then 2 (caches)\", and any key that cannot act on the highlighted row says why instead of doing nothing.",
+  "id": "fdfadd7d1",
+  "text": "Each operation on the home ends with what it does, and the status line describes the highlighted one: read-only reports and never changes anything, to Trash changes nothing until you press a and approve, then moves what you kept selected to the Trash, and PERMANENT deletes for good after its own confirmation. The confirmation leads with what the plan does and whether it can be undone, then shows the data-loss warning. The Scan everything report (v on the home) is read-only: its selection and apply keys name the category view that can act on the highlighted finding, such as \"b, then 2 (caches)\", and any key that cannot act on the highlighted row says why instead of doing nothing.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-quickstart"
  },
  {
@@ -1580,8 +1580,8 @@
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-tui"
  },
  {
-  "id": "f10be467f",
-  "text": "The menu shows the home volume's free space and how many local APFS snapshots it keeps, which hold space no scan can see; after a scan each operation names what its last scan offered, as a range such as 1.9–21.8 GB where APFS clones share blocks, summarizes total reclaimable space in the Selected pane, and asks for a rescan once an apply has changed a category. Scan everything and applies display a live progress bar; pressing o on a finding in Scan everything jumps straight into its actionable category preview. Wide terminals (≥ 96 cols) show proportional inline share bars beside finding sizes, and Trash-first outcomes name devtrim trash-empty --only-devtrim as the next step. During apply, x stops after the current item or command, and nothing later is attempted or journaled.",
+  "id": "f14bc50e1",
+  "text": "The home shows the home volume's free space and how many local APFS snapshots it keeps, which hold space no scan can see, then one row per operation. Scan everything ends there: a headline names the total reclaimable space, the largest category that moves to the Trash and how many categories failed; each row names what its last scan offered, as a range such as 1.9–21.8 GB where APFS clones share blocks; and the highlight lands on that largest category, never on a permanent or read-only one. v opens the scan's full report until an apply changes a category, which then asks for a rescan. Scan everything and applies display a live progress bar; pressing o on a finding in the report jumps straight into its actionable category preview. Wide terminals (≥ 96 cols) show proportional inline share bars beside finding sizes, and Trash-first outcomes name devtrim trash-empty --only-devtrim as the next step. During apply, x stops after the current item or command, and nothing later is attempted or journaled.",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#cmd-tui"
  },
  {
@@ -2662,6 +2662,11 @@
  {
   "id": "ff9e5d5c6",
   "text": "devtrim returns nonzero and includes the error in JSON. Failed actions are never counted as touched or reclaimed; fix the owner tool and preview again.",
+  "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
+ },
+ {
+  "id": "f548f771e",
+  "text": "devtrim v0.17.0",
   "link": "https://mneves75.github.io/devtrim/MANUAL.html#h-ts"
  },
  {

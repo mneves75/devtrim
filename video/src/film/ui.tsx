@@ -109,7 +109,7 @@ export const Panel: React.FC<{
 );
 
 const ROW_TOKENS =
-  /(danger-5|TRASH|stale [^…]+?(?= {2})|…\S+|\d+(?:\.\d+)? [GM]B)/;
+  /(danger-5|to Trash|stale [^…]+?(?= {2}|$)|[\w.-]+\/[\w.-]+|\d+(?:\.\d+)? [GM]B)/;
 
 /** One finding row, coloured the way the TUI colours it; a row left out reads muted. */
 export const RowText: React.FC<{ text: string; quiet?: boolean }> = ({
@@ -127,7 +127,7 @@ export const RowText: React.FC<{ text: string; quiet?: boolean }> = ({
               {part}
             </span>
           );
-        if (part === "TRASH")
+        if (part === "to Trash")
           return (
             <span key={i} style={{ color: C.lime }}>
               {part}
@@ -139,7 +139,7 @@ export const RowText: React.FC<{ text: string; quiet?: boolean }> = ({
               {part}
             </span>
           );
-        if (part.startsWith("…"))
+        if (part.includes("/"))
           return (
             <span key={i} style={{ color: C.muted }}>
               {part}
