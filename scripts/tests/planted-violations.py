@@ -1096,6 +1096,14 @@ CASES = (
         marker="PV git/probe-parent",
     ),
     Case(
+        name="process/output-limit",
+        relative_path="src/process.rs",
+        before="                    Ok(_) if bytes.len() as u64 > limit => {\n",
+        after="                    Ok(_) if false => {\n",
+        tests=("process::tests::a_stream_past_its_limit_fails_and_one_at_it_passes",),
+        marker="PV process/output-limit",
+    ),
+    Case(
         name="git/probe-acl",
         relative_path="src/ops/project.rs",
         before="    if listed.stdout.split(|byte| *byte == b'\\n').any(acl_allows) {\n",
