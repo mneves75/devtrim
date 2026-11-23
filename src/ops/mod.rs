@@ -3072,6 +3072,10 @@ mod tests {
         name: &'static str,
         fake: Fake,
         last_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        /// Whether `last` raises the flag itself; an observed scan raises it
+        /// only once the observer has heard `last`, so `waits` cannot be heard
+        /// first, however the threads are scheduled.
+        last_signals: bool,
     }
 
     impl Op for FakeOp {
@@ -3109,8 +3113,10 @@ mod tests {
                 Fake::Fails => anyhow::bail!("synthetic scan failure"),
                 Fake::Panics => panic!("synthetic scan panic"),
                 Fake::Last => {
-                    self.last_done
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    if self.last_signals {
+                        self.last_done
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     Ok(vec![finding("last", "/Users/example/dev/c/target", 512)])
                 }
             }
@@ -3120,8 +3126,10 @@ mod tests {
         }
     }
 
-    fn fake_operations() -> Vec<Box<dyn Op>> {
-        let last_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    fn fake_operations(
+        last_done: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        last_signals: bool,
+    ) -> Vec<Box<dyn Op>> {
         [
             ("waits", Fake::WaitsForLast),
             ("protected", Fake::Protected),
@@ -3135,6 +3143,7 @@ mod tests {
                 name,
                 fake,
                 last_done: last_done.clone(),
+                last_signals,
             }) as Box<dyn Op>
         })
         .collect()
@@ -3149,9 +3158,19 @@ mod tests {
         let scan = |observed: bool| {
             let ctx = context(PathBuf::from("/Users/example"));
             let heard = std::sync::Mutex::new(Vec::new());
-            let observer = |done: CategoryDone| heard.lock().unwrap().push(done);
-            let result =
-                scan_operations(&ctx, &fake_operations(), observed.then_some(&observer as _));
+            let last_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let observer = |done: CategoryDone| {
+                let last = done.category == "last";
+                heard.lock().unwrap().push(done);
+                if last {
+                    last_done.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            };
+            let result = scan_operations(
+                &ctx,
+                &fake_operations(&last_done, !observed),
+                observed.then_some(&observer as _),
+            );
             (
                 result.findings,
                 result.sections,
