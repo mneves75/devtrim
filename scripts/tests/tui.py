@@ -246,8 +246,14 @@ class Session:
             self.read_output()
 
     def quit(self, expected_status=0):
-        self.send(b"q")
+        # A `q` sent as a result is drawn is discarded with the rest of the
+        # queued input, so it is resent until the TUI exits; quitting twice
+        # is still quitting.
+        resend = 0.0
         while self.process.poll() is None:
+            if time.monotonic() >= resend:
+                self.send(b"q")
+                resend = time.monotonic() + 2.0
             self.read_output()
         # Drain the final terminal-restoration sequence after process exit.
         while select.select([self.master], [], [], 0)[0]:
@@ -283,6 +289,7 @@ def verify_scan_error_exit(binary):
                 session.wait_for("Scan everything")
                 session.send(b"3")
                 session.wait_for_screen("synthetic-git-failure" if failed else "Review every finding")
+                session.ready_for_keys()
                 session.settle(0.25)
                 if failed:
                     session.send(b"a")
@@ -435,12 +442,14 @@ def verify_action_keys_explain_themselves(binary):
             session.wait_for("Scan everything")
             session.send(b"1")
             session.wait_for_screen("Reclaimable: ", "v report")
+            session.ready_for_keys()
             session.send(b"v")
             session.wait_for_screen("Read-only result", "uv package cache")
             session.send(b"A")
             session.wait_for_screen("Read-only scan. To act on it: b, then 2 (caches).")
             session.send(b"b2")
             session.wait_for_screen("2/2 selected", "A none")
+            session.ready_for_keys()
             session.send(b"A")
             session.wait_for_screen(
                 "0/2 selected", "A all", "Every item is left out; A selects them all again."
@@ -478,6 +487,7 @@ def verify_scan_lands_on_the_home(binary):
             docker = [line for line in lines if "  Docker " in line]
             if len(docker) != 1 or " failed " not in docker[0] or not docker[0].rstrip().endswith("PERMANENT"):
                 raise AssertionError(f"the Docker row does not say it failed: {docker}")
+            session.ready_for_keys()
             session.send(b"v")
             session.wait_for_screen("READ-ONLY", "docker failed to scan: error rows say why; r retries.")
             session.send(b"b")
@@ -801,6 +811,7 @@ def verify_stop_between_targets(binary):
                 session.wait_for_screen("Stopping after the current item")
                 release.write_text("")
                 session.wait_for_screen("Stopped by you: 1 done, 1 not attempted.")
+                session.ready_for_keys()
                 # At 18 rows the errors sit below the long removal note.
                 session.send(b"jjjj")
                 session.wait_for_screen("stopped by you: 1 not attempted")
@@ -979,6 +990,7 @@ def verify_outcome_rescans(binary):
             session.ready_for_keys()
             session.send(b"sa0\r")
             session.wait_for_screen("permanently deleted uv package cache", "r rescan")
+            session.ready_for_keys()
             cache.mkdir()
             (cache / "blob").write_bytes(b"x")
             session.send(b"r")
