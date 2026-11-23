@@ -398,7 +398,7 @@ pre code { background: none; padding: 0; font-size: 1em; }
 <div class="wrap manual">
 <header class="manual-title">
   <h1>devtrim manual</h1>
-    <span class="chip g">v0.16.0</span>
+    <span class="chip g">v0.17.0</span>
 </header>
 <nav class="toc" aria-label="Table of contents">
   <div class="toc-tools">
@@ -467,9 +467,9 @@ devtrim --version</code></pre>
   <h2 id="h-quickstart">Quick start</h2>
   <p>In an interactive terminal, start with the keyboard interface:</p>
   <pre data-copy="safe"><code>devtrim</code></pre>
-  <p>Choose an operation, inspect its exact findings, and press <code>a</code> only when you intend to apply.</p>
-  <p>A preview lists one finding per line with the highlighted one shown whole below; a terminal too short to hold it says how many lines it hides, and <code>Enter</code> shows the finding in full in a view that scrolls, where no key changes the plan and <code>Esc</code> returns to it.</p>
-  <p>Each operation's badge is explained beside the menu: <code>READ-ONLY</code> reports and never changes anything, <code>TRASH</code> changes nothing until you press <code>a</code> and approve, then moves what you kept selected to the Trash, and <code>PERMANENT</code> deletes for good after a typed size acknowledgment. "Scan everything" is read-only: its selection and apply keys name the category view that can act on the highlighted finding, such as "b, then 2 (caches)", and any key that cannot act on the highlighted row says why instead of doing nothing.</p>
+  <p>Press <code>1</code> to scan everything first: it changes nothing, sizes every category on the home, and highlights the largest one that moves to the Trash, so <code>Enter</code> previews it. Inspect its exact findings, and press <code>a</code> only when you intend to apply.</p>
+  <p>A preview lists one finding per line: its size, name and path, then its danger and what applying it does, which stay whole however long the name or path. The highlighted finding is shown whole below; a terminal too short to hold it says how many lines it hides, and <code>Enter</code> shows the finding in full in a view that scrolls, where no key changes the plan and <code>Esc</code> returns to it.</p>
+  <p>Each operation on the home ends with what it does, and the status line describes the highlighted one: <code>read-only</code> reports and never changes anything, <code>to Trash</code> changes nothing until you press <code>a</code> and approve, then moves what you kept selected to the Trash, and <code>PERMANENT</code> deletes for good after its own confirmation. The confirmation leads with what the plan does and whether it can be undone, then shows the data-loss warning. The Scan everything report (<code>v</code> on the home) is read-only: its selection and apply keys name the category view that can act on the highlighted finding, such as "b, then 2 (caches)", and any key that cannot act on the highlighted row says why instead of doing nothing.</p>
   <h3>Keys</h3>
   <ul class="flow">
     <li><code>?</code> lists every key, whole even at the minimum size.</li>
@@ -515,7 +515,7 @@ devtrim clean caches</code></pre>
 
   <details class="card" id="cmd-tui">
     <summary><span class="cmd-name">tui</span><span class="cmd-desc">interactive keyboard interface; also the bare-command default</span></summary>
-    <div class="card-body"><p>Runs only when stdin and stdout are terminals. It calls the same scanners and apply owners as the CLI, shows textual risk labels, refuses CLI bypass flags, and requires a matching confirmation for the current preview. Bare <code>devtrim</code> prints help and exits nonzero instead when piped.</p><p>The menu shows the home volume's free space and how many local APFS snapshots it keeps, which hold space no scan can see; after a scan each operation names what its last scan offered, as a range such as <code>1.9–21.8 GB</code> where APFS clones share blocks, summarizes total reclaimable space in the Selected pane, and asks for a rescan once an apply has changed a category. Scan everything and applies display a live progress bar; pressing <code>o</code> on a finding in Scan everything jumps straight into its actionable category preview. Wide terminals (&ge; 96 cols) show proportional inline share bars beside finding sizes, and Trash-first outcomes name <code>devtrim trash-empty --only-devtrim</code> as the next step. During apply, <code>x</code> stops after the current item or command, and nothing later is attempted or journaled.</p></div>
+    <div class="card-body"><p>Runs only when stdin and stdout are terminals. It calls the same scanners and apply owners as the CLI, shows textual risk labels, refuses CLI bypass flags, and requires a matching confirmation for the current preview. Bare <code>devtrim</code> prints help and exits nonzero instead when piped.</p><p>The home shows the home volume's free space and how many local APFS snapshots it keeps, which hold space no scan can see, then one row per operation. Scan everything ends there: a headline names the total reclaimable space, the largest category that moves to the Trash and how many categories failed; each row names what its last scan offered, as a range such as <code>1.9–21.8 GB</code> where APFS clones share blocks; and the highlight lands on that largest category, never on a permanent or read-only one. <code>v</code> opens the scan's full report until an apply changes a category, which then asks for a rescan. Scan everything and applies display a live progress bar; pressing <code>o</code> on a finding in the report jumps straight into its actionable category preview. Wide terminals (&ge; 96 cols) show proportional inline share bars beside finding sizes, and Trash-first outcomes name <code>devtrim trash-empty --only-devtrim</code> as the next step. During apply, <code>x</code> stops after the current item or command, and nothing later is attempted or journaled.</p></div>
   </details>
   <h3 class="group" id="g-inspect">Report only</h3>
   <details class="card" id="cmd-scan">
@@ -820,12 +820,12 @@ codex_homes = ["~/.codex-berlin"] # more Codex homes, judged by agents like ~/.c
   <div class="wrap">
     <ul>
       <li class="foot-name">
-  <span>devtrim <b>v0.16.0</b></span>
+  <span>devtrim <b>v0.17.0</b></span>
       </li>
       <li><a href="index.html">Home</a></li>
       <li><a href="llms.txt">llms.txt</a></li>
       <li><a href="https://github.com/mneves75/devtrim">GitHub</a></li>
-      <li><a href="https://github.com/mneves75/devtrim/releases/tag/v0.16.0">Releases</a></li>
+      <li><a href="https://github.com/mneves75/devtrim/releases/tag/v0.17.0">Releases</a></li>
       <li><a href="https://github.com/mneves75/devtrim/blob/main/SECURITY.md">Security</a></li>
       <li>Apache-2.0</li>
     </ul>

@@ -4,8 +4,9 @@ import { Checkbox, Panel, PreviewTitle, RowText } from "../ui";
 
 /**
  * Phone players shrink the frame about five times, so the panel never shows a
- * whole TUI line: either its start (checkbox, number, danger, size) or its end
- * (size, action, name). Each is still a substring of the line on the site.
+ * whole TUI line: either its start (checkbox, size, name) or its end (path,
+ * danger, effect), right-aligned as the TUI keeps those columns. Each is still
+ * a substring of the line on the site.
  */
 const START_ROWS = [
   "row.1.short",
@@ -103,6 +104,8 @@ export const PreviewPanel: React.FC<{
               style={{
                 height: lineHeight,
                 paddingLeft: part === "start" ? font * 1.4 : 0,
+                textAlign: part === "end" ? "right" : undefined,
+                whiteSpace: "pre",
                 opacity: t,
                 transform: `translate(${offsets?.[i] ?? 0}px, ${(1 - t) * 28}px)`,
               }}
@@ -110,7 +113,7 @@ export const PreviewPanel: React.FC<{
               {part === "start" ? (
                 <>
                   <Checkbox mark={left} />
-                  {/* The TUI puts three cells between the checkbox and the row number. */}
+                  {/* The TUI puts three cells between the checkbox and the size. */}
                   <span style={{ display: "inline-block", width: "3ch" }} />
                 </>
               ) : null}

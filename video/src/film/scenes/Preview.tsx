@@ -13,7 +13,7 @@ export const Preview: React.FC = () => {
       <div style={{ position: "absolute", left: PANEL.left, top: 250 }}>
         <PreviewPanel
           part="end"
-          font={64}
+          font={54}
           lineHeight={92}
           frame={frame}
           draw={enter(frame, 0, BEAT)}

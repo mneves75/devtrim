@@ -17,51 +17,51 @@
  },
  "row.cursor": {
   "text": "›",
-  "fact": "f3e479258"
+  "fact": "feaf426af"
  },
  "row.open": {
   "text": "[",
-  "fact": "f3e479258"
+  "fact": "feaf426af"
  },
  "row.mark": {
   "text": "x",
-  "fact": "f3e479258"
+  "fact": "feaf426af"
  },
  "row.close": {
   "text": "]",
-  "fact": "f3e479258"
+  "fact": "feaf426af"
  },
  "row.1.end": {
-  "text": "5.9 GB  TRASH    stale target artifacts",
-  "fact": "fbaf38f7f"
+  "text": "payments-api/target    danger-5   to Trash",
+  "fact": "fd3ac7552"
  },
  "row.1.short": {
-  "text": "1. danger-5   5.9 GB",
-  "fact": "fbaf38f7f"
+  "text": "5.9 GB  stale target artifacts",
+  "fact": "fd3ac7552"
  },
  "row.2.end": {
-  "text": "1.1 GB  TRASH    stale node_modules",
-  "fact": "ff36b0a9f"
+  "text": "storefront/node_modules    danger-5   to Trash",
+  "fact": "f947f42eb"
  },
  "row.2.short": {
-  "text": "2. danger-5   1.1 GB",
-  "fact": "ff36b0a9f"
+  "text": "1.1 GB  stale node_modules",
+  "fact": "f947f42eb"
  },
  "row.3.end": {
-  "text": "614 MB  TRASH    stale .next artifacts",
-  "fact": "f5fad5d17"
+  "text": "storefront/.next        danger-5   to Trash",
+  "fact": "f62618f02"
  },
  "row.3.short": {
-  "text": "3. danger-5   614 MB",
-  "fact": "f5fad5d17"
+  "text": "614 MB  stale .next artifacts",
+  "fact": "f62618f02"
  },
  "row.4.end": {
-  "text": "205 MB  TRASH    stale .turbo artifacts",
-  "fact": "f01a57ddd"
+  "text": "storefront/.turbo      danger-5   to Trash",
+  "fact": "fde11f6ef"
  },
  "row.4.short": {
-  "text": "4. danger-5   205 MB",
-  "fact": "f01a57ddd"
+  "text": "205 MB  stale .turbo artifacts",
+  "fact": "fde11f6ef"
  },
  "see": {
   "text": "See before anything moves",
@@ -115,13 +115,13 @@
   "text": "Confirm exact plan · danger-5",
   "fact": "f58d40d09"
  },
- "confirm.warning": {
-  "text": "DATA-LOSS WARNING",
-  "fact": "f1d5f6ea8"
- },
  "confirm.effect": {
   "text": "Moves 3 items (7.2 GB) to the Trash.",
   "fact": "f37ec6626"
+ },
+ "confirm.undo": {
+  "text": "Recoverable from the Trash until it is emptied.",
+  "fact": "f3dd5a0df"
  },
  "confirm.plan": {
   "text": "This plan: 3 of 4 selected · 1 left out",

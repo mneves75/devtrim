@@ -40,7 +40,7 @@ export const Trash: React.FC = () => {
       <div style={{ position: "absolute", left: PANEL.left, top: 60 }}>
         <PreviewPanel
           part="end"
-          font={64}
+          font={54}
           lineHeight={92}
           frame={frame}
           cursor={2}

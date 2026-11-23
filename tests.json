@@ -1,97 +1,55 @@
 {
-  "plan": "plans/020-agent-era-perf-ux.md",
-  "target_version": "0.16.0",
-  "base_commit": "f3818c2",
-  "branch": "main",
-  "release_commit": "45daa25cd62f23e2b05e470ddd1eaec22165686b",
-  "release_tree": "e11ec50c8462698c32490ed187ffdc8cd4c3a417",
+  "plan": "plans/021-tui-clarity.md",
+  "target_version": "0.17.0",
+  "base_commit": "3310ef3",
+  "branch": "feat/tui-clarity",
   "updated_at": "2026-11-22",
-  "tasks": [
+  "checks": [
     {
-      "id": "T1",
-      "title": "APFS getattrlistbulk(2) batching + remove unused clone fields + .t3/worktrees default root",
-      "status": "passed",
-      "verified_by": [
-        "rustup run 1.98.1 cargo test --locked -p apfs-size",
-        "rustup run 1.98.1 cargo test --locked --all-targets --all-features",
-        "8000-file A/B benchmark: 35.5ms vs 37.3ms (0.15.0)"
-      ]
+      "id": "baseline",
+      "what": "PTY captures of the 0.16.0 TUI at 64x18, 80x24, 120x40 and CLI help/scan/clean",
+      "commit": "3310ef3",
+      "result": "captured",
+      "evidence": ".scratch/tui-clarity/baseline/"
     },
     {
-      "id": "T2",
-      "title": "Docker buildx local builder cache discovery and safe pruning",
-      "status": "passed",
-      "verified_by": [
-        "eval_clean_docker_buildx_prunes_deduplicated_local_builder_and_skips_remote",
-        "PV eval/docker-buildx in scripts/tests/planted-violations.py"
-      ]
+      "id": "phase1",
+      "what": "tui unit tests (73), tui.py (incl. new Scan everything landing flow with a stubbed failing docker), read-only-views.py, fmt, clippy -D warnings",
+      "commit": "2ace2ca",
+      "result": "pass",
+      "negative_control": "verify_scan_lands_on_the_home times out against the shipped 0.16.0 binary",
+      "evidence": ".scratch/tui-clarity/p1-tui.log, .scratch/tui-clarity/p1-rov.log, .scratch/tui-clarity/phase1/"
     },
     {
-      "id": "T3",
-      "title": "Enriched worktrees (dirty/in-use/clean + activity) and leftovers (tmp_objdir, Ollama/LM Studio models)",
-      "status": "passed",
-      "verified_by": [
-        "eval_worktrees_reports_dirty_clean_activity_and_in_use_state",
-        "eval_leftovers_reports_git_tmp_objdir_and_local_model_stores_read_only"
-      ]
+      "id": "phase1-focused",
+      "what": "bash scripts/verify.sh focused on the phase 1 tree (2ace2ca plus the merged-headline and fresh-scan fixes)",
+      "result": "pass after rerun",
+      "detail": "every gate exit 0 except tui.py, which timed out in verify_outcome_rescans at load 611 (keys dropped by the known settle race, memory tui-settle-race); tui.py alone exit 0 at load 653; read-only-views exit 0",
+      "evidence": ".scratch/tui-clarity/p1-focused.log, .scratch/tui-clarity/p1-tui-rerun.log, .scratch/tui-clarity/p1-rov-rerun.log"
     },
     {
-      "id": "T4",
-      "title": "Mole-inspired TUI UX (overview summary, inline share bars, progress bar, o jump, next-step hint)",
-      "status": "passed",
-      "verified_by": [
-        "python3 scripts/tests/tui.py target/debug/devtrim",
-        "python3 scripts/tests/read-only-views.py target/debug/devtrim",
-        "unit tests in src/tui.rs"
-      ]
+      "id": "phase2-4-unit",
+      "what": "tui unit tests (75, incl. AC4 row tail, AC4 row order, AC5 confirmation order), tests/cli.rs (21, incl. help order and examples), tests/lockfiles.rs",
+      "result": "pass",
+      "negative_controls": [
+        "lockfiles: fuzz/Cargo.lock devtrim set to 0.15.0 fails with the update command named; restored",
+        "help order: 0.16.0 --help lists tui first, which the exact-order assertion rejects"
+      ],
+      "evidence": ".scratch/tui-clarity/phase2/"
     },
     {
-      "id": "T5",
-      "title": "Retire video/audit-waivers.json (GHSA-g3hv-75wg-m249)",
-      "status": "passed",
-      "verified_by": [
-        "video-audit.py on Node 24 & Node 26 (no advisories, waivers=[])",
-        "scripts/tests/video-audit-controls.py (28 cases)"
-      ]
+      "id": "film",
+      "what": "python3 -B film/scripts/build.py (facts fresh, facts trace 37/37, lint, contrast, music, loudness, render, mux, media checks, sync, contact sheets)",
+      "result": "pass",
+      "detail": "sync worst offset 7.0 ms of 16.7 ms; stills at frames 320, 760, 1000 show every row and the undo line whole after the font resize",
+      "evidence": ".scratch/tui-clarity/film-build.log, video/out/film/contact-0*.png, .scratch/tui-clarity/stills/"
     },
     {
-      "id": "T6",
-      "title": "2026+ Site redesign (index.html, MANUAL.html, styles.css, DESIGN.md) and frames.py fixes",
-      "status": "passed",
-      "verified_by": [
-        "scripts/site/frames.py (9 frames, 5 widths)",
-        "scripts/site/csp.py --check + csp-controls.py (52 cases)",
-        "check_facts.py (37/37) + film-controls.py (0 failures)",
-        "Chrome CDP 390x844 & 1440x900 (scrollWidth == innerWidth, 0 console exceptions)"
-      ]
-    },
-    {
-      "id": "T7",
-      "title": "cccc <= 5 test rule and mneves-prune-tests pass",
-      "status": "passed",
-      "verified_by": [
-        "cccc 1.8.0 audit on all modified Rust files; pruned 3 <=5 non-regex unit tests"
-      ]
-    },
-    {
-      "id": "T8",
-      "title": "Version bump 0.16.0 and full documentation sync",
-      "status": "passed",
-      "verified_by": [
-        "Cargo.toml, Cargo.lock, fuzz/Cargo.lock, README.md, MANUAL.html, CHANGELOG.md, SECURITY.md, CODING_STANDARDS.md, DESIGN.md, AGENTS.md == CLAUDE.md"
-      ]
-    },
-    {
-      "id": "T9",
-      "title": "Full offline/online gates, cross-model review, mneves-verify, mneves-security gate, staging beta & prod release",
-      "status": "passed",
-      "verified_by": [
-        "CI PR #101 green + main CI 44959210183 green",
-        "Immutable v0.16.0-beta1 (run 44968377996) + v0.16.0 (run 44970344995) verified live",
-        "Homebrew tap 7656d47 upgraded /opt/homebrew/bin/devtrim to 0.16.0",
-        "mneves-security gate PASS (0 waivers) in .scratch/security-gate/45daa25cd62f23e2b05e470ddd1eaec22165686b/",
-        "Post-promotion index.html v0.16.0 + llms.txt + README AI-agent guide"
-      ]
+      "id": "cccc-prune",
+      "what": "cccc on src/tui.rs, src/cli.rs, tests/lockfiles.rs; mneves-prune-tests over the tests this branch added or changed",
+      "result": "no deletions",
+      "detail": "directly tested functions score above 5 (headline_forms 11, result_row_with_max 10, Overview::of 9, render_confirmation 8, RowSize::text 6) or fall under an exception: suggestion (0) guards that a PERMANENT category is never suggested, lockfiles is a regression test, the disk-line tests rewrite guards that existed in 0.16 and carry the 64x18 and unreadable-metric standards; removed tests guarded removed code (row numbers, badges, Selected pane)",
+      "evidence": ".scratch/tui-clarity/cccc.json"
     }
   ]
 }

@@ -470,16 +470,23 @@ pub(crate) fn worktree_listing(repo: &Path) -> Result<Vec<u8>> {
     })
 }
 
-/// Number of dirty entries (staged, unstaged, or untracked) in `worktree`.
-/// Uses `--no-optional-locks` through `hardened_git` so inspection never
-/// refreshes the index on disk, skips submodule status recursion
-/// (`--ignore-submodules=all`), and neutralizes every repository-configured
-/// content filter (`filter.*.{clean,smudge,process,required}`) and external
-/// diff/textconv driver — including non-UTF-8 config keys — before `git status`
-/// hashes modified files.
+/// Number of dirty paths (staged, unstaged, or untracked) in `worktree`.
+///
+/// `git status` hashes a modified file through any content filter an
+/// attribute selects and the configuration defines, and the repository's
+/// configuration and `info/attributes` can change while devtrim reads them, so
+/// no list of keys read beforehand can neutralize them all. The worktree side
+/// therefore runs through [`isolated_git_dir`], a Git directory devtrim owns
+/// whose only configuration is the one it wrote: Git reads the repository's
+/// index (`GIT_INDEX_FILE`) and its `info/exclude` as data, never its config or
+/// attributes, so no filter or driver a repository names can be selected. That
+/// directory's HEAD is unborn, so the staged side comes from the repository
+/// itself through `diff-index --cached`, which compares the index with HEAD's
+/// tree and never converts file content. Both run with `--no-optional-locks`
+/// through `hardened_git`, so the index on disk is never refreshed, and skip
+/// submodules.
 pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt as _;
+    use std::ffi::{OsStr, OsString};
 
     if !has_git_marker(worktree)? {
         anyhow::bail!("not a Git worktree: {}", worktree.display());
@@ -490,120 +497,326 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
     if !dot_git_metadata.is_dir() && !dot_git_metadata.is_file() {
         anyhow::bail!("refusing non-regular Git marker {}", dot_git.display());
     }
-    const SHA1_EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-    const SHA256_EMPTY_TREE: &str =
-        "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321";
-
-    let mut list_config = hardened_git(worktree, "git");
-    list_config
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .arg("--git-dir")
-        .arg(&dot_git)
-        .arg("--work-tree")
-        .arg(worktree)
-        .args(["config", "--includes", "--list", "-z"]);
-    let config_entries = hardened_output(list_config, || {
-        format!("cannot read Git config keys for {}", worktree.display())
+    let pinned = |command: &mut Command| {
+        command
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .arg("--git-dir")
+            .arg(&dot_git)
+            .arg("--work-tree")
+            .arg(worktree);
+    };
+    // Paths and the object format only: `rev-parse` converts no content.
+    let mut locate = hardened_git(worktree, "git");
+    pinned(&mut locate);
+    locate.args([
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-object-format",
+        "--git-path",
+        "index",
+        "--git-path",
+        "info/exclude",
+    ]);
+    let located = hardened_output(locate, || {
+        format!("cannot locate the Git index of {}", worktree.display())
     })?;
-    let mut empty_tree = SHA1_EMPTY_TREE;
-    let starts_ascii = |bytes: &[u8], prefix: &[u8]| {
-        bytes.len() >= prefix.len() && bytes[..prefix.len()].eq_ignore_ascii_case(prefix)
+    let located = located.strip_suffix(b"\n").unwrap_or(&located);
+    let [format, index, exclude] = located.split(|byte| *byte == b'\n').collect::<Vec<_>>()[..]
+    else {
+        anyhow::bail!("unexpected Git paths for {}", worktree.display());
     };
-    let ends_ascii = |bytes: &[u8], suffix: &[u8]| {
-        bytes.len() >= suffix.len()
-            && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    let sha256 = match format {
+        b"sha1" => false,
+        b"sha256" => true,
+        _ => anyhow::bail!("unknown Git object format for {}", worktree.display()),
     };
-    // Use `--attr-source=<empty-tree>` + `GIT_ATTR_NOSYSTEM=1` +
-    // `core.attributesFile=/dev/null` so `.gitattributes`, system attributes,
-    // and global attributes are disabled atomically inside `git status` itself
-    // with zero two-process race, and also neutralize every configured
-    // `filter.*` / `diff.*` key via `GIT_CONFIG_COUNT` for defense in depth
-    // (including `.git/info/attributes` and subsections containing `=` or
-    // non-UTF-8 bytes).
-    let mut overrides: Vec<(OsString, OsString)> = vec![
-        (
-            OsString::from("core.attributesFile"),
-            OsString::from("/dev/null"),
-        ),
-        (OsString::from("diff.external"), OsString::new()),
-    ];
-    for entry in config_entries
-        .split(|byte| *byte == 0)
-        .filter(|slice| !slice.is_empty())
-    {
-        let (raw_key, raw_value) = match entry.iter().position(|byte| *byte == b'\n') {
-            Some(newline) => (&entry[..newline], Some(&entry[newline + 1..])),
-            None => (entry, None),
-        };
-        if raw_key.eq_ignore_ascii_case(b"extensions.objectformat")
-            && raw_value.is_some_and(|value| value.eq_ignore_ascii_case(b"sha256"))
-        {
-            empty_tree = SHA256_EMPTY_TREE;
-        }
-        if starts_ascii(raw_key, b"filter.")
-            && (ends_ascii(raw_key, b".clean")
-                || ends_ascii(raw_key, b".smudge")
-                || ends_ascii(raw_key, b".process"))
-            || starts_ascii(raw_key, b"diff.")
-                && (ends_ascii(raw_key, b".textconv") || ends_ascii(raw_key, b".command"))
-        {
-            overrides.push((OsString::from_vec(raw_key.to_vec()), OsString::new()));
-        } else if starts_ascii(raw_key, b"filter.") && ends_ascii(raw_key, b".required") {
-            overrides.push((
-                OsString::from_vec(raw_key.to_vec()),
-                OsString::from("false"),
-            ));
-        }
+    let (index, exclude) = (
+        Path::new(OsStr::from_bytes(index)),
+        Path::new(OsStr::from_bytes(exclude)),
+    );
+    if !index.is_absolute() || !exclude.is_absolute() {
+        anyhow::bail!("Git named a relative index for {}", worktree.display());
     }
-    let mut command = hardened_git(worktree, "git");
-    command
+    let empty_tree = if sha256 {
+        "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"
+    } else {
+        "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    };
+
+    let mut status = hardened_git(worktree, "git");
+    status
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_INDEX_FILE", index)
         .arg("--git-dir")
-        .arg(&dot_git)
+        .arg(isolated_git_dir(&std::env::temp_dir(), sha256)?)
         .arg("--work-tree")
         .arg(worktree)
         .arg("--attr-source")
-        .arg(empty_tree);
-    command.env("GIT_CONFIG_COUNT", overrides.len().to_string());
-    for (index, (key, value)) in overrides.into_iter().enumerate() {
-        command
-            .env(format!("GIT_CONFIG_KEY_{index}"), key)
-            .env(format!("GIT_CONFIG_VALUE_{index}"), value);
-    }
-    command.args([
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=normal",
-        "--ignore-submodules=all",
-    ]);
-    let listed = hardened_output(command, || {
+        .arg(empty_tree)
+        .arg("-c")
+        .arg("core.attributesFile=/dev/null")
+        .arg("-c")
+        .arg({
+            let mut setting = OsString::from("core.excludesFile=");
+            setting.push(exclude);
+            setting
+        })
+        .args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=normal",
+            "--ignore-submodules=all",
+        ]);
+    let listed = hardened_output(status, || {
         format!("cannot check working-tree status of {}", worktree.display())
     })?;
-    parse_porcelain_status_count(&listed)
-        .with_context(|| format!("invalid Git status output for {}", worktree.display()))
+    let entries = parse_porcelain_status(&listed)
+        .with_context(|| format!("invalid Git status output for {}", worktree.display()))?;
+
+    // Against the isolated directory's unborn HEAD every tracked path reads
+    // staged, so only the worktree column and untracked paths count from it.
+    let mut dirty: std::collections::BTreeSet<&[u8]> = entries
+        .iter()
+        .filter(|entry| entry.worktree != b' ')
+        .map(|entry| entry.path)
+        .collect();
+    let mut born = hardened_git(worktree, "git");
+    pinned(&mut born);
+    born.args(["rev-parse", "--quiet", "--verify", "HEAD^{commit}"]);
+    let born = born
+        .output_within(QUERY_TIMEOUT)
+        .with_context(|| format!("cannot read HEAD of {}", worktree.display()))?;
+    let staged;
+    if born.status.success() {
+        let mut command = hardened_git(worktree, "git");
+        pinned(&mut command);
+        command.args([
+            "diff-index",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=all",
+            "HEAD",
+            "--",
+        ]);
+        staged = hardened_output(command, || {
+            format!("cannot compare the index of {}", worktree.display())
+        })?;
+        dirty.extend(
+            staged
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty()),
+        );
+    } else if born.status.code() == Some(1) && born.stdout.is_empty() && unborn_branch(worktree) {
+        // No commit yet: everything the index holds is staged. A HEAD that
+        // fails to resolve for any other reason (a branch naming a missing
+        // commit) is damage, and the count refuses.
+        dirty.extend(
+            entries
+                .iter()
+                .filter(|entry| entry.index != b' ' && entry.index != b'?')
+                .map(|entry| entry.path),
+        );
+    } else {
+        anyhow::bail!("cannot read HEAD of {}", worktree.display());
+    }
+    Ok(dirty.len())
 }
 
-/// Counts NUL-delimited `git status --porcelain=v1 -z` records.
-/// A rename or copy record carries a second NUL-terminated field for the
-/// original path, which must be consumed so one rename counts as one change.
-fn parse_porcelain_status_count(output: &[u8]) -> Result<usize> {
-    if output.is_empty() {
-        return Ok(0);
+/// A Git directory devtrim owns, holding only the configuration it writes
+/// here, an unborn HEAD, and empty `refs` and `objects`: `git status` run
+/// through it reads no repository's config, hooks or attributes. It lives in
+/// the per-user temporary folder, is created once per object format and kept,
+/// and is refused unless every part of it belongs to the current user, no one
+/// else may write to it, and it holds exactly those four entries. Its folder
+/// must belong to the current user with no group or other write, and every
+/// folder above it to that user or root, writable by others only when sticky,
+/// so no other account can create, rename or replace any part of it.
+fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
+
+    let uid = rustix::process::getuid().as_raw();
+    let base = base
+        .canonicalize()
+        .with_context(|| format!("cannot resolve {}", base.display()))?;
+    for (depth, folder) in base.ancestors().enumerate() {
+        let metadata = std::fs::symlink_metadata(folder)
+            .with_context(|| format!("cannot inspect {}", folder.display()))?;
+        let others_write = metadata.mode() & 0o022 != 0;
+        let trusted = if depth == 0 {
+            metadata.is_dir() && metadata.uid() == uid && !others_write
+        } else {
+            metadata.is_dir()
+                && (metadata.uid() == uid || metadata.uid() == 0)
+                && (!others_write || metadata.mode() & 0o1000 != 0)
+        };
+        if !trusted {
+            anyhow::bail!(
+                "refusing Git probe parent {}: another account could change it",
+                folder.display()
+            );
+        }
     }
-    let Some(entries) = output.strip_suffix(b"\0") else {
+    let format = if sha256 { "sha256" } else { "sha1" };
+    let dir = base.join(format!("devtrim-git-probe-{uid}-{format}"));
+    let config: &[u8] = if sha256 {
+        b"[core]\n\trepositoryformatversion = 1\n\tbare = false\n[extensions]\n\tobjectformat = sha256\n"
+    } else {
+        b"[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
+    };
+    let owned = |path: &Path, directory: bool| -> Result<()> {
+        let metadata = std::fs::symlink_metadata(path)
+            .with_context(|| format!("cannot inspect {}", path.display()))?;
+        let kind = if directory {
+            metadata.is_dir()
+        } else {
+            metadata.is_file()
+        };
+        if !kind || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+            anyhow::bail!("refusing Git probe directory part {}", path.display());
+        }
+        Ok(())
+    };
+    for part in [dir.clone(), dir.join("refs"), dir.join("objects")] {
+        match std::fs::DirBuilder::new().mode(0o700).create(&part) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot create {}", part.display()));
+            }
+        }
+        owned(&part, true)?;
+    }
+    for (leaf, expected) in [
+        ("HEAD", &b"ref: refs/heads/devtrim-unborn\n"[..]),
+        ("config", config),
+    ] {
+        let path = dir.join(leaf);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc_nofollow())
+            .open(&path)
+        {
+            Ok(mut file) => file
+                .write_all(expected)
+                .with_context(|| format!("cannot write {}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot create {}", path.display()));
+            }
+        }
+        owned(&path, false)?;
+        let found =
+            std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+        if found != expected {
+            anyhow::bail!(
+                "refusing Git probe file {} with unexpected content",
+                path.display()
+            );
+        }
+    }
+    // Git would read attributes and excludes from `info`, packed references
+    // and alternates from their own files: anything devtrim did not write.
+    let entries = |folder: &Path| -> Result<Vec<std::ffi::OsString>> {
+        let mut names = std::fs::read_dir(folder)
+            .with_context(|| format!("cannot list {}", folder.display()))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()
+            .with_context(|| format!("cannot list {}", folder.display()))?;
+        names.sort();
+        Ok(names)
+    };
+    if entries(&dir)? != ["HEAD", "config", "objects", "refs"]
+        || !entries(&dir.join("objects"))?.is_empty()
+        || !entries(&dir.join("refs"))?.is_empty()
+    {
+        anyhow::bail!(
+            "refusing Git probe directory {} holding entries devtrim did not write",
+            dir.display()
+        );
+    }
+    // Mode bits are not the whole story on macOS: an ACL `allow` entry can let
+    // another account write to or replace a folder its mode denies. `ls -e`
+    // lists every entry; a `deny` entry, such as the home folder's own
+    // `group:everyone deny delete`, only narrows access and is accepted.
+    let mut acl = Command::new("/bin/ls");
+    acl.arg("-lde").arg("--").args(base.ancestors());
+    for part in ["HEAD", "config", "objects", "refs"] {
+        acl.arg(dir.join(part));
+    }
+    acl.arg(&dir);
+    let listed = acl
+        .output_within(QUERY_TIMEOUT)
+        .with_context(|| format!("cannot read the ACLs above {}", dir.display()))?;
+    if !listed.status.success() {
+        anyhow::bail!("cannot read the ACLs above {}", dir.display());
+    }
+    if listed.stdout.split(|byte| *byte == b'\n').any(acl_allows) {
+        anyhow::bail!(
+            "refusing Git probe directory {}: an ACL lets another account change it",
+            dir.display()
+        );
+    }
+    Ok(dir)
+}
+
+/// Whether one `ls -le` line is an ACL entry that grants access: an index,
+/// `: `, then `allow` among its words. Any other line is a file's own line.
+fn acl_allows(line: &[u8]) -> bool {
+    let entry = line.trim_ascii_start();
+    let digits = entry
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    digits > 0
+        && entry[digits..].starts_with(b": ")
+        && entry
+            .split(|byte| *byte == b' ')
+            .any(|word| word == b"allow")
+}
+
+/// `O_NOFOLLOW` for [`std::os::unix::fs::OpenOptionsExt::custom_flags`].
+fn libc_nofollow() -> i32 {
+    rustix::fs::OFlags::NOFOLLOW.bits() as i32
+}
+
+/// One `git status --porcelain=v1 -z` record: its two status columns and path.
+struct StatusEntry<'a> {
+    index: u8,
+    worktree: u8,
+    path: &'a [u8],
+}
+
+/// Parses NUL-delimited `git status --porcelain=v1 -z` records; a rename or
+/// copy carries its original path as a second field, which is consumed.
+fn parse_porcelain_status(output: &[u8]) -> Result<Vec<StatusEntry<'_>>> {
+    if output.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(records) = output.strip_suffix(b"\0") else {
         anyhow::bail!("porcelain status output did not end with a NUL");
     };
-    let mut count = 0usize;
-    let mut fields = entries.split(|byte| *byte == 0);
+    let mut entries = Vec::new();
+    let mut fields = records.split(|byte| *byte == 0);
     while let Some(entry) = fields.next() {
         if entry.len() < 4 || entry[2] != b' ' {
             anyhow::bail!("malformed porcelain status entry");
         }
-        count = count.saturating_add(1);
+        entries.push(StatusEntry {
+            index: entry[0],
+            worktree: entry[1],
+            path: &entry[3..],
+        });
         if matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C') {
             let Some(original) = fields.next() else {
                 anyhow::bail!("truncated rename or copy entry in porcelain status");
@@ -613,7 +826,7 @@ fn parse_porcelain_status_count(output: &[u8]) -> Result<usize> {
             }
         }
     }
-    Ok(count)
+    Ok(entries)
 }
 
 /// The absolute common directory (`.git` of the main worktree) of the
@@ -1528,13 +1741,23 @@ mod tests {
 
     #[test]
     fn porcelain_status_counts_renames_and_copies_once_and_refuses_truncation() {
-        assert_eq!(parse_porcelain_status_count(b"").unwrap(), 0);
+        assert!(parse_porcelain_status(b"").unwrap().is_empty());
+        let entries = parse_porcelain_status(
+            b" M src/lib.rs\0?? notes.txt\0R  new name.rs\0old name.rs\0CM copy\nfile.rs\0orig\nfile.rs\0",
+        )
+        .unwrap();
+        let read: Vec<_> = entries
+            .iter()
+            .map(|entry| (entry.index, entry.worktree, entry.path))
+            .collect();
         assert_eq!(
-            parse_porcelain_status_count(
-                b" M src/lib.rs\0?? notes.txt\0R  new name.rs\0old name.rs\0CM copy\nfile.rs\0orig\nfile.rs\0"
-            )
-            .unwrap(),
-            4
+            read,
+            [
+                (b' ', b'M', &b"src/lib.rs"[..]),
+                (b'?', b'?', &b"notes.txt"[..]),
+                (b'R', b' ', &b"new name.rs"[..]),
+                (b'C', b'M', &b"copy\nfile.rs"[..]),
+            ]
         );
         for malformed in [
             &b" M missing-nul.rs"[..],
@@ -1544,10 +1767,168 @@ mod tests {
             &b"C  copy.rs\0\0"[..],
         ] {
             assert!(
-                parse_porcelain_status_count(malformed).is_err(),
+                parse_porcelain_status(malformed).is_err(),
                 "accepted malformed status: {malformed:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_isolated_git_dir_refuses_anything_it_did_not_write_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fixture = crate::ops::TestFixture::new("isolated-git-dir");
+        let base = fixture.path();
+        std::fs::create_dir_all(base).unwrap();
+        std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let dir = isolated_git_dir(base, false).unwrap();
+        assert_eq!(
+            isolated_git_dir(base, false).unwrap(),
+            dir,
+            "reused as written"
+        );
+        assert_ne!(
+            isolated_git_dir(base, true).unwrap(),
+            dir,
+            "one per object format"
+        );
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(isolated_git_dir(base, false).is_err(), "group-writable");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        std::fs::create_dir(dir.join("info")).unwrap();
+        assert!(isolated_git_dir(base, false).is_err(), "an info folder");
+        crate::ops::remove_test_path(dir.join("info"));
+        std::fs::write(dir.join("packed-refs"), "").unwrap();
+        assert!(isolated_git_dir(base, false).is_err(), "a packed-refs file");
+        crate::ops::remove_test_path(dir.join("packed-refs"));
+        std::fs::create_dir(dir.join("objects/info")).unwrap();
+        assert!(
+            isolated_git_dir(base, false).is_err(),
+            "an objects/info folder"
+        );
+        crate::ops::remove_test_path(dir.join("objects/info"));
+        assert_eq!(isolated_git_dir(base, false).unwrap(), dir, "restored");
+
+        std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(
+            isolated_git_dir(base, false).is_err(),
+            "PV git/probe-parent: a world-writable parent"
+        );
+        std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        assert!(
+            isolated_git_dir(base, false).is_err(),
+            "a sticky parent is still shared: the probe's own folder must be private"
+        );
+        std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let shared = base.join("shared");
+        let private = shared.join("private");
+        std::fs::create_dir_all(&private).unwrap();
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(
+            isolated_git_dir(&private, false).is_err(),
+            "a folder above it others may rename entries in"
+        );
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        assert!(
+            isolated_git_dir(&private, false).is_ok(),
+            "a sticky folder above it"
+        );
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let chmod = |entry: &str, path: &Path| {
+            let status = Command::new("/bin/chmod")
+                .arg(entry)
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success(), "chmod {entry} failed");
+        };
+        let acl = |entry: &str, path: &Path| {
+            let status = Command::new("/bin/chmod")
+                .args(["+a", entry])
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success(), "chmod +a {entry} failed");
+        };
+        acl("group:everyone deny delete", &shared);
+        assert!(
+            isolated_git_dir(&private, false).is_ok(),
+            "a deny entry only narrows access"
+        );
+        acl(
+            "group:everyone allow add_file,add_subdirectory,delete_child",
+            &shared,
+        );
+        assert!(
+            isolated_git_dir(&private, false).is_err(),
+            "PV git/probe-acl: an ACL above it lets another account change it"
+        );
+        chmod("-N", &shared);
+        let probe = isolated_git_dir(&private, false).unwrap();
+        acl("group:everyone allow write", &probe.join("config"));
+        assert!(
+            isolated_git_dir(&private, false).is_err(),
+            "an ACL on a part of the probe itself"
+        );
+        chmod("-N", &probe.join("config"));
+        assert!(isolated_git_dir(&private, false).is_ok(), "ACLs removed");
+
+        std::fs::write(dir.join("config"), "[filter \"x\"]\n\tclean = touch\n").unwrap();
+        assert!(
+            isolated_git_dir(base, false).is_err(),
+            "a config it did not write"
+        );
+    }
+
+    #[test]
+    fn worktree_dirty_count_counts_each_path_once_and_refuses_a_damaged_head() {
+        let fixture = crate::ops::TestFixture::new("dirty-count-heads");
+        let repo = fixture.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        git(&["add", "staged.txt"]);
+        std::fs::write(repo.join("untracked.txt"), "new\n").unwrap();
+        assert_eq!(
+            worktree_dirty_count(&repo).unwrap(),
+            2,
+            "no commit yet: the staged file and the untracked one"
+        );
+
+        git(&["commit", "-q", "-m", "initial"]);
+        std::fs::write(repo.join("staged.txt"), "changed\n").unwrap();
+        git(&["add", "staged.txt"]);
+        std::fs::write(repo.join("staged.txt"), "changed again\n").unwrap();
+        assert_eq!(
+            worktree_dirty_count(&repo).unwrap(),
+            2,
+            "a path staged and changed again counts once, beside the untracked one"
+        );
+
+        let missing = "0123456789abcdef0123456789abcdef01234567\n";
+        std::fs::write(repo.join(".git/refs/heads/main"), missing).unwrap();
+        assert!(
+            worktree_dirty_count(&repo).is_err(),
+            "PV git/damaged-head: a branch naming a missing commit is damage, not a repository with no commit"
+        );
     }
 
     #[test]

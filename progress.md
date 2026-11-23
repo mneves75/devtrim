@@ -1,3 +1,21 @@
+# Progress — 0.17.0 (plans/021)
+
+Current phase: 2, decision-first rows and effect-first confirmation. Branch `feat/tui-clarity`
+from `3310ef3`, worktree `../devtrim-wt-tui`. Baseline captures and prototypes in
+`.scratch/tui-clarity/` (untracked).
+
+- Decision: overview home (prototype A) over a Mole-style intent menu (C); evidence and
+  scenarios in the plan. Keys and launch behaviour unchanged.
+- Phase 1 done: one-column home (disk line, headline after a scan, an effect word on every
+  row, the highlighted row's description in the status row); Scan everything lands there
+  with the highlight on the largest category that moves to the Trash; `v` opens the last
+  scan's report until an apply makes it stale. The headline says "largest to Trash", so a
+  larger PERMANENT category is never misnamed. `r` on the home was dropped from the plan:
+  the landing status already says `1 scans again`, and one key per action is simpler.
+- Film probe: the unchanged film renders end to end (sync worst offset 7.0 ms of 16.7 ms),
+  so phase 2 can re-render it.
+- Next action: failing tests for AC4 and AC5, then rows and the confirmation.
+
 # Progress — 0.16.0 (plans/020)
 
 Shipped 2026-11-22: PR #101 squash-merged to `main` `45daa25cd62f23e2b05e470ddd1eaec22165686b` (tree `e11ec50c8462698c32490ed187ffdc8cd4c3a417`), immutable `v0.16.0-beta1` (run `44968377996`) and `v0.16.0` (run `44970344995`, ZIP SHA-256 `912cc97a446d208de15a52323cf5c4fc5e031ab3c7c1f586a05c93d756c61c9b`), Homebrew tap `7656d47`, `/opt/homebrew/bin/devtrim` `0.16.0` (SHA-256 `b5906877ea47963f8eb235e59e05d6aabde24ec7dc1334da03e9cea5903a8791`). Security gate: **PASS** for staging, GitHub Pages, and production with **zero waivers** (`GHSA-g3hv-75wg-m249` retired); records in `.scratch/security-gate/45daa25cd62f23e2b05e470ddd1eaec22165686b/`. Post-promotion closeout updated `index.html` to `v0.16.0`, regenerated `video/film/facts.json`, and added `llms.txt` + README AI-agent guide.

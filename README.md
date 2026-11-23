@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[llms.txt](https://mneves75.github.io/devtrim/llms.txt)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.16.0.
+This source tree and its packaged documentation describe devtrim v0.17.0.
 
 ## Install
 
@@ -562,9 +562,16 @@ in Trash instead of blocking the other exact items.
 The TUI offers the same scanners and apply owners behind a keyboard interface:
 arrow keys or `j`/`k` navigate, `Enter` previews, `a` starts confirmation, `s`
 switches an already-previewed Trash action to permanent mode and back, and `r`
-rescans. The menu shows the home volume's free space with a bar and how many
-local APFS snapshots the volume keeps, since a snapshot holds space no scan can
-see; after a scan each operation names what its last scan offered. Where APFS
+rescans. The home lists every operation on one row with its key and what it
+does, and its first line shows the home volume's free space and how many local
+APFS snapshots the volume keeps, since a snapshot holds space no scan can see.
+Scan everything ends on the home: a headline names the total it found, the
+largest category that moves to the Trash and how many categories failed, every
+row names what its last scan offered, and the highlight lands on that largest
+category, so `Enter` previews it; a PERMANENT or read-only operation is never
+picked, however large. `v` opens the scan's full read-only report, every
+finding, note and failure included, until an apply changes what it measured;
+`1` scans again. Where APFS
 clones share blocks, the size is a range from what it frees at least to what it
 holds, such as `1.9–21.8 GB`, and a category changed by an apply asks for a
 rescan instead of showing a stale size. Findings name what brings a target back
@@ -585,15 +592,17 @@ and kills every command devtrim started, exiting 130, 143 or 129. A category tha
 failed to scan, such as one whose liveness probe did not answer, is counted in
 the results title and named in the status line, and `r` retries it, from the
 failure screen too.
-A preview lists one finding per line with a detail pane that grows to show the
-highlighted one whole; a terminal too short to hold it says how many lines it
+A preview lists one finding per line: its size, name and path, then its danger
+and what applying it does, which stay whole at the end of the row however long
+the name or path. A detail pane grows to show the highlighted one whole; a terminal too short to hold it says how many lines it
 hides, and `Enter` shows the finding in full in a view that scrolls, where no
 key changes the plan and `Esc` returns to it. `?` lists every key, whole even at
 the minimum size.
-Each operation in the menu carries a badge that the pane beside it explains:
-`READ-ONLY` reports and never changes anything, `TRASH` changes nothing until
-you press `a` and approve, then moves what you kept selected to the Trash, and `PERMANENT` deletes for good after
-a typed size acknowledgment. "Scan everything" is read-only, so its selection
+Each operation on the home ends with what it does, and the status line
+describes the highlighted one: `read-only` reports and never changes anything,
+`to Trash` changes nothing until you press `a` and approve, then moves what you
+kept selected to the Trash, and `PERMANENT` deletes for good after its own
+confirmation. The Scan everything report is read-only, so its selection
 and apply keys do not act there; they name the category view that can act on
 the highlighted finding, such as "b, then 2 (caches)". Inside a category view,
 `Space` leaves the highlighted finding out of the plan or adds it back and `A`
@@ -614,8 +623,11 @@ piped, while automation continues to use explicit subcommands and `--json`.
 TUI confirmation is deliberately separate from CLI bypass flags. `devtrim tui`
 rejects `--apply`, `-y`, `--yolo`, `--shred`, and `--json`; ordinary actions
 require `y`, critical plans require their displayed numeric size, and Trash
-purge requires the exact phrase `PURGE <gb>`. The warning is shown after the
-exact preview and before authorization.
+purge requires the exact phrase `PURGE <gb>`. The confirmation comes after the
+exact preview and before authorization. It leads with what the plan does and
+whether it can be undone: a plan holding any permanent item says it cannot,
+and a Trash-only plan says it is recoverable from the Trash until the Trash is
+emptied. The data-loss warning follows, for every plan.
 
 `-y` acknowledges the data-loss warning and bypasses normal y/N prompts;
 critical plans still require typed confirmation. `--yolo` acknowledges the

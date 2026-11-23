@@ -854,3 +854,59 @@ fn an_interrupt_with_a_full_unread_stderr_still_exits_promptly_and_stops_deletin
         "PV process/interrupt-prompt: a cache after the first was removed after the signal"
     );
 }
+
+/// `--help` lists the commands in the order a cleanup runs (preview, clean,
+/// empty the Trash, then the reports and utilities) and ends with examples.
+/// The set of commands is the public contract and must not change with it.
+#[test]
+fn help_lists_cleanup_first_and_ends_with_examples() {
+    let sandbox = Sandbox::new("help-order");
+    let output = run(&sandbox, &["--help"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+
+    let commands: Vec<&str> = stdout
+        .lines()
+        .skip_while(|line| *line != "Commands:")
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            "scan",
+            "clean",
+            "purge",
+            "trash-empty",
+            "explain",
+            "history",
+            "tui",
+            "analyze",
+            "largest",
+            "status",
+            "disk",
+            "dashboard",
+            "worktrees",
+            "app-storage",
+            "icloud",
+            "uninstall",
+            "optimize",
+            "completions",
+            "manpage",
+            "help",
+        ],
+        "{stdout}"
+    );
+    let examples = stdout
+        .split_once("Examples:")
+        .map(|(_, rest)| rest)
+        .unwrap_or_else(|| panic!("no examples: {stdout}"));
+    for example in [
+        "devtrim scan",
+        "devtrim clean caches --apply",
+        "devtrim scan --json",
+    ] {
+        assert!(examples.contains(example), "{example} missing: {stdout}");
+    }
+}

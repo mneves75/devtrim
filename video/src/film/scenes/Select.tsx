@@ -32,7 +32,7 @@ export const Select: React.FC = () => {
       <div style={{ position: "absolute", left: PANEL.left, top: 70 }}>
         <PreviewPanel
           part="start"
-          font={76}
+          font={64}
           lineHeight={104}
           frame={frame}
           cursor={cursor}

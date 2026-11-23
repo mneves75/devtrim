@@ -2,13 +2,64 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.17.0] - 2026-11-22
+
+### Changed
+- The TUI home is one column. Its first line holds the home volume's free
+  space, how full it is and the local snapshot count. Each operation sits on
+  one row with its key, its last scan and one word for what it does:
+  `to Trash`, `PERMANENT` or `read-only`. These replace the uppercase badges
+  and the Selected pane, and the status line describes the highlighted
+  operation. The free-space bar is gone.
+- Scan everything now ends on the home instead of a flat list of findings. A
+  headline names the total, the largest category that moves to the Trash and
+  how many categories failed. The highlight lands on that category, so `Enter`
+  previews it; a PERMANENT or read-only operation is never picked, however
+  large. `v` opens the full read-only report, every finding, note and failure
+  included, until an apply changes a category it measured. A failed category
+  says `failed` on its row and in the status line, and the run still exits
+  nonzero.
+- Results rows read size, name, then path. The danger and what applying does
+  close the row as fixed columns, so a long name or path gives way and they
+  never do. The row number is gone.
+- The confirmation leads with what the plan does, then whether it can be
+  undone. One permanent item makes the whole plan `PERMANENT: this cannot be
+  undone.`; a Trash-only plan is recoverable from the Trash until it is
+  emptied. The data-loss notice stays for every plan, and the keys and typed
+  answers are unchanged.
+- `devtrim --help` lists the commands in the order a cleanup runs (preview
+  and clean, the reports, then maintenance and utilities) and ends with
+  examples. No command, flag, exit status or JSON document changed.
+- Updated `index.html` release links and version headings to verified immutable `v0.16.0` and regenerated `video/film/facts.json`.
+
+### Security
+- `worktrees` no longer reads a repository's configuration in the `git status`
+  behind its dirty count. A filter driver and an `info/attributes` line added
+  while devtrim read the repository could run as the invoking user, because
+  the probe neutralized only the filter keys it had listed a moment earlier
+  (CORE-GIT-1, pre-existing, found by the 0.17.0 security gate). Status now runs
+  through a Git directory devtrim owns, reading the repository's index and
+  `info/exclude` as data, and the staged side comes from `diff-index --cached`,
+  which converts no content. A planted violation and a feature eval with a
+  stubbed `git` that plants the driver mid-probe prove it.
+- The Git directory behind that count is refused unless it holds exactly what
+  devtrim wrote and no other account can change the folders above it, by mode
+  bits or by an ACL `allow` entry (CORE-GIT-2, found by the same gate and the
+  release autoreview), and a HEAD naming a missing commit now leaves the
+  count unavailable instead of counting every tracked file as staged.
 
 ### Added
 - Added `llms.txt` (served at `https://mneves75.github.io/devtrim/llms.txt`) and a `For AI agents` section in `README.md` with exact `--json` envelope contracts, exit codes, and safe Trash-first workflows.
+- `tests/lockfiles.rs` fails when `Cargo.lock` or `fuzz/Cargo.lock` pins a
+  `devtrim` other than `Cargo.toml`'s, naming the update command. A stale
+  fuzz lock reached the hosted release gate in 0.12.6-beta1.
+- A PTY flow proves Scan everything lands on the home with a failing category
+  (a stubbed `docker`) and that `v` opens its report.
 
-### Changed
-- Updated `index.html` release links and version headings to verified immutable `v0.16.0` and regenerated `video/film/facts.json`.
+### Removed
+- The `tui/row-number-width` planted violation and its PTY flow went with the
+  row numbers they guarded. `tui/row-keeps-effect` now proves a results row
+  keeps its danger and effect whole at its right end.
 
 ## [0.16.0] - 2026-11-21
 

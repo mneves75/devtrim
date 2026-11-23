@@ -17,7 +17,7 @@ const keys = keyCues("confirm");
 const at = (key: string) => keys.filter((k) => k.key === key)[0].at;
 
 const TOP = 70;
-const PREVIEW_FONT = 76;
+const PREVIEW_FONT = 64;
 const PREVIEW_LINE = 104;
 const FONT = 64;
 const LINE_HEIGHT = 96;
@@ -104,11 +104,13 @@ export const Confirm: React.FC = () => {
           lineHeight={LINE_HEIGHT}
           rows={4}
         >
-          <div style={{ color: C.red, fontWeight: 700, opacity: lineIn(1) }}>
-            {line("confirm.warning")}
-          </div>
-          <div style={{ fontWeight: 700, opacity: lineIn(2) }}>
+          <div style={{ fontWeight: 700, opacity: lineIn(1) }}>
             {line("confirm.effect")}
+          </div>
+          <div
+            style={{ color: C.muted, fontSize: "0.8em", opacity: lineIn(2) }}
+          >
+            {line("confirm.undo")}
           </div>
           <div style={{ opacity: lineIn(3) }}>{line("confirm.plan")}</div>
         </Panel>

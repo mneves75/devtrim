@@ -171,14 +171,19 @@ keyboard focus and useful empty/partial/error states. Logical sizes and actual
 filesystem available space stay separate. There is no apply control.
 
 ## Terminal interface
-- Preserve the same semantic palette: green = preview/read-only, amber = review,
-  red = permanent. Every meaning also appears as text (`READ-ONLY`, `TRASH`,
-  `SHRED`, `PERMANENT`) so color is never the only signal.
+- Preserve the semantic palette: red = permanent, amber = review, blue =
+  read-only, and the Trash, the norm, stays quiet. Every meaning also appears as
+  text (`to Trash`, `PERMANENT`, `read-only`, and each finding's `danger-N`) so
+  color is never the only signal. The home is one column; after Scan everything
+  it highlights the largest category that moves to the Trash, never a permanent
+  or read-only one. Result rows lead with size and name; the danger and the
+  effect close each row and never give way to a long name or path.
 - Minimum viewport is 64×18. Smaller terminals show a resize instruction rather
   than clipping controls or confirmation copy, and accept only quit input.
 - Arrow keys and `j`/`k` are equivalent; direct number keys open operations;
   `Esc` always cancels a confirmation.
-- The exact preview comes first. The following confirmation state repeats the
-  data-loss warning and exact requested acknowledgment before apply.
+- The exact preview comes first. The following confirmation state leads with
+  what the plan does and whether it can be undone, then repeats the data-loss
+  warning and exact requested acknowledgment before apply.
 - Results, errors, and outcomes use the same arrow/Vim scrolling; scanner
   diagnostics remain in the alternate-screen state instead of leaking to stderr.
