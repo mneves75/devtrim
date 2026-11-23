@@ -24,6 +24,13 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   no such time and are no longer offered either; empty the Trash by other
   means or move them again with 0.17.1 (CORE-TRASH-PROVENANCE-1, Medium, found
   by the 0.17.1 gate).
+- **Behavior change:** `trash-empty --only-devtrim` is now preview-only and
+  refuses `--apply`. The entry time is read just after the Trash move returns,
+  so a rename inside that interval cannot be told from devtrim's own, and a
+  permanent purge must not rest on evidence that cannot prove the move
+  (CORE-TRASH-PROVENANCE-2). It still lists what devtrim moved; purge the whole
+  Trash with `trash-empty --apply`. The journal keeps recording identity and
+  entry time for a release that can prove the move.
 - A reused `worktrees` Git probe folder has its own ACL read before anything
   is created or read inside it, not only after (CORE-GIT-ACL-3, Medium).
 - CI and the release workflow discard TruffleHog's stdout, where its printer

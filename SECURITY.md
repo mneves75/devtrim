@@ -68,6 +68,11 @@ every rename sets to the nanosecond on APFS; an entry is devtrim's only while
 its time still equals that record, at preview and again at the sink just before removal. A file with another name shares the time
 with it and records none, nor does an entry off APFS, and records written
 before 0.17.1 carry none, so all three stay (CORE-TRASH-PROVENANCE-1, 0.17.1).
+That time is read through the descriptor just after the move returns, not by
+the move itself, so a rename inside that interval cannot be told from
+devtrim's own (CORE-TRASH-PROVENANCE-2). Because a permanent purge needs that
+proof, `--only-devtrim` is preview-only in 0.17.1 and refuses `--apply`; the
+journal keeps recording both facts for a later release that can prove the move.
 
 The owner must separately account for copied files, terminal logs, screenshots,
 cloud shares, backups and restore copies. Their retention is controlled by their

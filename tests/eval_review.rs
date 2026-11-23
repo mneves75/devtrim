@@ -117,40 +117,34 @@ fn review_trash_empty_nothing_to_purge_human_refuses_an_unwritable_journal() {
     );
 }
 
-/// `--only-devtrim` takes the same empty-plan path and must keep the same
-/// journal check. The journal is readable, so the history it selects from is
-/// read in full and only the write check can refuse; the same fixture with a
-/// writable journal is the control.
+/// `--only-devtrim` is preview-only: `--apply` with it refuses, naming why,
+/// whatever the Trash holds, while the same list previews successfully.
 #[test]
-fn review_trash_empty_only_devtrim_nothing_to_purge_refuses_an_unwritable_journal() {
-    let args = ["trash-empty", "--only-devtrim", "--apply", "--json"];
-    let fixture = |name| {
-        let sandbox = Sandbox::in_target(name);
-        write(
-            &sandbox.path().join(".Trash/not-ours.txt"),
-            "not moved by devtrim",
-        );
-        write(&sandbox.journal(), "");
-        sandbox
-    };
-    let control = fixture("review-trash-only-control");
-    let ok = run(&control, &args);
-    let document = json(&ok);
-    assert!(ok.status.success(), "control: {document}");
-    assert!(control.path().join(".Trash/not-ours.txt").exists());
-
-    let sandbox = fixture("review-trash-only-journal");
-    break_journal(&sandbox);
-    let refused = run(&sandbox, &args);
-    let document = json(&refused);
-    assert!(
-        !refused.status.success(),
-        "review/trash-only-journal: an empty purge with an unwritable journal exited 0: {document}"
+fn review_trash_empty_only_devtrim_refuses_to_apply() {
+    let sandbox = Sandbox::in_target("review-trash-only-preview");
+    write(
+        &sandbox.path().join(".Trash/not-ours.txt"),
+        "not moved by devtrim",
     );
+    write(&sandbox.journal(), "");
+    let preview = run(&sandbox, &["trash-empty", "--only-devtrim", "--json"]);
+    assert!(preview.status.success(), "control: {}", json(&preview));
+    let refused = run(
+        &sandbox,
+        &[
+            "trash-empty",
+            "--only-devtrim",
+            "--apply",
+            "--yolo",
+            "--json",
+        ],
+    );
+    let document = json(&refused);
+    assert!(!refused.status.success(), "{document}");
     assert_ne!(document["applied"], true, "{document}");
     assert!(
-        error_text(&document).contains("journal"),
-        "review/trash-only-journal: refused for another reason: {document}"
+        error_text(&document).contains("preview-only"),
+        "refused for another reason: {document}"
     );
     assert!(sandbox.path().join(".Trash/not-ours.txt").exists());
 }

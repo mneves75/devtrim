@@ -103,7 +103,7 @@ devtrim app-storage --root ~/Movies       # also find saved Screen Studio projec
 devtrim icloud                            # large iCloud Drive files and local allocation
 devtrim trash-empty --confirm=14          # preview permanent Trash purge
 devtrim trash-empty --confirm=14 --apply  # perform the verified purge
-devtrim trash-empty --only-devtrim        # only what devtrim itself moved to the Trash
+devtrim trash-empty --only-devtrim        # list what devtrim itself moved to the Trash (preview-only)
 devtrim history                           # recent journaled applies; --json for one document
 devtrim analyze                           # interactive read-only disk explorer (never deletes)
 devtrim analyze ~/Library --json          # one-shot breakdown of a directory
@@ -170,7 +170,7 @@ Core contract for automated callers:
 - Every `--json` call emits one JSON document to stdout (`0` = clean, `1` = partial/runtime error including unknown `optimize --task`, `2` = CLI usage or capability-scoped flag refusal).
 - Report-only commands reject mutation flags (`--apply`, `-y`, `--yolo`, `--shred`) with exit `2`.
 - Non-TTY applies with actionable findings require `-y` (danger ≤ 8) or `--yolo` (danger ≥ 9); empty plans skip confirmation. Each CLI `--apply` invocation scans fresh and applies that invocation's plan (an earlier `--json` preview does not pin a later process); when actions run, apply JSON includes per-action `results` and, unless aborted by a fatal error, `summary` (with `home_volume` when measured).
-- Prefer Trash-first filesystem commands over `--shred`, `trash-empty --only-devtrim --apply`, or permanent command-based cleanups (`clean docker`, `clean simulators`) unless permanent removal is explicitly requested.
+- Prefer Trash-first filesystem commands over `--shred`, `trash-empty --apply`, or permanent command-based cleanups (`clean docker`, `clean simulators`) unless permanent removal is explicitly requested.
 
 `devtrim explain <PATH>` answers why a path is or is not offered: whether
 built-in protection or a `protect` entry refuses it (and which rule), and every
@@ -545,7 +545,9 @@ to Trash after the earlier preview is shown before it can be approved. The
 Trash, so an excluded item never makes it unsatisfiable. Anything moved to
 Trash after confirmation remains.
 The Trash is shared with every other program and session, so `--only-devtrim`
-narrows the purge to what devtrim itself moved there: each move to the Trash
+lists only what devtrim itself moved there. Since 0.17.1 it is preview-only and
+refuses `--apply`: the journal cannot prove that the move which set an entry's
+recorded time was devtrim's own, and a permanent purge needs that proof. Each move to the Trash
 journals the item's device, inode and birth time, which survive the move while
 the Trash renames the item at will, and the entry's status-change time read
 just after the move, which any later rename changes; only a Trash item matching

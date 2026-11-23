@@ -2066,6 +2066,17 @@ CASES = (
         target="eval_system",
     ),
     Case(
+        name="eval/trash-only-apply",
+        relative_path="src/app.rs",
+        # Without the refusal a narrowed purge acts on journal evidence that
+        # cannot prove the move was devtrim's.
+        before="            if only_devtrim {\n                return command_error(\n",
+        after="            if false {\n                return command_error(\n",
+        tests=("eval_trash_empty_only_devtrim_selects_only_journaled_identities",),
+        marker="PV eval/trash-only-apply",
+        target="eval_system",
+    ),
+    Case(
         name="eval/flags",
         relative_path="src/app.rs",
         # trash-empty accepts the permanent-deletion flag instead of rejecting it.

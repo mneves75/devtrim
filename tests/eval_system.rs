@@ -2485,25 +2485,23 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
         ],
     );
     let document = json(&apply);
+    // Preview-only: even every confirmation flag purges nothing.
     pristine.assert_only(
         &Tree::snapshot(home),
-        &Allowed {
-            removed: targets.clone(),
-            scratch: vec![home.join(".local")],
-        },
-        "eval/trash-only-apply",
+        &Allowed::default(),
+        "PV eval/trash-only-apply",
     );
-    assert!(apply.status.success(), "{document}");
-    assert_eq!(document["summary"]["items_touched"], targets.len());
-    let purged: Vec<String> = journal_lines(&sandbox)
-        .into_iter()
-        .filter(|line| line.op == "trash-empty" && line.phase == "attempt")
-        .filter_map(|line| line.target)
-        .collect();
-    assert_eq!(
-        sorted(purged.iter().map(PathBuf::from).collect()),
-        targets,
-        "EVAL journal: the purge must be journaled write-ahead"
+    assert!(!apply.status.success(), "{document}");
+    assert_ne!(document["applied"], true, "{document}");
+    assert!(
+        document.to_string().contains("preview-only"),
+        "the refusal must say why: {document}"
+    );
+    assert!(
+        !journal_lines(&sandbox)
+            .iter()
+            .any(|line| line.op == "trash-empty"),
+        "a refused narrowed purge journals no attempt"
     );
 }
 
