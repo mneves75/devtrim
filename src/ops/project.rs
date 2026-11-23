@@ -1959,6 +1959,8 @@ mod tests {
     #[test]
     fn the_isolated_git_dir_refuses_a_volume_that_ignores_ownership() {
         use std::os::unix::fs::PermissionsExt as _;
+        // A wedged disk-image service fails the test instead of hanging it.
+        const HDIUTIL_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
         let fixture = crate::ops::TestFixture::new("isolated-git-dir-owners");
         let base = fixture.path();
         std::fs::create_dir_all(base).unwrap();
@@ -1968,16 +1970,16 @@ mod tests {
                 "create", "-quiet", "-size", "16m", "-fs", "HFS+", "-volname", "probe",
             ])
             .arg(&image)
-            .status()
+            .output_within(HDIUTIL_LIMIT)
             .unwrap();
-        assert!(created.success(), "hdiutil create failed");
+        assert!(created.status.success(), "hdiutil create failed");
         struct Detach(PathBuf);
         impl Drop for Detach {
             fn drop(&mut self) {
                 let _ = Command::new("/usr/bin/hdiutil")
                     .args(["detach", "-quiet", "-force"])
                     .arg(&self.0)
-                    .status();
+                    .output_within(HDIUTIL_LIMIT);
             }
         }
         let probe_on = |owners: &str| {
@@ -1995,9 +1997,12 @@ mod tests {
                 .arg("-mountpoint")
                 .arg(&mount)
                 .arg(&image)
-                .status()
+                .output_within(HDIUTIL_LIMIT)
                 .unwrap();
-            assert!(attached.success(), "hdiutil attach -owners {owners} failed");
+            assert!(
+                attached.status.success(),
+                "hdiutil attach -owners {owners} failed"
+            );
             let _detach = Detach(mount.clone());
             let probe_base = mount.join("tmp");
             std::fs::create_dir_all(&probe_base).unwrap();
