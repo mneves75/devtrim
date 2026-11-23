@@ -42,11 +42,17 @@ pub(crate) struct TrashedIdentity {
 impl TrashedIdentity {
     /// The identity of the item at `path` itself, never what a link names.
     /// Unknown where the platform keeps no birth time.
+    #[cfg(test)]
     pub(crate) fn of(path: &Path) -> Option<Self> {
+        Self::from_metadata(&std::fs::symlink_metadata(path).ok()?)
+    }
+
+    /// The identity one `symlink_metadata` observation shows, so a caller
+    /// judging the same item twice can bind both judgments to that one read.
+    pub(crate) fn from_metadata(metadata: &std::fs::Metadata) -> Option<Self> {
         #[cfg(target_os = "macos")]
         {
             use std::os::macos::fs::MetadataExt as _;
-            let metadata = std::fs::symlink_metadata(path).ok()?;
             Some(Self {
                 dev: metadata.st_dev(),
                 ino: metadata.st_ino(),
@@ -56,7 +62,7 @@ impl TrashedIdentity {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = path;
+            let _ = metadata;
             None
         }
     }

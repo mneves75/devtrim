@@ -1406,10 +1406,28 @@ CASES = (
     Case(
         name="trash/only-devtrim-identity",
         relative_path="src/ops/mod.rs",
-        before="        let ours = TrashedIdentity::of(path).is_some_and(|identity| moved.contains(&identity));\n",
-        after="        let ours = TrashedIdentity::of(path).is_some() || moved.is_empty();\n",
+        before="        let ours = TrashedIdentity::from_metadata(metadata)\n            .is_some_and(|identity| moved.contains(&identity));\n",
+        after="        let ours = TrashedIdentity::from_metadata(metadata).is_some() || moved.is_empty();\n",
         tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
         marker="PV trash/only-devtrim-identity",
+    ),
+    Case(
+        name="trash/judged-identity",
+        relative_path="src/ops/mod.rs",
+        # Dropping the pin lets the finding read its identity again after the
+        # item was judged, so a later item at that name takes its place.
+        before="            )\n            .with_identity(FileIdentity::from_std_metadata(&metadata)),\n",
+        after="            ),\n",
+        tests=("ops::tests::a_trash_item_replaced_after_it_was_judged_is_never_purged",),
+        marker="PV trash/judged-identity",
+    ),
+    Case(
+        name="trash/journal-approved-identity",
+        relative_path="src/ops/mod.rs",
+        before="        .filter(|metadata| finding.identity() == Some(FileIdentity::from_std_metadata(metadata)))\n",
+        after="        .filter(|metadata| finding.identity().is_some() || metadata.is_dir())\n",
+        tests=("ops::tests::the_sink_journals_no_identity_for_an_item_swapped_in_after_preview",),
+        marker="PV trash/journal-approved-identity",
     ),
     Case(
         name="trash/journal-identity",

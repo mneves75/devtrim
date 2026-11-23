@@ -58,7 +58,9 @@ owned reports, exports and journal generations you intend to discard. Never
 remove or replace the lock while another process may use it. Keep evidence
 required for incident response. Removing journal records also removes the
 ownership evidence for `trash-empty --only-devtrim`; devtrim never reconstructs
-that evidence from names or age.
+that evidence from names or age. A record names an item only when the move's
+finding approved that exact object, and a narrowed purge removes only the
+object it matched against the journal, never one put at its name later.
 
 The owner must separately account for copied files, terminal logs, screenshots,
 cloud shares, backups and restore copies. Their retention is controlled by their

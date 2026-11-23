@@ -357,6 +357,15 @@ impl Finding {
         self.identity
     }
 
+    /// Pins the identity the caller judged the target by, replacing the one
+    /// `new` read a moment later, so the sink enforces the object that was
+    /// judged rather than whatever then sat at the path. It only narrows: a
+    /// target whose identity differs is refused at the sink.
+    pub(crate) fn with_identity(mut self, identity: FileIdentity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
     pub(crate) fn with_project(mut self, project: &Path) -> Self {
         self.project = Some(project.display().to_string());
         self

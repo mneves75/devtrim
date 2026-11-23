@@ -501,9 +501,14 @@ fn apply_verified_finding(
         .ok_or_else(|| anyhow::anyhow!("filesystem finding missing internal target"))?;
     // A move to the Trash keeps the item's identity, so recording it lets a
     // later `trash-empty --only-devtrim` tell this item from everyone else's.
+    // The record names only the object this finding approved: one read gives
+    // both the identity the sink then enforces and the birth time journaled,
+    // so an item swapped in before that read is never recorded as devtrim's.
     let trashed = (!permanent)
-        .then(|| crate::journal::TrashedIdentity::of(target))
-        .flatten();
+        .then(|| std::fs::symlink_metadata(target).ok())
+        .flatten()
+        .filter(|metadata| finding.identity() == Some(FileIdentity::from_std_metadata(metadata)))
+        .and_then(|metadata| crate::journal::TrashedIdentity::from_metadata(&metadata));
     let attempt = crate::journal::begin(
         ctx,
         crate::journal::JournalRecord::filesystem_attempt(
@@ -1346,8 +1351,9 @@ pub(crate) fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>>
         .filter_map(|record| record.identity)
         .collect::<std::collections::HashSet<_>>();
     let mut others = 0usize;
-    let findings = trash_findings_where(ctx, |path| {
-        let ours = TrashedIdentity::of(path).is_some_and(|identity| moved.contains(&identity));
+    let findings = trash_findings_where(ctx, |metadata| {
+        let ours = TrashedIdentity::from_metadata(metadata)
+            .is_some_and(|identity| moved.contains(&identity));
         if !ours {
             others = others.saturating_add(1);
         }
@@ -1363,7 +1369,13 @@ pub(crate) fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>>
 }
 
 /// Direct Trash children `keep` accepts, judged before any is measured.
-fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Result<Vec<Finding>> {
+/// Each item is read once: `keep` judges that observation and the finding
+/// carries its identity, so the sink removes only the object judged, never
+/// one put at its name afterwards (Finder renames Trash items at will).
+fn trash_findings_where(
+    ctx: &Ctx,
+    mut keep: impl FnMut(&std::fs::Metadata) -> bool,
+) -> Result<Vec<Finding>> {
     let directory = crate::safety::validate_trash_root(&ctx.home)?;
     let mut entries = std::fs::read_dir(&directory)
         .and_then(|listing| listing.collect::<std::io::Result<Vec<_>>>())
@@ -1383,7 +1395,14 @@ fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Resul
             continue;
         }
         let path = entry.path();
-        if !keep(&path) {
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                unread.push(project::UnreadFolder::new(&path, &error.into()));
+                continue;
+            }
+        };
+        if !keep(&metadata) {
             continue;
         }
         // One item that cannot be measured (a folder left unreadable) offers
@@ -1395,14 +1414,17 @@ fn trash_findings_where(ctx: &Ctx, mut keep: impl FnMut(&Path) -> bool) -> Resul
                 continue;
             }
         };
-        findings.push(Finding::sized(
-            format!("Trash item: {}", entry.file_name().to_string_lossy()),
-            Some(path),
-            size,
-            "permanent purge; Finder recovery is no longer available afterward",
-            9,
-            Action::Shred,
-        ));
+        findings.push(
+            Finding::sized(
+                format!("Trash item: {}", entry.file_name().to_string_lossy()),
+                Some(path),
+                size,
+                "permanent purge; Finder recovery is no longer available afterward",
+                9,
+                Action::Shred,
+            )
+            .with_identity(FileIdentity::from_std_metadata(&metadata)),
+        );
     }
     if !unread.is_empty() {
         findings.push(project::unread_folders_finding("Trash items", &unread));
@@ -2559,6 +2581,62 @@ mod tests {
         assert!(home.join(".Trash/a-project/.git/HEAD").exists());
         assert!(!home.join(".Trash/z-later").exists());
         remove_test_path(root);
+    }
+
+    /// An item put at a judged Trash item's name after it was judged — Finder
+    /// renames items at will — is never purged in its place: the finding
+    /// carries the identity of the object judged, which the sink enforces.
+    #[test]
+    fn a_trash_item_replaced_after_it_was_judged_is_never_purged() {
+        let fixture = crate::ops::TestFixture::new("devtrim-trash-swap");
+        let root = fixture.path().to_path_buf();
+        std::fs::create_dir_all(root.join(".Trash/judged")).unwrap();
+        let home = root.canonicalize().unwrap();
+        let item = home.join(".Trash/judged");
+        let ctx = context(home.clone());
+        let findings = trash_findings_where(&ctx, |_| {
+            std::fs::rename(&item, home.join("judged-elsewhere")).unwrap();
+            std::fs::create_dir(&item).unwrap();
+            std::fs::write(item.join("unrelated"), "keep").unwrap();
+            true
+        })
+        .unwrap();
+        let now = std::fs::symlink_metadata(&item).unwrap();
+        assert_ne!(
+            findings[0].identity(),
+            Some(FileIdentity::from_std_metadata(&now)),
+            "PV trash/judged-identity: the finding took the identity of the item put there later"
+        );
+
+        let outcome = purge_trash(&findings, &ctx).unwrap();
+
+        assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
+        assert!(item.join("unrelated").exists(), "the later item was purged");
+        remove_test_path(root);
+    }
+
+    /// The sink journals a Trash move's identity only for the object its
+    /// finding approved, so an item swapped in after the preview is never
+    /// recorded as one devtrim moved; a later `--only-devtrim` would
+    /// otherwise offer it.
+    #[test]
+    fn the_sink_journals_no_identity_for_an_item_swapped_in_after_preview() {
+        let (_fixture, home) = sink_test_home("trash-identity-swap");
+        let target = home.join("cache");
+        std::fs::create_dir_all(&target).unwrap();
+        let finding = Finding::new("cache", Some(target.clone()), 1, "test", 3, Action::Trash);
+        std::fs::rename(&target, home.join("cache-approved")).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        let mut ctx = context(home.clone());
+        ctx.protect = vec![target.clone()];
+        assert!(apply_filesystem_finding("caches", &finding, &ctx).is_err());
+
+        let history = crate::journal::read_history(&ctx.journal_path, 10).unwrap();
+        assert_eq!(
+            history.entries[0].identity, None,
+            "PV trash/journal-approved-identity: the swapped-in item was journaled as moved"
+        );
+        remove_test_path(home);
     }
 
     #[test]
