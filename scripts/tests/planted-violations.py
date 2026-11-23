@@ -1096,12 +1096,12 @@ CASES = (
         marker="PV git/probe-parent",
     ),
     Case(
-        name="git/probe-acl",
+        name="git/probe-ownership",
         relative_path="src/ops/project.rs",
-        before="    if listed.stdout.split(|byte| *byte == b'\\n').any(acl_allows) {\n",
+        before="    if ignores_ownership(&base)? {\n",
         after="    if false {\n",
-        tests=("ops::project::tests::the_isolated_git_dir_refuses_anything_it_did_not_write_alone",),
-        marker="PV git/probe-acl",
+        tests=("ops::project::tests::the_isolated_git_dir_refuses_a_volume_that_ignores_ownership",),
+        marker="PV git/probe-ownership",
     ),
     Case(
         name="git/damaged-head",
