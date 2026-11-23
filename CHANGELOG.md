@@ -4,6 +4,42 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-23
+
+### Security
+- `trash-empty --only-devtrim` reads each Trash item once. That one
+  observation is matched against the journal and becomes the identity the
+  sink enforces, so an unrelated item put at a matched item's name before the
+  purge is refused instead of removed. The sink also journals a move's
+  identity only when it is the object the finding approved, so an item swapped
+  in before a move is never recorded as one devtrim moved (CORE-TRASH-1,
+  Medium, found by the 0.17.0 gate).
+- CI and the release workflow discard TruffleHog's stdout, where its printer
+  writes each match's raw value, so a candidate credential never reaches an
+  Actions log; `--fail` still fails the step. `secret-scan-controls.py` proves
+  with the pinned binary that a synthetic match is detected, keeps the failing
+  exit and leaves no raw byte in the log (DIST-LOG-1, Medium).
+- The `worktrees` dirty count's Git probe folder is refused on a volume
+  mounted with ownership ignored, where every file reads as the current
+  user's and its ownership and mode checks prove nothing (AR-OWN-1, High,
+  found by the 0.17.0 release review). Its ACL check now reads the folder
+  chain before the probe creates anything (CORE-GIT-ACL-1) and refuses a
+  folder whose name holds a newline, which could forge a line of the `ls`
+  listing it parses (CORE-GIT-ACL-2). The count is unavailable in each case;
+  every other column is still reported.
+
+### Fixed
+- Each output stream of a command devtrim runs holds at most 256 MiB. Past
+  it the pipe is closed, which ends the writer, and the call fails naming the
+  program and stream instead of growing memory until its timeout
+  (CORE-BOUND-1, Low). The largest output measured is a system-wide
+  `lsof -d txt` of 1.8 MB.
+- `scripts/tests/tui.py` no longer races the TUI or its probes: it accepts a
+  probe already reaped when it kills one, waits for the TUI to take keys after
+  a plan appears by resending only `?`, and bounds each session at 60 s
+  instead of spending 15 s on a loaded machine's scan. It failed most CI runs
+  since 0.17.0's security fix; devtrim itself was unchanged.
+
 ## [0.17.0] - 2026-11-22
 
 ### Changed

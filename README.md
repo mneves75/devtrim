@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[llms.txt](https://mneves75.github.io/devtrim/llms.txt)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.17.0.
+This source tree and its packaged documentation describe devtrim v0.17.1.
 
 ## Install
 
