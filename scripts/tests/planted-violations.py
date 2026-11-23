@@ -2045,9 +2045,12 @@ CASES = (
     Case(
         name="eval/trash-only-devtrim",
         relative_path="src/ops/mod.rs",
-        # A failed or interrupted Trash move still selects its item.
-        before=".filter(|record| record.action == \"trash\" && record.status.as_deref() == Some(\"ok\"))",
-        after=".filter(|record| record.action == \"trash\")",
+        # Matching the object alone lets an entry trashed again after
+        # devtrim's move stand in for it. (A failed or interrupted move
+        # carries no entry time, which the writer and the reader both enforce,
+        # so the status filter beside it is no longer observable here.)
+        before="            .is_some_and(|entry| moved.contains(&entry));\n",
+        after="            .is_some_and(|entry| moved.iter().any(|known| known.0 == entry.0));\n",
         tests=("eval_trash_empty_only_devtrim_selects_only_journaled_identities",),
         marker="PV eval/trash-only-plan",
         target="eval_system",

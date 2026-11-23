@@ -2368,6 +2368,10 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
     write(&foreign_same_name.join("file"), "not ours");
     write(&failed_move.join("file"), "recorded as failed");
     write(&interrupted.join("file"), "never finished");
+    // Moved by devtrim, then restored and trashed again by someone else: the
+    // same object, but not the entry devtrim's move left.
+    let retrashed = trash.join("restored and trashed again");
+    write(&retrashed.join("file"), "trashed twice");
     let identity = |path: &Path| {
         let metadata = std::fs::symlink_metadata(path).unwrap();
         serde_json::json!({
@@ -2444,7 +2448,13 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
             &interrupted,
             None,
         ),
+        record("a5", "attempt", "/Users/x/retrashed", &retrashed, None),
+        record("a5", "result", "/Users/x/retrashed", &retrashed, Some("ok")),
     ];
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let restored = home.join("restored");
+    std::fs::rename(&retrashed, &restored).unwrap();
+    std::fs::rename(&restored, &retrashed).unwrap();
     write(&sandbox.journal(), &(lines.join("\n") + "\n"));
     let targets = sorted(vec![ours_dir, ours_file]);
     let pristine = Tree::snapshot(home);
@@ -2454,7 +2464,7 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
     assert_eq!(
         actionable_targets(&document),
         targets,
-        "PV eval/trash-only-plan: only items with a journaled successful move may be offered"
+        "PV eval/trash-only-plan: only entries a journaled successful move left may be offered"
     );
     pristine.assert_only(
         &Tree::snapshot(home),
