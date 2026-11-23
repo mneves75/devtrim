@@ -14,6 +14,16 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   identity only when it is the object the finding approved, so an item swapped
   in before a move is never recorded as one devtrim moved (CORE-TRASH-1,
   Medium, found by the 0.17.0 gate).
+- `trash-empty --only-devtrim` also requires the entry to be the one devtrim's
+  move left: the sink journals the entry's status-change time, read through a
+  descriptor held across the move, and any later rename changes it. An item
+  restored and trashed again by someone else, and a file with another name
+  (a hard link), are no longer offered. Items moved by an earlier devtrim carry
+  no such time and are no longer offered either; empty the Trash by other
+  means or move them again with 0.17.1 (CORE-TRASH-PROVENANCE-1, Medium, found
+  by the 0.17.1 gate).
+- A reused `worktrees` Git probe folder has its own ACL read before anything
+  is created or read inside it, not only after (CORE-GIT-ACL-3, Medium).
 - CI and the release workflow discard TruffleHog's stdout, where its printer
   writes each match's raw value, so a candidate credential never reaches an
   Actions log; `--fail` still fails the step. `secret-scan-controls.py` proves

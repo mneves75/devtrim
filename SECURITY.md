@@ -60,7 +60,14 @@ required for incident response. Removing journal records also removes the
 ownership evidence for `trash-empty --only-devtrim`; devtrim never reconstructs
 that evidence from names or age. A record names an item only when the move's
 finding approved that exact object, and a narrowed purge removes only the
-object it matched against the journal, never one put at its name later.
+object it matched against the journal, never one put at its name later. The
+object alone does not prove the move: an item restored and trashed again keeps
+its device, inode and birth time. So the sink holds a descriptor across each
+Trash move and journals the entry's status-change time just after it, which
+every rename sets to the nanosecond on APFS; an entry is devtrim's only while
+its time still equals that record. A file with another name shares the time
+with it and records none, nor does an entry off APFS, and records written
+before 0.17.1 carry none, so all three stay (CORE-TRASH-PROVENANCE-1, 0.17.1).
 
 The owner must separately account for copied files, terminal logs, screenshots,
 cloud shares, backups and restore copies. Their retention is controlled by their

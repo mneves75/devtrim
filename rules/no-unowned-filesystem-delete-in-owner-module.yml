@@ -30,7 +30,7 @@ rule:
           - inside:
               all:
                 - pattern: |
-                    fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
+                    fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<Option<crate::journal::EntryChanged>> {
                       $$$BODY
                     }
                 - kind: source_file > function_item

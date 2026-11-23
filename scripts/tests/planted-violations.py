@@ -1112,6 +1112,16 @@ CASES = (
         marker="PV git/probe-acl",
     ),
     Case(
+        name="git/reused-acl-before-write",
+        relative_path="src/ops/project.rs",
+        # Without it a reused probe shared by an ACL is written into before the
+        # late check refuses it.
+        before="        refuse_acl_grants([part.as_path()], &dir)?;\n",
+        after="",
+        tests=("ops::project::tests::the_isolated_git_dir_refuses_anything_it_did_not_write_alone",),
+        marker="PV git/reused-acl-before-write",
+    ),
+    Case(
         name="git/acl-before-create",
         relative_path="src/ops/project.rs",
         # Reading the chain's ACLs only after the probe exists lets a shared
@@ -1432,10 +1442,46 @@ CASES = (
     Case(
         name="trash/only-devtrim-identity",
         relative_path="src/ops/mod.rs",
-        before="        let ours = TrashedIdentity::from_metadata(metadata)\n            .is_some_and(|identity| moved.contains(&identity));\n",
+        before="        let ours = TrashedIdentity::from_metadata(metadata)\n            .zip(crate::journal::EntryChanged::of(metadata))\n            .is_some_and(|entry| moved.contains(&entry));\n",
         after="        let ours = TrashedIdentity::from_metadata(metadata).is_some() || moved.is_empty();\n",
         tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
         marker="PV trash/only-devtrim-identity",
+    ),
+    Case(
+        name="trash/move-provenance",
+        relative_path="src/ops/mod.rs",
+        # Matching the object alone lets an entry someone else trashed again
+        # after devtrim's move stand in for that move.
+        before="            .is_some_and(|entry| moved.contains(&entry));\n",
+        after="            .is_some_and(|entry| moved.iter().any(|known| known.0 == entry.0));\n",
+        tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
+        marker="PV trash/move-provenance",
+    ),
+    Case(
+        name="trash/single-link",
+        relative_path="src/journal.rs",
+        # A hard link shares its status time with every other name of the file.
+        before="        (metadata.is_dir() || metadata.nlink() == 1).then(|| Self {\n",
+        after="        true.then(|| Self {\n",
+        tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
+        marker="PV trash/single-link",
+    ),
+    Case(
+        name="trash/entry-time-record",
+        relative_path="src/journal.rs",
+        # Written unconditionally, the time lands on records the reader refuses.
+        before="            changed.filter(|_| result.is_ok() && attempt.identity.is_some());\n",
+        after="            changed;\n",
+        tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
+        marker="PV trash/entry-time-record",
+    ),
+    Case(
+        name="trash/held-single-link",
+        relative_path="src/ops/mod.rs",
+        before="        || (kind == rustix::fs::FileType::RegularFile && stat.st_nlink == 1);\n",
+        after="        || kind == rustix::fs::FileType::RegularFile;\n",
+        tests=("ops::tests::the_held_entry_time_is_kept_only_for_a_folder_or_a_single_link",),
+        marker="PV trash/held-single-link",
     ),
     Case(
         name="trash/judged-identity",

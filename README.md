@@ -547,8 +547,10 @@ Trash after confirmation remains.
 The Trash is shared with every other program and session, so `--only-devtrim`
 narrows the purge to what devtrim itself moved there: each move to the Trash
 journals the item's device, inode and birth time, which survive the move while
-the Trash renames the item at will, and only a Trash item matching a successful
-move is offered. Everything else stays and is counted in a note; an apply
+the Trash renames the item at will, and the entry's status-change time read
+just after the move, which any later rename changes; only a Trash item matching
+both is offered, so an item restored and trashed again, a file with another
+name (a hard link), and items moved before 0.17.1 stay. Everything else stays and is counted in a note; an apply
 journal that cannot be read whole refuses the narrowed purge and offers
 nothing, because the record that tells an item apart could be the one missed.
 Ownership reads every retained generation (current plus three rotated files),

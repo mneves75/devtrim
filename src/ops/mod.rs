@@ -528,7 +528,11 @@ fn apply_verified_finding(
                 .ok_or_else(|| anyhow::anyhow!("finding lacks preview identity"))?;
             remove_path(verified, permanent, expected)
         });
-    attempt.finish(ctx, result)
+    let (result, changed) = match result {
+        Ok(changed) => (Ok(()), changed),
+        Err(error) => (Err(error), None),
+    };
+    attempt.finish_trashed(ctx, result, changed)
 }
 
 /// The Trash move devtrim uses: `NSFileManager.trashItemAtURL`, never Finder.
@@ -552,7 +556,14 @@ fn trash_context() -> trash::TrashContext {
     trash::TrashContext::new()
 }
 
-fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
+/// Removes the verified target. A move to the Trash returns when the entry it
+/// left there last changed ([`crate::journal::EntryChanged`]), when that can
+/// be read for it.
+fn remove_path(
+    target: VerifiedTarget,
+    permanent: bool,
+    expected: FileIdentity,
+) -> Result<Option<crate::journal::EntryChanged>> {
     let (path, markers) = target.into_parts();
     let parent = path
         .parent()
@@ -579,6 +590,25 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
         let metadata = dir
             .symlink_metadata(leaf)
             .with_context(|| format!("cannot inspect deletion target: {}", path.display()))?;
+        // Held across the move, so the entry it leaves is read by descriptor:
+        // the Trash names it as it likes.
+        let mut held: Option<rustix::fd::OwnedFd> = None;
+        if metadata.is_file() {
+            held = rustix::fs::openat(
+                &dir,
+                leaf,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::NONBLOCK
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .ok()
+            .filter(|fd| {
+                rustix::fs::fstat(fd)
+                    .is_ok_and(|stat| FileIdentity::from_rustix_stat(&stat) == expected)
+            });
+        }
         if metadata.is_dir() {
             let target_dir = dir
                 .open_dir(leaf)
@@ -593,6 +623,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
             }
             preflight_same_device_tree(&target_dir, deletion_device, &path, &markers)
                 .context("Trash deletion preflight failed")?;
+            held = Some(target_dir.into_std_file().into());
         }
         let final_identity = file_identity_at(&dir, leaf)
             .with_context(|| format!("cannot recheck deletion target: {}", path.display()))?;
@@ -605,7 +636,7 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
         // macOS Trash has no descriptor-relative API; a residual rename window
         // remains after this final parent-anchored identity check.
         trash_context().delete(&path)?;
-        return Ok(());
+        return Ok(held.as_ref().and_then(trash_entry_changed));
     }
 
     let quarantine_name = next_quarantine_name(&dir)?;
@@ -858,7 +889,8 @@ fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) 
             )
         })?;
     }
-    Ok(())
+    // A permanent removal leaves no entry behind to recognize.
+    Ok(None)
 }
 
 /// A rename that refuses an occupied destination atomically (`renameatx_np`
@@ -873,6 +905,38 @@ fn rename_no_replace(dir: &cap_std::fs::Dir, from: &Path, to: &Path) -> Result<(
 fn file_identity_at(dir: &cap_std::fs::Dir, path: &Path) -> Result<FileIdentity> {
     let metadata = rustix::fs::statat(dir, path, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
     Ok(FileIdentity::from_rustix_stat(&metadata))
+}
+
+/// When the entry a Trash move left last changed, read through the descriptor
+/// held across the move: only for a folder or a singly linked file, and only
+/// on APFS, whose times keep nanoseconds.
+fn trash_entry_changed(fd: &rustix::fd::OwnedFd) -> Option<crate::journal::EntryChanged> {
+    let stat = rustix::fs::fstat(fd).ok()?;
+    let kind = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+    let single = kind == rustix::fs::FileType::Directory
+        || (kind == rustix::fs::FileType::RegularFile && stat.st_nlink == 1);
+    (single && on_apfs(fd)).then_some(crate::journal::EntryChanged {
+        secs: stat.st_ctime,
+        nanos: stat.st_ctime_nsec,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn on_apfs(fd: &rustix::fd::OwnedFd) -> bool {
+    rustix::fs::fstatfs(fd).is_ok_and(|statfs| {
+        let name = statfs
+            .f_fstypename
+            .iter()
+            .take_while(|byte| **byte != 0)
+            .map(|byte| *byte as u8)
+            .collect::<Vec<_>>();
+        name == b"apfs"
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn on_apfs(_fd: &rustix::fd::OwnedFd) -> bool {
+    false
 }
 
 fn file_identity_for_dir(dir: &cap_std::fs::Dir) -> Result<FileIdentity> {
@@ -1348,12 +1412,16 @@ pub(crate) fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>>
         .entries
         .iter()
         .filter(|record| record.action == "trash" && record.status.as_deref() == Some("ok"))
-        .filter_map(|record| record.identity)
+        .filter_map(|record| record.identity.zip(record.trash_entry_changed))
         .collect::<std::collections::HashSet<_>>();
     let mut others = 0usize;
+    // Object and move alike: the identity says which object devtrim moved, the
+    // entry's unchanged status time that this entry is still that move's. An
+    // older record, written before the time was kept, matches nothing.
     let findings = trash_findings_where(ctx, |metadata| {
         let ours = TrashedIdentity::from_metadata(metadata)
-            .is_some_and(|identity| moved.contains(&identity));
+            .zip(crate::journal::EntryChanged::of(metadata))
+            .is_some_and(|entry| moved.contains(&entry));
         if !ours {
             others = others.saturating_add(1);
         }
@@ -1800,7 +1868,7 @@ mod tests {
             .identity()
             .ok_or_else(|| anyhow::anyhow!("fixture has no identity"))?;
         let verified = crate::safety::validate_path_for_deletion(target, home, &[])?;
-        remove_path(verified, true, expected)
+        remove_path(verified, true, expected).map(drop)
     }
 
     /// Permanent deletion with uv's marker exception granted by the real lock.
@@ -1819,7 +1887,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("fixture has no identity"))?;
         let verified =
             crate::safety::validate_path_for_deletion(target, home, &[])?.grant_uv_marker(&lock)?;
-        remove_path(verified, true, expected)
+        remove_path(verified, true, expected).map(drop)
     }
 
     /// uv writes that empty `.git` on every cache initialisation, so while every
@@ -2021,53 +2089,99 @@ mod tests {
     /// for nothing.
     #[test]
     fn only_items_devtrim_moved_to_the_trash_are_offered() {
-        use crate::journal::{JournalRecord, TrashedIdentity, begin};
+        use crate::journal::{EntryChanged, JournalRecord, TrashedIdentity, begin};
 
         let (_fixture, home) = sink_test_home("only-devtrim");
         let trash = home.join(".Trash");
         let ours = trash.join("cache 12.09.42");
         let foreign = trash.join("cache");
-        for item in [&ours, &foreign] {
+        let retrashed = trash.join("restored and trashed again");
+        let older = trash.join("moved before 0.17.1");
+        for item in [&ours, &foreign, &retrashed, &older] {
             std::fs::create_dir_all(item).unwrap();
             std::fs::write(item.join("file"), "x").unwrap();
         }
+        // A file devtrim moved while another name of it sat in the Trash: the
+        // two share the object and its status time.
+        let linked = trash.join("linked.dmg");
+        std::fs::write(&linked, "x").unwrap();
+        std::fs::hard_link(&linked, trash.join("linked copy.dmg")).unwrap();
         let gone = home.join("gone");
         std::fs::create_dir_all(&gone).unwrap();
         let gone_identity = TrashedIdentity::of(&gone);
         std::fs::remove_dir(&gone).unwrap();
-        let ctx = context(home.clone());
-        let record = |identity: Option<TrashedIdentity>, succeeded: bool| {
-            let attempt = begin(
-                &ctx,
-                JournalRecord::filesystem_attempt("caches", "trash", Path::new("/x/cache"), 1)
-                    .with_trashed_identity(identity),
-            )
-            .unwrap();
-            let result = if succeeded {
-                Ok(())
-            } else {
-                Err(anyhow::anyhow!("refused"))
-            };
-            let _ = attempt.finish(&ctx, result);
+        let changed = |path: &Path| {
+            let metadata = std::fs::symlink_metadata(path).unwrap();
+            EntryChanged::of(&metadata).or(Some(EntryChanged {
+                secs: std::os::unix::fs::MetadataExt::ctime(&metadata),
+                nanos: std::os::unix::fs::MetadataExt::ctime_nsec(&metadata),
+            }))
         };
-        record(TrashedIdentity::of(&ours), true);
-        record(gone_identity, true);
-        record(TrashedIdentity::of(&foreign), false);
+        let ctx = context(home.clone());
+        let record =
+            |identity: Option<TrashedIdentity>, entry: Option<EntryChanged>, succeeded: bool| {
+                let attempt = begin(
+                    &ctx,
+                    JournalRecord::filesystem_attempt("caches", "trash", Path::new("/x/cache"), 1)
+                        .with_trashed_identity(identity),
+                )
+                .unwrap();
+                let result = if succeeded {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("refused"))
+                };
+                let _ = attempt.finish_trashed(&ctx, result, entry);
+            };
+        record(TrashedIdentity::of(&ours), changed(&ours), true);
+        record(gone_identity, changed(&trash), true);
+        record(TrashedIdentity::of(&foreign), changed(&foreign), false);
+        record(TrashedIdentity::of(&linked), changed(&linked), true);
+        record(TrashedIdentity::of(&older), None, true);
+        // Recorded by its move, then restored and trashed again by someone
+        // else: the object is the same, the entry is not that move's.
+        record(TrashedIdentity::of(&retrashed), changed(&retrashed), true);
+        let restored = home.join("restored");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::rename(&retrashed, &restored).unwrap();
+        std::fs::rename(&restored, &retrashed).unwrap();
+        // A time offered with no identity, or with a failed move, is dropped
+        // rather than written into a record the reader would refuse.
+        record(None, changed(&foreign), true);
 
-        let findings = trash_findings_moved_by_devtrim(&ctx).unwrap();
+        let findings = trash_findings_moved_by_devtrim(&ctx);
+        assert!(
+            findings.is_ok(),
+            "PV trash/entry-time-record: the writer left a record the reader refuses: {:?}",
+            findings.as_ref().err()
+        );
+        let findings = findings.unwrap();
+        let offered = findings
+            .iter()
+            .filter_map(Finding::target)
+            .collect::<Vec<_>>();
 
-        assert_eq!(
-            findings
-                .iter()
-                .filter_map(Finding::target)
-                .collect::<Vec<_>>(),
-            vec![ours.as_path()],
+        assert!(
+            !offered.contains(&foreign.as_path()),
             "PV trash/only-devtrim-identity: an item devtrim did not move was offered"
+        );
+        assert!(
+            !offered.contains(&retrashed.as_path()),
+            "PV trash/move-provenance: an entry trashed again after devtrim's move was offered"
+        );
+        assert!(
+            !offered.contains(&linked.as_path()),
+            "PV trash/single-link: a file sharing its status time with another name was offered"
+        );
+        assert_eq!(
+            offered,
+            vec![ours.as_path()],
+            "only the entry devtrim's own move left may be offered"
         );
         assert!(
             ctx.take_diagnostics()
                 .iter()
-                .any(|message| message.contains("1 Trash item(s) devtrim did not move there")),
+                .any(|message| message.contains("5 Trash item(s) devtrim did not move there")),
             "the items left in place must be counted"
         );
 
@@ -2080,6 +2194,45 @@ mod tests {
             refused.is_err(),
             "PV trash/incomplete-history: a partly read history still offered {:?}",
             refused.map(|findings| findings.len())
+        );
+        remove_test_path(home);
+    }
+
+    /// The time a Trash move records comes from the descriptor held across it,
+    /// and only for an object no other name shares.
+    #[test]
+    fn the_held_entry_time_is_kept_only_for_a_folder_or_a_single_link() {
+        let (_fixture, home) = sink_test_home("held-entry-time");
+        let folder = home.join("folder");
+        let single = home.join("single");
+        let linked = home.join("linked");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&single, "x").unwrap();
+        std::fs::write(&linked, "x").unwrap();
+        std::fs::hard_link(&linked, home.join("other name")).unwrap();
+        let open =
+            |path: &Path| -> rustix::fd::OwnedFd { std::fs::File::open(path).unwrap().into() };
+        let on_apfs_here = on_apfs(&open(&folder));
+        assert!(
+            on_apfs_here,
+            "the fixture must sit on APFS, or nothing here is judged"
+        );
+        for path in [&folder, &single] {
+            let metadata = std::fs::symlink_metadata(path).unwrap();
+            let expected = on_apfs_here
+                .then(|| crate::journal::EntryChanged::of(&metadata))
+                .flatten();
+            assert_eq!(
+                trash_entry_changed(&open(path)),
+                expected,
+                "{}",
+                path.display()
+            );
+        }
+        assert_eq!(
+            trash_entry_changed(&open(&linked)),
+            None,
+            "PV trash/held-single-link: a file with another name recorded its status time"
         );
         remove_test_path(home);
     }

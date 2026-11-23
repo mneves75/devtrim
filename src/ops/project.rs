@@ -714,6 +714,9 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
             }
         }
         owned(&part, true)?;
+        // A probe left by an earlier run is reused, so its own ACL is read
+        // before anything is created inside it.
+        refuse_acl_grants([part.as_path()], &dir)?;
     }
     for (leaf, expected) in [
         ("HEAD", &b"ref: refs/heads/devtrim-unborn\n"[..]),
@@ -736,6 +739,7 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
             }
         }
         owned(&path, false)?;
+        refuse_acl_grants([path.as_path()], &dir)?;
         let found =
             std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
         if found != expected {
@@ -1934,6 +1938,19 @@ mod tests {
         );
         chmod("-N", &probe.join("config"));
         assert!(isolated_git_dir(&private, false).is_ok(), "ACLs removed");
+        let _clear_probe = ClearAcls(vec![probe.clone()]);
+        acl("group:everyone allow add_subdirectory", &probe);
+        std::fs::remove_dir(probe.join("refs")).unwrap();
+        assert!(isolated_git_dir(&private, false).is_err());
+        assert!(
+            !probe.join("refs").exists(),
+            "PV git/reused-acl-before-write: a part was created inside a reused probe an ACL shares"
+        );
+        chmod("-N", &probe);
+        assert!(
+            isolated_git_dir(&private, false).is_ok(),
+            "the reused probe repaired"
+        );
 
         let newline = base.join("line\n1: user:x allow");
         std::fs::create_dir(&newline).unwrap();
