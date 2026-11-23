@@ -2383,7 +2383,15 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
             "target": target, "size_bytes": 10, "identity": identity(path)
         });
         match status {
-            Some("ok") => value["status"] = "ok".into(),
+            Some("ok") => {
+                value["status"] = "ok".into();
+                // The entry's status time just after the move, as the sink
+                // records it on a successful result.
+                let metadata = std::fs::symlink_metadata(path).unwrap();
+                value["trash_entry_changed"] = serde_json::json!({
+                    "secs": metadata.st_ctime(), "nanos": metadata.st_ctime_nsec()
+                });
+            }
             Some(_) => {
                 value["status"] = "error".into();
                 value["error"] = "boom".into();

@@ -38,6 +38,10 @@ fn retained_trash_record(path: &std::path::Path) -> String {
             "dev": metadata.st_dev(), "ino": metadata.st_ino(),
             "birth_secs": metadata.st_birthtime(),
             "birth_nanos": metadata.st_birthtime_nsec()
+        },
+        // The entry's status time just after the move, as the sink records it.
+        "trash_entry_changed": {
+            "secs": metadata.st_ctime(), "nanos": metadata.st_ctime_nsec()
         }
     })
     .to_string()
