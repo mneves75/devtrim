@@ -29,6 +29,7 @@ import sys
 import tempfile
 import termios
 import time
+import traceback
 
 
 ESCAPE = re.compile(
@@ -949,6 +950,9 @@ def main():
         verify_stop_between_targets(binary)
         verify_stop_during_a_command(binary)
     except (AssertionError, OSError, termios.error) as error:
+        # The stack names which check failed and where; a bare OSError such
+        # as ESRCH says nothing about which call raised it.
+        traceback.print_exc(file=sys.stderr)
         print(f"tui: {error}", file=sys.stderr)
         return 1
     print(
