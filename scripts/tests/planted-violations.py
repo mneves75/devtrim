@@ -1476,6 +1476,16 @@ CASES = (
         marker="PV trash/entry-time-record",
     ),
     Case(
+        name="trash/apply-entry",
+        relative_path="src/ops/mod.rs",
+        # Without the recheck the sink judges the object alone, so an entry
+        # restored and trashed again after the preview is removed.
+        before="        if found != Some(required) {\n",
+        after="        if found.is_none() && found == Some(required) {\n",
+        tests=("ops::tests::a_trash_entry_moved_again_after_the_preview_is_refused_at_apply",),
+        marker="PV trash/apply-entry",
+    ),
+    Case(
         name="trash/held-single-link",
         relative_path="src/ops/mod.rs",
         before="        || (kind == rustix::fs::FileType::RegularFile && stat.st_nlink == 1);\n",
@@ -1488,8 +1498,8 @@ CASES = (
         relative_path="src/ops/mod.rs",
         # Dropping the pin lets the finding read its identity again after the
         # item was judged, so a later item at that name takes its place.
-        before="            )\n            .with_identity(FileIdentity::from_std_metadata(&metadata)),\n",
-        after="            ),\n",
+        before="        )\n        .with_identity(FileIdentity::from_std_metadata(&metadata));\n",
+        after="        );\n",
         tests=("ops::tests::a_trash_item_replaced_after_it_was_judged_is_never_purged",),
         marker="PV trash/judged-identity",
     ),

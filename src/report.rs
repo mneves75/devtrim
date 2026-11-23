@@ -266,6 +266,10 @@ pub struct Finding {
     target: Option<PathBuf>,
     #[serde(skip)]
     identity: Option<FileIdentity>,
+    /// The Trash entry's status time a narrowed purge matched against the
+    /// journal; the sink refuses the entry once it differs.
+    #[serde(skip)]
+    trash_entry: Option<crate::journal::EntryChanged>,
     #[serde(skip)]
     authority: TargetAuthority,
     #[serde(skip)]
@@ -300,6 +304,7 @@ impl Finding {
             project: None,
             target: path,
             identity,
+            trash_entry: None,
             authority: TargetAuthority::Standard,
             command_authority: None,
             scan_error: None,
@@ -364,6 +369,16 @@ impl Finding {
     pub(crate) fn with_identity(mut self, identity: FileIdentity) -> Self {
         self.identity = Some(identity);
         self
+    }
+
+    /// Pins the Trash entry time a narrowed purge judged the item by.
+    pub(crate) fn with_trash_entry(mut self, entry: crate::journal::EntryChanged) -> Self {
+        self.trash_entry = Some(entry);
+        self
+    }
+
+    pub(crate) fn trash_entry(&self) -> Option<crate::journal::EntryChanged> {
+        self.trash_entry
     }
 
     pub(crate) fn with_project(mut self, project: &Path) -> Self {

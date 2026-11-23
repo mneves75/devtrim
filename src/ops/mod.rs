@@ -481,7 +481,9 @@ pub(crate) fn apply_uv_cache_finding(
 /// caches` moved there with its marker.
 fn apply_trashed_finding(finding: &Finding, ctx: &Ctx, trash: &Path) -> Result<()> {
     apply_verified_finding("trash-empty", finding, ctx, |verified| {
-        verified.grant_trashed_markers(trash)
+        Ok(verified
+            .grant_trashed_markers(trash)?
+            .require_trash_entry(finding.trash_entry()))
     })
 }
 
@@ -564,6 +566,7 @@ fn remove_path(
     permanent: bool,
     expected: FileIdentity,
 ) -> Result<Option<crate::journal::EntryChanged>> {
+    let target_trash_entry = target.required_trash_entry();
     let (path, markers) = target.into_parts();
     let parent = path
         .parent()
@@ -585,6 +588,17 @@ fn remove_path(
     let parent_identity = file_identity_for_dir(&dir)
         .with_context(|| format!("cannot inspect target parent: {}", parent.display()))?;
     let deletion_device = checked_removal_root(actual, expected, parent_identity.dev, &path)?;
+    if let Some(required) = target_trash_entry {
+        let found = rustix::fs::statat(&dir, leaf, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+            .ok()
+            .and_then(|stat| entry_changed_of(&stat));
+        if found != Some(required) {
+            anyhow::bail!(
+                "refusing {}: the Trash entry changed since it was matched to devtrim's move",
+                path.display()
+            );
+        }
+    }
 
     if !permanent {
         let metadata = dir
@@ -912,10 +926,16 @@ fn file_identity_at(dir: &cap_std::fs::Dir, path: &Path) -> Result<FileIdentity>
 /// on APFS, whose times keep nanoseconds.
 fn trash_entry_changed(fd: &rustix::fd::OwnedFd) -> Option<crate::journal::EntryChanged> {
     let stat = rustix::fs::fstat(fd).ok()?;
+    entry_changed_of(&stat).filter(|_| on_apfs(fd))
+}
+
+/// The entry time of a folder or a singly linked file, as
+/// [`crate::journal::EntryChanged::of`] reads it from metadata.
+fn entry_changed_of(stat: &rustix::fs::Stat) -> Option<crate::journal::EntryChanged> {
     let kind = rustix::fs::FileType::from_raw_mode(stat.st_mode);
     let single = kind == rustix::fs::FileType::Directory
         || (kind == rustix::fs::FileType::RegularFile && stat.st_nlink == 1);
-    (single && on_apfs(fd)).then_some(crate::journal::EntryChanged {
+    single.then_some(crate::journal::EntryChanged {
         secs: stat.st_ctime,
         nanos: stat.st_ctime_nsec,
     })
@@ -1390,7 +1410,7 @@ fn restore_quarantined_target(
 }
 
 pub(crate) fn trash_findings(ctx: &Ctx) -> Result<Vec<Finding>> {
-    trash_findings_where(ctx, |_| true)
+    trash_findings_where(ctx, false, |_| true)
 }
 
 /// The Trash items devtrim itself moved there, for `trash-empty
@@ -1418,7 +1438,7 @@ pub(crate) fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>>
     // Object and move alike: the identity says which object devtrim moved, the
     // entry's unchanged status time that this entry is still that move's. An
     // older record, written before the time was kept, matches nothing.
-    let findings = trash_findings_where(ctx, |metadata| {
+    let findings = trash_findings_where(ctx, true, |metadata| {
         let ours = TrashedIdentity::from_metadata(metadata)
             .zip(crate::journal::EntryChanged::of(metadata))
             .is_some_and(|entry| moved.contains(&entry));
@@ -1440,8 +1460,11 @@ pub(crate) fn trash_findings_moved_by_devtrim(ctx: &Ctx) -> Result<Vec<Finding>>
 /// Each item is read once: `keep` judges that observation and the finding
 /// carries its identity, so the sink removes only the object judged, never
 /// one put at its name afterwards (Finder renames Trash items at will).
+/// Direct Trash children `keep` accepts; with `pin_entry`, each finding also
+/// carries the entry time it was judged by, which the sink rechecks.
 fn trash_findings_where(
     ctx: &Ctx,
+    pin_entry: bool,
     mut keep: impl FnMut(&std::fs::Metadata) -> bool,
 ) -> Result<Vec<Finding>> {
     let directory = crate::safety::validate_trash_root(&ctx.home)?;
@@ -1482,17 +1505,20 @@ fn trash_findings_where(
                 continue;
             }
         };
-        findings.push(
-            Finding::sized(
-                format!("Trash item: {}", entry.file_name().to_string_lossy()),
-                Some(path),
-                size,
-                "permanent purge; Finder recovery is no longer available afterward",
-                9,
-                Action::Shred,
-            )
-            .with_identity(FileIdentity::from_std_metadata(&metadata)),
-        );
+        let finding = Finding::sized(
+            format!("Trash item: {}", entry.file_name().to_string_lossy()),
+            Some(path),
+            size,
+            "permanent purge; Finder recovery is no longer available afterward",
+            9,
+            Action::Shred,
+        )
+        .with_identity(FileIdentity::from_std_metadata(&metadata));
+        let finding = match crate::journal::EntryChanged::of(&metadata).filter(|_| pin_entry) {
+            Some(entry) => finding.with_trash_entry(entry),
+            None => finding,
+        };
+        findings.push(finding);
     }
     if !unread.is_empty() {
         findings.push(project::unread_folders_finding("Trash items", &unread));
@@ -2198,6 +2224,58 @@ mod tests {
         remove_test_path(home);
     }
 
+    /// A narrowed purge acts only on the entry it matched: one restored and
+    /// trashed again between the preview and the apply is the same object but
+    /// not devtrim's move, so the sink refuses it and leaves it; an entry left
+    /// alone meanwhile is removed.
+    #[test]
+    fn a_trash_entry_moved_again_after_the_preview_is_refused_at_apply() {
+        use crate::journal::{EntryChanged, JournalRecord, TrashedIdentity, begin};
+
+        let (_fixture, home) = sink_test_home("only-devtrim-apply");
+        let trash = home.join(".Trash");
+        let kept = trash.join("left alone");
+        let moved = trash.join("moved again");
+        for item in [&kept, &moved] {
+            std::fs::create_dir_all(item).unwrap();
+            std::fs::write(item.join("file"), "x").unwrap();
+        }
+        let ctx = context(home.clone());
+        for item in [&kept, &moved] {
+            let metadata = std::fs::symlink_metadata(item).unwrap();
+            let attempt = begin(
+                &ctx,
+                JournalRecord::filesystem_attempt("caches", "trash", Path::new("/x/cache"), 1)
+                    .with_trashed_identity(TrashedIdentity::of(item)),
+            )
+            .unwrap();
+            attempt
+                .finish_trashed(&ctx, Ok(()), EntryChanged::of(&metadata))
+                .unwrap();
+        }
+        let findings = trash_findings_moved_by_devtrim(&ctx).unwrap();
+        assert_eq!(findings.len(), 2, "both entries are devtrim's at preview");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let restored = home.join("restored");
+        std::fs::rename(&moved, &restored).unwrap();
+        std::fs::rename(&restored, &moved).unwrap();
+
+        for finding in &findings {
+            let result = apply_trashed_finding(finding, &ctx, &trash);
+            if finding.target() == Some(moved.as_path()) {
+                assert!(
+                    result.is_err() && moved.join("file").exists(),
+                    "PV trash/apply-entry: an entry moved again after the preview was removed"
+                );
+            } else {
+                result.unwrap();
+            }
+        }
+        assert!(!kept.exists(), "the entry left alone is removed");
+        remove_test_path(home);
+    }
+
     /// The time a Trash move records comes from the descriptor held across it,
     /// and only for an object no other name shares.
     #[test]
@@ -2747,7 +2825,7 @@ mod tests {
         let home = root.canonicalize().unwrap();
         let item = home.join(".Trash/judged");
         let ctx = context(home.clone());
-        let findings = trash_findings_where(&ctx, |_| {
+        let findings = trash_findings_where(&ctx, false, |_| {
             std::fs::rename(&item, home.join("judged-elsewhere")).unwrap();
             std::fs::create_dir(&item).unwrap();
             std::fs::write(item.join("unrelated"), "keep").unwrap();

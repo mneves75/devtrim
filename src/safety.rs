@@ -710,6 +710,9 @@ impl FileIdentity {
 pub(crate) struct VerifiedTarget {
     path: PathBuf,
     markers: MarkerGrant,
+    /// A Trash entry time the sink must still find on the target, or it
+    /// refuses: [`VerifiedTarget::require_trash_entry`].
+    trash_entry: Option<crate::journal::EntryChanged>,
 }
 
 /// The nested Git markers the sink may tolerate inside one target. Validation
@@ -742,6 +745,23 @@ impl MarkerGrant {
 impl VerifiedTarget {
     pub(crate) fn into_parts(self) -> (PathBuf, MarkerGrant) {
         (self.path, self.markers)
+    }
+
+    /// The Trash entry time the sink must still find, if one is required.
+    pub(crate) fn required_trash_entry(&self) -> Option<crate::journal::EntryChanged> {
+        self.trash_entry
+    }
+
+    /// Narrows the target to the Trash entry a narrowed purge matched: the
+    /// sink refuses it once its status time differs, as it does after any
+    /// rename, so an entry restored and trashed again after the preview is
+    /// never removed for devtrim's earlier move.
+    pub(crate) fn require_trash_entry(
+        mut self,
+        entry: Option<crate::journal::EntryChanged>,
+    ) -> Self {
+        self.trash_entry = entry;
+        self
     }
 
     /// Lets the sink tolerate uv's source-distribution marker in this target,
@@ -900,6 +920,7 @@ pub(crate) fn validate_path_for_deletion(
     Ok(VerifiedTarget {
         path: literal,
         markers: MarkerGrant::default(),
+        trash_entry: None,
     })
 }
 

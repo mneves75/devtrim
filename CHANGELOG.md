@@ -18,7 +18,9 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   move left: the sink journals the entry's status-change time, read through a
   descriptor held across the move, and any later rename changes it. An item
   restored and trashed again by someone else, and a file with another name
-  (a hard link), are no longer offered. Items moved by an earlier devtrim carry
+  (a hard link), are no longer offered, and the sink checks that time again
+  just before removal, so an entry moved again between preview and apply is
+  refused and left in the Trash. Items moved by an earlier devtrim carry
   no such time and are no longer offered either; empty the Trash by other
   means or move them again with 0.17.1 (CORE-TRASH-PROVENANCE-1, Medium, found
   by the 0.17.1 gate).

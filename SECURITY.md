@@ -65,7 +65,7 @@ object alone does not prove the move: an item restored and trashed again keeps
 its device, inode and birth time. So the sink holds a descriptor across each
 Trash move and journals the entry's status-change time just after it, which
 every rename sets to the nanosecond on APFS; an entry is devtrim's only while
-its time still equals that record. A file with another name shares the time
+its time still equals that record, at preview and again at the sink just before removal. A file with another name shares the time
 with it and records none, nor does an entry off APFS, and records written
 before 0.17.1 carry none, so all three stay (CORE-TRASH-PROVENANCE-1, 0.17.1).
 
