@@ -107,7 +107,9 @@ class Session:
         self.columns = columns
         self.output = bytearray()
         self.process = None
-        self.deadline = time.monotonic() + 15
+        # A bound on a hang, never a wait: a loaded machine can take most of
+        # 15 s to scan before the first screen, so every session gets 60 s.
+        self.deadline = time.monotonic() + 60
 
     def __enter__(self):
         self.master, self.slave = pty.openpty()
@@ -154,6 +156,45 @@ class Session:
 
     def send(self, keys):
         os.write(self.master, keys)
+
+    def ready_for_keys(self):
+        """Waits until the TUI takes keys again. It discards input still
+        queued when it draws a result, by design, so keys sent the moment a
+        plan appears can be lost. `?` is safe to resend: it opens the key
+        reference, which no key passes through, and a lost `?` does nothing.
+        Once the reference shows, `?` closes it and the screen takes keys."""
+        marker = "Nothing is applied without an explicit, separate approval."
+        for _ in range(10):
+            self.send(b"?")
+            if self.shows_within(marker, 2.0):
+                # A slow first `?` and its resend would open and close it.
+                if not self.shows_within_steady(marker, 0.5):
+                    continue
+                break
+        else:
+            raise AssertionError("the TUI never took a key: its key reference did not open")
+        self.send(b"?")
+        self.wait_for_screen_without(marker)
+
+    def shows_within(self, text, seconds):
+        """Whether `text` is on the rebuilt screen within `seconds`."""
+        until = min(self.deadline, time.monotonic() + seconds)
+        while time.monotonic() < until:
+            self.read_output()
+            if text in screen_text(render_screen(self.output, self.rows, self.columns)):
+                return True
+            if self.process.poll() is not None:
+                raise AssertionError(f"TUI exited before showing {text!r}")
+        return False
+
+    def shows_within_steady(self, text, seconds):
+        """Whether `text` stays on the rebuilt screen for `seconds`."""
+        until = min(self.deadline, time.monotonic() + seconds)
+        while time.monotonic() < until:
+            self.read_output()
+            if text not in screen_text(render_screen(self.output, self.rows, self.columns)):
+                return False
+        return True
 
     def wait_for(self, text):
         start = len(self.output)
@@ -297,6 +338,7 @@ def verify_type_ahead(binary):
             session.wait_for("Scan everything")
             session.send(b"2sa0\r")
             session.wait_for_screen("Review every finding")
+            session.ready_for_keys()
             session.settle(1.0)
             if not cache.exists():
                 raise AssertionError("type-ahead approved a plan before it was displayed")
@@ -326,6 +368,7 @@ def verify_paste_and_modified_keys_never_approve(binary):
                 raise AssertionError("PV tui/bracketed-paste: bracketed paste was not enabled")
             session.send(b"2")
             session.wait_for_screen("Review every finding")
+            session.ready_for_keys()
             session.send(b"sa")
             session.wait_for_screen("This plan:")
             session.send(b"\x1b[200~0\r\x1b[201~")
@@ -358,6 +401,7 @@ def verify_selection(binary):
             session.wait_for("Scan everything")
             session.send(b"2")
             session.wait_for_screen("Review every finding")
+            session.ready_for_keys()
             session.send(b" ")
             # Ratatui redraws only changed cells, so the title's "2 of 2" turning
             # into "1 of 2" emits one character; the detail line is drawn whole.
@@ -490,6 +534,7 @@ def verify_purge(binary):
             session.wait_for("Scan everything")
             session.send(b"p")
             session.wait_for_screen("Review every finding")
+            session.ready_for_keys()
             # The larger `target` is first; move to `node_modules` and leave it out.
             session.send(b"j ")
             session.wait_for_screen("Left out of this plan", str(project / "node_modules"))
@@ -515,6 +560,7 @@ def verify_minimum_size(binary):
             session.wait_for("Scan everything")
             session.send(b"p")
             session.wait_for_screen("Review every finding")
+            session.ready_for_keys()
             session.send(b"j ")
             session.wait_for_screen("Left out of this plan", "more line(s); Enter shows all")
             session.send(b"\r")
@@ -537,6 +583,15 @@ def alive(pid):
     except ProcessLookupError:
         return False
     return True
+
+
+def kill_if_alive(pid):
+    """Kills `pid` unless it is already gone: devtrim kills the probes it
+    started, and one can be reaped between a check and the signal."""
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def elapsed_on_screen(session):
@@ -620,7 +675,7 @@ def verify_slow_scan_stops(binary):
                     raise AssertionError(f"{name}: the probe the scan started still runs")
             finally:
                 if probe is not None and alive(probe):
-                    os.kill(probe, signal.SIGKILL)
+                    kill_if_alive(probe)
     return timings
 
 
@@ -651,6 +706,7 @@ def verify_blocked_apply_refuses_quit(binary):
                 session.wait_for("Scan everything")
                 session.send(b"3")
                 session.wait_for_screen("Review every finding")
+                session.ready_for_keys()
                 session.send(b"a")
                 session.wait_for_screen("y apply · n/Esc cancel")
                 session.send(b"y")
@@ -690,7 +746,7 @@ def verify_blocked_apply_refuses_quit(binary):
                 raise AssertionError("an apply stopped in its preflight removed a target")
         finally:
             if probe is not None and alive(probe):
-                os.kill(probe, signal.SIGKILL)
+                kill_if_alive(probe)
 
 
 def verify_stop_between_targets(binary):
@@ -724,6 +780,7 @@ def verify_stop_between_targets(binary):
                 session.wait_for("Scan everything")
                 session.send(b"p")
                 session.wait_for_screen("Review every finding")
+                session.ready_for_keys()
                 session.send(b"sa")
                 session.wait_for_screen("then Enter")
                 session.send(b"0\r")
@@ -757,7 +814,7 @@ def verify_stop_between_targets(binary):
                 raise AssertionError(f"the journal holds more than the removed item: {records}")
         finally:
             if probe is not None and alive(probe):
-                os.kill(probe, signal.SIGKILL)
+                kill_if_alive(probe)
 
 
 def verify_scan_board(binary):
@@ -790,7 +847,7 @@ def verify_scan_board(binary):
                     raise AssertionError(f"q during a scan exited {session.process.returncode}")
         finally:
             if probe is not None and alive(probe):
-                os.kill(probe, signal.SIGKILL)
+                kill_if_alive(probe)
 
 
 def verify_stop_during_a_command(binary):
@@ -831,6 +888,7 @@ def verify_stop_during_a_command(binary):
                 session.wait_for("Scan everything")
                 session.send(b"7")
                 session.wait_for_screen("Review every finding")
+                session.ready_for_keys()
                 session.send(b"a")
                 session.wait_for_screen("Esc cancel")
                 visible = screen_text(render_screen(session.output, session.rows, session.columns))
@@ -852,7 +910,7 @@ def verify_stop_during_a_command(binary):
                 raise AssertionError(f"the journal holds more than the finished command: {records}")
         finally:
             if probe is not None and alive(probe):
-                os.kill(probe, signal.SIGKILL)
+                kill_if_alive(probe)
 
 
 def uv_cache_home(directory):
@@ -874,6 +932,7 @@ def verify_confirmation_feedback_at_minimum_size(binary):
             session.wait_for("Scan everything")
             session.send(b"2")
             session.wait_for_screen("Review every finding")
+            session.ready_for_keys()
             session.send(b"sa")
             session.wait_for_screen("This plan:")
             session.send(b"\r")
@@ -917,6 +976,7 @@ def verify_outcome_rescans(binary):
             session.wait_for("Scan everything")
             session.send(b"2")
             session.wait_for_screen("Review every finding")
+            session.ready_for_keys()
             session.send(b"sa0\r")
             session.wait_for_screen("permanently deleted uv package cache", "r rescan")
             cache.mkdir()
