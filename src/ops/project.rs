@@ -1853,6 +1853,17 @@ mod tests {
                 .unwrap();
             assert!(status.success(), "chmod +a {entry} failed");
         };
+        // A `deny delete` entry left behind by a failing assertion would make
+        // the fixture undeletable, so the entries are cleared as it unwinds.
+        struct ClearAcls(Vec<PathBuf>);
+        impl Drop for ClearAcls {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    let _ = Command::new("/bin/chmod").arg("-N").arg(path).status();
+                }
+            }
+        }
+        let _clear = ClearAcls(vec![shared.clone()]);
         acl("group:everyone deny delete", &shared);
         assert!(
             isolated_git_dir(&private, false).is_ok(),
