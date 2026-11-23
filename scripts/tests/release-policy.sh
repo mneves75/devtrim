@@ -328,7 +328,11 @@ require_fixed "$ci_workflow" 'scripts/tests/gitleaks-positive-control.sh "$tool_
 require_fixed "$ci_workflow" 'name: Full-history secret scans'
 require_fixed "$ci_workflow" 'gitleaks git --redact --no-banner .'
 require_fixed "$ci_workflow" 'trufflehog git "file://$(pwd)" --results=verified,unknown --fail'
-require_fixed "$ci_workflow" '--fail-on-scan-errors --no-update --no-color'
+for workflow in "$release_workflow" "$ci_workflow"; do
+  # DIST-LOG-1: TruffleHog prints raw matches on stdout, which must never reach the log.
+  require_line "$workflow" '            --fail-on-scan-errors --no-update --no-color > /dev/null'
+  require_line "$workflow" '          python3 -B scripts/tests/secret-scan-controls.py'
+done
 require_fixed "$release_workflow" 'shellcheck-v0.11.0.darwin.x86_64.tar.gz'
 require_fixed "$release_workflow" '78d0d9db2f4dfd964fd313e70e92571c6d4204243ad8f3d0abbb2ffc56e45fc6'
 require_fixed "$release_workflow" '847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2'

@@ -539,6 +539,10 @@ Non-negotiable boundaries:
   checksum-pinned full-history Gitleaks and TruffleHog scans run in PR/main CI
   and again during release validation. Both installation paths first prove
   Gitleaks detects a non-allowlisted synthetic PAT assembled at runtime.
+  Gitleaks runs with `--redact`; TruffleHog, whose printer writes each raw
+  match, runs with its stdout discarded, so a candidate credential never
+  reaches an Actions log while `--fail` still fails the step, and
+  `scripts/tests/secret-scan-controls.py` proves both with the pinned binary.
 - `sha2` (RustCrypto) verifies the SHA-256 digests the Codex voice manifest
   records; no existing dependency provides SHA-256, and running `shasum` once
   per file would add dozens of processes per release.
