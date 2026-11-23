@@ -243,13 +243,16 @@ Non-negotiable boundaries:
   account can create, rename or replace any part of it, and it holds exactly
   `HEAD`, `config`, an empty `objects` and an empty `refs`, each owned by the user
   with no group or other access, `HEAD` naming an unborn branch and `config`
-  only the object format, byte for byte as devtrim writes them. No ACL is read:
-  on macOS only a file's owner, or an account an ACL that owner set allows to,
-  can change its ACL, so every entry in a chain owned by the user or root was
-  placed by one of them. Ownership means nothing on a volume mounted with it
+  only the object format, byte for byte as devtrim writes them. Since an ACL
+  `allow` entry can let another account write where the mode bits deny it, one
+  bounded `/bin/ls -lde` over the folder chain must show no `allow` entry before
+  anything is created, and again over that chain and the probe's parts after;
+  `deny` entries, such as the home folder's own, only narrow access. A folder
+  whose name holds a newline, which could forge a listed line, is refused
+  before `ls` runs. Ownership means nothing on a volume mounted with it
   ignored (`MNT_IGNORE_OWNERSHIP`, as Finder's "Ignore ownership on this
   volume" and `hdiutil attach -owners off` set), where every file reads as the
-  current user's, so the probe's folder is refused there and the count is
+  current user's, so a chain holding such a volume is refused and the count is
   unavailable (AR-OWN-1, CORE-GIT-ACL-1 and CORE-GIT-ACL-2, 0.17.1). Git reads the
   repository's index through `GIT_INDEX_FILE` and its `info/exclude` through
   `core.excludesFile`, both as data, with `--attr-source=<empty-tree>`,

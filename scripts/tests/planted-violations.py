@@ -1096,10 +1096,28 @@ CASES = (
         marker="PV git/probe-parent",
     ),
     Case(
+        name="git/probe-acl",
+        relative_path="src/ops/project.rs",
+        before="    if listed.stdout.split(|byte| *byte == b'\\n').any(acl_allows) {\n",
+        after="    if false {\n",
+        tests=("ops::project::tests::the_isolated_git_dir_refuses_anything_it_did_not_write_alone",),
+        marker="PV git/probe-acl",
+    ),
+    Case(
+        name="git/acl-before-create",
+        relative_path="src/ops/project.rs",
+        # Reading the chain's ACLs only after the probe exists lets a shared
+        # folder hold its parts before the refusal.
+        before="    refuse_acl_grants(base.ancestors(), &base)?;\n",
+        after="",
+        tests=("ops::project::tests::the_isolated_git_dir_refuses_anything_it_did_not_write_alone",),
+        marker="PV git/acl-before-create",
+    ),
+    Case(
         name="git/probe-ownership",
         relative_path="src/ops/project.rs",
-        before="    if ignores_ownership(&base)? {\n",
-        after="    if false {\n",
+        before="        if ignores_ownership(folder)? {\n",
+        after="        if false {\n",
         tests=("ops::project::tests::the_isolated_git_dir_refuses_a_volume_that_ignores_ownership",),
         marker="PV git/probe-ownership",
     ),
