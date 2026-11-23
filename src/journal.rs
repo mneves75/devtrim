@@ -39,14 +39,48 @@ pub(crate) struct TrashedIdentity {
     pub birth_nanos: i64,
 }
 
+/// When a Trash entry last changed status, read through a descriptor devtrim
+/// held across its own move, just after it. Device, inode and birth time name
+/// the object, not the move: an item restored and trashed again still carries
+/// them. Every rename sets the status-change time, to the nanosecond on APFS,
+/// and nothing devtrim does changes it after the move (measured with
+/// `NSFileManager` on an APFS image, a file and a folder alike), so an entry
+/// whose time still equals the one recorded is the one devtrim put there and
+/// has not left the Trash since. It is recorded only for a folder or a
+/// singly linked file on APFS: a hard link shares the time with its other
+/// names, and HFS+ keeps it to the second.
+#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq, Hash)]
+pub(crate) struct EntryChanged {
+    pub secs: i64,
+    pub nanos: i64,
+}
+
+impl EntryChanged {
+    /// The time a Trash entry shows now, or nothing for a file with other
+    /// names, whose time any of them could have set.
+    pub(crate) fn of(metadata: &std::fs::Metadata) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+        (metadata.is_dir() || metadata.nlink() == 1).then(|| Self {
+            secs: metadata.ctime(),
+            nanos: metadata.ctime_nsec(),
+        })
+    }
+}
+
 impl TrashedIdentity {
     /// The identity of the item at `path` itself, never what a link names.
     /// Unknown where the platform keeps no birth time.
+    #[cfg(test)]
     pub(crate) fn of(path: &Path) -> Option<Self> {
+        Self::from_metadata(&std::fs::symlink_metadata(path).ok()?)
+    }
+
+    /// The identity one `symlink_metadata` observation shows, so a caller
+    /// judging the same item twice can bind both judgments to that one read.
+    pub(crate) fn from_metadata(metadata: &std::fs::Metadata) -> Option<Self> {
         #[cfg(target_os = "macos")]
         {
             use std::os::macos::fs::MetadataExt as _;
-            let metadata = std::fs::symlink_metadata(path).ok()?;
             Some(Self {
                 dev: metadata.st_dev(),
                 ino: metadata.st_ino(),
@@ -56,7 +90,7 @@ impl TrashedIdentity {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = path;
+            let _ = metadata;
             None
         }
     }
@@ -84,6 +118,10 @@ pub(crate) struct JournalRecord {
     /// The moved item's identity, on a `trash` record only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<TrashedIdentity>,
+    /// When the Trash entry the move left last changed, on the successful
+    /// result of a `trash` record only: [`EntryChanged`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trash_entry_changed: Option<EntryChanged>,
     /// The exact target, kept in memory only so the apply JSON can tell this
     /// record's item from another whose name reads the same as text; `target`
     /// is that text, which is lossy for a name that is not UTF-8.
@@ -111,6 +149,7 @@ impl JournalRecord {
             status: None,
             error: None,
             identity: None,
+            trash_entry_changed: None,
             exact_target: Some(target.to_path_buf()),
         }
     }
@@ -143,6 +182,7 @@ impl JournalRecord {
             status: None,
             error: None,
             identity: None,
+            trash_entry_changed: None,
             exact_target: None,
         }
     }
@@ -410,7 +450,24 @@ pub(crate) fn begin(ctx: &Ctx, record: JournalRecord) -> Result<JournalAttempt> 
 
 impl JournalAttempt {
     pub(crate) fn finish<T>(self, ctx: &Ctx, result: Result<T>) -> Result<T> {
-        let finished = finish_record_at(ctx, &self.location, &self.record, result);
+        self.finish_trashed(ctx, result, None)
+    }
+
+    /// [`Self::finish`] for a Trash move, recording on its result when the
+    /// entry the move left in the Trash last changed.
+    pub(crate) fn finish_trashed<T>(
+        self,
+        ctx: &Ctx,
+        result: Result<T>,
+        changed: Option<EntryChanged>,
+    ) -> Result<T> {
+        let mut attempt = self.record.clone();
+        // A record the reader would call malformed refuses every later narrowed
+        // purge, so the time goes only where it may: a successful move whose
+        // identity was recorded.
+        attempt.trash_entry_changed =
+            changed.filter(|_| result.is_ok() && attempt.identity.is_some());
+        let finished = finish_record_at(ctx, &self.location, &attempt, result);
         drop(self.rotation_lock);
         finished
     }
@@ -1178,6 +1235,11 @@ fn valid_record(record: &JournalRecord) -> bool {
         return false;
     }
     if record.identity.is_some() && record.action != "trash" {
+        return false;
+    }
+    if record.trash_entry_changed.is_some()
+        && (record.identity.is_none() || record.status.as_deref() != Some("ok"))
+    {
         return false;
     }
     let action_valid = match record.action.as_str() {

@@ -1096,12 +1096,48 @@ CASES = (
         marker="PV git/probe-parent",
     ),
     Case(
+        name="process/output-limit",
+        relative_path="src/process.rs",
+        before="                    Ok(_) if bytes.len() as u64 > limit => {\n",
+        after="                    Ok(_) if false => {\n",
+        tests=("process::tests::a_stream_past_its_limit_fails_and_one_at_it_passes",),
+        marker="PV process/output-limit",
+    ),
+    Case(
         name="git/probe-acl",
         relative_path="src/ops/project.rs",
         before="    if listed.stdout.split(|byte| *byte == b'\\n').any(acl_allows) {\n",
         after="    if false {\n",
         tests=("ops::project::tests::the_isolated_git_dir_refuses_anything_it_did_not_write_alone",),
         marker="PV git/probe-acl",
+    ),
+    Case(
+        name="git/reused-acl-before-write",
+        relative_path="src/ops/project.rs",
+        # Without it a reused probe shared by an ACL is written into before the
+        # late check refuses it.
+        before="        refuse_acl_grants([part.as_path()], &dir)?;\n",
+        after="",
+        tests=("ops::project::tests::the_isolated_git_dir_refuses_anything_it_did_not_write_alone",),
+        marker="PV git/reused-acl-before-write",
+    ),
+    Case(
+        name="git/acl-before-create",
+        relative_path="src/ops/project.rs",
+        # Reading the chain's ACLs only after the probe exists lets a shared
+        # folder hold its parts before the refusal.
+        before="    refuse_acl_grants(base.ancestors(), &base)?;\n",
+        after="",
+        tests=("ops::project::tests::the_isolated_git_dir_refuses_anything_it_did_not_write_alone",),
+        marker="PV git/acl-before-create",
+    ),
+    Case(
+        name="git/probe-ownership",
+        relative_path="src/ops/project.rs",
+        before="        if ignores_ownership(folder)? {\n",
+        after="        if false {\n",
+        tests=("ops::project::tests::the_isolated_git_dir_refuses_a_volume_that_ignores_ownership",),
+        marker="PV git/probe-ownership",
     ),
     Case(
         name="git/damaged-head",
@@ -1406,10 +1442,74 @@ CASES = (
     Case(
         name="trash/only-devtrim-identity",
         relative_path="src/ops/mod.rs",
-        before="        let ours = TrashedIdentity::of(path).is_some_and(|identity| moved.contains(&identity));\n",
-        after="        let ours = TrashedIdentity::of(path).is_some() || moved.is_empty();\n",
+        before="        let ours = TrashedIdentity::from_metadata(metadata)\n            .zip(crate::journal::EntryChanged::of(metadata))\n            .is_some_and(|entry| moved.contains(&entry));\n",
+        after="        let ours = TrashedIdentity::from_metadata(metadata).is_some() || moved.is_empty();\n",
         tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
         marker="PV trash/only-devtrim-identity",
+    ),
+    Case(
+        name="trash/move-provenance",
+        relative_path="src/ops/mod.rs",
+        # Matching the object alone lets an entry someone else trashed again
+        # after devtrim's move stand in for that move.
+        before="            .is_some_and(|entry| moved.contains(&entry));\n",
+        after="            .is_some_and(|entry| moved.iter().any(|known| known.0 == entry.0));\n",
+        tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
+        marker="PV trash/move-provenance",
+    ),
+    Case(
+        name="trash/single-link",
+        relative_path="src/journal.rs",
+        # A hard link shares its status time with every other name of the file.
+        before="        (metadata.is_dir() || metadata.nlink() == 1).then(|| Self {\n",
+        after="        true.then(|| Self {\n",
+        tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
+        marker="PV trash/single-link",
+    ),
+    Case(
+        name="trash/entry-time-record",
+        relative_path="src/journal.rs",
+        # Written unconditionally, the time lands on records the reader refuses.
+        before="            changed.filter(|_| result.is_ok() && attempt.identity.is_some());\n",
+        after="            changed;\n",
+        tests=("ops::tests::only_items_devtrim_moved_to_the_trash_are_offered",),
+        marker="PV trash/entry-time-record",
+    ),
+    Case(
+        name="trash/apply-entry",
+        relative_path="src/ops/mod.rs",
+        # Without the recheck the sink judges the object alone, so an entry
+        # restored and trashed again after the preview is removed.
+        before="        if found != Some(required) {\n",
+        after="        if found.is_none() && found == Some(required) {\n",
+        tests=("ops::tests::a_trash_entry_moved_again_after_the_preview_is_refused_at_apply",),
+        marker="PV trash/apply-entry",
+    ),
+    Case(
+        name="trash/held-single-link",
+        relative_path="src/ops/mod.rs",
+        before="        || (kind == rustix::fs::FileType::RegularFile && stat.st_nlink == 1);\n",
+        after="        || kind == rustix::fs::FileType::RegularFile;\n",
+        tests=("ops::tests::the_held_entry_time_is_kept_only_for_a_folder_or_a_single_link",),
+        marker="PV trash/held-single-link",
+    ),
+    Case(
+        name="trash/judged-identity",
+        relative_path="src/ops/mod.rs",
+        # Dropping the pin lets the finding read its identity again after the
+        # item was judged, so a later item at that name takes its place.
+        before="        )\n        .with_identity(FileIdentity::from_std_metadata(&metadata));\n",
+        after="        );\n",
+        tests=("ops::tests::a_trash_item_replaced_after_it_was_judged_is_never_purged",),
+        marker="PV trash/judged-identity",
+    ),
+    Case(
+        name="trash/journal-approved-identity",
+        relative_path="src/ops/mod.rs",
+        before="        .filter(|metadata| finding.identity() == Some(FileIdentity::from_std_metadata(metadata)))\n",
+        after="        .filter(|metadata| finding.identity().is_some() || metadata.is_dir())\n",
+        tests=("ops::tests::the_sink_journals_no_identity_for_an_item_swapped_in_after_preview",),
+        marker="PV trash/journal-approved-identity",
     ),
     Case(
         name="trash/journal-identity",
@@ -1955,11 +2055,25 @@ CASES = (
     Case(
         name="eval/trash-only-devtrim",
         relative_path="src/ops/mod.rs",
-        # A failed or interrupted Trash move still selects its item.
-        before=".filter(|record| record.action == \"trash\" && record.status.as_deref() == Some(\"ok\"))",
-        after=".filter(|record| record.action == \"trash\")",
+        # Matching the object alone lets an entry trashed again after
+        # devtrim's move stand in for it. (A failed or interrupted move
+        # carries no entry time, which the writer and the reader both enforce,
+        # so the status filter beside it is no longer observable here.)
+        before="            .is_some_and(|entry| moved.contains(&entry));\n",
+        after="            .is_some_and(|entry| moved.iter().any(|known| known.0 == entry.0));\n",
         tests=("eval_trash_empty_only_devtrim_selects_only_journaled_identities",),
         marker="PV eval/trash-only-plan",
+        target="eval_system",
+    ),
+    Case(
+        name="eval/trash-only-apply",
+        relative_path="src/app.rs",
+        # Without the refusal a narrowed purge acts on journal evidence that
+        # cannot prove the move was devtrim's.
+        before="            if only_devtrim {\n                return command_error(\n",
+        after="            if false {\n                return command_error(\n",
+        tests=("eval_trash_empty_only_devtrim_selects_only_journaled_identities",),
+        marker="PV eval/trash-only-apply",
         target="eval_system",
     ),
     Case(

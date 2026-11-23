@@ -58,7 +58,21 @@ owned reports, exports and journal generations you intend to discard. Never
 remove or replace the lock while another process may use it. Keep evidence
 required for incident response. Removing journal records also removes the
 ownership evidence for `trash-empty --only-devtrim`; devtrim never reconstructs
-that evidence from names or age.
+that evidence from names or age. A record names an item only when the move's
+finding approved that exact object, and a narrowed purge removes only the
+object it matched against the journal, never one put at its name later. The
+object alone does not prove the move: an item restored and trashed again keeps
+its device, inode and birth time. So the sink holds a descriptor across each
+Trash move and journals the entry's status-change time just after it, which
+every rename sets to the nanosecond on APFS; an entry is devtrim's only while
+its time still equals that record, at preview and again at the sink just before removal. A file with another name shares the time
+with it and records none, nor does an entry off APFS, and records written
+before 0.17.1 carry none, so all three stay (CORE-TRASH-PROVENANCE-1, 0.17.1).
+That time is read through the descriptor just after the move returns, not by
+the move itself, so a rename inside that interval cannot be told from
+devtrim's own (CORE-TRASH-PROVENANCE-2). Because a permanent purge needs that
+proof, `--only-devtrim` is preview-only in 0.17.1 and refuses `--apply`; the
+journal keeps recording both facts for a later release that can prove the move.
 
 The owner must separately account for copied files, terminal logs, screenshots,
 cloud shares, backups and restore copies. Their retention is controlled by their
@@ -241,7 +255,17 @@ Non-negotiable boundaries:
   account can create, rename or replace any part of it, and it holds exactly
   `HEAD`, `config`, an empty `objects` and an empty `refs`, each owned by the user
   with no group or other access, `HEAD` naming an unborn branch and `config`
-  only the object format, byte for byte as devtrim writes them. Since an ACL `allow` entry can let another account write where the mode bits deny it, one bounded `/bin/ls -lde` over that folder chain and the probe's parts must show no `allow` entry; `deny` entries, such as the home folder's own, only narrow access. Git reads the
+  only the object format, byte for byte as devtrim writes them. Since an ACL
+  `allow` entry can let another account write where the mode bits deny it, one
+  bounded `/bin/ls -lde` over the folder chain must show no `allow` entry before
+  anything is created, and again over that chain and the probe's parts after;
+  `deny` entries, such as the home folder's own, only narrow access. A folder
+  whose name holds a newline, which could forge a listed line, is refused
+  before `ls` runs. Ownership means nothing on a volume mounted with it
+  ignored (`MNT_IGNORE_OWNERSHIP`, as Finder's "Ignore ownership on this
+  volume" and `hdiutil attach -owners off` set), where every file reads as the
+  current user's, so a chain holding such a volume is refused and the count is
+  unavailable (AR-OWN-1, CORE-GIT-ACL-1 and CORE-GIT-ACL-2, 0.17.1). Git reads the
   repository's index through `GIT_INDEX_FILE` and its `info/exclude` through
   `core.excludesFile`, both as data, with `--attr-source=<empty-tree>`,
   `GIT_ATTR_NOSYSTEM=1` and `core.attributesFile=/dev/null`; no configuration
@@ -537,6 +561,10 @@ Non-negotiable boundaries:
   checksum-pinned full-history Gitleaks and TruffleHog scans run in PR/main CI
   and again during release validation. Both installation paths first prove
   Gitleaks detects a non-allowlisted synthetic PAT assembled at runtime.
+  Gitleaks runs with `--redact`; TruffleHog, whose printer writes each raw
+  match, runs with its stdout discarded, so a candidate credential never
+  reaches an Actions log while `--fail` still fails the step, and
+  `scripts/tests/secret-scan-controls.py` proves both with the pinned binary.
 - `sha2` (RustCrypto) verifies the SHA-256 digests the Codex voice manifest
   records; no existing dependency provides SHA-256, and running `shasum` once
   per file would add dozens of processes per release.

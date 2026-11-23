@@ -229,8 +229,12 @@ jobs:
       - name: Full-history secret scans
         run: |
           gitleaks git --redact --no-banner .
+          # TruffleHog's printer writes each match's raw value on stdout.
+          # Discard it so no candidate credential reaches the Actions log;
+          # --fail still fails the step. Rerun the scan locally to see it.
           trufflehog git "file://$(pwd)" --results=verified,unknown --fail \
-            --fail-on-scan-errors --no-update --no-color
+            --fail-on-scan-errors --no-update --no-color > /dev/null
+          python3 -B scripts/tests/secret-scan-controls.py
 
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings

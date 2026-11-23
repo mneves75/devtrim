@@ -638,7 +638,12 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
 /// else may write to it, and it holds exactly those four entries. Its folder
 /// must belong to the current user with no group or other write, and every
 /// folder above it to that user or root, writable by others only when sticky,
-/// so no other account can create, rename or replace any part of it.
+/// so no other account can create, rename or replace any part of it, and no
+/// ACL may grant access there either. That folder chain is judged in full
+/// before anything is created, and the probe's own parts again after. Every
+/// folder must also be on a volume that enforces ownership: on one mounted
+/// with ownership ignored every file reads as the current user's, and none of
+/// those checks says anything.
 fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
     use std::io::Write as _;
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
@@ -647,7 +652,21 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
     let base = base
         .canonicalize()
         .with_context(|| format!("cannot resolve {}", base.display()))?;
+    // `ls` prints each name it lists, and a name holding a newline could pass
+    // for an ACL line; such a folder is refused before anything reads it.
+    if base.as_os_str().as_bytes().contains(&b'\n') {
+        anyhow::bail!(
+            "refusing Git probe parent {}: its name holds a newline",
+            base.display()
+        );
+    }
     for (depth, folder) in base.ancestors().enumerate() {
+        if ignores_ownership(folder)? {
+            anyhow::bail!(
+                "refusing Git probe parent {}: its volume ignores ownership",
+                folder.display()
+            );
+        }
         let metadata = std::fs::symlink_metadata(folder)
             .with_context(|| format!("cannot inspect {}", folder.display()))?;
         let others_write = metadata.mode() & 0o022 != 0;
@@ -665,6 +684,7 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
             );
         }
     }
+    refuse_acl_grants(base.ancestors(), &base)?;
     let format = if sha256 { "sha256" } else { "sha1" };
     let dir = base.join(format!("devtrim-git-probe-{uid}-{format}"));
     let config: &[u8] = if sha256 {
@@ -694,6 +714,9 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
             }
         }
         owned(&part, true)?;
+        // A probe left by an earlier run is reused, so its own ACL is read
+        // before anything is created inside it.
+        refuse_acl_grants([part.as_path()], &dir)?;
     }
     for (leaf, expected) in [
         ("HEAD", &b"ref: refs/heads/devtrim-unborn\n"[..]),
@@ -716,6 +739,7 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
             }
         }
         owned(&path, false)?;
+        refuse_acl_grants([path.as_path()], &dir)?;
         let found =
             std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
         if found != expected {
@@ -745,29 +769,37 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
             dir.display()
         );
     }
-    // Mode bits are not the whole story on macOS: an ACL `allow` entry can let
-    // another account write to or replace a folder its mode denies. `ls -e`
-    // lists every entry; a `deny` entry, such as the home folder's own
-    // `group:everyone deny delete`, only narrows access and is accepted.
-    let mut acl = Command::new("/bin/ls");
-    acl.arg("-lde").arg("--").args(base.ancestors());
-    for part in ["HEAD", "config", "objects", "refs"] {
-        acl.arg(dir.join(part));
-    }
-    acl.arg(&dir);
-    let listed = acl
+    // The chain is read again with the probe's own parts, in case it changed
+    // while they were created.
+    let parts = ["HEAD", "config", "objects", "refs"].map(|part| dir.join(part));
+    let probe_parts = parts.iter().map(PathBuf::as_path).chain([dir.as_path()]);
+    refuse_acl_grants(probe_parts.chain(base.ancestors()), &dir)?;
+    Ok(dir)
+}
+
+/// Refuses when an ACL on any of `paths` grants access. Mode bits are not the
+/// whole story on macOS: an ACL `allow` entry can let another account write to
+/// or replace a folder its mode denies. `ls -e` lists every entry; a `deny`
+/// entry, such as the home folder's own `group:everyone deny delete`, only
+/// narrows access and is accepted. Callers pass only paths free of newlines,
+/// so every line `ls` prints is either a file's own line or an ACL entry.
+fn refuse_acl_grants<'a>(paths: impl IntoIterator<Item = &'a Path>, probe: &Path) -> Result<()> {
+    let listed = Command::new("/bin/ls")
+        .arg("-lde")
+        .arg("--")
+        .args(paths)
         .output_within(QUERY_TIMEOUT)
-        .with_context(|| format!("cannot read the ACLs above {}", dir.display()))?;
+        .with_context(|| format!("cannot read the ACLs of {}", probe.display()))?;
     if !listed.status.success() {
-        anyhow::bail!("cannot read the ACLs above {}", dir.display());
+        anyhow::bail!("cannot read the ACLs of {}", probe.display());
     }
     if listed.stdout.split(|byte| *byte == b'\n').any(acl_allows) {
         anyhow::bail!(
             "refusing Git probe directory {}: an ACL lets another account change it",
-            dir.display()
+            probe.display()
         );
     }
-    Ok(dir)
+    Ok(())
 }
 
 /// Whether one `ls -le` line is an ACL entry that grants access: an index,
@@ -783,6 +815,18 @@ fn acl_allows(line: &[u8]) -> bool {
         && entry
             .split(|byte| *byte == b' ')
             .any(|word| word == b"allow")
+}
+
+/// Whether the volume holding `path` was mounted with ownership ignored
+/// (`MNT_IGNORE_OWNERSHIP`, `0x00200000` in macOS `<sys/mount.h>`, which
+/// Finder's "Ignore ownership on this volume" and `hdiutil attach -owners off`
+/// set): there every file reads as owned by the current user.
+fn ignores_ownership(path: &Path) -> Result<bool> {
+    const MNT_IGNORE_OWNERSHIP: u32 = 0x0020_0000;
+    let stats = rustix::fs::statfs(path)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot read the volume of {}", path.display()))?;
+    Ok(stats.f_flags & MNT_IGNORE_OWNERSHIP != 0)
 }
 
 /// `O_NOFOLLOW` for [`std::os::unix::fs::OpenOptionsExt::custom_flags`].
@@ -1877,6 +1921,14 @@ mod tests {
             isolated_git_dir(&private, false).is_err(),
             "PV git/probe-acl: an ACL above it lets another account change it"
         );
+        let fresh = shared.join("fresh");
+        std::fs::create_dir(&fresh).unwrap();
+        std::fs::set_permissions(&fresh, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(isolated_git_dir(&fresh, false).is_err());
+        assert!(
+            std::fs::read_dir(&fresh).unwrap().next().is_none(),
+            "PV git/acl-before-create: the probe was created under a folder an ACL shares"
+        );
         chmod("-N", &shared);
         let probe = isolated_git_dir(&private, false).unwrap();
         acl("group:everyone allow write", &probe.join("config"));
@@ -1886,11 +1938,105 @@ mod tests {
         );
         chmod("-N", &probe.join("config"));
         assert!(isolated_git_dir(&private, false).is_ok(), "ACLs removed");
+        let _clear_probe = ClearAcls(vec![probe.clone()]);
+        acl("group:everyone allow add_subdirectory", &probe);
+        std::fs::remove_dir(probe.join("refs")).unwrap();
+        assert!(isolated_git_dir(&private, false).is_err());
+        assert!(
+            !probe.join("refs").exists(),
+            "PV git/reused-acl-before-write: a part was created inside a reused probe an ACL shares"
+        );
+        chmod("-N", &probe);
+        assert!(
+            isolated_git_dir(&private, false).is_ok(),
+            "the reused probe repaired"
+        );
+
+        let newline = base.join("line\n1: user:x allow");
+        std::fs::create_dir(&newline).unwrap();
+        std::fs::set_permissions(&newline, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            isolated_git_dir(&newline, false)
+                .is_err_and(|error| error.to_string().contains("holds a newline")),
+            "a folder whose name could forge an ACL line"
+        );
 
         std::fs::write(dir.join("config"), "[filter \"x\"]\n\tclean = touch\n").unwrap();
         assert!(
             isolated_git_dir(base, false).is_err(),
             "a config it did not write"
+        );
+    }
+
+    /// On a volume mounted with ownership ignored every file reads as the
+    /// current user's, so the probe's ownership and mode checks prove nothing
+    /// there and its folder is refused; the same image mounted with ownership
+    /// enforced is the positive control. Each mount is detached as the test
+    /// unwinds, before the fixture is removed.
+    #[test]
+    fn the_isolated_git_dir_refuses_a_volume_that_ignores_ownership() {
+        use std::os::unix::fs::PermissionsExt as _;
+        // A wedged disk-image service fails the test instead of hanging it.
+        const HDIUTIL_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+        let fixture = crate::ops::TestFixture::new("isolated-git-dir-owners");
+        let base = fixture.path();
+        std::fs::create_dir_all(base).unwrap();
+        let image = base.join("probe.dmg");
+        let created = Command::new("/usr/bin/hdiutil")
+            .args([
+                "create", "-quiet", "-size", "16m", "-fs", "HFS+", "-volname", "probe",
+            ])
+            .arg(&image)
+            .output_within(HDIUTIL_LIMIT)
+            .unwrap();
+        assert!(created.status.success(), "hdiutil create failed");
+        struct Detach(PathBuf);
+        impl Drop for Detach {
+            fn drop(&mut self) {
+                let _ = Command::new("/usr/bin/hdiutil")
+                    .args(["detach", "-quiet", "-force"])
+                    .arg(&self.0)
+                    .output_within(HDIUTIL_LIMIT);
+            }
+        }
+        let probe_on = |owners: &str| {
+            let mount = base.join(format!("owners-{owners}"));
+            std::fs::create_dir_all(&mount).unwrap();
+            let attached = Command::new("/usr/bin/hdiutil")
+                .args([
+                    "attach",
+                    "-quiet",
+                    "-nobrowse",
+                    "-noautoopen",
+                    "-owners",
+                    owners,
+                ])
+                .arg("-mountpoint")
+                .arg(&mount)
+                .arg(&image)
+                .output_within(HDIUTIL_LIMIT)
+                .unwrap();
+            assert!(
+                attached.status.success(),
+                "hdiutil attach -owners {owners} failed"
+            );
+            let _detach = Detach(mount.clone());
+            let probe_base = mount.join("tmp");
+            std::fs::create_dir_all(&probe_base).unwrap();
+            std::fs::set_permissions(&probe_base, std::fs::Permissions::from_mode(0o700)).unwrap();
+            isolated_git_dir(&probe_base, false)
+        };
+
+        assert!(
+            probe_on("on").is_ok(),
+            "a volume that enforces ownership must be accepted"
+        );
+        let refused = probe_on("off");
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("ignores ownership")),
+            "PV git/probe-ownership: a volume that ignores ownership was trusted: {refused:?}"
         );
     }
 

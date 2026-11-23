@@ -33,7 +33,7 @@ invalid:
           Ok(())
       }
   - |
-      fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<()> {
+      fn remove_path(target: VerifiedTarget, permanent: bool, expected: FileIdentity) -> Result<Option<crate::journal::EntryChanged>> {
           let path = target.path;
           std::fs::remove_file(path)?;
           Ok(())

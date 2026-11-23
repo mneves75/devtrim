@@ -436,15 +436,37 @@ fn run(mut cli: cli::Cli) -> Result<ExitCode> {
                     report::print_line(&nothing_to_purge)?;
                 } else {
                     report::print_human(&findings)?;
-                    let narrowed = if only_devtrim { " --only-devtrim" } else { "" };
-                    report::print_line(&format!(
-                        "\n{} no changes made. Re-run with {} and {} to act.",
-                        "dry-run".yellow().bold(),
-                        format!("--apply{narrowed}").cyan(),
-                        format!("--confirm={}", size / (1024 * 1024 * 1024)).cyan()
-                    ))?;
+                    if only_devtrim {
+                        report::print_line(&format!(
+                            "\n{} no changes made. This list is what devtrim moved to the Trash; it is never purged from here.",
+                            "preview-only".yellow().bold(),
+                        ))?;
+                    } else {
+                        report::print_line(&format!(
+                            "\n{} no changes made. Re-run with {} and {} to act.",
+                            "dry-run".yellow().bold(),
+                            "--apply".cyan(),
+                            format!("--confirm={}", size / (1024 * 1024 * 1024)).cyan()
+                        ))?;
+                    }
                 }
                 return Ok(exit_status(&scan_errors));
+            }
+            // The journal names the object devtrim moved and the entry's time
+            // just after the move, but not that the move setting that time was
+            // devtrim's own: a rename in between cannot be told apart. So the
+            // narrowed list grants no purge (0.17.1 security gate,
+            // CORE-TRASH-PROVENANCE-2); the plain purge is unchanged.
+            if only_devtrim {
+                return command_error(
+                    "trash-empty",
+                    false,
+                    &findings,
+                    &ctx,
+                    anyhow::anyhow!(
+                        "trash-empty --only-devtrim is preview-only: devtrim cannot yet prove that the move which put an entry in the Trash was its own, so it never purges on that evidence; purge the whole Trash with `devtrim trash-empty --apply`, or remove the items listed yourself"
+                    ),
+                );
             }
             // As in `run_op`: a plan with nothing to purge has no size to
             // acknowledge and no consent to give, but it still starts an

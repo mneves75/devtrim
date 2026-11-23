@@ -2368,6 +2368,10 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
     write(&foreign_same_name.join("file"), "not ours");
     write(&failed_move.join("file"), "recorded as failed");
     write(&interrupted.join("file"), "never finished");
+    // Moved by devtrim, then restored and trashed again by someone else: the
+    // same object, but not the entry devtrim's move left.
+    let retrashed = trash.join("restored and trashed again");
+    write(&retrashed.join("file"), "trashed twice");
     let identity = |path: &Path| {
         let metadata = std::fs::symlink_metadata(path).unwrap();
         serde_json::json!({
@@ -2383,7 +2387,15 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
             "target": target, "size_bytes": 10, "identity": identity(path)
         });
         match status {
-            Some("ok") => value["status"] = "ok".into(),
+            Some("ok") => {
+                value["status"] = "ok".into();
+                // The entry's status time just after the move, as the sink
+                // records it on a successful result.
+                let metadata = std::fs::symlink_metadata(path).unwrap();
+                value["trash_entry_changed"] = serde_json::json!({
+                    "secs": metadata.st_ctime(), "nanos": metadata.st_ctime_nsec()
+                });
+            }
             Some(_) => {
                 value["status"] = "error".into();
                 value["error"] = "boom".into();
@@ -2436,7 +2448,13 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
             &interrupted,
             None,
         ),
+        record("a5", "attempt", "/Users/x/retrashed", &retrashed, None),
+        record("a5", "result", "/Users/x/retrashed", &retrashed, Some("ok")),
     ];
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let restored = home.join("restored");
+    std::fs::rename(&retrashed, &restored).unwrap();
+    std::fs::rename(&restored, &retrashed).unwrap();
     write(&sandbox.journal(), &(lines.join("\n") + "\n"));
     let targets = sorted(vec![ours_dir, ours_file]);
     let pristine = Tree::snapshot(home);
@@ -2446,7 +2464,7 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
     assert_eq!(
         actionable_targets(&document),
         targets,
-        "PV eval/trash-only-plan: only items with a journaled successful move may be offered"
+        "PV eval/trash-only-plan: only entries a journaled successful move left may be offered"
     );
     pristine.assert_only(
         &Tree::snapshot(home),
@@ -2467,25 +2485,23 @@ fn eval_trash_empty_only_devtrim_selects_only_journaled_identities() {
         ],
     );
     let document = json(&apply);
+    // Preview-only: even every confirmation flag purges nothing.
     pristine.assert_only(
         &Tree::snapshot(home),
-        &Allowed {
-            removed: targets.clone(),
-            scratch: vec![home.join(".local")],
-        },
-        "eval/trash-only-apply",
+        &Allowed::default(),
+        "PV eval/trash-only-apply",
     );
-    assert!(apply.status.success(), "{document}");
-    assert_eq!(document["summary"]["items_touched"], targets.len());
-    let purged: Vec<String> = journal_lines(&sandbox)
-        .into_iter()
-        .filter(|line| line.op == "trash-empty" && line.phase == "attempt")
-        .filter_map(|line| line.target)
-        .collect();
-    assert_eq!(
-        sorted(purged.iter().map(PathBuf::from).collect()),
-        targets,
-        "EVAL journal: the purge must be journaled write-ahead"
+    assert!(!apply.status.success(), "{document}");
+    assert_ne!(document["applied"], true, "{document}");
+    assert!(
+        document.to_string().contains("preview-only"),
+        "the refusal must say why: {document}"
+    );
+    assert!(
+        !journal_lines(&sandbox)
+            .iter()
+            .any(|line| line.op == "trash-empty"),
+        "a refused narrowed purge journals no attempt"
     );
 }
 

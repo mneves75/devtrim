@@ -41,6 +41,13 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(180);
 /// a backstop against a wedged tool.
 pub(crate) const MUTATION_TIMEOUT: Duration = Duration::from_secs(900);
 
+/// The most one output stream may hold. The largest measured is a
+/// system-wide `lsof -d txt`, 1.8 MB on a machine running hundreds of
+/// processes; a large repository's object listing reaches tens of megabytes.
+/// Past this the stream is closed, which ends a writer through `SIGPIPE`, and
+/// the command fails rather than grow devtrim's memory without bound.
+const OUTPUT_LIMIT: u64 = 256 * 1024 * 1024;
+
 /// How long a killed child gets to be reaped before it is reported unreaped.
 /// A process stuck in uninterruptible I/O ignores SIGKILL until the I/O ends.
 const REAP_GRACE: Duration = Duration::from_secs(5);
@@ -53,7 +60,8 @@ pub(crate) trait BoundedCommand {
     ///
     /// Standard input is null and both output streams are captured, as with
     /// `output`. Both streams are drained while the child runs, so a large
-    /// listing cannot stall it on a full pipe. Past `limit` the child is
+    /// listing cannot stall it on a full pipe, and neither may pass
+    /// [`OUTPUT_LIMIT`], which fails the call. Past `limit` the child is
     /// killed and reaped and the error is [`io::ErrorKind::TimedOut`], naming
     /// the program and the limit. A program that cannot start keeps its own
     /// error, `NotFound` included.
@@ -89,8 +97,16 @@ impl BoundedCommand for Command {
             )
         };
 
-        let stdout = drain(child.stdout.take());
-        let stderr = drain(child.stderr.take());
+        let stdout = drain(
+            child.stdout.take(),
+            OUTPUT_LIMIT,
+            format!("{program} stdout"),
+        );
+        let stderr = drain(
+            child.stderr.take(),
+            OUTPUT_LIMIT,
+            format!("{program} stderr"),
+        );
         let (stdout, stderr) = match (stdout, stderr) {
             (Ok(stdout), Ok(stderr)) => (stdout, stderr),
             (Err(error), _) | (_, Err(error)) => {
@@ -143,9 +159,13 @@ impl BoundedCommand for Command {
     }
 }
 
-/// Reads one pipe to the end on its own thread and hands the bytes over.
+/// Reads one pipe to the end, or to `limit` bytes, on its own thread and
+/// hands the bytes over; more than `limit` is an error naming `stream`, and
+/// the pipe is closed at once, so its writer is not left blocked on it.
 fn drain(
     pipe: Option<impl Read + Send + 'static>,
+    limit: u64,
+    stream: String,
 ) -> io::Result<mpsc::Receiver<io::Result<Vec<u8>>>> {
     let (sender, receiver) = mpsc::channel();
     thread::Builder::new()
@@ -153,7 +173,13 @@ fn drain(
         .spawn(move || {
             let mut bytes = Vec::new();
             let result = match pipe {
-                Some(mut pipe) => pipe.read_to_end(&mut bytes).map(|_| bytes),
+                Some(pipe) => match pipe.take(limit.saturating_add(1)).read_to_end(&mut bytes) {
+                    Ok(_) if bytes.len() as u64 > limit => {
+                        Err(io::Error::other(format!("{stream} passed {limit} bytes")))
+                    }
+                    Ok(_) => Ok(bytes),
+                    Err(error) => Err(error),
+                },
                 None => Ok(bytes),
             };
             // The receiver is gone once the deadline passed; nothing to tell.
@@ -463,6 +489,43 @@ mod tests {
             sender.send(body()).ok();
         });
         receiver.recv_timeout(wait).ok()
+    }
+
+    /// A stream may fill its limit exactly; one byte more fails the call.
+    #[test]
+    fn a_stream_past_its_limit_fails_and_one_at_it_passes() {
+        let read = |bytes: usize| {
+            drain(
+                Some(io::Cursor::new(vec![b'x'; bytes])),
+                10,
+                "test stdout".into(),
+            )
+            .unwrap()
+            .recv()
+            .unwrap()
+        };
+        assert_eq!(read(10).unwrap().len(), 10);
+        let past = read(11);
+        assert!(
+            past.as_ref()
+                .is_err_and(|error| error.to_string().contains("test stdout passed 10 bytes")),
+            "PV process/output-limit: a stream past its limit was kept: {past:?}"
+        );
+    }
+
+    /// A command that never stops writing fails at the limit, and promptly:
+    /// the closed pipe ends it rather than the timeout.
+    #[test]
+    fn an_endless_writer_fails_at_the_output_limit_before_its_timeout() {
+        let result = within(Duration::from_secs(60), || {
+            Command::new("/usr/bin/yes").output_within(QUERY_TIMEOUT)
+        })
+        .expect("an endless writer ran into the timeout instead of the output limit");
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("/usr/bin/yes stdout passed"),
+            "{error}"
+        );
     }
 
     fn alive(pid: &str) -> bool {
