@@ -1,6 +1,6 @@
 # devtrim
 
-> Safe macOS developer-machine disk hygiene CLI & TUI (`v0.17.0`): measure, classify, and trim caches, stale build artifacts, `node_modules`, Xcode DerivedData/DeviceSupport, simulators, Docker/Buildx caches, Swift toolchains, installers, and agent caches — preview-by-default, Trash-first for filesystem targets, identity-verified, and write-ahead journaled.
+> Safe macOS developer-machine disk hygiene CLI & TUI (`v0.17.1`): measure, classify, and trim caches, stale build artifacts, `node_modules`, Xcode DerivedData/DeviceSupport, simulators, Docker/Buildx caches, Swift toolchains, installers, and agent caches — preview-by-default, Trash-first for filesystem targets, identity-verified, and write-ahead journaled.
 
 - Website: https://mneves75.github.io/devtrim/
 - Full Manual: https://mneves75.github.io/devtrim/MANUAL.html
@@ -47,14 +47,17 @@ devtrim clean caches --apply -y --json
 devtrim purge --apply --yolo --json
 ```
 
-### 4. Reclaim disk space from Trash (only items devtrim moved; permanent)
+### 4. Reclaim disk space from Trash (permanent)
 ```bash
-# Human preview prints the exact `--confirm=<gb>` value; from JSON, sum actionable `findings[].size_bytes`, divide by 1073741824 (1 GiB), and truncate to an integer
+# List only items devtrim itself moved to the Trash (preview-only; refuses --apply)
 devtrim trash-empty --only-devtrim
 devtrim trash-empty --only-devtrim --json
 
-# Only with explicit human authorization for permanent purge (`--confirm=<gb>` checks the new scan's truncated GiB total within ±2):
-devtrim trash-empty --only-devtrim --confirm=<gb> --apply --yolo --json
+# Preview the whole Trash; human output prints the exact `--confirm=<gb>` value (from JSON, sum actionable `findings[].size_bytes`, divide by 1073741824, and truncate to an integer)
+devtrim trash-empty --json
+
+# Only with explicit human authorization for permanent whole-Trash purge (`--confirm=<gb>` checks the new scan's truncated GiB total within ±2):
+devtrim trash-empty --confirm=<gb> --apply --yolo --json
 ```
 
 ### 5. Docker & local Buildx cache cleanup (permanent — bypasses Trash; never touches volumes)
@@ -96,7 +99,7 @@ devtrim history --limit 20 --json
 | `devtrim clean installers [--apply]` | Trash-first | Stale `.dmg`/`.pkg` installers in Downloads/Desktop |
 | `devtrim clean agents [--apply]` | Trash-first | Agent caches, superseded Codex releases, and stale session history |
 | `devtrim optimize --task <NAME> [--apply]` | Command | macOS maintenance (`quicklook`, `fonts`, `launch-services`); `--apply` requires an explicit `--task` |
-| `devtrim trash-empty [--only-devtrim] [--confirm=<gb>] [--apply]` | Permanent | Permanent Trash purge (`--confirm=<gb>` is required only when `--apply` has actionable items; `--only-devtrim` restricts to items journaled by devtrim) |
+| `devtrim trash-empty [--only-devtrim] [--confirm=<gb>] [--apply]` | Permanent | Permanent Trash purge (`--confirm=<gb>` is required only when `--apply` has actionable items; `--only-devtrim` lists items journaled by devtrim and is preview-only, refusing `--apply`) |
 
 ## JSON Envelopes (`--json`)
 
