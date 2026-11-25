@@ -97,6 +97,16 @@
     "audit-incidents-controls: 14 refused; the new 'ignored test' control fails with the (?!ignore) guard removed",
     "cargo test --lib ops::caches 12 passed; evals caches 2 passed; fmt, clippy -D warnings, ast-grep clean"
    ]
+  },
+  {
+   "id": "verify-round-1",
+   "what": "mneves-verify FAIL findings: Go/Gradle owner roots inside npm/pnpm caches; audit credited ignored/cfg-disabled catchers; D-08 commit cell",
+   "result": "pass",
+   "evidence": [
+    "981663b: in_install_cache refuses GOMODCACHE/GRADLE_USER_HOME in ~/.npm, ~/.cache/npm, pnpm cache; eval_no_other_owner_claims_npm_or_pnpm_installs passes; planted caches/go-install-cache and caches/gradle-install-cache CAUGHT",
+    "60db621: audit refuses #[ignore] or non-macos #[cfg] anywhere in the attribute block; fixture control; removing each filter fails the controls",
+    "D-08: mapped disproved - CLAUDE.md allows the in-flight dash; the commit is filled in the closeout PR after the squash merge creates it"
+   ]
   }
  ]
 }

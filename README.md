@@ -847,7 +847,13 @@ planted fixtures. Report evals check fixture-derived content and exit codes;
 previews must change nothing on disk, and applies must change exactly the
 previewed targets while preserving near misses. Named planted mutants in
 `scripts/tests/planted-violations.py` prove the assertions they select can
-fail; other assertions remain review obligations. The shared removal-root
+fail; other assertions remain review obligations. The apply stop protocol has
+a bounded model, `journal::tests::stop_model`. It runs every plan of up to
+three attempts, with the stop arriving before each step, through the real
+journal, and it must fail on the order 0.15.0 fixed. `docs/incidents.md` lists
+each defect met after commit with the check that now catches it, and
+`scripts/tests/audit-incidents.py` fails when that check is renamed or
+removed. The shared removal-root
 device check is tested with injected device metadata, not a real mounted
 volume or a real Trash move, which would land in the developer's own Trash.
 Two opt-in checks go beyond stubs:

@@ -14,13 +14,29 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   fuzzing uses nightly; the shipped binary is still built by the pinned
   stable compiler.
 
+### Added
+- An incident ledger, `docs/incidents.md`: each defect met after commit, with
+  the check that now catches it. `scripts/tests/audit-incidents.py` runs in
+  `verify.sh` and CI and fails when a row's version, commit or catcher no
+  longer exists. Building it found that 0.11.0 had deleted the two tests
+  0.7.0 added for two of its fixes, unnoticed; the rows name the tests that
+  guard those fixes now.
+- A bounded model of the apply stop protocol (`journal::tests::stop_model`):
+  every plan of one to three attempts, with the stop before each step, through
+  the real `admit`, `begin` and `finish`. 0.15.0's bug, a stop between the
+  stop check and uv's lock leaving the lock unjournaled, is replayed as its
+  negative control, and planted mutants prove the model fails on it.
+
 ### Fixed
 - `clean caches` no longer offers npm's whole cache folder. It offers
   `_cacache`, what `npm cache clean --force` removes, and leaves `_npx`, whose
   installs a running npx tool (an editor's language server, an MCP server)
   loads from there. pnpm's cache is offered as its metadata folders, the ones
   `pnpm cache delete` removes, never its `dlx` installs. Apply refuses the
-  whole folder, `_npx` and `dlx` whatever a finding claims (Mole I-11).
+  whole folder, `_npx` and `dlx` whatever a finding claims, and asks npm for
+  its cache root again, refusing a `_cacache` anywhere but directly in it.
+  Neither `GOMODCACHE` nor `GRADLE_USER_HOME` pointing into npm's or pnpm's
+  cache makes a Go or Gradle cache there (Mole I-11).
 
 ## [0.17.1] - 2026-11-23
 

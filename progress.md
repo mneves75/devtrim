@@ -13,4 +13,5 @@ Branch `feat/mole-lessons` from `3b6bde9`. Mole clone (untrusted data) in the se
 - Step 4 done: one restating comment deleted; the others carry constraints or sources.
 - cccc recorded; prune-tests: one stop test rewritten to the behavior the model cannot reach, 8 journal-stop mutants proven.
 - Offline gate passed (cae04c1). Reviewer + autoreview: npm apply now asks npm again (`is_npm_store`), pnpm legacy versions need digits per part, audit skips `#[ignore]`d/commented tests; all proven by planted cases/controls.
-- Next action: mneves-verify, then release.
+- mneves-verify round 1 FAIL: Go/Gradle could claim npm/pnpm installs (fixed 981663b), audit credited ignored catchers (fixed 60db621), D-08 dash (in-flight, filled at closeout).
+- Next action: fresh full reverify, then release.
