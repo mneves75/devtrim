@@ -7,6 +7,7 @@ replays the real drift the ledger exists for: 33fe4e2's VM-disk test, removed
 in 0.11.0 without anything noticing.
 """
 
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -57,8 +58,47 @@ def run(ledger: str) -> subprocess.CompletedProcess:
         path.unlink()
 
 
+# Catcher shapes `cargo test` never runs, beside two it does.
+FIXTURE = """
+#[test]
+fn runs() {}
+#[ignore]
+#[test]
+fn ignored_first() {}
+#[test]
+#[ignore = "helper"]
+fn ignored_after() {}
+#[cfg(any())]
+#[test]
+fn compiled_out() {}
+/*
+#[test]
+fn commented_out() {}
+*/
+// #[test] fn line_commented() {}
+#[cfg(target_os = "macos")]
+#[test]
+fn on_macos() {}
+"""
+
+
+def fixture_failures() -> int:
+    spec = importlib.util.spec_from_file_location("audit_incidents", AUDIT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with tempfile.TemporaryDirectory() as root:
+        Path(root, "lib.rs").write_text(FIXTURE, encoding="utf-8")
+        found = module.rust_tests((Path(root),))
+    if found != {"runs", "on_macos"}:
+        print(f"FAIL non-running catchers: expected only runs and on_macos, got {sorted(found)}")
+        return 1
+    print("REFUSED ignored, compiled-out and commented catchers")
+    return 0
+
+
 def main() -> int:
     failures = 0
+    failures += fixture_failures()
     original = run(LEDGER)
     if original.returncode != 0:
         print(f"FAIL the unmodified ledger must pass:\n{original.stdout}{original.stderr}")

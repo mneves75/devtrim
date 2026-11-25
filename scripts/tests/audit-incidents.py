@@ -49,12 +49,24 @@ def planted_cases() -> set[str]:
     return set(re.findall(r'^\s*name="([^"]+)",$', text, re.MULTILINE))
 
 
-def rust_tests() -> set[str]:
+# CI runs on macOS, so that is the one `cfg` a catcher may carry; any other
+# (`cfg(any())`, another OS) or an `#[ignore]` keeps it from running.
+RUNNABLE_CFG = '#[cfg(target_os = "macos")]'
+
+
+def rust_tests(roots: tuple[Path, ...] = (Path("src"), Path("tests"))) -> set[str]:
     names = set()
-    for path in [*Path("src").rglob("*.rs"), *Path("tests").rglob("*.rs")]:
+    for path in [file for root in roots for file in root.rglob("*.rs")]:
         text = re.sub(r"/\*.*?\*/|//[^\n]*", "", path.read_text(encoding="utf-8"), flags=re.DOTALL)
-        # An `#[ignore]`d function never runs under `cargo test`, so it catches nothing.
-        names.update(re.findall(r"#\[test\]\s*(?:#\[(?!ignore)[^\]]*\]\s*)*(?:pub(?:\([^)]*\))? )?fn ([a-z0-9_]+)\(", text))
+        for attributes, name in re.findall(
+            r"((?:#\[[^\]]*\]\s*)+)(?:pub(?:\([^)]*\))? )?fn ([a-z0-9_]+)\(", text
+        ):
+            found = re.findall(r"#\[[^\]]*\]", attributes)
+            if "#[test]" in found and not any(
+                item.startswith("#[ignore") or (item.startswith("#[cfg") and item != RUNNABLE_CFG)
+                for item in found
+            ):
+                names.add(name)
     return names
 
 
