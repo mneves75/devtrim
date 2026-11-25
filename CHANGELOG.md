@@ -14,6 +14,14 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   fuzzing uses nightly; the shipped binary is still built by the pinned
   stable compiler.
 
+### Fixed
+- `clean caches` no longer offers npm's whole cache folder. It offers
+  `_cacache`, what `npm cache clean --force` removes, and leaves `_npx`, whose
+  installs a running npx tool (an editor's language server, an MCP server)
+  loads from there. pnpm's cache is offered as its metadata folders, the ones
+  `pnpm cache delete` removes, never its `dlx` installs. Apply refuses the
+  whole folder, `_npx` and `dlx` whatever a finding claims (Mole I-11).
+
 ## [0.17.1] - 2026-11-23
 
 ### Security

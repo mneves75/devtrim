@@ -1,55 +1,58 @@
 {
-  "plan": "plans/021-tui-clarity.md",
-  "target_version": "0.17.0",
-  "base_commit": "3310ef3",
-  "branch": "feat/tui-clarity",
-  "updated_at": "2026-11-22",
+  "plan": "plans/022-mole-lessons.md",
+  "target_version": "0.18.0",
+  "base_commit": "3b6bde9",
+  "branch": "feat/mole-lessons",
+  "updated_at": "2026-11-25",
   "checks": [
     {
-      "id": "baseline",
-      "what": "PTY captures of the 0.16.0 TUI at 64x18, 80x24, 120x40 and CLI help/scan/clean",
-      "commit": "3310ef3",
-      "result": "captured",
-      "evidence": ".scratch/tui-clarity/baseline/"
+      "id": "baseline-focused",
+      "what": "scripts/verify.sh focused on 3b6bde9",
+      "commit": "3b6bde9",
+      "result": "pass"
     },
     {
-      "id": "phase1",
-      "what": "tui unit tests (73), tui.py (incl. new Scan everything landing flow with a stubbed failing docker), read-only-views.py, fmt, clippy -D warnings",
-      "commit": "2ace2ca",
+      "id": "baseline-offline",
+      "what": "scripts/verify.sh offline on 3b6bde9",
+      "commit": "3b6bde9",
+      "result": "not-run",
+      "note": "nohup could not detach from the tool console; offline gate runs at closeout instead"
+    },
+    {
+      "id": "step1-npm-pnpm",
+      "what": "npm offers only _cacache, pnpm only v<N>/metadata*; evals with _npx/dlx near misses fail on 3b6bde9",
       "result": "pass",
-      "negative_control": "verify_scan_lands_on_the_home times out against the shipped 0.16.0 binary",
-      "evidence": ".scratch/tui-clarity/p1-tui.log, .scratch/tui-clarity/p1-rov.log, .scratch/tui-clarity/phase1/"
-    },
-    {
-      "id": "phase1-focused",
-      "what": "bash scripts/verify.sh focused on the phase 1 tree (2ace2ca plus the merged-headline and fresh-scan fixes)",
-      "result": "pass after rerun",
-      "detail": "every gate exit 0 except tui.py, which timed out in verify_outcome_rescans at load 611 (keys dropped by the known settle race, memory tui-settle-race); tui.py alone exit 0 at load 653; read-only-views exit 0",
-      "evidence": ".scratch/tui-clarity/p1-focused.log, .scratch/tui-clarity/p1-tui-rerun.log, .scratch/tui-clarity/p1-rov-rerun.log"
-    },
-    {
-      "id": "phase2-4-unit",
-      "what": "tui unit tests (75, incl. AC4 row tail, AC4 row order, AC5 confirmation order), tests/cli.rs (21, incl. help order and examples), tests/lockfiles.rs",
-      "result": "pass",
-      "negative_controls": [
-        "lockfiles: fuzz/Cargo.lock devtrim set to 0.15.0 fails with the update command named; restored",
-        "help order: 0.16.0 --help lists tui first, which the exact-order assertion rejects"
+      "evidence": [
+        "eval_clean_caches_removes_every_listed_cache_and_nothing_else failed on 3b6bde9 (offered .npm and Library/Caches/pnpm whole), passes after",
+        "planted-violations.py caches/: 15 caught incl. npm-store-name, pnpm-metadata-name, pnpm-whole",
+        "fmt, clippy -D warnings, ast-grep test+scan pass; full tests pass except 7 host-dependent tests"
       ],
-      "evidence": ".scratch/tui-clarity/phase2/"
+      "host_failures": "sysmond missing: pgrep exits 3 (liveness_pgrep_matches_devtrims_own_ancestors, coding_agents_protect_*, 3 eval_worktrees_*); hdiutil create \"Device not configured\" (isolated_git_dir_refuses_a_volume_*, foreign_device_boundaries_*). Not caused by this change; rerun after host recovers."
     },
     {
-      "id": "film",
-      "what": "python3 -B film/scripts/build.py (facts fresh, facts trace 37/37, lint, contrast, music, loudness, render, mux, media checks, sync, contact sheets)",
-      "result": "pass",
-      "detail": "sync worst offset 7.0 ms of 16.7 ms; stills at frames 320, 760, 1000 show every row and the undo line whole after the font resize",
-      "evidence": ".scratch/tui-clarity/film-build.log, video/out/film/contact-0*.png, .scratch/tui-clarity/stills/"
+      "id": "step2-ledger",
+      "what": "docs/incidents.md + audit-incidents.py + controls in verify.sh and CI",
+      "result": "pending"
     },
     {
-      "id": "cccc-prune",
-      "what": "cccc on src/tui.rs, src/cli.rs, tests/lockfiles.rs; mneves-prune-tests over the tests this branch added or changed",
-      "result": "no deletions",
-      "detail": "directly tested functions score above 5 (headline_forms 11, result_row_with_max 10, Overview::of 9, render_confirmation 8, RowSize::text 6) or fall under an exception: suggestion (0) guards that a PERMANENT category is never suggested, lockfiles is a regression test, the disk-line tests rewrite guards that existed in 0.16 and carry the 64x18 and unreadable-metric standards; removed tests guarded removed code (row numbers, badges, Selected pane)",
-      "evidence": ".scratch/tui-clarity/cccc.json"
+      "id": "step3-model",
+      "what": "exhaustive stop/admit/begin interleaving test; pre-cf7962b ordering fails",
+      "result": "pending"
+    },
+    {
+      "id": "step4-comments",
+      "what": "no-comments pass over touched files",
+      "result": "pending"
+    },
+    {
+      "id": "step5-closeout",
+      "what": "cccc, prune-tests, mneves-verify, reviewer, autoreview, security gate, release",
+      "result": "pending"
+    },
+    {
+      "id": "host-rerun",
+      "what": "rerun the 7 host-dependent tests once pgrep/hdiutil work again",
+      "result": "pending"
     }
   ]
 }

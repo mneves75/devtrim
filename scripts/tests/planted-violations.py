@@ -2156,6 +2156,32 @@ CASES = (
         marker="PV caches/unreadable-cache",
         target="cli",
     ),
+    # 0.18.0: npm and pnpm offer only what their own clean commands remove
+    # (Mole I-11); a running npx or `pnpm dlx` tool loads the installs beside it.
+    Case(
+        name="caches/npm-store-name",
+        relative_path="src/ops/caches.rs",
+        before="        TargetAuthority::NpmCacheStore => (target.file_name() == Some(OsStr::new(NPM_STORE))\n",
+        after="        TargetAuthority::NpmCacheStore => (true\n",
+        tests=("ops::caches::tests::npx_and_dlx_installs_are_refused_at_apply",),
+        marker="PV caches/npm-store-name",
+    ),
+    Case(
+        name="caches/pnpm-metadata-name",
+        relative_path="src/ops/caches.rs",
+        before="    let shaped = if parent == cache {\n        is_pnpm_metadata_name(name, false)\n",
+        after="    let shaped = if parent == cache {\n        true\n",
+        tests=("ops::caches::tests::npx_and_dlx_installs_are_refused_at_apply",),
+        marker="PV caches/pnpm-metadata-name",
+    ),
+    Case(
+        name="caches/pnpm-whole",
+        relative_path="src/ops/caches.rs",
+        before="        .filter(|entry| entry.relative != crate::safety::PNPM_CACHE)\n",
+        after="",
+        tests=("ops::caches::tests::npx_and_dlx_installs_are_refused_at_apply",),
+        marker="PV caches/pnpm-whole",
+    ),
     Case(
         name="liveness/agent-processes",
         relative_path="src/safety.rs",

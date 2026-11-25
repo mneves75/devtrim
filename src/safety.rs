@@ -1248,6 +1248,9 @@ const _: () = assert!(
     "every managed Library cache needs evidence for why it may be deleted"
 );
 
+/// pnpm's `cacheDir` below `~/Library/Caches`, offered only as its metadata.
+pub(crate) const PNPM_CACHE: &str = "pnpm";
+
 /// Exact `~/Library/Caches` subdirectories devtrim manages, each a
 /// [`DeletionEntry`] whose `relative` is the directory name.
 ///
@@ -1309,10 +1312,16 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
     },
     DeletionEntry {
         label: "pnpm metadata cache",
-        relative: "pnpm",
-        evidence: "pnpm's `cacheDir` (metadata and dlx). Deliberately NOT the \
-                   content-addressable store at `~/Library/pnpm/store`, which \
-                   every installed `node_modules` hard-links into.",
+        relative: PNPM_CACHE,
+        evidence: "pnpm's `cacheDir`. Protection covers it whole, but `caches` \
+                   offers only its metadata folders (`ops::caches`): pnpm \
+                   11.27.0 names them `v11/metadata`, `v11/metadata-full` and \
+                   `v11/metadata-full-filtered` (`metadata-v1.3`, \
+                   `metadata-full-v1.3`, `metadata-ff-v1.3` before), and its own \
+                   `pnpm cache delete` removes only metadata. Its `dlx` installs, \
+                   which a running `pnpm dlx` command loads, stay. Deliberately \
+                   NOT the content-addressable store at `~/Library/pnpm/store`, \
+                   which every installed `node_modules` hard-links into.",
     },
     // `Caches/gh` is deliberately absent, and it is the reason this field
     // exists. It shipped in 0.9.1 and 0.9.2 on the strength of its name: go-gh

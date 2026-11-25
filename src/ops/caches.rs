@@ -1,6 +1,7 @@
 //! Regenerable download caches. Filesystem targets remain Trash-first.
 
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use super::project::{UnreadFolder, error_finding, has_git_marker, unread_folders_finding};
@@ -125,13 +126,18 @@ const _: () = assert!(
 /// The `~/Library/Caches` half of the same list, derived from the closed
 /// carve-out in the protection boundary so a cache can never be previewed
 /// without also being deletable, or protected without also being unlisted.
+/// pnpm's cache is offered as its metadata folders instead
+/// ([`pnpm_metadata_findings`]), so it is never a whole-folder target.
 fn library_caches(home: &Path) -> impl Iterator<Item = (&'static str, PathBuf)> {
-    crate::safety::MANAGED_LIBRARY_CACHES.iter().map(|entry| {
-        (
-            entry.label,
-            home.join("Library/Caches").join(entry.relative),
-        )
-    })
+    crate::safety::MANAGED_LIBRARY_CACHES
+        .iter()
+        .filter(|entry| entry.relative != crate::safety::PNPM_CACHE)
+        .map(|entry| {
+            (
+                entry.label,
+                home.join("Library/Caches").join(entry.relative),
+            )
+        })
 }
 
 impl Op for Caches {
@@ -161,19 +167,23 @@ impl Op for Caches {
                 findings.push(cache_finding(label, path, size, 3));
             }
         }
+        match pnpm_metadata_findings(&ctx.home, &mut unread) {
+            Ok(pnpm) => findings.extend(pnpm),
+            Err(error) => unread.push(UnreadFolder::new(&pnpm_cache(&ctx.home), &error)),
+        }
         // An owner command that fails withholds only its own cache, as `go`
         // does below; the caches listed after it are still judged.
         match owner_cache_path("npm", &["config", "get", "cache"], NPM_QUIET, ctx) {
             Ok(Some(path)) => {
-                let size = measured(&path, &mut unread);
+                let store = path.join(NPM_STORE);
+                let size = measured(&store, &mut unread);
                 if size.allocated > 0 {
-                    let mut finding = cache_finding("npm cache folder", path, size, 2)
-                        .with_authority(TargetAuthority::NpmCache);
-                    finding.note =
-                        "npm's whole cache folder: downloaded packages (`_cacache`) and npx \
-                                installs (`_npx`) are fetched again on next use; its logs \
-                                (`_logs`) do not come back"
-                            .to_string();
+                    let mut finding = cache_finding("npm package cache", store, size, 2)
+                        .with_authority(TargetAuthority::NpmCacheStore);
+                    finding.note = "what `npm cache clean --force` removes: packages download \
+                                    again on next install; npx installs (`_npx`) stay, since a \
+                                    running npx tool loads them"
+                        .to_string();
                     findings.push(finding);
                 }
             }
@@ -350,6 +360,135 @@ fn brew_cache_findings(
     Ok(findings)
 }
 
+/// npm's package store inside its cache folder: npm 12.2.3 `cache clean
+/// --force` removes `<cache>/_cacache` and nothing else (`@npmcli/config`
+/// `definitions.js`: `flatOptions.cache = join(cache, '_cacache')`, the npx
+/// cache being `join(cache, '_npx')`).
+const NPM_STORE: &str = "_cacache";
+
+fn pnpm_cache(home: &Path) -> PathBuf {
+    home.join("Library/Caches").join(crate::safety::PNPM_CACHE)
+}
+
+/// Whether `name` is a folder pnpm keeps package metadata in. `in_version` is
+/// whether it sits in a `v<digits>` folder (pnpm 11.27.0 `v11/metadata`,
+/// `v11/metadata-full`, `v11/metadata-full-filtered`) rather than directly in
+/// the cache (the earlier `metadata-v1.3`, `metadata-full-v1.3`,
+/// `metadata-ff-v1.3`).
+fn is_pnpm_metadata_name(name: &OsStr, in_version: bool) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    if in_version {
+        return matches!(
+            name,
+            "metadata" | "metadata-full" | "metadata-full-filtered"
+        );
+    }
+    ["metadata-v", "metadata-full-v", "metadata-ff-v"]
+        .iter()
+        .filter_map(|prefix| name.strip_prefix(prefix))
+        .any(|version| {
+            !version.is_empty()
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        })
+}
+
+fn is_pnpm_version_name(name: &OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| name.strip_prefix('v'))
+        .is_some_and(|digits| {
+            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+/// The real directories directly below `folder`, links left out.
+fn real_subfolders(folder: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot read {}", folder.display()));
+        }
+    };
+    let mut folders = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("cannot read {}", folder.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("cannot inspect {}", entry.path().display()))?;
+        if file_type.is_dir() {
+            folders.push(entry.path());
+        }
+    }
+    folders.sort();
+    Ok(folders)
+}
+
+/// pnpm's metadata folders, each its own finding. Its `cacheDir` also holds
+/// the packages `pnpm dlx` installed, which a running `dlx` command loads, so
+/// the cache is never offered whole; anything pnpm does not name as metadata
+/// stays.
+fn pnpm_metadata_findings(home: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<Finding>> {
+    let cache = pnpm_cache(home);
+    let mut targets = Vec::new();
+    for child in real_subfolders(&cache)? {
+        let name = child.file_name().unwrap_or_default();
+        if is_pnpm_metadata_name(name, false) {
+            targets.push(child);
+        } else if is_pnpm_version_name(name) {
+            targets.extend(real_subfolders(&child)?.into_iter().filter(|folder| {
+                is_pnpm_metadata_name(folder.file_name().unwrap_or_default(), true)
+            }));
+        }
+    }
+    let mut findings = Vec::new();
+    for target in targets {
+        let size = measured(&target, unread);
+        if size.allocated == 0 {
+            continue;
+        }
+        let name = target
+            .strip_prefix(&cache)
+            .unwrap_or(&target)
+            .display()
+            .to_string();
+        let mut finding = cache_finding(&format!("pnpm metadata cache: {name}"), target, size, 3)
+            .with_authority(TargetAuthority::PnpmMetadata);
+        finding.note = "package metadata pnpm fetches again on next install; its `dlx` \
+                        installs stay, since a running `pnpm dlx` command loads them"
+            .to_string();
+        findings.push(finding);
+    }
+    Ok(findings)
+}
+
+/// The shape `pnpm_metadata_findings` offers a folder in, asked again at
+/// apply: a real directory named as metadata, directly in pnpm's cache or in a
+/// real `v<digits>` folder there.
+fn is_pnpm_metadata(target: &Path, home: &Path) -> Result<bool> {
+    let cache = pnpm_cache(home);
+    let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
+        return Ok(false);
+    };
+    let shaped = if parent == cache {
+        is_pnpm_metadata_name(name, false)
+    } else {
+        parent.parent() == Some(cache.as_path())
+            && parent.file_name().is_some_and(is_pnpm_version_name)
+            && is_pnpm_metadata_name(name, true)
+            && std::fs::symlink_metadata(parent)
+                .with_context(|| format!("cannot inspect {}", parent.display()))?
+                .is_dir()
+    };
+    Ok(shaped
+        && std::fs::symlink_metadata(target)
+            .with_context(|| format!("cannot inspect {}", target.display()))?
+            .is_dir())
+}
+
 /// A cache's size, or 0 with the cache recorded in `unread` when it cannot be
 /// measured: an unreadable folder, or a size that overflows. Only a cache that
 /// does not exist (`dir_measure` yields 0) is an ordinary empty one.
@@ -420,8 +559,13 @@ fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
         }
         TargetAuthority::Standard if is_gradle_cache(target, home)? => Some(CacheKind::Gradle),
         TargetAuthority::Standard => None,
-        TargetAuthority::NpmCache => {
-            is_eligible_owner_cache("npm", target, home).then_some(CacheKind::Plain)
+        TargetAuthority::NpmCacheStore => (target.file_name() == Some(OsStr::new(NPM_STORE))
+            && target
+                .parent()
+                .is_some_and(|cache| is_eligible_owner_cache("npm", cache, home)))
+        .then_some(CacheKind::Plain),
+        TargetAuthority::PnpmMetadata => {
+            is_pnpm_metadata(target, home)?.then_some(CacheKind::Plain)
         }
         TargetAuthority::BrewCache => {
             is_eligible_owner_cache("brew", target, home).then_some(CacheKind::Plain)
@@ -869,7 +1013,7 @@ mod tests {
             9,
             Action::Shred,
         )
-        .with_authority(TargetAuthority::NpmCache);
+        .with_authority(TargetAuthority::NpmCacheStore);
         let ctx = Ctx {
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             ..Ctx::for_test(home.clone())
@@ -1142,6 +1286,59 @@ mod tests {
         assert_eq!(outcome.summary.items_touched, 0);
         assert_eq!(outcome.errors.len(), 1);
         assert!(sentinel.exists());
+        crate::ops::remove_test_path(home);
+    }
+
+    /// Mole I-11: a running npx or `pnpm dlx` tool loads its packages from the
+    /// cache, so neither install folder may pass apply whatever authority a
+    /// finding claims, and neither may pnpm's cache whole.
+    #[test]
+    fn npx_and_dlx_installs_are_refused_at_apply() {
+        let fixture = crate::ops::TestFixture::new("devtrim-cache-installs");
+        let home = fixture.path().to_path_buf();
+        for folder in [".npm/_npx/9420", "Library/Caches/pnpm/dlx/1e5f"] {
+            std::fs::create_dir_all(home.join(folder)).unwrap();
+            std::fs::write(home.join(folder).join("sentinel"), "keep").unwrap();
+        }
+        let home = home.canonicalize().unwrap();
+        let ctx = Ctx {
+            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            ..Ctx::for_test(home.clone())
+        };
+        for (relative, authority, marker) in [
+            (
+                ".npm/_npx",
+                TargetAuthority::NpmCacheStore,
+                "PV caches/npm-store-name",
+            ),
+            (
+                "Library/Caches/pnpm/dlx",
+                TargetAuthority::PnpmMetadata,
+                "PV caches/pnpm-metadata-name",
+            ),
+            (
+                "Library/Caches/pnpm",
+                TargetAuthority::Standard,
+                "PV caches/pnpm-whole",
+            ),
+        ] {
+            let finding = Finding::new(
+                "forged",
+                Some(home.join(relative)),
+                4,
+                "test",
+                9,
+                Action::Shred,
+            )
+            .with_authority(authority);
+            let outcome = Caches.apply(&[finding], &ctx).unwrap();
+            assert_eq!(
+                outcome.summary.items_touched, 0,
+                "{marker}: {relative} was removed"
+            );
+        }
+        assert!(home.join(".npm/_npx/9420/sentinel").exists());
+        assert!(home.join("Library/Caches/pnpm/dlx/1e5f/sentinel").exists());
         crate::ops::remove_test_path(home);
     }
 

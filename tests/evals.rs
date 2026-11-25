@@ -180,10 +180,15 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
         ".cargo/registry/src",
         "Library/Caches/pip",
         "Library/Caches/go-build",
-        "Library/Caches/pnpm",
+        // pnpm's metadata folders, current and legacy; never its `dlx` installs.
+        "Library/Caches/pnpm/v12/metadata",
+        "Library/Caches/pnpm/v12/metadata-full",
+        "Library/Caches/pnpm/v11/metadata-full-filtered",
+        "Library/Caches/pnpm/metadata-v1.3",
         "Library/Caches/org.swift.swiftpm",
         "Library/Caches/CocoaPods",
-        ".npm",
+        // What `npm cache clean --force` removes; never its npx installs.
+        ".npm/_cacache",
         // Homebrew's cache holds a Git clone, so it is offered as its other children.
         "Library/Caches/Homebrew/downloads",
         "Library/Caches/Homebrew/bootsnap",
@@ -215,6 +220,13 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
         ".gradle/init.d/init.gradle",
         ".gradle/daemon/9.8.1/registry.bin",
         "go/bin/tool", // installed commands beside the module cache
+        ".npm/_npx/94207acffe67148d/node_modules/.bin/tool", // a running npx tool loads these
+        ".npm/_prebuilds/x",
+        "Library/Caches/pnpm/dlx/1e5fa13a/node_modules/x", // a running `pnpm dlx` loads these
+        "Library/Caches/pnpm/lockfile-verified.jsonl",
+        "Library/Caches/pnpm/v12/pkg/x", // not a folder pnpm names as metadata
+        "Library/Caches/pnpm/v12x/metadata/x",
+        "Library/Caches/pnpm/metadata-notes/x",
     ] {
         write(&home.join(relative), "keep");
     }

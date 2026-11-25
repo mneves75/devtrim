@@ -351,9 +351,13 @@ direct children — `downloads`, `api`, `Cask`, and so on — and the clones sta
 links Homebrew left at the top are left for `brew cleanup`.
 
 Two boundaries inside that are worth stating, because a shorter list would
-over-claim. The pnpm entry is the metadata cache, never the content-addressable
-store at `~/Library/pnpm/store` that installed `node_modules` trees hard-link
-into. And editor *logs* and application data are not covered at all: VS Code
+over-claim. The pnpm entry is offered only as its metadata folders, the ones
+`pnpm cache delete` removes, never its `dlx` installs, which a running
+`pnpm dlx` command loads, and never the content-addressable store at
+`~/Library/pnpm/store` that installed `node_modules` trees hard-link into.
+npm's cache is offered only as `_cacache`, what `npm cache clean --force`
+removes; its `_npx` installs, which a running npx tool such as an editor's
+language server loads, stay. And editor *logs* and application data are not covered at all: VS Code
 keeps its logs, `CachedData` and webview caches under `~/Library/Application
 Support/Code`, and JetBrains keeps logs under `~/Library/Logs` — both outside
 `~/Library/Caches`, both mixed in with real user state, and neither reachable
