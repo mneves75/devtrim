@@ -1966,4 +1966,225 @@ mod tests {
         assert_eq!(without.len(), 4);
         assert_eq!(journal(true), without);
     }
+
+    /// A bounded model of the stop protocol, driven through the real `admit`,
+    /// `begin` and `finish` against a real journal: every plan of one to three
+    /// attempts, with the stop arriving before each step in turn. The stop
+    /// comes from another thread, so between any two steps is where it lands.
+    mod stop_model {
+        use super::*;
+
+        #[derive(Clone, Copy, Debug)]
+        enum Attempt {
+            Plain,
+            Uv,
+            /// uv's lock is created, then taking it fails before `begin`.
+            UvFails,
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        enum Order {
+            Admitted,
+            /// cf7962b's parent: check the stop, write the lock, then `begin`.
+            CheckThenWrite,
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        enum Step {
+            Admit,
+            CheckStop,
+            WriteLock,
+            Begin,
+            Finish,
+            FailPreparation,
+        }
+
+        fn steps(attempt: Attempt, order: Order) -> &'static [Step] {
+            use Step::*;
+            match (attempt, order) {
+                (Attempt::Plain, _) => &[Begin, Finish],
+                (Attempt::Uv, Order::Admitted) => &[Admit, WriteLock, Begin, Finish],
+                (Attempt::Uv, Order::CheckThenWrite) => &[CheckStop, WriteLock, Begin, Finish],
+                (Attempt::UvFails, Order::Admitted) => &[Admit, WriteLock, FailPreparation],
+                (Attempt::UvFails, Order::CheckThenWrite) => {
+                    &[CheckStop, WriteLock, FailPreparation]
+                }
+            }
+        }
+
+        #[derive(Clone, Copy, PartialEq)]
+        enum Outcome {
+            Done,
+            Stopped,
+            Failed,
+        }
+
+        /// Runs one interleaving; a broken invariant returns its trace.
+        fn run(root: &Path, plan: &[Attempt], order: Order, stop_at: usize) -> Option<String> {
+            let ctx = Ctx::for_test(root.to_path_buf());
+            let monitor = std::sync::Arc::new(ApplyMonitor::new(plan.len(), 0));
+            let mut trace = Vec::new();
+            let mut step_index = 0;
+            let mut outcomes = Vec::new();
+            let mut began_after_stop = Vec::new();
+            ctx.with_apply_monitor(monitor.clone(), || {
+                for (index, &attempt) in plan.iter().enumerate() {
+                    let cache = root.join(format!("cache{index}"));
+                    let mut admission = None;
+                    let mut admitted_before_stop = false;
+                    let mut journaled = None;
+                    let mut outcome = Outcome::Done;
+                    for &step in steps(attempt, order) {
+                        if step_index == stop_at {
+                            monitor.request_stop();
+                            trace.push("STOP".to_owned());
+                        }
+                        step_index += 1;
+                        let refused = match step {
+                            Step::Admit => admit(&ctx).map(|granted| {
+                                admitted_before_stop = !monitor.stop_requested();
+                                admission = Some(granted);
+                            }),
+                            Step::CheckStop => refuse_if_stopped(&ctx),
+                            Step::WriteLock => {
+                                std::fs::create_dir_all(&cache).unwrap();
+                                std::fs::write(cache.join(".lock"), b"").unwrap();
+                                Ok(())
+                            }
+                            Step::Begin => {
+                                let record =
+                                    JournalRecord::filesystem_attempt("caches", "trash", &cache, 4);
+                                begin(&ctx, record).map(|attempt| {
+                                    if monitor.stop_requested() {
+                                        began_after_stop.push((index, admitted_before_stop));
+                                    }
+                                    journaled = Some(attempt);
+                                })
+                            }
+                            Step::Finish => {
+                                journaled.take().unwrap().finish(&ctx, Ok(())).unwrap();
+                                Ok(())
+                            }
+                            Step::FailPreparation => {
+                                drop(admission.take());
+                                outcome = Outcome::Failed;
+                                Ok(())
+                            }
+                        };
+                        trace.push(format!("{attempt:?}#{index} {step:?}"));
+                        if let Err(error) = refused {
+                            assert!(error.downcast_ref::<ApplyStopped>().is_some(), "{error:#}");
+                            trace.push("  refused: stopped".to_owned());
+                            outcome = Outcome::Stopped;
+                            break;
+                        }
+                    }
+                    outcomes.push(outcome);
+                }
+            });
+            let journal = std::fs::read_to_string(&ctx.journal_path).unwrap_or_default();
+            let recorded = |index: usize| {
+                let target = root.join(format!("cache{index}"));
+                journal.lines().any(|line| {
+                    let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                    value["phase"] == "attempt"
+                        && value["target"] == serde_json::json!(target.to_string_lossy())
+                })
+            };
+            let broken =
+                |why: String| Some(format!("{why}\n  plan {plan:?}\n  {}", trace.join("\n  ")));
+            for (index, &outcome) in outcomes.iter().enumerate() {
+                let lock = root.join(format!("cache{index}/.lock")).exists();
+                if lock && !recorded(index) && outcome == Outcome::Stopped {
+                    return broken(format!(
+                        "attempt {index} wrote uv's lock, then was refused as stopped: no journal record"
+                    ));
+                }
+            }
+            if let Some((index, _)) = began_after_stop.iter().find(|(_, admitted)| !admitted) {
+                return broken(format!(
+                    "attempt {index} began after the stop without an admission before it"
+                ));
+            }
+            if began_after_stop.len() > 1 {
+                return broken("more than one attempt began after the stop".to_owned());
+            }
+            let stopped = outcomes.iter().filter(|&&o| o == Outcome::Stopped).count();
+            let done = outcomes.iter().filter(|&&o| o == Outcome::Done).count();
+            if monitor.stopped() != stopped || monitor.finished() != done {
+                return broken(format!(
+                    "monitor counted {} stopped and {} finished, the plan saw {stopped} and {done}",
+                    monitor.stopped(),
+                    monitor.finished()
+                ));
+            }
+            if journal.lines().count() != 2 * done {
+                return broken(format!(
+                    "{} journal lines for {done} finished attempts",
+                    journal.lines().count()
+                ));
+            }
+            None
+        }
+
+        fn plans() -> Vec<Vec<Attempt>> {
+            let kinds = [Attempt::Plain, Attempt::Uv, Attempt::UvFails];
+            let mut plans: Vec<Vec<Attempt>> = kinds.iter().map(|&kind| vec![kind]).collect();
+            let mut last = plans.clone();
+            for _ in 1..3 {
+                last = last
+                    .iter()
+                    .flat_map(|plan| {
+                        kinds
+                            .iter()
+                            .map(move |&kind| [plan.clone(), vec![kind]].concat())
+                    })
+                    .collect();
+                plans.extend(last.iter().cloned());
+            }
+            plans
+        }
+
+        fn first_violation(name: &str, order: Order) -> (usize, Option<String>) {
+            let root = temp(name);
+            let mut runs = 0;
+            let mut violation = None;
+            'plans: for (number, plan) in plans().iter().enumerate() {
+                let length: usize = plan.iter().map(|&a| steps(a, order).len()).sum();
+                for stop_at in 0..=length {
+                    let folder = root.join(format!("{number}-{stop_at}"));
+                    std::fs::create_dir_all(&folder).unwrap();
+                    runs += 1;
+                    violation = run(&folder, plan, order, stop_at);
+                    if violation.is_some() {
+                        break 'plans;
+                    }
+                }
+            }
+            crate::ops::remove_test_path(root);
+            (runs, violation)
+        }
+
+        /// Replays D-07 (cf7962b): the order before the fix must break the
+        /// model, so the model is known to see the bug it guards against.
+        #[test]
+        fn the_stop_protocol_holds_in_every_bounded_interleaving() {
+            let (runs, violation) = first_violation("model-admitted", Order::Admitted);
+            if let Some(trace) = violation {
+                panic!("PV journal-stop/model: {trace}");
+            }
+            assert_eq!(
+                runs, 345,
+                "12 + 63 + 270 interleavings for plans of 1, 2 and 3 attempts"
+            );
+            let (_, replay) = first_violation("model-check-then-write", Order::CheckThenWrite);
+            let trace =
+                replay.expect("the pre-cf7962b order passed the model, so it cannot see D-07");
+            assert!(
+                trace.contains("wrote uv's lock, then was refused as stopped"),
+                "{trace}"
+            );
+            eprintln!("D-07 replayed:\n{trace}");
+        }
+    }
 }

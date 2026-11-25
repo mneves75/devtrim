@@ -1,64 +1,75 @@
 {
-  "plan": "plans/022-mole-lessons.md",
-  "target_version": "0.18.0",
-  "base_commit": "3b6bde9",
-  "branch": "feat/mole-lessons",
-  "updated_at": "2026-11-25",
-  "checks": [
-    {
-      "id": "baseline-focused",
-      "what": "scripts/verify.sh focused on 3b6bde9",
-      "commit": "3b6bde9",
-      "result": "pass"
-    },
-    {
-      "id": "baseline-offline",
-      "what": "scripts/verify.sh offline on 3b6bde9",
-      "commit": "3b6bde9",
-      "result": "not-run",
-      "note": "nohup could not detach from the tool console; offline gate runs at closeout instead"
-    },
-    {
-      "id": "step1-npm-pnpm",
-      "what": "npm offers only _cacache, pnpm only v<N>/metadata*; evals with _npx/dlx near misses fail on 3b6bde9",
-      "result": "pass",
-      "evidence": [
-        "eval_clean_caches_removes_every_listed_cache_and_nothing_else failed on 3b6bde9 (offered .npm and Library/Caches/pnpm whole), passes after",
-        "planted-violations.py caches/: 15 caught incl. npm-store-name, pnpm-metadata-name, pnpm-whole",
-        "fmt, clippy -D warnings, ast-grep test+scan pass; full tests pass except 7 host-dependent tests"
-      ],
-      "host_failures": "sysmond missing: pgrep exits 3 (liveness_pgrep_matches_devtrims_own_ancestors, coding_agents_protect_*, 3 eval_worktrees_*); hdiutil create \"Device not configured\" (isolated_git_dir_refuses_a_volume_*, foreign_device_boundaries_*). Not caused by this change; rerun after host recovers."
-    },
-    {
-      "id": "step2-ledger",
-      "what": "docs/incidents.md + audit-incidents.py + controls in verify.sh and CI",
-      "result": "pass",
-      "evidence": [
-        "audit-incidents.py: 8 incidents, each with a live catcher",
-        "audit-incidents-controls.py: 13 planted defects refused, incl. the real 0.11.0 removal of 33fe4e2 tests",
-        "release-policy.sh passes with the CI step extended"
-      ],
-      "limit": "the reachable-but-not-ancestor branch of the commit check has no control (would need a dangling commit object in the repo)"
-    },
-    {
-      "id": "step3-model",
-      "what": "exhaustive stop/admit/begin interleaving test; pre-cf7962b ordering fails",
-      "result": "pending"
-    },
-    {
-      "id": "step4-comments",
-      "what": "no-comments pass over touched files",
-      "result": "pending"
-    },
-    {
-      "id": "step5-closeout",
-      "what": "cccc, prune-tests, mneves-verify, reviewer, autoreview, security gate, release",
-      "result": "pending"
-    },
-    {
-      "id": "host-rerun",
-      "what": "rerun the 7 host-dependent tests once pgrep/hdiutil work again",
-      "result": "pending"
-    }
-  ]
+ "plan": "plans/022-mole-lessons.md",
+ "target_version": "0.18.0",
+ "base_commit": "3b6bde9",
+ "branch": "feat/mole-lessons",
+ "updated_at": "2026-11-25",
+ "checks": [
+  {
+   "id": "baseline-focused",
+   "what": "scripts/verify.sh focused on 3b6bde9",
+   "commit": "3b6bde9",
+   "result": "pass"
+  },
+  {
+   "id": "baseline-offline",
+   "what": "scripts/verify.sh offline on 3b6bde9",
+   "commit": "3b6bde9",
+   "result": "not-run",
+   "note": "nohup could not detach from the tool console; offline gate runs at closeout instead"
+  },
+  {
+   "id": "step1-npm-pnpm",
+   "what": "npm offers only _cacache, pnpm only v<N>/metadata*; evals with _npx/dlx near misses fail on 3b6bde9",
+   "result": "pass",
+   "evidence": [
+    "eval_clean_caches_removes_every_listed_cache_and_nothing_else failed on 3b6bde9 (offered .npm and Library/Caches/pnpm whole), passes after",
+    "planted-violations.py caches/: 15 caught incl. npm-store-name, pnpm-metadata-name, pnpm-whole",
+    "fmt, clippy -D warnings, ast-grep test+scan pass; full tests pass except 7 host-dependent tests"
+   ],
+   "host_failures": "sysmond missing: pgrep exits 3 (liveness_pgrep_matches_devtrims_own_ancestors, coding_agents_protect_*, 3 eval_worktrees_*); hdiutil create \"Device not configured\" (isolated_git_dir_refuses_a_volume_*, foreign_device_boundaries_*). Not caused by this change; rerun after host recovers."
+  },
+  {
+   "id": "step2-ledger",
+   "what": "docs/incidents.md + audit-incidents.py + controls in verify.sh and CI",
+   "result": "pass",
+   "evidence": [
+    "audit-incidents.py: 8 incidents, each with a live catcher",
+    "audit-incidents-controls.py: 13 planted defects refused, incl. the real 0.11.0 removal of 33fe4e2 tests",
+    "release-policy.sh passes with the CI step extended"
+   ],
+   "limit": "the reachable-but-not-ancestor branch of the commit check has no control (would need a dangling commit object in the repo)"
+  },
+  {
+   "id": "step3-model",
+   "what": "exhaustive stop/admit/begin interleaving test; pre-cf7962b ordering fails",
+   "result": "pass",
+   "evidence": [
+    "journal::tests::stop_model: 345 interleavings (plans of 1-3 attempts x every stop position) pass on the real admit/begin/finish",
+    "negative control: cf7962b's parent order fails with trace CheckStop, STOP, WriteLock, Begin refused (printed as 'D-07 replayed')",
+    "planted-violations.py journal-stop/model: 2 mutants caught (cf7962b's begin mutation; admit skipping its stop check)",
+    "docs/incidents.md D-07 catcher now journal-stop/model; audit + 13 controls pass",
+    ".claude/skills/verify-apply-stop/SKILL.md documents the commands and limits"
+   ],
+   "limit": "stop placed between protocol steps only; one begin per admission, as every caller does"
+  },
+  {
+   "id": "step4-comments",
+   "what": "no-comments pass over touched files",
+   "result": "pending"
+  },
+  {
+   "id": "step5-closeout",
+   "what": "cccc, prune-tests, mneves-verify, reviewer, autoreview, security gate, release",
+   "result": "pending"
+  },
+  {
+   "id": "host-rerun",
+   "what": "rerun the 7 host-dependent tests once pgrep/hdiutil work again",
+   "result": "pass",
+   "evidence": [
+    "pgrep and hdiutil work again; all 7 host-dependent tests plus a fourth worktrees eval pass on f69a28b+step3"
+   ]
+  }
+ ]
 }

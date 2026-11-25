@@ -2324,6 +2324,24 @@ CASES = (
         tests=("journal::tests::an_admitted_attempt_survives_a_later_stop_and_only_once",),
         marker="PV journal-stop/dropped-admission",
     ),
+    # The bounded stop model replays D-07: cf7962b's mutation must break it.
+    Case(
+        name="journal-stop/model",
+        relative_path="src/journal.rs",
+        before="    if !admitted {\n        refuse_if_stopped(ctx)?;\n    }\n",
+        after="    let _ = admitted;\n    refuse_if_stopped(ctx)?;\n",
+        tests=("journal::tests::stop_model::the_stop_protocol_holds_in_every_bounded_interleaving",),
+        marker="PV journal-stop/model",
+    ),
+    # An admission granted after the stop lets uv's lock and its attempt past it.
+    Case(
+        name="journal-stop/model-admit",
+        relative_path="src/journal.rs",
+        before="    refuse_if_stopped(ctx)?;\n    let monitor = ctx.apply_monitor();\n",
+        after="    let monitor = ctx.apply_monitor();\n",
+        tests=("journal::tests::stop_model::the_stop_protocol_holds_in_every_bounded_interleaving",),
+        marker="PV journal-stop/model",
+    ),
 )
 
 

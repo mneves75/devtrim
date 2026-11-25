@@ -31,7 +31,7 @@ CONTROLS = [
     ("missing commit", ("| cf7962b |", "| 0000000 |"), "not a commit reachable from HEAD"),
     ("not a commit", ("| cf7962b |", "| main |"), "not a commit reachable from HEAD"),
     ("no commit on a shipped row", ("| cf7962b |", "| — |"), "allowed only for an in-flight release"),
-    ("missing cell", ("| cf7962b | journal-stop/admitted-begin |", "| journal-stop/admitted-begin |"), "cells, expected 5"),
+    ("missing cell", ("| cf7962b | journal-stop/model |", "| journal-stop/model |"), "cells, expected 5"),
     (
         "empty class",
         ("| A stop between the stop check and uv's lock left `<cache>/.lock` with no journal record |", "|  |"),

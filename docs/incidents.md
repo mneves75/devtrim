@@ -25,5 +25,5 @@ nothing noticed until this ledger.
 | D-04 | 0.10.5 | One unreadable folder (`.fseventsd`) emptied `node-modules` and `artifacts` | b118350 | node_modules/unread-folders-reported |
 | D-05 | 0.10.5 | A fresh `git init` repository emptied both project categories | b118350 | project/unborn-branch |
 | D-06 | 0.12.6 | A version bump left `fuzz/Cargo.lock` stale, failing the release's clean-checkout gate | 13ccd96 | every_lockfile_pins_the_version_cargo_toml_declares |
-| D-07 | 0.15.0 | A stop between the stop check and uv's lock left `<cache>/.lock` with no journal record | cf7962b | journal-stop/admitted-begin |
+| D-07 | 0.15.0 | A stop between the stop check and uv's lock left `<cache>/.lock` with no journal record | cf7962b | journal-stop/model |
 | D-08 | Unreleased | `clean caches` offered npm's whole cache, including `_npx` installs a running language server loaded, and pnpm's `dlx` (Mole I-11) | — | caches/npm-store-name |
