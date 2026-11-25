@@ -107,6 +107,17 @@
     "60db621: audit refuses #[ignore] or non-macos #[cfg] anywhere in the attribute block; fixture control; removing each filter fails the controls",
     "D-08: mapped disproved - CLAUDE.md allows the in-flight dash; the commit is filled in the closeout PR after the squash merge creates it"
    ]
+  },
+  {
+   "id": "verify-round-2",
+   "what": "Sonnet host reverify FAIL on 48a05ff: linked npm/pnpm cache escaped the holder check; audit credited compiled-out/orphan catchers and a tagged declared version; pnpm protection wording",
+   "result": "pass",
+   "evidence": [
+    "overlaps_install_cache walks canonicalize(cache) ancestors; eval_a_linked_install_cache_keeps_its_holder passes; planted caches/install-cache-link CAUGHT with the other two install-cache cases",
+    "audit-incidents.py asks cargo test --list (minus --ignored) for runnable catchers; an orphan src file's test is refused; removing the --ignored subtraction fails the ignored-test control",
+    "declared version is in flight only while v<version> is untagged; tagged_version_failures control fails without the rule",
+    "AGENTS/CLAUDE and safety.rs evidence now say the carve-out lifts protection from pnpm's folder; caches scan and apply are the guard"
+   ]
   }
  ]
 }

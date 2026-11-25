@@ -400,6 +400,52 @@ fn eval_no_other_owner_claims_npm_or_pnpm_installs() {
     }
 }
 
+/// An install cache linked into another owner's folder is still held by it:
+/// `~/.npm` linked into the Go module cache, or pnpm's cache linked into
+/// Gradle's, keeps that whole owner's cache from being offered or removed.
+#[test]
+fn eval_a_linked_install_cache_keeps_its_holder() {
+    let sandbox = Sandbox::in_target("eval-linked-install-cache");
+    let home = sandbox.path().canonicalize().unwrap();
+    write(&home.join("go/pkg/mod/cache/download/x.zip"), "module");
+    write(&home.join("go/pkg/mod/npm/_npx/9420/sentinel"), "install");
+    write(&home.join(".gradle/caches/modules-2/x.jar"), "module");
+    write(
+        &home.join(".gradle/caches/pnpm/dlx/1e5f/sentinel"),
+        "install",
+    );
+    std::fs::create_dir_all(home.join("Library/Caches")).unwrap();
+    std::os::unix::fs::symlink(home.join("go/pkg/mod/npm"), home.join(".npm")).unwrap();
+    std::os::unix::fs::symlink(
+        home.join(".gradle/caches/pnpm"),
+        home.join("Library/Caches/pnpm"),
+    )
+    .unwrap();
+    sandbox.script(
+        "go",
+        "[ \"${GOTOOLCHAIN:-}\" = local ] || exit 3\nprintf '%s\\n' \"$HOME/go/pkg/mod\"",
+    );
+    let pristine = Tree::snapshot(&home);
+    let preview = json(&run(&sandbox, &["clean", "caches", "--json"]));
+    assert_eq!(
+        actionable_targets(&preview),
+        Vec::<PathBuf>::new(),
+        "PV eval/install-cache-link: a cache holding a linked install cache was offered: {preview}"
+    );
+    let applied = json(&run(
+        &sandbox,
+        &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+    ));
+    pristine.assert_only(
+        &Tree::snapshot(&home),
+        &Allowed {
+            removed: Vec::new(),
+            scratch: vec![home.join(".local/state/devtrim")],
+        },
+        &format!("linked install cache {applied}"),
+    );
+}
+
 /// An owner command that fails withholds only its own cache: a broken `npm`
 /// or `brew` (a stale version-manager shim) is one error finding each, the
 /// run exits nonzero, and every other cache is still offered and removed.

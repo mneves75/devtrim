@@ -22,7 +22,7 @@ CONTROLS = [
     (
         "removed catcher (0.11.0 drift)",
         (D01, "| 33fe4e2 | apply_skips_the_report_only_vm_disk_finding_instead_of_refusing_it |"),
-        "is neither a planted case nor a #[test] fn",
+        "is neither a planted case nor a test `cargo test` runs",
     ),
     ("unknown planted case", ("| git/signature-program |", "| git/signature-programs |"), "neither a planted case"),
     ("ignored test", ("| cf7962b | journal-stop/model |", "| cf7962b | concurrent_writer_child |"), "neither a planted case"),
@@ -58,47 +58,25 @@ def run(ledger: str) -> subprocess.CompletedProcess:
         path.unlink()
 
 
-# Catcher shapes `cargo test` never runs, beside two it does.
-FIXTURE = """
-#[test]
-fn runs() {}
-#[ignore]
-#[test]
-fn ignored_first() {}
-#[test]
-#[ignore = "helper"]
-fn ignored_after() {}
-#[cfg(any())]
-#[test]
-fn compiled_out() {}
-/*
-#[test]
-fn commented_out() {}
-*/
-// #[test] fn line_commented() {}
-#[cfg(target_os = "macos")]
-#[test]
-fn on_macos() {}
-"""
-
-
-def fixture_failures() -> int:
+def tagged_version_failures() -> int:
+    """A version already tagged is no longer in flight, even while Cargo.toml
+    still declares it: a row shipped in it must name its commit."""
     spec = importlib.util.spec_from_file_location("audit_incidents", AUDIT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    with tempfile.TemporaryDirectory() as root:
-        Path(root, "lib.rs").write_text(FIXTURE, encoding="utf-8")
-        found = module.rust_tests((Path(root),))
-    if found != {"runs", "on_macos"}:
-        print(f"FAIL non-running catchers: expected only runs and on_macos, got {sorted(found)}")
+    module.declared_version = lambda: "0.17.1"
+    planted = LEDGER.replace(D07, "| D-07 | 0.17.1 |").replace("| cf7962b |", "| — |")
+    failures = module.audit(planted)
+    if not any("allowed only for an in-flight release" in failure for failure in failures):
+        print(f"FAIL tagged declared version: expected the dash refused, got {failures}")
         return 1
-    print("REFUSED ignored, compiled-out and commented catchers")
+    print("REFUSED tagged declared version")
     return 0
 
 
 def main() -> int:
     failures = 0
-    failures += fixture_failures()
+    failures += tagged_version_failures()
     original = run(LEDGER)
     if original.returncode != 0:
         print(f"FAIL the unmodified ledger must pass:\n{original.stdout}{original.stderr}")

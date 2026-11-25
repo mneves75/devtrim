@@ -857,8 +857,10 @@ fn is_brew_cache_entry(target: &Path, home: &Path) -> Result<bool> {
 /// npm's and pnpm's cache folders hold installs a running tool loads (Mole
 /// I-11), so another owner's answer (`GOMODCACHE`, `GRADLE_USER_HOME`) never
 /// makes a cache of a folder inside one or holding one; only their own
-/// authorities reach inside. Compared by device and inode, so a case or
-/// link spelling matches too, and an unreadable folder counts as overlapping.
+/// authorities reach inside. Checked for the default folders, the only ones
+/// devtrim offers npm and pnpm from, by device and inode and through each
+/// one's real folder, so a case spelling or a cache linked elsewhere matches
+/// too; an unreadable folder counts as overlapping.
 fn overlaps_install_cache(path: &Path, home: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
 
@@ -875,11 +877,13 @@ fn overlaps_install_cache(path: &Path, home: &Path) -> bool {
         .any(|cache| match identity(cache) {
             Err(error) => !not_found(&error),
             Ok(cache_id) => {
+                let Ok(real) = std::fs::canonicalize(cache) else {
+                    return true;
+                };
                 path.ancestors()
                     .any(|folder| identity(folder).is_ok_and(|id| id == cache_id))
                     || target.is_some_and(|target| {
-                        cache
-                            .ancestors()
+                        real.ancestors()
                             .any(|folder| identity(folder).is_ok_and(|id| id == target))
                     })
             }

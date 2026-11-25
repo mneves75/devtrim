@@ -5,11 +5,13 @@ committed. `scripts/tests/audit-incidents.py` checks every row in CI:
 
 - **Shipped**: a `CHANGELOG.md` version, or `Unreleased`.
 - **Commit**: a commit reachable from `HEAD`. It may be `—` only while
-  Shipped is `Unreleased` or the version `Cargo.toml` declares, since a
-  squash merge rewrites the branch commit.
+  Shipped is `Unreleased`, or the version `Cargo.toml` declares and no
+  `v<version>` tag exists yet, since a squash merge rewrites the branch
+  commit.
 - **Catcher**: names the check that now fails on the defect. It is either a
   `Case` in `scripts/tests/planted-violations.py`, which mutation-proves it,
-  or a `#[test]` function in `src/` or `tests/`.
+  or a test `cargo test --list` names and does not list again under
+  `--ignored`, so a test compiled out or ignored does not count.
 
 A catcher renamed or deleted fails the audit. It must not silently stop
 guarding its incident: `33fe4e2`'s two tests were removed in 0.11.0 and

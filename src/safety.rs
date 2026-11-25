@@ -1313,8 +1313,9 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
     DeletionEntry {
         label: "pnpm metadata cache",
         relative: PNPM_CACHE,
-        evidence: "pnpm's `cacheDir`. Protection covers it whole, but `caches` \
-                   offers only its metadata folders (`ops::caches`): pnpm \
+        evidence: "pnpm's `cacheDir`. Carved out of protection whole, so \
+                   `caches` alone keeps it to its metadata folders, at scan \
+                   and at apply (`ops::caches`): pnpm \
                    11.27.0 names them `v11/metadata`, `v11/metadata-full` and \
                    `v11/metadata-full-filtered` (`metadata-v1.3`, \
                    `metadata-full-v1.3`, `metadata-ff-v1.3` before), and its own \

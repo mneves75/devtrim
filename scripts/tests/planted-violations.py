@@ -245,6 +245,16 @@ CASES = (
         marker="PV eval/go-install-cache", target="eval_safety",
     ),
     Case(
+        name="caches/install-cache-link",
+        relative_path="src/ops/caches.rs",
+        # Walking the spelled `~/.npm` instead of its real folder, a Go module
+        # cache holding npm's linked cache is offered whole.
+        before="                        real.ancestors()\n",
+        after="                        cache.ancestors()\n",
+        tests=("eval_a_linked_install_cache_keeps_its_holder",),
+        marker="PV eval/install-cache-link", target="eval_safety",
+    ),
+    Case(
         name="caches/gradle-install-cache",
         relative_path="src/ops/caches.rs",
         # A GRADLE_USER_HOME inside npm's or pnpm's cache makes its `caches`

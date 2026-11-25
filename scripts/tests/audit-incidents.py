@@ -49,25 +49,26 @@ def planted_cases() -> set[str]:
     return set(re.findall(r'^\s*name="([^"]+)",$', text, re.MULTILINE))
 
 
-# CI runs on macOS, so that is the one `cfg` a catcher may carry; any other
-# (`cfg(any())`, another OS) or an `#[ignore]` keeps it from running.
-RUNNABLE_CFG = '#[cfg(target_os = "macos")]'
+def runnable_tests() -> set[str]:
+    """What `cargo test` runs, asked of the test harness itself: a test compiled
+    out (a `cfg`, a file no module declares) is never listed, and an
+    `#[ignore]`d one is listed again under `--ignored` and taken away."""
+
+    def listed(*extra: str) -> set[str]:
+        command = ["cargo", "test", "--locked", "--all-targets", "--all-features", "--quiet", "--", "--list", *extra]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise ValueError(f"`{' '.join(command)}` failed:\n{result.stderr[-2000:]}")
+        return {line.removesuffix(": test") for line in result.stdout.splitlines() if line.endswith(": test")}
+
+    return {path.rsplit("::", 1)[-1] for path in listed() - listed("--ignored")}
 
 
-def rust_tests(roots: tuple[Path, ...] = (Path("src"), Path("tests"))) -> set[str]:
-    names = set()
-    for path in [file for root in roots for file in root.rglob("*.rs")]:
-        text = re.sub(r"/\*.*?\*/|//[^\n]*", "", path.read_text(encoding="utf-8"), flags=re.DOTALL)
-        for attributes, name in re.findall(
-            r"((?:#\[[^\]]*\]\s*)+)(?:pub(?:\([^)]*\))? )?fn ([a-z0-9_]+)\(", text
-        ):
-            found = re.findall(r"#\[[^\]]*\]", attributes)
-            if "#[test]" in found and not any(
-                item.startswith("#[ignore") or (item.startswith("#[cfg") and item != RUNNABLE_CFG)
-                for item in found
-            ):
-                names.add(name)
-    return names
+def tagged(version: str) -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/v{version}"], capture_output=True
+    )
+    return result.returncode == 0
 
 
 def reachable(commit: str) -> bool:
@@ -94,8 +95,13 @@ def audit(ledger: str) -> list[str]:
     except ValueError as error:
         return [str(error)]
     versions = changelog_versions()
-    in_flight = {"Unreleased", declared_version()}
-    catchers = planted_cases() | rust_tests()
+    declared = declared_version()
+    # The version Cargo.toml declares is in flight only until it is tagged.
+    in_flight = {"Unreleased"} | ({declared} if not tagged(declared) else set())
+    try:
+        catchers = planted_cases() | runnable_tests()
+    except ValueError as error:
+        return [str(error)]
     seen = set()
     for number, cells in enumerate(table, start=1):
         if len(cells) != len(HEADER):
@@ -118,7 +124,7 @@ def audit(ledger: str) -> list[str]:
         elif not reachable(commit):
             failures.append(f"{label}: Commit `{commit}` is not a commit reachable from HEAD")
         if catcher not in catchers:
-            failures.append(f"{label}: Catcher `{catcher}` is neither a planted case nor a #[test] fn")
+            failures.append(f"{label}: Catcher `{catcher}` is neither a planted case nor a test `cargo test` runs")
     return failures
 
 

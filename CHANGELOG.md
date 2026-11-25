@@ -17,8 +17,8 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 ### Added
 - An incident ledger, `docs/incidents.md`: each defect met after commit, with
   the check that now catches it. `scripts/tests/audit-incidents.py` runs in
-  `verify.sh` and CI and fails when a row's version, commit or catcher no
-  longer exists. Building it found that 0.11.0 had deleted the two tests
+  `verify.sh` and CI and fails when a row's version or commit no longer
+  exists, or its catcher is no planted case and no test `cargo test` runs. Building it found that 0.11.0 had deleted the two tests
   0.7.0 added for two of its fixes, unnoticed; the rows name the tests that
   guard those fixes now.
 - A bounded model of the apply stop protocol (`journal::tests::stop_model`):
@@ -36,8 +36,8 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   whole folder, `_npx` and `dlx` whatever a finding claims, and asks npm for
   its cache root again, refusing a `_cacache` anywhere but directly in it.
   Neither `GOMODCACHE` nor `GRADLE_USER_HOME` pointing into npm's or pnpm's
-  cache, or at a folder holding one, makes a Go or Gradle cache of it
-  (Mole I-11).
+  cache, or at a folder holding one, even through a link, makes a Go or
+  Gradle cache of it (Mole I-11).
 
 ## [0.17.1] - 2026-11-23
 
