@@ -62,6 +62,19 @@
    ]
   },
   {
+   "id": "prune-tests",
+   "what": "mneves-prune-tests over journal stop tests and caches npm/pnpm tests",
+   "result": "pass",
+   "baseline": "journal:: + ops::caches:: 27 passed, 1 ignored (helper process); evals caches 1 passed",
+   "after": "27 passed, 1 ignored; clippy clean",
+   "changes": [
+    "rewrote an_admitted_attempt_survives_a_later_stop_and_only_once -> one_admission_lets_one_attempt_past_a_stop (duplicate: admitted-begin and dropped-admission now caught by stop_model; kept the two-begins-under-one-admission behavior the model does not reach)",
+    "planted: dropped journal-stop/admitted-begin (identical to journal-stop/model); dropped-admission repointed to stop_model; added journal-stop/one-admission; 8 journal-stop cases proven"
+   ],
+   "kept": "apply_reasserts_owner_namespace_and_preserves_sentinel and npx_and_dlx_installs_are_refused_at_apply (security refusals, distinct inputs); owner_cache_roots_are_program_specific_and_normalized (security)",
+   "cccc": "begin 4, admit 1, refuse_if_stopped 2: below the <=5 bar, tested anyway because the owner asked for a formal model of real concurrency bugs (D-07); flagged in the report. New caches code: authorize_cache_finding cyclomatic 10 (security boundary), pnpm_metadata_findings 7, is_pnpm_metadata 4 (apply shape guard, security), audit-incidents.audit 20 / rows 12 (regex)"
+  },
+  {
    "id": "step5-closeout",
    "what": "cccc, prune-tests, mneves-verify, reviewer, autoreview, security gate, release",
    "result": "pending"

@@ -11,4 +11,5 @@ Branch `feat/mole-lessons` from `3b6bde9`. Mole clone (untrusted data) in the se
 - Host recovered: the 7 host-dependent tests pass.
 - Step 3 done: bounded stop model (345 runs) in journal.rs; cf7962b's order replays D-07; 2 planted mutants caught; D-07 now caught by the model.
 - Step 4 done: one restating comment deleted; the others carry constraints or sources.
-- Next action: step 5 closeout (cccc, prune-tests, verify, reviewer, release).
+- cccc recorded; prune-tests: one stop test rewritten to the behavior the model cannot reach, 8 journal-stop mutants proven.
+- Next action: offline gate, reviewer, mneves-verify, then release.

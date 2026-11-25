@@ -1873,44 +1873,27 @@ mod tests {
         crate::ops::remove_test_path(root);
     }
 
-    /// A stop requested after `admit` let an attempt through does not refuse
-    /// that attempt's `begin`, which may follow a write (uv's lock); the next
-    /// attempt is refused, and so is any attempt after an admission dropped
-    /// without reaching `begin`.
+    /// One admission lets one `begin` past a stop, however long it is held:
+    /// the bounded model never runs two begins under one admission, since no
+    /// caller does, so this is where a second one is refused.
     #[test]
-    fn an_admitted_attempt_survives_a_later_stop_and_only_once() {
+    fn one_admission_lets_one_attempt_past_a_stop() {
         let root = temp("stop-admission");
         let ctx = Ctx::for_test(root.clone());
-        let monitor = std::sync::Arc::new(ApplyMonitor::new(3, 12));
+        let monitor = std::sync::Arc::new(ApplyMonitor::new(2, 8));
         let record =
             || JournalRecord::filesystem_attempt("caches", "trash", Path::new("/tmp/uv"), 4);
         ctx.with_apply_monitor(monitor.clone(), || {
-            let unused = admit(&ctx).unwrap();
-            drop(unused);
             let admission = admit(&ctx).unwrap();
             monitor.request_stop();
-            let attempt = begin(&ctx, record()).expect(
-                "PV journal-stop/admitted-begin: a stop after admit refused the admitted attempt",
-            );
-            attempt.finish(&ctx, Ok(())).unwrap();
+            begin(&ctx, record()).unwrap().finish(&ctx, Ok(())).unwrap();
             let error = begin(&ctx, record())
                 .err()
                 .expect("PV journal-stop/one-admission: one admission let two attempts through");
             assert!(error.downcast_ref::<ApplyStopped>().is_some(), "{error:#}");
             drop(admission);
         });
-        ctx.with_apply_monitor(std::sync::Arc::new(ApplyMonitor::new(1, 4)), || {
-            let monitor = ctx.apply_monitor().unwrap();
-            drop(admit(&ctx).unwrap());
-            monitor.request_stop();
-            assert!(
-                begin(&ctx, record()).is_err(),
-                "PV journal-stop/dropped-admission: an admission that never reached begin admitted a later attempt"
-            );
-        });
-        assert_eq!(monitor.finished(), 1);
-        assert_eq!(monitor.stopped(), 1);
-        assert!(admit(&ctx).is_ok(), "no monitor, nothing to refuse");
+        assert_eq!((monitor.finished(), monitor.stopped()), (1, 1));
         crate::ops::remove_test_path(root);
     }
 

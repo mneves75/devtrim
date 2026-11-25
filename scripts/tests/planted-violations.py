@@ -2304,16 +2304,6 @@ CASES = (
         tests=("ops::caches::tests::a_stopped_apply_creates_nothing_in_the_uv_cache",),
         marker="PV journal-stop/uv-lock",
     ),
-    # The admission is ignored at begin: a stop arriving after uv's lock was
-    # created refuses the attempt, leaving the lock file unjournaled.
-    Case(
-        name="journal-stop/admitted-begin",
-        relative_path="src/journal.rs",
-        before="    if !admitted {\n        refuse_if_stopped(ctx)?;\n    }\n",
-        after="    let _ = admitted;\n    refuse_if_stopped(ctx)?;\n",
-        tests=("journal::tests::an_admitted_attempt_survives_a_later_stop_and_only_once",),
-        marker="PV journal-stop/admitted-begin",
-    ),
     # An admission dropped before begin keeps admitting: an attempt after a
     # failed uv preparation would pass a stop.
     Case(
@@ -2321,8 +2311,18 @@ CASES = (
         relative_path="src/journal.rs",
         before="            monitor.admitted.store(false, Ordering::SeqCst);\n",
         after="",
-        tests=("journal::tests::an_admitted_attempt_survives_a_later_stop_and_only_once",),
-        marker="PV journal-stop/dropped-admission",
+        tests=("journal::tests::stop_model::the_stop_protocol_holds_in_every_bounded_interleaving",),
+        marker="PV journal-stop/model",
+    ),
+    # begin reads the admission without taking it: a second begin under the
+    # same admission passes the stop.
+    Case(
+        name="journal-stop/one-admission",
+        relative_path="src/journal.rs",
+        before="monitor.admitted.swap(false, Ordering::SeqCst)",
+        after="monitor.admitted.load(Ordering::SeqCst)",
+        tests=("journal::tests::one_admission_lets_one_attempt_past_a_stop",),
+        marker="PV journal-stop/one-admission",
     ),
     # The bounded stop model replays D-07: cf7962b's mutation must break it.
     Case(
