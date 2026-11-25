@@ -56,7 +56,10 @@
   {
    "id": "step4-comments",
    "what": "no-comments pass over touched files",
-   "result": "pending"
+   "result": "pass",
+   "evidence": [
+    "reviewed every comment added since 3b6bde9 and the inline comments of caches.rs, journal.rs and report.rs; one restating doc (real_subfolders) deleted, the rest carry a constraint or a source"
+   ]
   },
   {
    "id": "step5-closeout",

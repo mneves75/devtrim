@@ -404,7 +404,6 @@ fn is_pnpm_version_name(name: &OsStr) -> bool {
         })
 }
 
-/// The real directories directly below `folder`, links left out.
 fn real_subfolders(folder: &Path) -> Result<Vec<PathBuf>> {
     let entries = match std::fs::read_dir(folder) {
         Ok(entries) => entries,

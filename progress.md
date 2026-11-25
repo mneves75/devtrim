@@ -10,4 +10,5 @@ Branch `feat/mole-lessons` from `3b6bde9`. Mole clone (untrusted data) in the se
 - Step 2 done: docs/incidents.md (8 rows), audit + 13 controls in verify.sh and CI. Found: 33fe4e2's two catcher tests were deleted in 0.11.0 unnoticed; rows now name the evals that guard them.
 - Host recovered: the 7 host-dependent tests pass.
 - Step 3 done: bounded stop model (345 runs) in journal.rs; cf7962b's order replays D-07; 2 planted mutants caught; D-07 now caught by the model.
-- Next action: step 4, comment pass over touched files.
+- Step 4 done: one restating comment deleted; the others carry constraints or sources.
+- Next action: step 5 closeout (cccc, prune-tests, verify, reviewer, release).
