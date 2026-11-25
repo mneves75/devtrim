@@ -301,6 +301,97 @@ fn eval_gradle_caches_need_gradle_and_no_repository() {
     }
 }
 
+/// Mole I-11: npm's and pnpm's caches hold installs a running tool loads, so
+/// neither `go env GOMODCACHE` nor `GRADLE_USER_HOME` pointing into them makes
+/// a cache there, even with Go's or Gradle's layout planted. The control is
+/// the same layouts in their default homes.
+#[test]
+fn eval_no_other_owner_claims_npm_or_pnpm_installs() {
+    let sandbox = Sandbox::in_target("eval-install-cache-owners");
+    let home = sandbox.path().canonicalize().unwrap();
+    let installs = [
+        ".npm/_npx",
+        "Library/Caches/pnpm",
+        "Library/Caches/pnpm/dlx",
+    ];
+    for relative in installs.iter().copied().chain(["go/pkg/mod"]) {
+        write(&home.join(relative).join("cache/download/x.zip"), "module");
+    }
+    for relative in installs.iter().copied().chain([".gradle"]) {
+        write(
+            &home.join(relative).join("caches/modules-2/x.jar"),
+            "module",
+        );
+    }
+    let run_with = |go_root: &str, gradle: Option<&Path>, args: &[&str]| {
+        sandbox.script(
+            "go",
+            &format!(
+                "[ \"${{GOTOOLCHAIN:-}}\" = local ] || exit 3\nprintf '%s\\n' \"$HOME/{go_root}\""
+            ),
+        );
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"));
+        command
+            .args(args)
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", sandbox.bin());
+        if let Some(gradle) = gradle {
+            command.env("GRADLE_USER_HOME", gradle);
+        }
+        command.output().unwrap()
+    };
+    let control = json(&run_with(
+        "go/pkg/mod",
+        None,
+        &["clean", "caches", "--json"],
+    ));
+    assert_eq!(
+        actionable_targets(&control),
+        vec![home.join(".gradle/caches"), home.join("go/pkg/mod")],
+        "{control}"
+    );
+    for relative in installs {
+        let install = home.join(relative);
+        let pristine = Tree::snapshot(&home);
+        let preview = json(&run_with(relative, None, &["clean", "caches", "--json"]));
+        assert!(
+            !actionable_targets(&preview).contains(&install),
+            "PV eval/go-install-cache: GOMODCACHE made {relative} a cache: {preview}"
+        );
+        let preview = json(&run_with(
+            "go/pkg/mod",
+            Some(&install),
+            &["clean", "caches", "--json"],
+        ));
+        assert!(
+            !actionable_targets(&preview).contains(&install.join("caches")),
+            "PV eval/gradle-install-cache: GRADLE_USER_HOME made {relative}/caches a cache: {preview}"
+        );
+        let apply = json(&run_with(
+            relative,
+            Some(&install),
+            &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+        ));
+        let removed: Vec<PathBuf> = [".gradle/caches", "go/pkg/mod"]
+            .iter()
+            .map(|default| home.join(default))
+            .filter(|default| !default.exists())
+            .collect();
+        pristine.assert_only(
+            &Tree::snapshot(&home),
+            &Allowed {
+                removed: removed.clone(),
+                scratch: vec![home.join(".local/state/devtrim"), sandbox.bin()],
+            },
+            &format!("install cache owners {apply}"),
+        );
+        for default in removed {
+            write(&default.join("restored"), "module");
+        }
+    }
+}
+
 /// An owner command that fails withholds only its own cache: a broken `npm`
 /// or `brew` (a stale version-manager shim) is one error finding each, the
 /// run exits nonzero, and every other cache is still offered and removed.

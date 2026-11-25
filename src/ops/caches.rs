@@ -602,7 +602,8 @@ fn gradle_user_home(home: &Path) -> Result<Option<PathBuf>> {
         return Ok(None);
     }
     let resolved = resolved_owner_path("gradle", configured)?;
-    Ok(normalized_absolute(&resolved).filter(|path| path.starts_with(home) && path != home))
+    Ok(normalized_absolute(&resolved)
+        .filter(|path| path.starts_with(home) && path != home && !in_install_cache(path, home)))
 }
 
 fn is_gradle_cache(target: &Path, home: &Path) -> Result<bool> {
@@ -688,7 +689,7 @@ fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
         Ok(None) => {
             ctx.diagnostic(
                 "warn",
-                "the Gradle user home (GRADLE_USER_HOME, or ~/.gradle and where it links) is not a folder inside the home folder; skipping Gradle's caches",
+                "the Gradle user home (GRADLE_USER_HOME, or ~/.gradle and where it links) is not a folder inside the home folder, or lies in npm's or pnpm's cache; skipping Gradle's caches",
             );
             return Vec::new();
         }
@@ -776,14 +777,15 @@ fn go_module_cache(ctx: &Ctx, warn: bool) -> Result<Option<PathBuf>> {
         Ok(_) => {}
     }
     let corroborated = holds_go_download_cache(&path)?;
-    let inside_home = normalized_absolute(&path)
-        .is_some_and(|cache| cache.starts_with(&ctx.home) && cache != ctx.home);
+    let inside_home = normalized_absolute(&path).is_some_and(|cache| {
+        cache.starts_with(&ctx.home) && cache != ctx.home && !in_install_cache(&cache, &ctx.home)
+    });
     if !(corroborated && inside_home) {
         if warn {
             ctx.diagnostic(
                 "warn",
                 format!(
-                    "`go` reports module cache {} outside the home folder or without Go's `cache/download`; skipping",
+                    "`go` reports module cache {} outside the home folder, inside npm's or pnpm's cache, or without Go's `cache/download`; skipping",
                     path.display()
                 ),
             );
@@ -847,6 +849,15 @@ fn is_brew_cache_entry(target: &Path, home: &Path) -> Result<bool> {
         return Ok(false);
     }
     Ok(!(metadata.is_dir() && has_git_marker(target)?))
+}
+
+/// npm's and pnpm's cache folders hold installs a running tool loads (Mole
+/// I-11), so another owner's answer (`GOMODCACHE`, `GRADLE_USER_HOME`) never
+/// makes a folder in them a cache; only their own authorities reach inside.
+fn in_install_cache(path: &Path, home: &Path) -> bool {
+    [home.join(".npm"), home.join(".cache/npm"), pnpm_cache(home)]
+        .iter()
+        .any(|cache| path.starts_with(cache))
 }
 
 /// npm's store is exactly `<root>/_cacache`, `root` being the cache folder npm
