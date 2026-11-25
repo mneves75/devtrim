@@ -32,7 +32,13 @@
     {
       "id": "step2-ledger",
       "what": "docs/incidents.md + audit-incidents.py + controls in verify.sh and CI",
-      "result": "pending"
+      "result": "pass",
+      "evidence": [
+        "audit-incidents.py: 8 incidents, each with a live catcher",
+        "audit-incidents-controls.py: 13 planted defects refused, incl. the real 0.11.0 removal of 33fe4e2 tests",
+        "release-policy.sh passes with the CI step extended"
+      ],
+      "limit": "the reachable-but-not-ancestor branch of the commit check has no control (would need a dangling commit object in the repo)"
     },
     {
       "id": "step3-model",

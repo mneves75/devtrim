@@ -214,6 +214,8 @@ jobs:
       - name: Release policy tests
         run: |
           bash scripts/tests/release-policy.sh
+          python3 -B scripts/tests/audit-incidents.py
+          python3 -B scripts/tests/audit-incidents-controls.py
           for script in scripts/verify.sh scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh scripts/perf/ab.sh scripts/perf/corpus.sh; do
             bash -n "$script"
           done

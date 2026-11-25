@@ -7,4 +7,5 @@ Branch `feat/mole-lessons` from `3b6bde9`. Mole clone (untrusted data) in the se
 - Live evidence: pid 26224 typescript-language-server runs from ~/.npm/_npx (746 MB of 781 MB).
 - Step 1 done: npm `_cacache` only, pnpm metadata folders only, apply reasserts both; 3 planted cases caught.
 - Host degraded since ~11:40: `pgrep` fails (sysmond missing), `hdiutil create` fails; 7 host-dependent tests fail for that reason only.
-- Next action: step 2, incident ledger and audit gate.
+- Step 2 done: docs/incidents.md (8 rows), audit + 13 controls in verify.sh and CI. Found: 33fe4e2's two catcher tests were deleted in 0.11.0 unnoticed; rows now name the evals that guard them.
+- Next action: step 3, stop-protocol model.
