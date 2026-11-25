@@ -309,11 +309,17 @@ fn eval_gradle_caches_need_gradle_and_no_repository() {
 fn eval_no_other_owner_claims_npm_or_pnpm_installs() {
     let sandbox = Sandbox::in_target("eval-install-cache-owners");
     let home = sandbox.path().canonicalize().unwrap();
+    // Inside an install cache, in either case, or holding one (`.cache` holds
+    // npm's `.cache/npm`). npm's folder is created as `.NPM`, so only the
+    // volume, not the spelling, says `.npm` is the same folder.
     let installs = [
+        ".NPM/_npx",
         ".npm/_npx",
         "Library/Caches/pnpm",
         "Library/Caches/pnpm/dlx",
+        ".cache",
     ];
+    write(&home.join(".cache/npm/_npx/9420/sentinel"), "install");
     for relative in installs.iter().copied().chain(["go/pkg/mod"]) {
         write(&home.join(relative).join("cache/download/x.zip"), "module");
     }
@@ -355,18 +361,20 @@ fn eval_no_other_owner_claims_npm_or_pnpm_installs() {
         let install = home.join(relative);
         let pristine = Tree::snapshot(&home);
         let preview = json(&run_with(relative, None, &["clean", "caches", "--json"]));
-        assert!(
-            !actionable_targets(&preview).contains(&install),
-            "PV eval/go-install-cache: GOMODCACHE made {relative} a cache: {preview}"
+        assert_eq!(
+            actionable_targets(&preview),
+            vec![home.join(".gradle/caches")],
+            "PV eval/go-install-cache: GOMODCACHE {relative} was offered: {preview}"
         );
         let preview = json(&run_with(
             "go/pkg/mod",
             Some(&install),
             &["clean", "caches", "--json"],
         ));
-        assert!(
-            !actionable_targets(&preview).contains(&install.join("caches")),
-            "PV eval/gradle-install-cache: GRADLE_USER_HOME made {relative}/caches a cache: {preview}"
+        assert_eq!(
+            actionable_targets(&preview),
+            vec![home.join("go/pkg/mod")],
+            "PV eval/gradle-install-cache: GRADLE_USER_HOME {relative} was offered: {preview}"
         );
         let apply = json(&run_with(
             relative,

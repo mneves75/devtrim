@@ -36,7 +36,8 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   whole folder, `_npx` and `dlx` whatever a finding claims, and asks npm for
   its cache root again, refusing a `_cacache` anywhere but directly in it.
   Neither `GOMODCACHE` nor `GRADLE_USER_HOME` pointing into npm's or pnpm's
-  cache makes a Go or Gradle cache there (Mole I-11).
+  cache, or at a folder holding one, makes a Go or Gradle cache of it
+  (Mole I-11).
 
 ## [0.17.1] - 2026-11-23
 

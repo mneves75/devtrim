@@ -219,8 +219,28 @@ CASES = (
         relative_path="src/ops/caches.rs",
         # A GOMODCACHE inside npm's or pnpm's cache, holding Go's layout, is
         # offered and deleted as Go's: `_npx`, `dlx` or pnpm's cache whole.
-        before="        cache.starts_with(&ctx.home) && cache != ctx.home && !in_install_cache(&cache, &ctx.home)\n",
-        after="        cache.starts_with(&ctx.home) && cache != ctx.home\n",
+        before="            && !overlaps_install_cache(&cache, &ctx.home)\n",
+        after="",
+        tests=("eval_no_other_owner_claims_npm_or_pnpm_installs",),
+        marker="PV eval/go-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-holder",
+        relative_path="src/ops/caches.rs",
+        # A GOMODCACHE holding npm's cache (`~/.cache`) is offered, `_npx`
+        # inside it.
+        before="                    || target.is_some_and(|target| {\n",
+        after="                    || false && target.is_some_and(|target| {\n",
+        tests=("eval_no_other_owner_claims_npm_or_pnpm_installs",),
+        marker="PV eval/go-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-identity",
+        relative_path="src/ops/caches.rs",
+        # Compared by spelling, npm's cache folder created as `~/.NPM` is
+        # not `~/.npm`, so a GOMODCACHE in it escapes; identity folds it.
+        before="                    .any(|folder| identity(folder).is_ok_and(|id| id == cache_id))\n",
+        after="                    .any(|folder| folder == cache.as_path() && identity(folder).is_ok_and(|id| id == cache_id))\n",
         tests=("eval_no_other_owner_claims_npm_or_pnpm_installs",),
         marker="PV eval/go-install-cache", target="eval_safety",
     ),
@@ -229,8 +249,8 @@ CASES = (
         relative_path="src/ops/caches.rs",
         # A GRADLE_USER_HOME inside npm's or pnpm's cache makes its `caches`
         # folder Gradle's.
-        before="        .filter(|path| path.starts_with(home) && path != home && !in_install_cache(path, home)))\n",
-        after="        .filter(|path| path.starts_with(home) && path != home))\n",
+        before="        path.starts_with(home) && path != home && !overlaps_install_cache(path, home)\n",
+        after="        path.starts_with(home) && path != home\n",
         tests=("eval_no_other_owner_claims_npm_or_pnpm_installs",),
         marker="PV eval/gradle-install-cache", target="eval_safety",
     ),

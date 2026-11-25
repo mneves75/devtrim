@@ -602,8 +602,9 @@ fn gradle_user_home(home: &Path) -> Result<Option<PathBuf>> {
         return Ok(None);
     }
     let resolved = resolved_owner_path("gradle", configured)?;
-    Ok(normalized_absolute(&resolved)
-        .filter(|path| path.starts_with(home) && path != home && !in_install_cache(path, home)))
+    Ok(normalized_absolute(&resolved).filter(|path| {
+        path.starts_with(home) && path != home && !overlaps_install_cache(path, home)
+    }))
 }
 
 fn is_gradle_cache(target: &Path, home: &Path) -> Result<bool> {
@@ -689,7 +690,7 @@ fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
         Ok(None) => {
             ctx.diagnostic(
                 "warn",
-                "the Gradle user home (GRADLE_USER_HOME, or ~/.gradle and where it links) is not a folder inside the home folder, or lies in npm's or pnpm's cache; skipping Gradle's caches",
+                "the Gradle user home (GRADLE_USER_HOME, or ~/.gradle and where it links) is not a folder inside the home folder, or overlaps npm's or pnpm's cache; skipping Gradle's caches",
             );
             return Vec::new();
         }
@@ -778,14 +779,16 @@ fn go_module_cache(ctx: &Ctx, warn: bool) -> Result<Option<PathBuf>> {
     }
     let corroborated = holds_go_download_cache(&path)?;
     let inside_home = normalized_absolute(&path).is_some_and(|cache| {
-        cache.starts_with(&ctx.home) && cache != ctx.home && !in_install_cache(&cache, &ctx.home)
+        cache.starts_with(&ctx.home)
+            && cache != ctx.home
+            && !overlaps_install_cache(&cache, &ctx.home)
     });
     if !(corroborated && inside_home) {
         if warn {
             ctx.diagnostic(
                 "warn",
                 format!(
-                    "`go` reports module cache {} outside the home folder, inside npm's or pnpm's cache, or without Go's `cache/download`; skipping",
+                    "`go` reports module cache {} outside the home folder, overlapping npm's or pnpm's cache, or without Go's `cache/download`; skipping",
                     path.display()
                 ),
             );
@@ -853,11 +856,34 @@ fn is_brew_cache_entry(target: &Path, home: &Path) -> Result<bool> {
 
 /// npm's and pnpm's cache folders hold installs a running tool loads (Mole
 /// I-11), so another owner's answer (`GOMODCACHE`, `GRADLE_USER_HOME`) never
-/// makes a folder in them a cache; only their own authorities reach inside.
-fn in_install_cache(path: &Path, home: &Path) -> bool {
+/// makes a cache of a folder inside one or holding one; only their own
+/// authorities reach inside. Compared by device and inode, so a case or
+/// link spelling matches too, and an unreadable folder counts as overlapping.
+fn overlaps_install_cache(path: &Path, home: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let identity =
+        |candidate: &Path| std::fs::metadata(candidate).map(|meta| (meta.dev(), meta.ino()));
+    let not_found = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
+    let target = match identity(path) {
+        Ok(target) => Some(target),
+        Err(error) if not_found(&error) => None,
+        Err(_) => return true,
+    };
     [home.join(".npm"), home.join(".cache/npm"), pnpm_cache(home)]
         .iter()
-        .any(|cache| path.starts_with(cache))
+        .any(|cache| match identity(cache) {
+            Err(error) => !not_found(&error),
+            Ok(cache_id) => {
+                path.ancestors()
+                    .any(|folder| identity(folder).is_ok_and(|id| id == cache_id))
+                    || target.is_some_and(|target| {
+                        cache
+                            .ancestors()
+                            .any(|folder| identity(folder).is_ok_and(|id| id == target))
+                    })
+            }
+        })
 }
 
 /// npm's store is exactly `<root>/_cacache`, `root` being the cache folder npm
