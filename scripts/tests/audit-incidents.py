@@ -49,19 +49,38 @@ def planted_cases() -> set[str]:
     return set(re.findall(r'^\s*name="([^"]+)",$', text, re.MULTILINE))
 
 
-def runnable_tests() -> set[str]:
-    """What `cargo test` runs, asked of the test harness itself: a test compiled
-    out (a `cfg`, a file no module declares) is never listed, and an
-    `#[ignore]`d one is listed again under `--ignored` and taken away."""
+def runnable_tests() -> list[str]:
+    """The full paths of what `cargo test` runs, asked of the test harness
+    itself: a test compiled out (a `cfg`, a file no module declares) is never
+    listed, and an `#[ignore]`d one is listed again under `--ignored`."""
 
     def listed(*extra: str) -> set[str]:
         command = ["cargo", "test", "--locked", "--all-targets", "--all-features", "--quiet", "--", "--list", *extra]
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode != 0:
             raise ValueError(f"`{' '.join(command)}` failed:\n{result.stderr[-2000:]}")
-        return {line.removesuffix(": test") for line in result.stdout.splitlines() if line.endswith(": test")}
+        return [line.removesuffix(": test") for line in result.stdout.splitlines() if line.endswith(": test")]
 
-    return {path.rsplit("::", 1)[-1] for path in listed() - listed("--ignored")}
+    ignored = set(listed("--ignored"))
+    return [path for path in listed() if path not in ignored]
+
+
+def test_problem(catcher: str, tests: list[str]) -> str | None:
+    """A catcher names exactly one test that runs. A bare name defined twice
+    must be qualified, or a namesake still running would hide a copy that no
+    longer does."""
+    matches = [path for path in tests if path == catcher or path.endswith(f"::{catcher}")]
+    if not matches:
+        return "is neither a planted case nor a test `cargo test` runs"
+    if len(matches) > 1:
+        return f"matches {len(matches)} tests `cargo test` runs; name it by its full path"
+    if "::" not in catcher:
+        pattern = re.compile(rf"\bfn\s+{re.escape(catcher)}\s*[<(]")
+        sources = [path for root in (Path("src"), Path("tests")) for path in root.rglob("*.rs")]
+        defined = sum(len(pattern.findall(path.read_text(encoding="utf-8"))) for path in sources)
+        if defined > 1:
+            return f"is defined {defined} times but `cargo test` runs one; name it by its full path"
+    return None
 
 
 def tagged(version: str) -> bool:
@@ -99,7 +118,7 @@ def audit(ledger: str) -> list[str]:
     # The version Cargo.toml declares is in flight only until it is tagged.
     in_flight = {"Unreleased"} | ({declared} if not tagged(declared) else set())
     try:
-        catchers = planted_cases() | runnable_tests()
+        planted, tests = planted_cases(), runnable_tests()
     except ValueError as error:
         return [str(error)]
     seen = set()
@@ -123,8 +142,9 @@ def audit(ledger: str) -> list[str]:
                 failures.append(f"{label}: `{NO_COMMIT}` is allowed only for an in-flight release, not {shipped}")
         elif not reachable(commit):
             failures.append(f"{label}: Commit `{commit}` is not a commit reachable from HEAD")
-        if catcher not in catchers:
-            failures.append(f"{label}: Catcher `{catcher}` is neither a planted case nor a test `cargo test` runs")
+        problem = None if catcher in planted else test_problem(catcher, tests)
+        if problem:
+            failures.append(f"{label}: Catcher `{catcher}` {problem}")
     return failures
 
 

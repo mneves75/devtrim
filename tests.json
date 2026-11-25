@@ -111,7 +111,8 @@
   {
    "id": "verify-round-2",
    "what": "Sonnet host reverify FAIL on 48a05ff: linked npm/pnpm cache escaped the holder check; audit credited compiled-out/orphan catchers and a tagged declared version; pnpm protection wording",
-   "result": "pass",
+   "result": "fail",
+   "outcome": "2f40898 fixed these, but the round-3 reverify (verifier reported Opus, so not a different model) found every non-Go/Gradle caches authority, npm's reported root and pnpm's XDG cacheDir still reach _npx/dlx (7 of 11 shapes) and short-name catcher collisions; install-cache bug survived three fixes, stopped for the owner per the bug-fix rule; catcher collisions fixed (exact-one match, bare name defined once, 18 controls)",
    "evidence": [
     "overlaps_install_cache walks canonicalize(cache) ancestors; eval_a_linked_install_cache_keeps_its_holder passes; planted caches/install-cache-link CAUGHT with the other two install-cache cases",
     "audit-incidents.py asks cargo test --list (minus --ignored) for runnable catchers; an orphan src file's test is refused; removing the --ignored subtraction fails the ignored-test control",

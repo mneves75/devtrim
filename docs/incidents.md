@@ -10,8 +10,9 @@ committed. `scripts/tests/audit-incidents.py` checks every row in CI:
   commit.
 - **Catcher**: names the check that now fails on the defect. It is either a
   `Case` in `scripts/tests/planted-violations.py`, which mutation-proves it,
-  or a test `cargo test --list` names and does not list again under
-  `--ignored`, so a test compiled out or ignored does not count.
+  or exactly one test `cargo test --list` names and does not list again
+  under `--ignored`, so a test compiled out or ignored does not count. A
+  bare name defined more than once must be written as its full path.
 
 A catcher renamed or deleted fails the audit. It must not silently stop
 guarding its incident: `33fe4e2`'s two tests were removed in 0.11.0 and

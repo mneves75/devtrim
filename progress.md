@@ -15,4 +15,5 @@ Branch `feat/mole-lessons` from `3b6bde9`. Mole clone (untrusted data) in the se
 - Offline gate passed (cae04c1). Reviewer + autoreview: npm apply now asks npm again (`is_npm_store`), pnpm legacy versions need digits per part, audit skips `#[ignore]`d/commented tests; all proven by planted cases/controls.
 - mneves-verify round 1 FAIL: Go/Gradle could claim npm/pnpm installs (fixed 981663b), audit credited ignored catchers (fixed 60db621), D-08 dash (in-flight, filled at closeout).
 - mneves-verify round 2 (Sonnet, host) FAIL on 48a05ff: linked install cache, compiled-out/orphan catchers, tagged in-flight version, pnpm wording; all fixed with controls (owner asked to fix until 100% satisfied).
-- Next action: fresh full reverify of round 2, then release.
+- Round-3 reverify FAIL on 2f40898 (verifier ran as Opus, so not independent by model): npm `_npx`/pnpm `dlx` still reachable through every other caches authority, npm's reported root and pnpm's XDG cacheDir. Same bug survived three fixes: stopped for the owner. Audit catcher collisions fixed with controls.
+- Next action: owner decision on the install-cache boundary; release blocked until then.

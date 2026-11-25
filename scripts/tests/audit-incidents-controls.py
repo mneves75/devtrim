@@ -26,6 +26,11 @@ CONTROLS = [
     ),
     ("unknown planted case", ("| git/signature-program |", "| git/signature-programs |"), "neither a planted case"),
     ("ignored test", ("| cf7962b | journal-stop/model |", "| cf7962b | concurrent_writer_child |"), "neither a planted case"),
+    (
+        "ambiguous partial test path",
+        ("| cf7962b | journal-stop/model |", "| cf7962b | tests::active_build_cwd_skips_repo_and_refuses_apply |"),
+        "name it by its full path",
+    ),
     ("helper fn, not a test", ("| every_lockfile_pins_the_version_cargo_toml_declares |", "| locked_version |"), "neither a planted case"),
     ("duplicate ID", (D07, "| D-06 | 0.15.0 |"), "duplicate ID"),
     ("malformed ID", (D07, "| I-7 | 0.15.0 |"), "ID must look like D-01"),
@@ -58,25 +63,59 @@ def run(ledger: str) -> subprocess.CompletedProcess:
         path.unlink()
 
 
-def tagged_version_failures() -> int:
-    """A version already tagged is no longer in flight, even while Cargo.toml
-    still declares it: a row shipped in it must name its commit."""
+def load_audit():
     spec = importlib.util.spec_from_file_location("audit_incidents", AUDIT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def refused(name: str, failures: list[str], expected: str) -> int:
+    if not any(expected in failure for failure in failures):
+        print(f"FAIL {name}: expected {expected!r}, got {failures}")
+        return 1
+    print(f"REFUSED {name}")
+    return 0
+
+
+def module_failures() -> int:
+    """Defects a ledger edit alone cannot plant: a tagged declared version, a
+    namesake compiled out beside one that runs, and a test listing that fails."""
+    count = 0
+    module = load_audit()
     module.declared_version = lambda: "0.17.1"
     planted = LEDGER.replace(D07, "| D-07 | 0.17.1 |").replace("| cf7962b |", "| — |")
-    failures = module.audit(planted)
-    if not any("allowed only for an in-flight release" in failure for failure in failures):
-        print(f"FAIL tagged declared version: expected the dash refused, got {failures}")
-        return 1
-    print("REFUSED tagged declared version")
-    return 0
+    count += refused("tagged declared version", module.audit(planted), "allowed only for an in-flight release")
+
+    module = load_audit()
+    name = "active_build_cwd_skips_repo_and_refuses_apply"
+    real = module.runnable_tests()
+    namesakes = [path for path in real if path.endswith(f"::{name}")]
+    module.runnable_tests = lambda: [path for path in real if path not in namesakes[1:]]
+    planted = LEDGER.replace("| cf7962b | journal-stop/model |", f"| cf7962b | {name} |")
+    count += refused("namesake compiled out", module.audit(planted), "name it by its full path")
+
+    module = load_audit()
+    real_run = module.subprocess.run
+
+    class FailingCargo:
+        @staticmethod
+        def run(command, **options):
+            if command[0] == "cargo":
+                return subprocess.CompletedProcess(command, 101, "", "error: could not compile")
+            return real_run(command, **options)
+
+    module.subprocess = FailingCargo
+    count += refused("test listing fails", module.audit(LEDGER), "failed")
+    return count
+
+
+MODULE_CONTROLS = 3
 
 
 def main() -> int:
     failures = 0
-    failures += tagged_version_failures()
+    failures += module_failures()
     original = run(LEDGER)
     if original.returncode != 0:
         print(f"FAIL the unmodified ledger must pass:\n{original.stdout}{original.stderr}")
@@ -94,7 +133,7 @@ def main() -> int:
             print(f"REFUSED {name}")
     if failures:
         return 1
-    print(f"audit-incidents-controls: {len(CONTROLS)} planted defect(s) refused")
+    print(f"audit-incidents-controls: {len(CONTROLS) + MODULE_CONTROLS} planted defect(s) refused")
     return 0
 
 
