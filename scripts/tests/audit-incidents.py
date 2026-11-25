@@ -52,8 +52,9 @@ def planted_cases() -> set[str]:
 def rust_tests() -> set[str]:
     names = set()
     for path in [*Path("src").rglob("*.rs"), *Path("tests").rglob("*.rs")]:
-        text = path.read_text(encoding="utf-8")
-        names.update(re.findall(r"#\[test\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))? )?fn ([a-z0-9_]+)\(", text))
+        text = re.sub(r"/\*.*?\*/|//[^\n]*", "", path.read_text(encoding="utf-8"), flags=re.DOTALL)
+        # An `#[ignore]`d function never runs under `cargo test`, so it catches nothing.
+        names.update(re.findall(r"#\[test\]\s*(?:#\[(?!ignore)[^\]]*\]\s*)*(?:pub(?:\([^)]*\))? )?fn ([a-z0-9_]+)\(", text))
     return names
 
 

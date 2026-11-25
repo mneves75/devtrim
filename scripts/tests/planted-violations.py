@@ -2161,17 +2161,45 @@ CASES = (
     Case(
         name="caches/npm-store-name",
         relative_path="src/ops/caches.rs",
-        before="        TargetAuthority::NpmCacheStore => (target.file_name() == Some(OsStr::new(NPM_STORE))\n",
-        after="        TargetAuthority::NpmCacheStore => (true\n",
-        tests=("ops::caches::tests::npx_and_dlx_installs_are_refused_at_apply",),
+        before="    target.file_name() == Some(OsStr::new(NPM_STORE)) && target.parent() == Some(root)\n",
+        after="    target.parent() == Some(root)\n",
+        tests=("ops::caches::tests::the_npm_store_is_only_the_reported_roots_cacache",),
         marker="PV caches/npm-store-name",
+    ),
+    Case(
+        name="caches/npm-store-root",
+        relative_path="src/ops/caches.rs",
+        before="    target.file_name() == Some(OsStr::new(NPM_STORE)) && target.parent() == Some(root)\n",
+        after="    target.file_name() == Some(OsStr::new(NPM_STORE)) && !root.as_os_str().is_empty()\n",
+        tests=("ops::caches::tests::the_npm_store_is_only_the_reported_roots_cacache",),
+        marker="PV caches/npm-store-root",
+    ),
+    Case(
+        name="eval/caches-npm-root",
+        relative_path="src/ops/caches.rs",
+        # Apply trusts the root the preview saw instead of asking npm again.
+        before="                .is_some_and(|root| is_npm_store(target, &root))\n",
+        after="                .is_some_and(|_| target.parent().is_some_and(|root| is_npm_store(target, root)))\n",
+        tests=("eval_clean_caches_refuses_a_store_npm_no_longer_reports",),
+        marker="PV eval/caches-npm-root",
+        target="evals",
+    ),
+    Case(
+        name="caches/pnpm-legacy-version",
+        relative_path="src/ops/caches.rs",
+        # `metadata-v.` and `metadata-v1..3` pass as legacy metadata names.
+        before="                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))\n",
+        after="                .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))\n",
+        tests=("eval_clean_caches_removes_every_listed_cache_and_nothing_else",),
+        marker="PV eval/caches-plan",
+        target="evals",
     ),
     Case(
         name="caches/pnpm-metadata-name",
         relative_path="src/ops/caches.rs",
         before="    let shaped = if parent == cache {\n        is_pnpm_metadata_name(name, false)\n",
         after="    let shaped = if parent == cache {\n        true\n",
-        tests=("ops::caches::tests::npx_and_dlx_installs_are_refused_at_apply",),
+        tests=("ops::caches::tests::dlx_installs_are_refused_at_apply",),
         marker="PV caches/pnpm-metadata-name",
     ),
     Case(
@@ -2179,7 +2207,7 @@ CASES = (
         relative_path="src/ops/caches.rs",
         before="        .filter(|entry| entry.relative != crate::safety::PNPM_CACHE)\n",
         after="",
-        tests=("ops::caches::tests::npx_and_dlx_installs_are_refused_at_apply",),
+        tests=("ops::caches::tests::dlx_installs_are_refused_at_apply",),
         marker="PV caches/pnpm-whole",
     ),
     Case(

@@ -24,6 +24,7 @@ CONTROLS = [
         "is neither a planted case nor a #[test] fn",
     ),
     ("unknown planted case", ("| git/signature-program |", "| git/signature-programs |"), "neither a planted case"),
+    ("ignored test", ("| cf7962b | journal-stop/model |", "| cf7962b | concurrent_writer_child |"), "neither a planted case"),
     ("helper fn, not a test", ("| every_lockfile_pins_the_version_cargo_toml_declares |", "| locked_version |"), "neither a planted case"),
     ("duplicate ID", (D07, "| D-06 | 0.15.0 |"), "duplicate ID"),
     ("malformed ID", (D07, "| I-7 | 0.15.0 |"), "ID must look like D-01"),

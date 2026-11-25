@@ -44,3 +44,7 @@ rerun both commands.
   admission, because no caller does; `journal-stop/one-admission` covers that.
 - A preparation that fails (uv's lock held) leaves its lock unrecorded and is
   reported as an error, not as stopped. The model allows exactly that.
+- The model checks the protocol, not its callers: the uv steps are written into
+  `steps()` by hand. That `caches.rs` takes the admission before writing the
+  lock is guarded by `journal-stop/uv-lock`
+  (`a_stopped_apply_creates_nothing_in_the_uv_cache`), not by the model.

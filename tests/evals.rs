@@ -227,6 +227,8 @@ fn caches_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
         "Library/Caches/pnpm/v12/pkg/x", // not a folder pnpm names as metadata
         "Library/Caches/pnpm/v12x/metadata/x",
         "Library/Caches/pnpm/metadata-notes/x",
+        "Library/Caches/pnpm/metadata-v./x", // a legacy name needs digits in every part
+        "Library/Caches/pnpm/metadata-v1..3/x",
     ] {
         write(&home.join(relative), "keep");
     }
@@ -283,6 +285,51 @@ fn eval_clean_caches_removes_every_listed_cache_and_nothing_else() {
         "PV eval/caches-apply",
     );
     assert_journaled(&sandbox, "caches", "shred", &targets);
+}
+
+/// npm is asked for its cache root again at apply: a store in a folder npm no
+/// longer reports is refused and stays, whatever the preview saw.
+#[test]
+fn eval_clean_caches_refuses_a_store_npm_no_longer_reports() {
+    let sandbox = Sandbox::in_target("eval-caches-npm-root");
+    let home = sandbox.path();
+    let calls = home.join("npm-stub");
+    std::fs::create_dir_all(&calls).unwrap();
+    // The first answer (the scan) is `~/.npm`; every later one (apply) is not.
+    sandbox.script(
+        "npm",
+        &format!(
+            "if [ -e '{0}/asked' ]; then printf '%s\\n' \"$HOME/.cache/npm\"; else : > '{0}/asked'; printf '%s\\n' \"$HOME/.npm\"; fi",
+            calls.display()
+        ),
+    );
+    let store = home.join(".npm/_cacache");
+    write(&store.join("index-v5/x"), "entry");
+    let pristine = Tree::snapshot(home);
+
+    let apply = run(
+        &sandbox,
+        &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+    );
+    let document = json(&apply);
+    assert_eq!(
+        actionable_targets(&document),
+        vec![store.clone()],
+        "{document}"
+    );
+    assert_eq!(
+        document["summary"]["items_touched"], 0,
+        "PV eval/caches-npm-root: a store npm no longer reports was removed: {document}"
+    );
+    assert!(!apply.status.success(), "{document}");
+    pristine.assert_only(
+        &Tree::snapshot(home),
+        &Allowed {
+            removed: vec![],
+            scratch: vec![calls, home.join(".local/state/devtrim")],
+        },
+        "eval/caches-npm-root",
+    );
 }
 
 /// The apply document says what became of every actionable finding, so an

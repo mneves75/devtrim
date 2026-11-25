@@ -389,10 +389,9 @@ fn is_pnpm_metadata_name(name: &OsStr, in_version: bool) -> bool {
         .iter()
         .filter_map(|prefix| name.strip_prefix(prefix))
         .any(|version| {
-            !version.is_empty()
-                && version
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || byte == b'.')
+            version
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
         })
 }
 
@@ -558,11 +557,11 @@ fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
         }
         TargetAuthority::Standard if is_gradle_cache(target, home)? => Some(CacheKind::Gradle),
         TargetAuthority::Standard => None,
-        TargetAuthority::NpmCacheStore => (target.file_name() == Some(OsStr::new(NPM_STORE))
-            && target
-                .parent()
-                .is_some_and(|cache| is_eligible_owner_cache("npm", cache, home)))
-        .then_some(CacheKind::Plain),
+        TargetAuthority::NpmCacheStore => {
+            owner_cache_path("npm", &["config", "get", "cache"], NPM_QUIET, ctx)?
+                .is_some_and(|root| is_npm_store(target, &root))
+                .then_some(CacheKind::Plain)
+        }
         TargetAuthority::PnpmMetadata => {
             is_pnpm_metadata(target, home)?.then_some(CacheKind::Plain)
         }
@@ -848,6 +847,12 @@ fn is_brew_cache_entry(target: &Path, home: &Path) -> Result<bool> {
         return Ok(false);
     }
     Ok(!(metadata.is_dir() && has_git_marker(target)?))
+}
+
+/// npm's store is exactly `<root>/_cacache`, `root` being the cache folder npm
+/// reports: the one folder `npm cache clean --force` removes.
+fn is_npm_store(target: &Path, root: &Path) -> bool {
+    target.file_name() == Some(OsStr::new(NPM_STORE)) && target.parent() == Some(root)
 }
 
 fn is_builtin_cache_root(path: &Path, home: &Path) -> bool {
@@ -1288,28 +1293,43 @@ mod tests {
         crate::ops::remove_test_path(home);
     }
 
-    /// Mole I-11: a running npx or `pnpm dlx` tool loads its packages from the
-    /// cache, so neither install folder may pass apply whatever authority a
-    /// finding claims, and neither may pnpm's cache whole.
+    /// Mole I-11: a running npx tool loads its packages from `_npx`, beside
+    /// the store, and from nowhere npm reports as its cache root.
     #[test]
-    fn npx_and_dlx_installs_are_refused_at_apply() {
+    fn the_npm_store_is_only_the_reported_roots_cacache() {
+        let root = Path::new("/Users/u/.npm");
+        assert!(is_npm_store(&root.join("_cacache"), root));
+        assert!(
+            !is_npm_store(&root.join("_npx"), root),
+            "PV caches/npm-store-name: npx installs passed as npm's store"
+        );
+        for elsewhere in [
+            "/Users/u/.npm/_npx/9420/node_modules/pkg/_cacache",
+            "/Users/u/.cache/npm/_cacache",
+        ] {
+            assert!(
+                !is_npm_store(Path::new(elsewhere), root),
+                "PV caches/npm-store-root: {elsewhere} passed outside the reported root"
+            );
+        }
+    }
+
+    /// Mole I-11: a running `pnpm dlx` tool loads its packages from the cache,
+    /// so its install folder may not pass apply whatever authority a finding
+    /// claims, and neither may pnpm's cache whole.
+    #[test]
+    fn dlx_installs_are_refused_at_apply() {
         let fixture = crate::ops::TestFixture::new("devtrim-cache-installs");
         let home = fixture.path().to_path_buf();
-        for folder in [".npm/_npx/9420", "Library/Caches/pnpm/dlx/1e5f"] {
-            std::fs::create_dir_all(home.join(folder)).unwrap();
-            std::fs::write(home.join(folder).join("sentinel"), "keep").unwrap();
-        }
+        let dlx = home.join("Library/Caches/pnpm/dlx/1e5f");
+        std::fs::create_dir_all(&dlx).unwrap();
+        std::fs::write(dlx.join("sentinel"), "keep").unwrap();
         let home = home.canonicalize().unwrap();
         let ctx = Ctx {
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             ..Ctx::for_test(home.clone())
         };
         for (relative, authority, marker) in [
-            (
-                ".npm/_npx",
-                TargetAuthority::NpmCacheStore,
-                "PV caches/npm-store-name",
-            ),
             (
                 "Library/Caches/pnpm/dlx",
                 TargetAuthority::PnpmMetadata,
@@ -1336,7 +1356,6 @@ mod tests {
                 "{marker}: {relative} was removed"
             );
         }
-        assert!(home.join(".npm/_npx/9420/sentinel").exists());
         assert!(home.join("Library/Caches/pnpm/dlx/1e5f/sentinel").exists());
         crate::ops::remove_test_path(home);
     }

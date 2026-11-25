@@ -86,6 +86,17 @@
    "evidence": [
     "pgrep and hdiutil work again; all 7 host-dependent tests plus a fourth worktrees eval pass on f69a28b+step3"
    ]
+  },
+  {
+   "id": "review-fixes",
+   "what": "reviewer + autoreview findings: npm apply bound to npm's current root, pnpm legacy version parts non-empty, audit ignores #[ignore]d and commented tests",
+   "result": "pass",
+   "evidence": [
+    "verify.sh offline exit 0 on cae04c1 (before fixes)",
+    "planted caches/npm-store-name, caches/npm-store-root, caches/pnpm-legacy-version, eval/caches-npm-root CAUGHT; eval/caches-plan, eval/caches-apply still CAUGHT",
+    "audit-incidents-controls: 14 refused; the new 'ignored test' control fails with the (?!ignore) guard removed",
+    "cargo test --lib ops::caches 12 passed; evals caches 2 passed; fmt, clippy -D warnings, ast-grep clean"
+   ]
   }
  ]
 }
