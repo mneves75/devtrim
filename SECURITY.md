@@ -423,7 +423,26 @@ Non-negotiable boundaries:
 - User-configured `protect` paths are refused at the deletion sink (literal and
   resolved, ASCII-case-insensitive and Unicode-normalization-insensitive, so
   NFC config text still protects NFD on-disk names) and filtered from previews;
-  malformed entries are a configuration error and unresolved entries warn.
+  `clean simulators` enforces configured `protect` on each simulator device
+  folder at scan and fail-closed at apply (revalidating protect symlink aliases
+  before issuing `xcrun simctl delete`); malformed entries are a configuration
+  error and unresolved entries warn.
+- `hardened_git` canonicalizes each repository root and sets
+  `GIT_CEILING_DIRECTORIES` to its canonical parent (refusing if the parent
+  contains `:` or cannot be determined), so an invalid `.git` marker never lets
+  Git walk upward into an ancestor repository (such as a dotfiles repository at
+  HOME).
+- `dirs_home` refuses execution when `euid != ruid` or when the canonical
+  `$HOME` directory is owned by a different UID than `euid` (such as `sudo`
+  preserving `$HOME`), `load_config` requires config files (and any symlink) to
+  be regular files owned by `euid` and bounded to 1 MiB, journal directory
+  creation verifies parent ownership before `fchmod(0o700)`, and `removable_now`
+  checks `accessat(..., AtFlags::EACCESS)`.
+- The Trash move path in `remove_path` refuses non-UTF-8 target paths and
+  non-APFS/HFS filesystems before calling `NSFileManager` (directing operators
+  to fd-anchored `--shred`), preventing the `trash` crate's percent-encoding of
+  invalid UTF-8 bytes or Foundation NFC/NFD decomposition from addressing a
+  sibling path on a foreign mount.
 - Every deletion and typed command is journaled write-ahead (attempt
   before, result after) to a mode-0600 file in a mode-0700 state directory,
   with every path component opened without following symlinks. Each complete

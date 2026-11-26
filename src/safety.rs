@@ -494,12 +494,44 @@ pub(crate) fn roots_note(roots: &[PathBuf], origin: RootsOrigin, home: &Path) ->
     }
 }
 
+fn verify_execution_identity(
+    ruid: u32,
+    euid: u32,
+    home_uid: u32,
+    canonical_home: &Path,
+) -> Result<()> {
+    if ruid != euid {
+        bail!("refusing to run with effective UID {euid} different from real UID {ruid}");
+    }
+    if home_uid != euid {
+        bail!(
+            "refusing to run as UID {euid} when $HOME ({}) is owned by UID {home_uid} \
+             (do not run devtrim under sudo with a preserved HOME)",
+            canonical_home.display()
+        );
+    }
+    Ok(())
+}
+
 fn dirs_home() -> Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
     let home = std::env::var("HOME")
         .map(PathBuf::from)
         .map_err(|_| anyhow::anyhow!("$HOME not set"))?;
-    home.canonicalize()
-        .with_context(|| format!("cannot resolve $HOME: {}", home.display()))
+    let canonical = home
+        .canonicalize()
+        .with_context(|| format!("cannot resolve $HOME: {}", home.display()))?;
+    let home_uid = std::fs::metadata(&canonical)
+        .with_context(|| format!("cannot inspect $HOME: {}", canonical.display()))?
+        .uid();
+    verify_execution_identity(
+        rustix::process::getuid().as_raw(),
+        rustix::process::geteuid().as_raw(),
+        home_uid,
+        &canonical,
+    )?;
+    Ok(canonical)
 }
 
 /// `~` is the home folder and `~/rest` a path inside it, as a shell reads
@@ -524,13 +556,67 @@ pub(crate) struct FileCfg {
     codex_homes: Option<Vec<String>>,
 }
 
+const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
+
 fn load_config(path: &Path) -> Result<FileCfg> {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => parse_config_str(&contents)
-            .with_context(|| format!("invalid config: {}", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileCfg::default()),
-        Err(error) => Err(error).with_context(|| format!("cannot read config: {}", path.display())),
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+
+    let euid = rustix::process::geteuid().as_raw();
+    let link_meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(FileCfg::default()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect config: {}", path.display()));
+        }
+    };
+    if link_meta.uid() != euid {
+        bail!(
+            "refusing config owned by UID {} (expected {euid}): {}",
+            link_meta.uid(),
+            path.display()
+        );
     }
+    let fd = match rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::NOENT) => return Ok(FileCfg::default()),
+        Err(error) => {
+            return Err(std::io::Error::from(error))
+                .with_context(|| format!("cannot read config: {}", path.display()));
+        }
+    };
+    let stat = rustix::fs::fstat(&fd)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot inspect config: {}", path.display()))?;
+    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
+        bail!("refusing non-regular config: {}", path.display());
+    }
+    if stat.st_uid != euid {
+        bail!(
+            "refusing config owned by UID {} (expected {euid}): {}",
+            stat.st_uid,
+            path.display()
+        );
+    }
+    let mut file = std::fs::File::from(fd);
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(CONFIG_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("cannot read config: {}", path.display()))?;
+    if bytes.len() as u64 > CONFIG_MAX_BYTES {
+        bail!(
+            "config exceeds {CONFIG_MAX_BYTES} bytes: {}",
+            path.display()
+        );
+    }
+    let contents = String::from_utf8(bytes)
+        .with_context(|| format!("config is not valid UTF-8: {}", path.display()))?;
+    parse_config_str(&contents).with_context(|| format!("invalid config: {}", path.display()))
 }
 
 pub(crate) fn parse_config_str(contents: &str) -> Result<FileCfg> {
@@ -922,6 +1008,47 @@ pub(crate) fn validate_path_for_deletion(
         markers: MarkerGrant::default(),
         trash_entry: None,
     })
+}
+
+/// Fail-closed configured `protect` check for typed command authorities (such as
+/// `clean simulators`) whose underlying data folder lies under a built-in
+/// protected root like `~/Library` and therefore does not pass through
+/// [`validate_path_for_deletion`].
+pub(crate) fn validate_config_protect_for_command(path: &Path, protect: &[PathBuf]) -> Result<()> {
+    if configured_protect_values(protect).is_empty() {
+        return Ok(());
+    }
+    revalidate_configured_protect_aliases(protect)?;
+    let literal = abs(path);
+    if is_config_protected_abs(&literal, protect) {
+        bail!("refusing configured protected path: {}", literal.display());
+    }
+    let parent = literal
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("refusing path without parent: {}", literal.display()))?;
+    let leaf = literal
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("refusing path without leaf: {}", literal.display()))?;
+    let resolved_parent = parent
+        .canonicalize()
+        .with_context(|| format!("cannot verify parent: {}", parent.display()))?;
+    let resolved = clean(&resolved_parent.join(leaf));
+    if is_config_protected_abs(&resolved, protect) {
+        bail!(
+            "refusing configured protected resolved path: {}",
+            resolved.display()
+        );
+    }
+    if let Ok(canonical_leaf) = resolved.canonicalize() {
+        let canonical_leaf = clean(&canonical_leaf);
+        if is_config_protected_abs(&canonical_leaf, protect) {
+            bail!(
+                "refusing configured protected resolved path: {}",
+                canonical_leaf.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn revalidate_configured_protect_aliases(protect: &[PathBuf]) -> Result<()> {
@@ -4288,6 +4415,59 @@ mod tests {
         assert!(
             matches!(denied, Err(BulkWalkError::Failed(_))),
             "unreadable subdirectory must fail closed"
+        );
+    }
+
+    #[test]
+    fn verify_execution_identity_rejects_euid_or_home_owner_mismatch() {
+        let home = Path::new("/Users/alice");
+        assert!(verify_execution_identity(501, 501, 501, home).is_ok());
+        assert!(
+            verify_execution_identity(501, 0, 501, home).is_err(),
+            "PV safety/exec-context: setuid ruid != euid must be refused"
+        );
+        assert!(
+            verify_execution_identity(0, 0, 501, home).is_err(),
+            "PV safety/exec-context: sudo HOME owner != euid must be refused"
+        );
+    }
+
+    #[test]
+    fn validate_config_protect_for_command_rejects_protected_and_changed_alias() {
+        let fixture = crate::ops::TestFixture::new("devtrim-cmd-protect");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let devices = home.join("Library/Developer/CoreSimulator/Devices");
+        let dev_a = devices.join("11111111-2222-3333-4444-555555555555");
+        let dev_b = devices.join("66666666-7777-8888-9999-aaaaaaaaaaaa");
+        std::fs::create_dir_all(&dev_a).unwrap();
+        std::fs::create_dir_all(&dev_b).unwrap();
+
+        // Empty protect allows any device.
+        assert!(validate_config_protect_for_command(&dev_a, &[]).is_ok());
+
+        // Configured protect refuses matching device and allows sibling.
+        let (protect, _) = configured_protect(vec![dev_a.display().to_string()], &home).unwrap();
+        assert!(
+            validate_config_protect_for_command(&dev_a, &protect).is_err(),
+            "PV safety/cmd-protect: protected device must fail closed"
+        );
+        assert!(validate_config_protect_for_command(&dev_b, &protect).is_ok());
+
+        // A changed symlink alias in protect refuses even an unrelated device.
+        let target_one = home.join("alias-one");
+        let target_two = home.join("alias-two");
+        std::fs::create_dir_all(&target_one).unwrap();
+        std::fs::create_dir_all(&target_two).unwrap();
+        let alias = home.join("protect-link");
+        std::os::unix::fs::symlink(&target_one, &alias).unwrap();
+        let (aliased_protect, _) =
+            configured_protect(vec![alias.display().to_string()], &home).unwrap();
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&target_two, &alias).unwrap();
+        assert!(
+            validate_config_protect_for_command(&dev_b, &aliased_protect).is_err(),
+            "PV safety/cmd-protect: changed protect alias must fail closed"
         );
     }
 }

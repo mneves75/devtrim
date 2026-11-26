@@ -4,6 +4,39 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [0.17.2] - 2026-11-26
 
+### Security
+- **Local Git hooks installation (`scripts/install-hooks.sh`):** stop pointing
+  `core.hooksPath` directly at the tracked `.githooks/` directory, where
+  checking out an untrusted branch could supply and execute hooks (such as
+  `post-checkout`) before review. `scripts/install-hooks.sh` copies the
+  reviewed `pre-commit` and `pre-push` hooks into `<git-common-dir>/hooks` and
+  replaces local `core.hooksPath` with that out-of-tree path; `release-policy.sh`
+  and `eval_local_hooks_installer_keeps_hooks_outside_working_tree` enforce it.
+- **Confine Git discovery to the marker folder:** `hardened_git` now
+  canonicalizes each repository root and sets `GIT_CEILING_DIRECTORIES` to its
+  canonical parent (refusing a colon-bearing or missing parent), so an empty
+  `.git` directory or dangling `.git` symlink can no longer let an ancestor
+  repository (including a stale dotfiles repository at `$HOME`) decide
+  staleness or tracked files for `node-modules`, `artifacts`, or `purge`
+  (planted `git/discovery-ceiling`).
+- **Configured `protect` covers `clean simulators`:** unavailable simulator
+  devices whose device folder (`~/Library/Developer/CoreSimulator/Devices/<UDID>`)
+  matches a configured `protect` entry are skipped during preview and refused
+  fail-closed at apply via `validate_config_protect_for_command` (revalidating
+  protect symlink aliases before invoking `xcrun simctl delete`, planted
+  `simulators/protect-scan`, `simulators/protect-apply`, `safety/cmd-protect`).
+- **Trash path encoding and filesystem guard:** `remove_path`'s Trash branch
+  now refuses non-UTF-8 paths and non-APFS/HFS filesystems before calling
+  `NSFileManager` (pointing operators to fd-anchored `--shred`), closing the
+  percent-encoding and normalization mismatch on byte-transparent mounts
+  (planted `trash/non-utf8-refused`).
+- **Execution-context principal guard:** `dirs_home` now refuses execution when
+  `euid != ruid` or when canonical `$HOME` is owned by a different UID than
+  `euid` (such as `sudo` preserving `$HOME`); `load_config` enforces owner,
+  regular-file, and 1 MiB bounds; journal parent creation verifies owner before
+  `fchmod(0o700)`; and `removable_now` checks `AtFlags::EACCESS` (planted
+  `safety/exec-context`).
+
 ### Changed
 - Build and release with Rust 1.100.0, the current stable release, in place
   of 1.98.1: `rust-toolchain.toml`, both hosted workflows, the pre-push hook,

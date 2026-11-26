@@ -2460,6 +2460,66 @@ CASES = (
         tests=("journal::tests::stop_model::the_stop_protocol_holds_in_every_bounded_interleaving",),
         marker="PV journal-stop/model",
     ),
+    # Removing GIT_CEILING_DIRECTORIES lets an invalid .git marker escape upward
+    # into an ancestor repository (such as a stale dotfiles repo at HOME).
+    Case(
+        name="git/discovery-ceiling",
+        relative_path="src/ops/project.rs",
+        before='        .env("GIT_CEILING_DIRECTORIES", ceiling)\n',
+        after='        .env_remove("GIT_CEILING_DIRECTORIES")\n',
+        tests=("ops::project::tests::invalid_git_marker_never_escapes_to_ancestor_repo",),
+        marker="PV git/discovery-ceiling",
+    ),
+    # Skipping the configured protect check in simulator scanning offers a
+    # simulator device the operator explicitly protected.
+    Case(
+        name="simulators/protect-scan",
+        relative_path="src/ops/simulators.rs",
+        before="        if crate::safety::is_config_protected(&path, &ctx.protect) {\n",
+        after="        if false {\n",
+        tests=("ops::simulators::tests::configured_protect_skips_preview_and_refuses_apply_for_simulator_device",),
+        marker="PV simulators/protect-scan",
+    ),
+    # Skipping the configured protect recheck in Simulators::apply lets a
+    # protected device reach `xcrun simctl delete`.
+    Case(
+        name="simulators/protect-apply",
+        relative_path="src/ops/simulators.rs",
+        before="                crate::safety::validate_config_protect_for_command(&device, &ctx.protect)?;\n",
+        after="                let _ = (&device, &ctx.protect);\n",
+        tests=("ops::simulators::tests::configured_protect_skips_preview_and_refuses_apply_for_simulator_device",),
+        marker="PV simulators/protect-apply",
+    ),
+    # Dropping the alias revalidation in validate_config_protect_for_command
+    # lets a changed protect symlink alias pass simulator apply.
+    Case(
+        name="safety/cmd-protect",
+        relative_path="src/safety.rs",
+        before="    if configured_protect_values(protect).is_empty() {\n        return Ok(());\n    }\n    revalidate_configured_protect_aliases(protect)?;\n",
+        after="    if configured_protect_values(protect).is_empty() {\n        return Ok(());\n    }\n",
+        tests=("safety::tests::validate_config_protect_for_command_rejects_protected_and_changed_alias",),
+        marker="PV safety/cmd-protect",
+    ),
+    # Dropping the non-UTF-8 guard in remove_path lets a non-UTF-8 target reach
+    # the macOS Trash crate, which percent-encodes invalid bytes into a literal path.
+    Case(
+        name="trash/non-utf8-refused",
+        relative_path="src/ops/mod.rs",
+        before="    if !permanent && path.to_str().is_none() {\n",
+        after="    if false {\n",
+        tests=("ops::tests::trash_refuses_non_utf8_target_before_calling_trash_crate",),
+        marker="PV trash/non-utf8-refused",
+    ),
+    # Dropping the HOME-owner check lets execution under a mismatched euid
+    # (such as sudo preserving HOME) act as a confused deputy.
+    Case(
+        name="safety/exec-context",
+        relative_path="src/safety.rs",
+        before="    if home_uid != euid {\n",
+        after="    if false {\n",
+        tests=("safety::tests::verify_execution_identity_rejects_euid_or_home_owner_mismatch",),
+        marker="PV safety/exec-context",
+    ),
 )
 
 

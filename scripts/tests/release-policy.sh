@@ -1026,4 +1026,51 @@ if grep -Fq "planted-violations.py" "$release_script"; then
   fail "credential-bearing release script must not run the planted-violation gate"
 fi
 
+# Local Git hooks must be installed outside the working tree via
+# scripts/install-hooks.sh, never by pointing core.hooksPath into `.githooks`,
+# where checking out an untrusted branch would execute contributor hooks.
+install_hooks_script="$repo_root/scripts/install-hooks.sh"
+[[ -x "$install_hooks_script" ]] || fail "scripts/install-hooks.sh must exist and be executable"
+require_fixed "$install_hooks_script" 'git config --local --replace-all core.hooksPath "$hooks"'
+for doc_or_hook in \
+  "$repo_root/AGENTS.md" \
+  "$repo_root/CLAUDE.md" \
+  "$repo_root/.githooks/pre-push"; do
+  require_fixed "$doc_or_hook" "scripts/install-hooks.sh"
+  if grep -Fq "core.hooksPath .githooks" "$doc_or_hook"; then
+    fail "$doc_or_hook must not instruct pointing core.hooksPath at .githooks"
+  fi
+done
+
+hooks_fixture=$(mktemp -d "${TMPDIR:-/tmp}/devtrim-hooks-policy.XXXXXX")
+(
+  trap 'rm -rf "$hooks_fixture"' EXIT
+  git -C "$hooks_fixture" init -q -b main
+  mkdir -p "$hooks_fixture/.githooks" "$hooks_fixture/scripts"
+  printf '#!/bin/sh\nexit 0\n' > "$hooks_fixture/.githooks/pre-commit"
+  printf '#!/bin/sh\nexit 0\n' > "$hooks_fixture/.githooks/pre-push"
+  chmod +x "$hooks_fixture/.githooks/pre-commit" "$hooks_fixture/.githooks/pre-push"
+  cp "$install_hooks_script" "$hooks_fixture/scripts/install-hooks.sh"
+  chmod +x "$hooks_fixture/scripts/install-hooks.sh"
+  git -C "$hooks_fixture" add .
+  git -C "$hooks_fixture" -c user.name=test -c user.email=test@example.invalid commit -q -m init
+  (cd "$hooks_fixture" && sh scripts/install-hooks.sh)
+  installed_path=$(git -C "$hooks_fixture" config --local --get core.hooksPath)
+  expected_path="$(git -C "$hooks_fixture" rev-parse --path-format=absolute --git-common-dir)/hooks"
+  [[ "$installed_path" == "$expected_path" ]] ||
+    fail "scripts/install-hooks.sh set core.hooksPath to '$installed_path', expected '$expected_path'"
+  git -C "$hooks_fixture" checkout -q -b contributor
+  cat > "$hooks_fixture/.githooks/post-checkout" <<EOF
+#!/bin/sh
+echo ran > "$hooks_fixture/HOOK_RAN"
+EOF
+  chmod +x "$hooks_fixture/.githooks/post-checkout"
+  git -C "$hooks_fixture" add .githooks/post-checkout
+  git -C "$hooks_fixture" -c user.name=test -c user.email=test@example.invalid commit -q -m evil
+  git -C "$hooks_fixture" checkout -q main
+  git -C "$hooks_fixture" checkout -q contributor
+  [[ ! -e "$hooks_fixture/HOOK_RAN" ]] ||
+    fail "contributor .githooks/post-checkout executed after scripts/install-hooks.sh"
+)
+
 echo "release-policy: all checks passed"

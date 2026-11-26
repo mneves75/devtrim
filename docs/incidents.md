@@ -30,3 +30,6 @@ nothing noticed until this ledger.
 | D-06 | 0.12.6 | A version bump left `fuzz/Cargo.lock` stale, failing the release's clean-checkout gate | 13ccd96 | every_lockfile_pins_the_version_cargo_toml_declares |
 | D-07 | 0.15.0 | A stop between the stop check and uv's lock left `<cache>/.lock` with no journal record | cf7962b | journal-stop/model |
 | D-08 | 0.17.2 | `clean caches` offered npm's whole cache, including `_npx` installs a running language server loaded, and pnpm's `dlx` (Mole I-11) | — | caches/npm-store-name |
+| D-09 | 0.17.2 | An invalid `.git` marker let `hardened_git` walk upward into an ancestor repository (including `$HOME`) to judge project staleness | — | git/discovery-ceiling |
+| D-10 | 0.17.2 | `clean simulators` ignored configured `protect` entries covering simulator device folders at preview and apply | — | simulators/protect-apply |
+| D-11 | 0.17.2 | Documented `git config core.hooksPath .githooks` let any checked-out branch supply and run Git hooks before review | — | eval_local_hooks_installer_keeps_hooks_outside_working_tree |

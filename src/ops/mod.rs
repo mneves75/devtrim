@@ -568,6 +568,12 @@ fn remove_path(
 ) -> Result<Option<crate::journal::EntryChanged>> {
     let target_trash_entry = target.required_trash_entry();
     let (path, markers) = target.into_parts();
+    if !permanent && path.to_str().is_none() {
+        anyhow::bail!(
+            "refusing Trash move for non-UTF-8 path {}: macOS Trash re-encodes non-UTF-8 bytes; use --shred for descriptor-anchored permanent removal",
+            path.display()
+        );
+    }
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("refusing target without parent: {}", path.display()))?;
@@ -644,6 +650,13 @@ fn remove_path(
         if final_identity != expected {
             anyhow::bail!(
                 "target identity changed during Trash preflight: {}",
+                path.display()
+            );
+        }
+        #[cfg(target_os = "macos")]
+        if !on_apple_fs(&dir) {
+            anyhow::bail!(
+                "refusing Trash move for {} on a non-APFS/HFS filesystem: use --shred for descriptor-anchored permanent removal",
                 path.display()
             );
         }
@@ -942,6 +955,19 @@ fn entry_changed_of(stat: &rustix::fs::Stat) -> Option<crate::journal::EntryChan
 }
 
 #[cfg(target_os = "macos")]
+fn on_apple_fs(dir: &cap_std::fs::Dir) -> bool {
+    rustix::fs::fstatfs(dir).is_ok_and(|statfs| {
+        let name = statfs
+            .f_fstypename
+            .iter()
+            .take_while(|byte| **byte != 0)
+            .map(|byte| *byte as u8)
+            .collect::<Vec<_>>();
+        name == b"apfs" || name == b"hfs"
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn on_apfs(fd: &rustix::fd::OwnedFd) -> bool {
     rustix::fs::fstatfs(fd).is_ok_and(|statfs| {
         let name = statfs
@@ -1202,7 +1228,7 @@ fn removable_now(dir: &cap_std::fs::Dir, path: &Path) -> Result<bool> {
         dir,
         ".",
         rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK,
-        rustix::fs::AtFlags::empty(),
+        rustix::fs::AtFlags::EACCESS,
     ) {
         Ok(()) => Ok(true),
         Err(rustix::io::Errno::ACCESS) => Ok(false),
@@ -3319,6 +3345,29 @@ mod tests {
         assert_eq!(
             tally("panics"),
             Err("scan thread terminated abnormally".into())
+        );
+    }
+
+    #[test]
+    fn trash_refuses_non_utf8_target_before_calling_trash_crate() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let fixture = TestFixture::new("trash-non-utf8");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let parent = home.join("dev");
+        std::fs::create_dir_all(&parent).unwrap();
+        let mut raw = parent.as_os_str().as_bytes().to_vec();
+        raw.extend_from_slice(b"/repo\xff");
+        let target_path = PathBuf::from(OsStr::from_bytes(&raw));
+
+        let verified = crate::safety::validate_path_for_deletion(&target_path, &home, &[]).unwrap();
+        let dummy_id = FileIdentity::from_std_metadata(&std::fs::metadata(&parent).unwrap());
+        let error = remove_path(verified, false, dummy_id).unwrap_err();
+        assert!(
+            error.to_string().contains("non-UTF-8"),
+            "PV trash/non-utf8-refused: expected non-UTF-8 Trash refusal, got {error:#}"
         );
     }
 }

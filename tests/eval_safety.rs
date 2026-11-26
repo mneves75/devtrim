@@ -1578,3 +1578,143 @@ fn eval_build_process_liveness_keeps_only_the_busy_repository() {
         assert_journaled(&sandbox, category, "shred", &[eligible]);
     }
 }
+
+#[test]
+fn eval_invalid_git_marker_never_borrows_stale_home_repo() {
+    let sandbox = Sandbox::in_target("eval-git-ceiling");
+    let home = sandbox.path();
+    let real_git = |dir: &Path, args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_AUTHOR_DATE", "2020-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2020-01-01T00:00:00Z")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    };
+    real_git(home, &["init", "-q"]);
+    write(&home.join(".dotfiles-marker"), "stale");
+    real_git(home, &["add", ".dotfiles-marker"]);
+    real_git(home, &["commit", "-q", "-m", "old home repo"]);
+    // Drop the fresh reflog entry created by `git commit` so the home repo's
+    // activity date is 2020-01-01 (stale), not today.
+    let _ = std::fs::remove_dir_all(home.join(".git/logs"));
+    // Run the real host git binary inside the sandbox and stub pgrep so
+    // ambient build processes do not interfere.
+    sandbox.script("git", "exec /usr/bin/git \"$@\"");
+    sandbox.script("pgrep", "exit 1");
+
+    let dev = home.join("Developer");
+    let proj = dev.join("broken-proj");
+    std::fs::create_dir_all(proj.join(".git")).unwrap();
+    write(&proj.join("package.json"), "{}");
+    write(&proj.join("node_modules/pkg/index.js"), "x");
+    write(&proj.join("Cargo.toml"), "[package]\nname = \"broken\"\n");
+    write(&proj.join("target/debug/broken"), "bin");
+
+    let root = dev.to_str().unwrap();
+    for category in ["node-modules", "artifacts"] {
+        let preview = run(&sandbox, &["clean", category, "--root", root, "--json"]);
+        let document = json(&preview);
+        assert!(
+            !preview.status.success(),
+            "PV eval/git-ceiling: {category} with invalid .git marker must fail closed: {document}"
+        );
+        assert_eq!(
+            actionable_targets(&document),
+            Vec::<PathBuf>::new(),
+            "PV eval/git-ceiling: {category} offered output using stale ancestor HOME repo: {document}"
+        );
+    }
+}
+
+#[test]
+fn eval_local_hooks_installer_keeps_hooks_outside_working_tree() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let installer = manifest_dir.join("scripts/install-hooks.sh");
+    assert!(installer.is_file(), "scripts/install-hooks.sh must exist");
+    for rel in ["AGENTS.md", "CLAUDE.md", ".githooks/pre-push"] {
+        let text = std::fs::read_to_string(manifest_dir.join(rel)).unwrap();
+        assert!(
+            !text.contains("core.hooksPath .githooks"),
+            "{rel} must not instruct pointing core.hooksPath into .githooks"
+        );
+        assert!(
+            text.contains("scripts/install-hooks.sh"),
+            "{rel} must instruct running scripts/install-hooks.sh"
+        );
+    }
+
+    let sandbox = Sandbox::in_target("eval-hooks-installer");
+    let repo = sandbox.path().join("repo");
+    std::fs::create_dir_all(repo.join(".githooks")).unwrap();
+    std::fs::create_dir_all(repo.join("scripts")).unwrap();
+    write(&repo.join(".githooks/pre-commit"), "#!/bin/sh\nexit 0\n");
+    write(&repo.join(".githooks/pre-push"), "#!/bin/sh\nexit 0\n");
+    std::fs::copy(&installer, repo.join("scripts/install-hooks.sh")).unwrap();
+    for p in [
+        repo.join(".githooks/pre-commit"),
+        repo.join(".githooks/pre-push"),
+        repo.join("scripts/install-hooks.sh"),
+    ] {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&p).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&p, perms).unwrap();
+    }
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+
+    let install_status = std::process::Command::new("sh")
+        .arg("scripts/install-hooks.sh")
+        .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .status()
+        .unwrap();
+    assert!(install_status.success(), "install-hooks.sh failed");
+
+    let marker = sandbox.path().join("HOOK_RAN");
+    git(&["checkout", "-q", "-b", "contributor"]);
+    let evil = repo.join(".githooks/post-checkout");
+    write(
+        &evil,
+        &format!("#!/bin/sh\necho ran > '{}'\n", marker.display()),
+    );
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&evil).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&evil, perms).unwrap();
+    }
+    git(&["add", ".githooks/post-checkout"]);
+    git(&["commit", "-q", "-m", "evil hook"]);
+    git(&["checkout", "-q", "main"]);
+    git(&["checkout", "-q", "contributor"]);
+    assert!(
+        !marker.exists(),
+        "contributor .githooks/post-checkout executed after scripts/install-hooks.sh"
+    );
+}

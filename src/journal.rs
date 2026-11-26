@@ -667,6 +667,13 @@ impl JournalLocation {
             }
         }
         if matches!(mode, ParentMode::Create) && opened_component {
+            let status = rustix::fs::fstat(&parent).map_err(io::Error::from)?;
+            if status.st_uid != rustix::process::geteuid().as_raw() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "refusing to chmod or write journal in a directory owned by another user",
+                ));
+            }
             fchmod(&parent, Mode::from(0o700)).map_err(io::Error::from)?;
         }
         Ok(Some(Self {

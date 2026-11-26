@@ -111,6 +111,13 @@ fn findings_from_simctl(output: &str, ctx: &Ctx) -> Result<Vec<Finding>> {
             continue;
         }
         let path = simulator_device_path(&device_root, &udid)?;
+        if crate::safety::is_config_protected(&path, &ctx.protect) {
+            ctx.diagnostic(
+                "info",
+                format!("skipping protected simulator device: {}", path.display()),
+            );
+            continue;
+        }
         let size = match dir_size(&path)
             .with_context(|| format!("cannot measure simulator device {}", path.display()))
         {
@@ -319,6 +326,11 @@ impl Op for Simulators {
                 if finding.action != authority.action() {
                     anyhow::bail!("refusing altered simulator action");
                 }
+                let device = simulator_device_path(
+                    &ctx.home.join("Library/Developer/CoreSimulator/Devices"),
+                    udid,
+                )?;
+                crate::safety::validate_config_protect_for_command(&device, &ctx.protect)?;
                 let current = simulator_states(&simctl(&["list", "devices", "--json"])?)?;
                 match current.get(udid) {
                     Some(false) => {}
@@ -475,5 +487,58 @@ mod tests {
                     .contains("invalid simulator device identifier")
             );
         }
+    }
+
+    #[test]
+    fn configured_protect_skips_preview_and_refuses_apply_for_simulator_device() {
+        let home = tempfile::Builder::new()
+            .prefix("devtrim-simulators-protect")
+            .tempdir()
+            .unwrap();
+        let home_path = home.path().canonicalize().unwrap();
+        let devices = home_path.join("Library/Developer/CoreSimulator/Devices");
+        let protected_udid = "11111111-2222-3333-4444-555555555555";
+        let open_udid = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+        std::fs::create_dir_all(devices.join(protected_udid)).unwrap();
+        std::fs::write(devices.join(protected_udid).join("data"), "keep").unwrap();
+        std::fs::create_dir_all(devices.join(open_udid)).unwrap();
+        std::fs::write(devices.join(open_udid).join("data"), "trim").unwrap();
+
+        let output = format!(
+            r#"{{"devices":{{"runtime":[{{"isAvailable":false,"udid":"{protected_udid}"}},{{"isAvailable":false,"udid":"{open_udid}"}}]}}}}"#
+        );
+
+        let mut ctx = test_ctx();
+        ctx.home = home_path.clone();
+        ctx.journal_path = home_path.join("journal.jsonl");
+        ctx.protect = vec![devices.join(protected_udid)];
+
+        let findings = findings_from_simctl(&output, &ctx).unwrap();
+        let offered: Vec<&str> = findings
+            .iter()
+            .filter_map(|finding| finding.command_authority()?.simulator_udid())
+            .collect();
+        assert_eq!(
+            offered,
+            vec![open_udid],
+            "PV simulators/protect-scan: protected simulator device must not be previewed"
+        );
+
+        let protected_finding = Finding::command(
+            format!("unavailable Apple simulator device {protected_udid}"),
+            4,
+            "test",
+            4,
+            CommandAuthority::DeleteSimulator {
+                udid: protected_udid.to_string(),
+            },
+        );
+        let outcome = Simulators.apply(&[protected_finding], &ctx).unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        let errors = format!("{:?}", outcome.errors);
+        assert!(
+            errors.contains("refusing configured protected"),
+            "PV simulators/protect-apply: protected simulator must be refused before simctl: {errors}"
+        );
     }
 }

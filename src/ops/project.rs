@@ -280,11 +280,14 @@ fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> {
 }
 
 /// `git -C <root>` against a repository that may be hostile, ready for its
-/// subcommand.
+/// subcommand, and confined to `root` via `GIT_CEILING_DIRECTORIES`.
 ///
 /// Neutralizes repository-controlled config while inspecting an untrusted
 /// clone, and ambient repository-selection variables that would make git
 /// answer for a different repo than the one that owns the deletion target.
+/// Canonicalizing `root` and setting `GIT_CEILING_DIRECTORIES` to its parent
+/// stops Git from walking upward past an invalid `.git` marker (an empty
+/// directory or dangling symlink) into an ancestor repository such as HOME.
 /// Git cannot ignore repository config wholesale, so every path by which these
 /// read-only queries could spawn a configured program is closed explicitly:
 /// hooks and fsmonitor here, plus a promisor remote that would lazily fetch a
@@ -292,7 +295,15 @@ fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> {
 /// display (`gpg.program`) itself. A git too old to know `--no-lazy-fetch`
 /// fails, which refuses rather than trusts. Ambient pathspec settings are
 /// dropped too, so no query's matching depends on the caller's environment.
-fn hardened_git(root: &Path, git: &str) -> Command {
+fn hardened_git(root: &Path, git: &str) -> Result<Command> {
+    let canonical = std::fs::canonicalize(root)
+        .with_context(|| format!("cannot resolve Git root {}", root.display()))?;
+    let ceiling = canonical
+        .parent()
+        .filter(|parent| {
+            parent.is_absolute() && !parent.as_os_str().as_encoded_bytes().contains(&b':')
+        })
+        .ok_or_else(|| anyhow::anyhow!("cannot confine Git to {}", canonical.display()))?;
     let mut command = Command::new(git);
     command
         .env_remove("GIT_DIR")
@@ -301,7 +312,7 @@ fn hardened_git(root: &Path, git: &str) -> Command {
         .env_remove("GIT_COMMON_DIR")
         .env_remove("GIT_OBJECT_DIRECTORY")
         .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-        .env_remove("GIT_CEILING_DIRECTORIES")
+        .env("GIT_CEILING_DIRECTORIES", ceiling)
         .env_remove("GIT_DISCOVERY_ACROSS_FILESYSTEM")
         .env_remove("GIT_CONFIG")
         .env_remove("GIT_CONFIG_PARAMETERS")
@@ -311,7 +322,7 @@ fn hardened_git(root: &Path, git: &str) -> Command {
         .env_remove("GIT_NOGLOB_PATHSPECS")
         .env_remove("GIT_ICASE_PATHSPECS")
         .arg("-C")
-        .arg(root)
+        .arg(&canonical)
         .args([
             "-c",
             "core.fsmonitor=false",
@@ -321,7 +332,7 @@ fn hardened_git(root: &Path, git: &str) -> Command {
             "--no-lazy-fetch",
             "--no-pager",
         ]);
-    command
+    Ok(command)
 }
 
 /// Whether the repository at `root` tracks any file under `target`, which lies
@@ -353,7 +364,7 @@ pub(crate) struct TrackedIndex {
 
 impl TrackedIndex {
     pub(crate) fn list(root: &Path) -> Result<Self> {
-        let mut command = hardened_git(root, "git");
+        let mut command = hardened_git(root, "git")?;
         command.args(["ls-files", "-z"]);
         let listed = hardened_output(command, || {
             format!("Git tracked-file check failed for {}", root.display())
@@ -424,7 +435,7 @@ impl TrackedIndex {
 
 /// One `git log -1` against a repository that may be hostile.
 fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
-    let mut command = hardened_git(root, git);
+    let mut command = hardened_git(root, git)?;
     command
         .env("TZ", "UTC0")
         // Signature display runs the repository's `gpg.program`.
@@ -463,7 +474,7 @@ fn hardened_output(mut command: Command, failure: impl Fn() -> String) -> Result
 /// through the hardened invocation. Every path it lists is the repository's
 /// own data, not a fact about the disk.
 pub(crate) fn worktree_listing(repo: &Path) -> Result<Vec<u8>> {
-    let mut command = hardened_git(repo, "git");
+    let mut command = hardened_git(repo, "git")?;
     command.args(["worktree", "list", "--porcelain", "-z"]);
     hardened_output(command, || {
         format!("cannot list the worktrees of {}", repo.display())
@@ -507,7 +518,7 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
             .arg(worktree);
     };
     // Paths and the object format only: `rev-parse` converts no content.
-    let mut locate = hardened_git(worktree, "git");
+    let mut locate = hardened_git(worktree, "git")?;
     pinned(&mut locate);
     locate.args([
         "rev-parse",
@@ -544,7 +555,7 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
         "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
     };
 
-    let mut status = hardened_git(worktree, "git");
+    let mut status = hardened_git(worktree, "git")?;
     status
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -584,7 +595,7 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
         .filter(|entry| entry.worktree != b' ')
         .map(|entry| entry.path)
         .collect();
-    let mut born = hardened_git(worktree, "git");
+    let mut born = hardened_git(worktree, "git")?;
     pinned(&mut born);
     born.args(["rev-parse", "--quiet", "--verify", "HEAD^{commit}"]);
     let born = born
@@ -592,7 +603,7 @@ pub(crate) fn worktree_dirty_count(worktree: &Path) -> Result<usize> {
         .with_context(|| format!("cannot read HEAD of {}", worktree.display()))?;
     let staged;
     if born.status.success() {
-        let mut command = hardened_git(worktree, "git");
+        let mut command = hardened_git(worktree, "git")?;
         pinned(&mut command);
         command.args([
             "diff-index",
@@ -876,7 +887,7 @@ fn parse_porcelain_status(output: &[u8]) -> Result<Vec<StatusEntry<'_>>> {
 /// The absolute common directory (`.git` of the main worktree) of the
 /// repository holding `repo`.
 pub(crate) fn git_common_dir(repo: &Path) -> Result<PathBuf> {
-    let mut command = hardened_git(repo, "git");
+    let mut command = hardened_git(repo, "git")?;
     command.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     let mut listed = hardened_output(command, || {
         format!("cannot find the Git directory of {}", repo.display())
@@ -897,7 +908,7 @@ pub(crate) fn git_common_dir(repo: &Path) -> Result<PathBuf> {
 /// (`check-ignore` exits 0 for ignored, 1 for not ignored; anything else is a
 /// failure, never an answer).
 pub(crate) fn ignores_path(repo: &Path, relative: &str) -> Result<bool> {
-    let mut command = hardened_git(repo, "git");
+    let mut command = hardened_git(repo, "git")?;
     command.args(["check-ignore", "-q", "--", relative]);
     let output = command
         .output_within(QUERY_TIMEOUT)
@@ -1129,7 +1140,7 @@ pub(crate) fn gitfile_target(bytes: &[u8]) -> Option<&std::ffi::OsStr> {
 /// the original failure then stands.
 pub(crate) fn unborn_branch(repo: &Path) -> bool {
     let git_output = |arguments: &[&str]| {
-        let mut command = hardened_git(repo, "git");
+        let mut command = hardened_git(repo, "git").ok()?;
         command.args(arguments);
         command.output_within(QUERY_TIMEOUT).ok()
     };
@@ -1318,7 +1329,7 @@ fn records_submodule(superproject: &Path, submodule: &Path) -> Result<bool> {
             superproject.display()
         )
     })?;
-    let mut command = hardened_git(superproject, "git");
+    let mut command = hardened_git(superproject, "git")?;
     command
         .args(["--literal-pathspecs", "ls-files", "--stage", "-z", "--"])
         .arg(relative);
@@ -2137,6 +2148,50 @@ mod tests {
             worktree_dirty_count(&repo).unwrap(),
             0,
             "worktree_dirty_count followed hostile core.worktree outside validated directory"
+        );
+    }
+
+    #[test]
+    fn invalid_git_marker_never_escapes_to_ancestor_repo() {
+        let fixture = crate::ops::TestFixture::new("git-discovery-ceiling");
+        let home = fixture.path().join("home");
+        init_old_git_repo(&home).unwrap();
+        let _ = std::fs::remove_dir_all(home.join(".git/logs"));
+
+        // Empty .git directory and dangling .git symlink must fail closed rather
+        // than escaping upward to the stale ancestor repository at `home`.
+        let empty_marker = home.join("dev/empty-marker");
+        std::fs::create_dir_all(empty_marker.join(".git")).unwrap();
+        let dangling_marker = home.join("dev/dangling-marker");
+        std::fs::create_dir_all(&dangling_marker).unwrap();
+        std::os::unix::fs::symlink(home.join("does-not-exist"), dangling_marker.join(".git"))
+            .unwrap();
+
+        for broken in [&empty_marker, &dangling_marker] {
+            let activity = repo_last_activity(broken);
+            assert!(
+                activity.is_err(),
+                "PV git/discovery-ceiling: {} borrowed ancestor activity {:?}",
+                broken.display(),
+                activity
+            );
+            let tracked = TrackedIndex::list(broken);
+            assert!(
+                tracked.is_err(),
+                "PV git/discovery-ceiling: {} borrowed ancestor tracked index",
+                broken.display()
+            );
+        }
+
+        // Positive control: a valid child repository inside the stale ancestor
+        // still reports its own date.
+        let valid_child = home.join("dev/valid-child");
+        init_old_git_repo(&valid_child).unwrap();
+        let _ = std::fs::remove_dir_all(valid_child.join(".git/logs"));
+        let child_date = repo_last_activity(&valid_child).unwrap();
+        assert_eq!(
+            child_date, "2000-01-01",
+            "valid child repo must still report its own date"
         );
     }
 }
