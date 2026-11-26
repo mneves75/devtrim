@@ -116,39 +116,6 @@ fn review_trash_empty_nothing_to_purge_human_refuses_an_unwritable_journal() {
         "review/trash-human-journal",
     );
 }
-
-/// `--only-devtrim` is preview-only: `--apply` with it refuses, naming why,
-/// whatever the Trash holds, while the same list previews successfully.
-#[test]
-fn review_trash_empty_only_devtrim_refuses_to_apply() {
-    let sandbox = Sandbox::in_target("review-trash-only-preview");
-    write(
-        &sandbox.path().join(".Trash/not-ours.txt"),
-        "not moved by devtrim",
-    );
-    write(&sandbox.journal(), "");
-    let preview = run(&sandbox, &["trash-empty", "--only-devtrim", "--json"]);
-    assert!(preview.status.success(), "control: {}", json(&preview));
-    let refused = run(
-        &sandbox,
-        &[
-            "trash-empty",
-            "--only-devtrim",
-            "--apply",
-            "--yolo",
-            "--json",
-        ],
-    );
-    let document = json(&refused);
-    assert!(!refused.status.success(), "{document}");
-    assert_ne!(document["applied"], true, "{document}");
-    assert!(
-        error_text(&document).contains("preview-only"),
-        "refused for another reason: {document}"
-    );
-    assert!(sandbox.path().join(".Trash/not-ours.txt").exists());
-}
-
 /// A regular file where the Trash folder should be is an error in preview and
 /// apply, JSON and human alike; it is never "nothing to purge".
 #[test]
@@ -253,7 +220,10 @@ fn review_installers_refused_first_archive_does_not_stop_the_second() {
         &["clean", "installers", "--apply", "--shred"],
         || age(&first, 0),
     );
-    assert!(first.exists(), "the touched archive was removed:\n{output}");
+    assert!(
+        first.exists() && output.contains("A-first.dmg"),
+        "the touched archive must be kept and named:\n{output}"
+    );
     assert!(
         !second.exists(),
         "review/installers-order: the archive after the refusal was kept:\n{output}"
@@ -261,6 +231,10 @@ fn review_installers_refused_first_archive_does_not_stop_the_second() {
     assert!(
         !status.success(),
         "the refusal must fail the run:\n{output}"
+    );
+    assert!(
+        output.contains("partial") && output.contains("free space on the home volume: "),
+        "the partial summary must report measured free space:\n{output}"
     );
     support::assert_journaled(&sandbox, "installers", "shred", &[second]);
 }

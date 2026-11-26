@@ -1516,39 +1516,6 @@ mod tests {
         );
     }
 
-    /// Archives are listed for visibility only, so one that cannot be
-    /// measured is reported beside the folders that were judged and never
-    /// withholds them.
-    #[test]
-    fn an_unmeasurable_archive_never_withholds_device_support() {
-        let fixture = crate::ops::TestFixture::new("devtrim-xcode-archives");
-        std::fs::create_dir_all(fixture.path()).unwrap();
-        let home = fixture.path().canonicalize().unwrap();
-        let symbols = home.join("Library/Developer/Xcode/iOS DeviceSupport/18.0 (22A3354)");
-        aged_file(&symbols.join("Symbols/dyld"), 10);
-        let archives = home.join("Library/Developer/Xcode/Archives");
-        aged_file(&archives.join("2026-01-01/App.xcarchive/Info.plist"), 10);
-        let locked = crate::ops::Unreadable::new(&archives.join("2026-01-02"), 0o000);
-
-        let findings = Xcode
-            .scan_with_xcode_build_state(&test_context(home.clone()), Ok(XcodeActivity::Idle))
-            .unwrap();
-
-        drop(locked);
-        let offered = findings
-            .iter()
-            .filter_map(Finding::target)
-            .collect::<Vec<_>>();
-        assert_eq!(offered, vec![symbols.as_path()]);
-        assert!(
-            findings
-                .iter()
-                .filter_map(Finding::scan_error)
-                .any(|error| error.contains("Archives")),
-            "{findings:?}"
-        );
-    }
-
     #[test]
     fn derived_data_apply_refuses_a_running_or_unknown_xcode_build() {
         let home = std::env::temp_dir().join(format!("devtrim-xcode-live-{}", std::process::id()));

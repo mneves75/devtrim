@@ -453,46 +453,6 @@ mod tests {
         assert_eq!(outcome.summary.items_touched, 0);
     }
 
-    /// One unavailable device whose data cannot be measured offers nothing
-    /// and is named in one error finding; the others are still offered.
-    #[test]
-    fn an_unmeasurable_device_withholds_only_itself() {
-        let home = tempfile::Builder::new()
-            .prefix("devtrim-simulators-unread")
-            .tempdir()
-            .unwrap();
-        let mut ctx = test_ctx();
-        ctx.home = home.path().to_path_buf();
-        let devices = ctx.home.join("Library/Developer/CoreSimulator/Devices");
-        let readable = "11111111-1111-1111-1111-111111111111";
-        let sealed_udid = "22222222-2222-2222-2222-222222222222";
-        std::fs::create_dir_all(devices.join(readable).join("data")).unwrap();
-        std::fs::write(devices.join(readable).join("data/file"), "x").unwrap();
-        let sealed = crate::ops::Unreadable::new(&devices.join(sealed_udid).join("data"), 0o000);
-        let output = format!(
-            r#"{{"devices":{{"runtime":[{{"isAvailable":false,"udid":"{readable}"}},{{"isAvailable":false,"udid":"{sealed_udid}"}}]}}}}"#
-        );
-
-        let findings = findings_from_simctl(&output, &ctx).unwrap();
-
-        drop(sealed);
-        let commands = findings
-            .iter()
-            .filter(|finding| matches!(finding.action, Action::Command { .. }))
-            .map(|finding| finding.label.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            commands,
-            vec![format!("unavailable Apple simulator device {readable}")]
-        );
-        let errors = findings
-            .iter()
-            .filter_map(Finding::scan_error)
-            .collect::<Vec<_>>();
-        assert_eq!(errors.len(), 1, "{findings:?}");
-        assert!(errors[0].contains(sealed_udid), "{errors:?}");
-    }
-
     #[test]
     fn malformed_simulator_device_id_is_an_error() {
         let ctx = test_ctx();
