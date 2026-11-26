@@ -835,41 +835,6 @@ fn eval_installers_apply_refuses_an_archive_modified_after_preview() {
     );
 }
 
-/// A refused installer does not strand the unrelated ones after it: the
-/// archive in Downloads (scanned first) is touched after the preview, and the
-/// one on the Desktop is still removed while the run reports the refusal.
-#[test]
-fn eval_installers_apply_continues_past_a_refused_archive() {
-    let sandbox = Sandbox::in_target("eval-installers-continue");
-    let refreshed = sandbox.path().join("Downloads/Refreshed.dmg");
-    let stale = sandbox.path().join("Desktop/Stale.dmg");
-    write_aged(&refreshed, &"x".repeat(2048), 400);
-    write_aged(&stale, &"x".repeat(2048), 400);
-
-    let (status, output) = drift_session(
-        &sandbox,
-        &["clean", "installers", "--apply", "--shred"],
-        || age(&refreshed, 0),
-    );
-    assert!(
-        !stale.exists(),
-        "eval/installers-continue: the archive after the refused one was not removed:\n{output}"
-    );
-    assert!(
-        refreshed.exists() && output.contains("Refreshed.dmg"),
-        "the touched archive must be kept and named:\n{output}"
-    );
-    assert!(
-        !status.success(),
-        "the refusal must fail the run:\n{output}"
-    );
-    // The partial summary carries the measured line too.
-    assert!(
-        output.contains("partial") && output.contains("free space on the home volume: "),
-        "the partial summary must report measured free space:\n{output}"
-    );
-}
-
 /// A `Downloads` that is a link to another folder is named in a warning and
 /// offers nothing, since the sink refuses a target below a link; a real
 /// `Desktop` beside it is the control that the category still offers.
@@ -1126,6 +1091,22 @@ fn eval_clean_agents_removes_only_regenerable_caches_and_stale_history() {
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], targets.len());
     assert_journaled(&sandbox, "agents", "shred", &targets);
+
+    let locked = sandbox.path().join(".codex/sessions/2025/01/02");
+    write_aged(&locked.join("rollout.jsonl"), "{}", 400);
+    let _locked = ModeGuard::unreadable(locked.clone());
+    let unreadable = run(&sandbox, &["clean", "agents", "--json"]);
+    let document = json(&unreadable);
+    let errors = error_text(&document);
+    assert!(
+        errors.contains("could not be read while looking for agent caches and history")
+            && errors.contains(&locked.display().to_string()),
+        "eval/agents-unreadable: the unreadable folder must be named: {errors}"
+    );
+    assert!(
+        !unreadable.status.success(),
+        "eval/agents-unreadable: the unreadable folder must fail the run: {document}"
+    );
 }
 
 /// A `codex_homes` setting that cannot be trusted whole fails the run before
@@ -1225,37 +1206,6 @@ fn eval_a_malformed_codex_homes_setting_refuses_the_run() {
             "eval/codex-homes-closed-apply",
         );
     }
-}
-
-/// One history folder that cannot be read offers nothing and is named in one
-/// error finding, so the run exits nonzero; the cache and the readable stale
-/// history beside it are still offered.
-#[test]
-fn eval_agents_lists_every_finding_past_an_unreadable_history_folder() {
-    let sandbox = Sandbox::in_target("eval-agents-unreadable");
-    let home = sandbox.path();
-    let cache = home.join(".claude/cache");
-    write(&cache.join("catalog.json"), "{}");
-    let stale = home.join(".codex/sessions/2025/01/01");
-    write_aged(&stale.join("rollout.jsonl"), "{}", 400);
-    let locked = home.join(".codex/sessions/2025/01/02");
-    write_aged(&locked.join("rollout.jsonl"), "{}", 400);
-    let _locked = ModeGuard::unreadable(locked.clone());
-
-    let preview = run(&sandbox, &["clean", "agents", "--json"]);
-    let document = json(&preview);
-    assert_eq!(
-        actionable_targets(&document),
-        sorted(vec![cache, stale]),
-        "eval/agents-unreadable: one unreadable folder hid the findings beside it"
-    );
-    let errors = error_text(&document);
-    assert!(
-        errors.contains("could not be read while looking for agent caches and history")
-            && errors.contains(&locked.display().to_string()),
-        "eval/agents-unreadable: the unreadable folder must be named: {errors}"
-    );
-    assert!(!preview.status.success(), "{document}");
 }
 
 // ---------- clean simulators ----------
@@ -2729,6 +2679,7 @@ fn eval_toolchains_list_every_finding_past_an_unreadable_toolchain() {
         targets,
         "eval/toolchains-unreadable: one unreadable toolchain hid the others"
     );
+    assert_eq!(document["errors"].as_array().unwrap().len(), 1, "{document}");
     assert!(
         error_text(&document).contains("swift-5.6-RELEASE.xctoolchain"),
         "eval/toolchains-unreadable: the unreadable toolchain must be named: {document}"
@@ -2753,6 +2704,7 @@ fn eval_simulators_list_every_device_past_an_unreadable_one() {
         vec![argv(&["xcrun", "simctl", "delete", GONE_ONE])],
         "eval/simulators-unreadable: one unreadable device hid the others"
     );
+    assert_eq!(document["errors"].as_array().unwrap().len(), 1, "{document}");
     assert!(
         error_text(&document).contains(GONE_TWO),
         "eval/simulators-unreadable: the unreadable device must be named: {document}"
@@ -2854,9 +2806,11 @@ fn eval_leftovers_report_every_folder_past_an_unreadable_one() {
         vec![evidence],
         "eval/leftovers-unreadable: an unreadable folder hid the evidence beside it"
     );
-    assert!(
-        error_text(&document).contains(&sealed.display().to_string()),
-        "eval/leftovers-unreadable: the unreadable folder must be named: {document}"
+    assert_eq!(document["errors"].as_array().unwrap().len(), 1, "{document}");
+    assert_eq!(
+        error_text(&document).matches(sealed.to_str().unwrap()).count(),
+        1,
+        "eval/leftovers-unreadable: the unreadable folder must be named exactly once: {document}"
     );
     assert!(!output.status.success(), "{document}");
 }

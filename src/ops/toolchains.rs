@@ -469,42 +469,6 @@ mod tests {
         Ctx::for_test(home)
     }
 
-    /// A toolchain that cannot be measured offers nothing and is named in one
-    /// error finding; the toolchains beside it are still judged.
-    #[test]
-    fn an_unmeasurable_toolchain_withholds_only_itself() {
-        let (_fixture, root) = target_temp("unread");
-        let home = root.canonicalize().unwrap();
-        let directory = home.join("Library/Developer/Toolchains");
-        let readable = directory.join("swift-1.xctoolchain");
-        std::fs::create_dir_all(readable.join("usr/bin")).unwrap();
-        std::fs::write(readable.join("usr/bin/swift"), "binary").unwrap();
-        let sealed = crate::ops::Unreadable::new(&directory.join("swift-2.xctoolchain/usr"), 0o000);
-        std::fs::create_dir_all(directory.join("swift-3.xctoolchain")).unwrap();
-        symlink(
-            "swift-3.xctoolchain",
-            directory.join("swift-latest.xctoolchain"),
-        )
-        .unwrap();
-
-        let findings = Toolchains
-            .scan(&test_context(home.clone()), &Default::default())
-            .unwrap();
-
-        drop(sealed);
-        let offered = findings
-            .iter()
-            .filter_map(Finding::target)
-            .collect::<Vec<_>>();
-        assert_eq!(offered, vec![readable.as_path()]);
-        let errors = findings
-            .iter()
-            .filter_map(Finding::scan_error)
-            .collect::<Vec<_>>();
-        assert_eq!(errors.len(), 1, "{findings:?}");
-        assert!(errors[0].contains("swift-2.xctoolchain"), "{errors:?}");
-    }
-
     #[test]
     fn apply_rejects_forged_nested_toolchain_target() {
         let (_fixture, root) = target_temp("apply-nested");

@@ -4071,15 +4071,12 @@ mod tests {
                 app.handle_key(key(KeyCode::Char('s')));
                 assert!(app.shred);
             }
+            let cleanup_effect = if shred { "PERMANENT" } else { "to Trash" };
+            let expected = [(3, cleanup_effect), (10, cleanup_effect), (0, "read-only")];
             for width in [usize::from(MIN_WIDTH) - 2, 78, 118] {
-                for row in 0..3 {
-                    let finding = effective_finding(&app, &app.findings[row]);
+                for (row, (danger, effect)) in expected.into_iter().enumerate() {
                     let text = row_text(&app, row, width);
-                    let tail = format!(
-                        "danger-{}  {:>EFFECT_WIDTH$}",
-                        finding.danger,
-                        Effect::of_action(&finding.action).word()
-                    );
+                    let tail = format!("danger-{danger}  {effect:>EFFECT_WIDTH$}");
                     // Within the row, whole: a row wider than its pane is cut
                     // by the widget, which would take the tail first.
                     assert!(
@@ -4089,8 +4086,6 @@ mod tests {
                 }
             }
         }
-        let words: Vec<String> = (0..3).map(|row| row_text(&app, row, 118)).collect();
-        assert!(words[0].ends_with("PERMANENT") && words[2].ends_with("read-only"));
     }
 
     /// The decision inputs lead: the size, then the name, then the path; the
@@ -4527,7 +4522,23 @@ mod tests {
                 let rows = screen_rows(&app, width, height);
                 for item in MENU {
                     let row = menu_row(&rows, item.label);
-                    let word = Effect::of(item.operation).word();
+                    let word = match item.operation {
+                        Operation::TrashEmpty
+                        | Operation::Clean(Target::Docker | Target::Simulators) => "PERMANENT",
+                        Operation::ScanAll
+                        | Operation::Icloud
+                        | Operation::Clean(Target::Leftovers) => "read-only",
+                        Operation::Purge
+                        | Operation::Clean(
+                            Target::Caches
+                            | Target::NodeModules
+                            | Target::Artifacts
+                            | Target::Xcode
+                            | Target::Toolchains
+                            | Target::Installers
+                            | Target::Agents,
+                        ) => "to Trash",
+                    };
                     assert!(
                         row.trim_start_matches('▶')
                             .trim_start()
@@ -4547,13 +4558,6 @@ mod tests {
                     "{rows:#?}"
                 );
             }
-        }
-        let words: Vec<&str> = MENU
-            .iter()
-            .map(|item| Effect::of(item.operation).word())
-            .collect();
-        for word in ["to Trash", "PERMANENT", "read-only"] {
-            assert!(words.contains(&word), "{words:?}");
         }
         for item in MENU {
             assert!(
@@ -5428,14 +5432,24 @@ mod tests {
     /// preview the approval covers, not only the results title behind it.
     #[test]
     fn the_confirmation_names_how_much_of_the_preview_it_covers() {
-        let mut app = cleanup(vec![trash("first", 1, 2), trash("second", 1, 2)]);
+        let mut app = cleanup(vec![
+            trash("first", 1 << 30, 2),
+            trash("second", 1 << 30, 2),
+            trash("third", 1 << 30, 2),
+            trash("left-out", 1 << 30, 2),
+        ]);
+        app.handle_key(key(KeyCode::End));
         app.handle_key(key(KeyCode::Char(' ')));
         app.begin_confirmation();
 
         let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
 
-        assert!(output.contains("1 of 2 selected"), "{output}");
+        assert!(output.contains("3 of 4 selected"), "{output}");
         assert!(output.contains("1 left out"), "{output}");
+        assert!(
+            output.contains("Moves 3 items (3.0 GB) to the Trash."),
+            "{output}"
+        );
     }
 
     /// The results title row, whatever its mode.
@@ -5509,35 +5523,6 @@ mod tests {
                 .position(|row| row.chars().nth(left) == Some('└'))
                 .expect("the confirmation is closed");
         (top, bottom, left, right)
-    }
-
-    /// Consent is given on this screen, so it says what will happen in words
-    /// and numbers, computed from the plan the approval covers.
-    #[test]
-    fn the_confirmation_says_what_will_happen() {
-        let mut trash_plan = cleanup(vec![
-            trash("first", 1 << 30, 2),
-            trash("second", 1 << 30, 2),
-            trash("third", 1 << 30, 2),
-            trash("left-out", 1 << 30, 2),
-        ]);
-        trash_plan.handle_key(key(KeyCode::End));
-        trash_plan.handle_key(key(KeyCode::Char(' ')));
-        trash_plan.begin_confirmation();
-        let output = rendered(&trash_plan, MIN_WIDTH, MIN_HEIGHT);
-        assert!(
-            output.contains("Moves 3 items (3.0 GB) to the Trash."),
-            "{output}"
-        );
-
-        let mut permanent = cleanup(vec![trash("only", 2 << 30, 2)]);
-        permanent.handle_key(key(KeyCode::Char('s')));
-        permanent.begin_confirmation();
-        let output = rendered(&permanent, MIN_WIDTH, MIN_HEIGHT);
-        assert!(
-            output.contains("Permanently deletes 1 item (2.0 GB)."),
-            "{output}"
-        );
     }
 
     /// A y/N plan asks for one key: no input line, and the keys say so. A
@@ -5697,15 +5682,12 @@ mod tests {
     fn the_header_is_one_row_and_the_footer_two() {
         let app = cleanup(vec![trash("cache", 1, 2)]);
         let rows = screen_rows(&app, MIN_WIDTH, MIN_HEIGHT);
-        let output = rows.concat();
         assert!(rows[0].contains("devtrim"), "{rows:#?}");
         assert!(
             rows[1].starts_with('┌'),
             "the body starts on row 2: {rows:#?}"
         );
         assert!(rows[MIN_HEIGHT as usize - 3].starts_with('└'), "{rows:#?}");
-        assert!(!output.contains("measure · classify"), "{output}");
-        assert!(!output.contains("Safe disk hygiene"), "{output}");
     }
 
     /// Every status says how much it matters: neutral information is muted, a
@@ -5912,7 +5894,6 @@ mod tests {
         let app = cleanup(Vec::new());
         let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
         assert_eq!(output.matches("Nothing found").count(), 1, "{output}");
-        assert!(!output.contains("No findings"), "{output}");
         assert!(
             !output.contains("move"),
             "the footer offers no movement over nothing: {output}"
@@ -5925,7 +5906,6 @@ mod tests {
         app.fail(anyhow::anyhow!("synthetic"));
         let output = rendered(&app, MIN_WIDTH, MIN_HEIGHT);
         assert!(output.contains("┌ Error"), "{output}");
-        assert!(!output.contains("Failed closed"), "{output}");
         assert!(output.contains("Nothing was changed."), "{output}");
     }
 

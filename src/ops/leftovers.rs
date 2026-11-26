@@ -538,40 +538,6 @@ fn unread_once(unread: &mut Vec<project::UnreadFolder>, path: &Path, error: &any
 mod tests {
     use super::*;
 
-    /// A folder below a root that cannot be read is named once in one error
-    /// finding; everything else under the root is still reported.
-    #[test]
-    fn an_unreadable_folder_withholds_only_itself() {
-        let fixture = crate::ops::TestFixture::new("devtrim-leftovers-unread");
-        std::fs::create_dir_all(fixture.path()).unwrap();
-        let home = fixture.path().canonicalize().unwrap();
-        let root = home.join("dev");
-        let evidence = root.join(".supergoal/evidence");
-        std::fs::create_dir_all(&evidence).unwrap();
-        std::fs::write(evidence.join("run.log"), "log").unwrap();
-        let sealed = crate::ops::Unreadable::new(&root.join("sealed"), 0o000);
-        let ctx = Ctx {
-            roots: vec![root.clone()],
-            roots_origin: crate::safety::RootsOrigin::Flag,
-            ..Ctx::for_test(home.clone())
-        };
-
-        let findings = Leftovers.scan(&ctx, &Default::default()).unwrap();
-
-        drop(sealed);
-        let reported = findings
-            .iter()
-            .filter_map(Finding::target)
-            .collect::<Vec<_>>();
-        assert_eq!(reported, vec![evidence.as_path()]);
-        let errors = findings
-            .iter()
-            .filter_map(Finding::scan_error)
-            .collect::<Vec<_>>();
-        assert_eq!(errors.len(), 1, "{findings:?}");
-        assert_eq!(errors[0].matches("sealed").count(), 1, "{errors:?}");
-    }
-
     /// A `.supergoal` that cannot be searched is where the scan could not
     /// look: it is named once beside the other unread folders, and the
     /// readable `.supergoal` in another project is still reported.
