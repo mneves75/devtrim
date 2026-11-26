@@ -371,9 +371,15 @@ fn eval_no_other_owner_claims_npm_or_pnpm_installs() {
             Some(&install),
             &["clean", "caches", "--json"],
         ));
+        // `.cache/caches` holds no install cache: only a Gradle home inside
+        // one keeps Gradle's caches out.
+        let mut expected = vec![home.join("go/pkg/mod")];
+        if relative == ".cache" {
+            expected.insert(0, home.join(".cache/caches"));
+        }
         assert_eq!(
             actionable_targets(&preview),
-            vec![home.join("go/pkg/mod")],
+            expected,
             "PV eval/gradle-install-cache: GRADLE_USER_HOME {relative} was offered: {preview}"
         );
         let apply = json(&run_with(
@@ -381,7 +387,7 @@ fn eval_no_other_owner_claims_npm_or_pnpm_installs() {
             Some(&install),
             &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
         ));
-        let removed: Vec<PathBuf> = [".gradle/caches", "go/pkg/mod"]
+        let removed: Vec<PathBuf> = [".gradle/caches", "go/pkg/mod", ".cache/caches"]
             .iter()
             .map(|default| home.join(default))
             .filter(|default| !default.exists())
@@ -395,7 +401,7 @@ fn eval_no_other_owner_claims_npm_or_pnpm_installs() {
             &format!("install cache owners {apply}"),
         );
         for default in removed {
-            write(&default.join("restored"), "module");
+            write(&default.join("modules-2/restored"), "module");
         }
     }
 }
@@ -444,6 +450,184 @@ fn eval_a_linked_install_cache_keeps_its_holder() {
         },
         &format!("linked install cache {applied}"),
     );
+}
+
+/// How a row's control puts its install cache out of the victim's reach.
+#[derive(Clone, Copy)]
+enum Away {
+    /// The linked default spelling points at a folder outside the victim.
+    Relink,
+    /// `XDG_CACHE_HOME` is unset, so pnpm's cache is its macOS default.
+    NoXdg,
+    /// `npm` is absent, so nothing reports npm's configured cache.
+    NoNpm,
+}
+
+/// Mole I-11 for every caches authority: no cache — built-in, library, npm's
+/// store, pnpm's metadata, Homebrew's or Go's — that holds npm's or pnpm's
+/// cache folder is offered or removed, whether that folder is linked there,
+/// is where `npm config get cache` reports, or is `$XDG_CACHE_HOME/pnpm`.
+/// Each row's control moves the install cache away and the victim is offered.
+#[test]
+fn eval_no_cache_holds_an_install_cache() {
+    struct Row {
+        name: &'static str,
+        files: &'static [&'static str],
+        link: Option<(&'static str, &'static str)>,
+        stubs: &'static [(&'static str, &'static str)],
+        xdg: bool,
+        victim: &'static str,
+        away: Away,
+    }
+    let rows = [
+        Row {
+            name: "corepack",
+            files: &[".cache/node/corepack/pnpm/dlx/1e5f/sentinel"],
+            link: Some(("Library/Caches/pnpm", ".cache/node/corepack/pnpm")),
+            stubs: &[],
+            xdg: false,
+            victim: ".cache/node/corepack",
+            away: Away::Relink,
+        },
+        Row {
+            name: "npm-store",
+            files: &[
+                ".npm/_cacache/index",
+                ".npm/_cacache/pnpm/dlx/1e5f/sentinel",
+            ],
+            link: Some(("Library/Caches/pnpm", ".npm/_cacache/pnpm")),
+            stubs: &[("npm", ".npm")],
+            xdg: false,
+            victim: ".npm/_cacache",
+            away: Away::Relink,
+        },
+        Row {
+            name: "pnpm-metadata",
+            files: &["Library/Caches/pnpm/v11/metadata/npm/_npx/9420/sentinel"],
+            link: Some((".npm", "Library/Caches/pnpm/v11/metadata/npm")),
+            stubs: &[],
+            xdg: false,
+            victim: "Library/Caches/pnpm/v11/metadata",
+            away: Away::Relink,
+        },
+        Row {
+            name: "homebrew",
+            files: &[
+                "Library/Caches/Homebrew/downloads/x.tar.gz",
+                "Library/Caches/Homebrew/pnpm/dlx/1e5f/sentinel",
+            ],
+            link: Some(("Library/Caches/pnpm", "Library/Caches/Homebrew/pnpm")),
+            stubs: &[("brew", "Library/Caches/Homebrew")],
+            xdg: false,
+            victim: "Library/Caches/Homebrew",
+            away: Away::Relink,
+        },
+        Row {
+            name: "pip",
+            files: &["Library/Caches/pip/pnpm/dlx/1e5f/sentinel"],
+            link: Some(("Library/Caches/pnpm", "Library/Caches/pip/pnpm")),
+            stubs: &[],
+            xdg: false,
+            victim: "Library/Caches/pip",
+            away: Away::Relink,
+        },
+        Row {
+            name: "xdg-pnpm",
+            files: &[
+                ".cache/cache/download/x.zip",
+                ".cache/pnpm/dlx/1e5f/sentinel",
+            ],
+            link: None,
+            stubs: &[("go", ".cache")],
+            xdg: true,
+            victim: ".cache",
+            away: Away::NoXdg,
+        },
+        Row {
+            name: "npm-reported",
+            files: &[
+                "go/pkg/mod/cache/download/x.zip",
+                "go/pkg/mod/npmcache/_npx/9420/sentinel",
+            ],
+            link: None,
+            stubs: &[("go", "go/pkg/mod"), ("npm", "go/pkg/mod/npmcache")],
+            xdg: false,
+            victim: "go/pkg/mod",
+            away: Away::NoNpm,
+        },
+    ];
+    for row in rows {
+        let sandbox = Sandbox::in_target(&format!("eval-install-cache-{}", row.name));
+        let home = sandbox.path().canonicalize().unwrap();
+        for file in row.files {
+            write(&home.join(file), "install or cache");
+        }
+        std::fs::create_dir_all(home.join("elsewhere")).unwrap();
+        if let Some((install, linked)) = row.link {
+            std::fs::create_dir_all(home.join(install).parent().unwrap()).unwrap();
+            symlink(home.join(linked), home.join(install)).unwrap();
+        }
+        for (program, root) in row.stubs {
+            sandbox.script(program, &format!("printf '%s\\n' \"$HOME/{root}\""));
+        }
+        let devtrim = |xdg: bool, args: &[&str]| {
+            let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"));
+            command
+                .args(args)
+                .env_clear()
+                .env("HOME", &home)
+                .env("PATH", sandbox.bin());
+            if xdg {
+                command.env("XDG_CACHE_HOME", home.join(".cache"));
+            }
+            json(&command.output().unwrap())
+        };
+        let victim = home.join(row.victim);
+        let pristine = Tree::snapshot(&home);
+        let preview = devtrim(row.xdg, &["clean", "caches", "--json"]);
+        assert!(
+            !actionable_targets(&preview).contains(&victim),
+            "PV eval/holds-install-cache: {}: {} was offered: {preview}",
+            row.name,
+            row.victim
+        );
+        let applied = devtrim(
+            row.xdg,
+            &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+        );
+        pristine.assert_only(
+            &Tree::snapshot(&home),
+            &Allowed {
+                removed: actionable_targets(&preview),
+                scratch: vec![home.join(".local/state/devtrim")],
+            },
+            &format!("{}: {applied}", row.name),
+        );
+        for file in row.files.iter().filter(|file| file.ends_with("sentinel")) {
+            assert!(home.join(file).exists(), "{}: {file} was removed", row.name);
+        }
+
+        let xdg = match row.away {
+            Away::Relink => {
+                let (install, _) = row.link.unwrap();
+                std::fs::remove_file(home.join(install)).unwrap();
+                symlink(home.join("elsewhere"), home.join(install)).unwrap();
+                row.xdg
+            }
+            Away::NoXdg => false,
+            Away::NoNpm => {
+                std::fs::remove_file(sandbox.bin().join("npm")).unwrap();
+                row.xdg
+            }
+        };
+        let control = devtrim(xdg, &["clean", "caches", "--json"]);
+        assert!(
+            actionable_targets(&control).contains(&victim),
+            "PV eval/owned-install-cache: {}: control did not offer {}: {control}",
+            row.name,
+            row.victim
+        );
+    }
 }
 
 /// An owner command that fails withholds only its own cache: a broken `npm`

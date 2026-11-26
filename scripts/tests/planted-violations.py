@@ -215,22 +215,42 @@ CASES = (
         marker="PV eval/gradle-authority", target="eval_safety",
     ),
     Case(
-        name="caches/go-install-cache",
+        name="caches/install-cache-scan",
         relative_path="src/ops/caches.rs",
-        # A GOMODCACHE inside npm's or pnpm's cache, holding Go's layout, is
-        # offered and deleted as Go's: `_npx`, `dlx` or pnpm's cache whole.
-        before="            && !overlaps_install_cache(&cache, &ctx.home)\n",
-        after="",
-        tests=("eval_no_other_owner_claims_npm_or_pnpm_installs",),
-        marker="PV eval/go-install-cache", target="eval_safety",
+        # Without the scan's filter, a cache holding npm's or pnpm's cache
+        # folder is offered (apply still refuses it).
+        before="        findings.retain(|finding| {\n",
+        after="        findings.retain(|finding| true || {\n",
+        tests=("eval_no_cache_holds_an_install_cache",),
+        marker="PV eval/holds-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-apply",
+        relative_path="src/ops/caches.rs",
+        # Without apply's check, a finding whose target holds an install
+        # cache is authorized under every authority.
+        before="    if let Some(install) = installs.reached_by(target, finding.authority())? {\n",
+        after="    if let Some(install) = installs.reached_by(target, finding.authority())?.filter(|_| false) {\n",
+        tests=("ops::caches::tests::a_target_holding_an_install_cache_is_refused_at_apply",),
+        marker="PV caches/install-cache-apply",
     ),
     Case(
         name="caches/install-cache-holder",
         relative_path="src/ops/caches.rs",
-        # A GOMODCACHE holding npm's cache (`~/.cache`) is offered, `_npx`
-        # inside it.
-        before="                    || target.is_some_and(|target| {\n",
-        after="                    || false && target.is_some_and(|target| {\n",
+        # A cache holding pnpm's linked cache (Corepack's, pip's, Homebrew's)
+        # is offered, `dlx` inside it.
+        before="            if holds || inside {\n",
+        after="            if (holds && false) || inside {\n",
+        tests=("eval_no_cache_holds_an_install_cache",),
+        marker="PV eval/holds-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-inside",
+        relative_path="src/ops/caches.rs",
+        # A GOMODCACHE inside npm's or pnpm's cache, holding Go's layout, is
+        # offered and deleted as Go's: `_npx`, `dlx` or pnpm's cache whole.
+        before="            if holds || inside {\n",
+        after="            if holds || (inside && false) {\n",
         tests=("eval_no_other_owner_claims_npm_or_pnpm_installs",),
         marker="PV eval/go-install-cache", target="eval_safety",
     ),
@@ -239,8 +259,8 @@ CASES = (
         relative_path="src/ops/caches.rs",
         # Compared by spelling, npm's cache folder created as `~/.NPM` is
         # not `~/.npm`, so a GOMODCACHE in it escapes; identity folds it.
-        before="                    .any(|folder| identity(folder).is_ok_and(|id| id == cache_id))\n",
-        after="                    .any(|folder| folder == cache.as_path() && identity(folder).is_ok_and(|id| id == cache_id))\n",
+        before="                    .any(|folder| identity(folder).is_ok_and(|id| id == cache_id));\n",
+        after="                    .any(|folder| folder == cache.as_path() && identity(folder).is_ok_and(|id| id == cache_id));\n",
         tests=("eval_no_other_owner_claims_npm_or_pnpm_installs",),
         marker="PV eval/go-install-cache", target="eval_safety",
     ),
@@ -249,20 +269,40 @@ CASES = (
         relative_path="src/ops/caches.rs",
         # Walking the spelled `~/.npm` instead of its real folder, a Go module
         # cache holding npm's linked cache is offered whole.
-        before="                        real.ancestors()\n",
-        after="                        cache.ancestors()\n",
+        before="            let holds = real\n",
+        after="            let holds = cache\n",
         tests=("eval_a_linked_install_cache_keeps_its_holder",),
         marker="PV eval/install-cache-link", target="eval_safety",
     ),
     Case(
-        name="caches/gradle-install-cache",
+        name="caches/install-cache-reported",
         relative_path="src/ops/caches.rs",
-        # A GRADLE_USER_HOME inside npm's or pnpm's cache makes its `caches`
-        # folder Gradle's.
-        before="        path.starts_with(home) && path != home && !overlaps_install_cache(path, home)\n",
-        after="        path.starts_with(home) && path != home\n",
-        tests=("eval_no_other_owner_claims_npm_or_pnpm_installs",),
-        marker="PV eval/gradle-install-cache", target="eval_safety",
+        # Judging npm's default folders alone, a Go module cache holding the
+        # cache folder `npm config get cache` reports is offered.
+        before="        npm.extend(npm_reported);\n",
+        after="        npm.extend(npm_reported.filter(|_| false));\n",
+        tests=("eval_no_cache_holds_an_install_cache",),
+        marker="PV eval/holds-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-xdg",
+        relative_path="src/ops/caches.rs",
+        # Ignoring `XDG_CACHE_HOME`, a Go module cache holding pnpm's cache
+        # there is offered.
+        before="                .filter(|xdg| xdg.is_absolute())\n",
+        after="                .filter(|xdg| false && xdg.is_absolute())\n",
+        tests=("eval_no_cache_holds_an_install_cache",),
+        marker="PV eval/holds-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-owned",
+        relative_path="src/ops/caches.rs",
+        # Denying npm's store its place inside npm's own cache folder, the
+        # store is never offered.
+        before="            .map(|cache| (cache, authority == TargetAuthority::NpmCacheStore));\n",
+        after="            .map(|cache| (cache, false));\n",
+        tests=("eval_no_cache_holds_an_install_cache",),
+        marker="PV eval/owned-install-cache", target="eval_safety",
     ),
     Case(
         name="caches/gradle-layout",

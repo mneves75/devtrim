@@ -357,7 +357,9 @@ over-claim. The pnpm entry is offered only as its metadata folders, the ones
 `~/Library/pnpm/store` that installed `node_modules` trees hard-link into.
 npm's cache is offered only as `_cacache`, what `npm cache clean --force`
 removes; its `_npx` installs, which a running npx tool such as an editor's
-language server loads, stay. And editor *logs* and application data are not covered at all: VS Code
+language server loads, stay. No other cache is offered while it holds npm's
+or pnpm's cache folder, even linked there, or lies inside one, and neither is
+npm's store or pnpm's metadata while it holds the other's. And editor *logs* and application data are not covered at all: VS Code
 keeps its logs, `CachedData` and webview caches under `~/Library/Application
 Support/Code`, and JetBrains keeps logs under `~/Library/Logs` — both outside
 `~/Library/Caches`, both mixed in with real user state, and neither reachable

@@ -172,8 +172,14 @@ impl Op for Caches {
             Err(error) => unread.push(UnreadFolder::new(&pnpm_cache(&ctx.home), &error)),
         }
         // An owner command that fails withholds only its own cache, as `go`
-        // does below; the caches listed after it are still judged.
-        match owner_cache_path("npm", &["config", "get", "cache"], NPM_QUIET, ctx) {
+        // does below; the caches listed after it are still judged, against
+        // npm's default folders alone.
+        let npm_root = npm_reported_root(ctx);
+        let installs = InstallCaches::new(&ctx.home, npm_root.as_ref().ok().cloned().flatten());
+        match npm_root.and_then(|root| match root {
+            Some(root) => eligible_owner_root("npm", root, ctx),
+            None => Ok(None),
+        }) {
             Ok(Some(path)) => {
                 let store = path.join(NPM_STORE);
                 let size = measured(&store, &mut unread);
@@ -215,6 +221,29 @@ impl Op for Caches {
             Ok(None) => {}
             Err(error) => findings.push(not_judged("Go module cache", &error)),
         }
+        findings.retain(|finding| {
+            let Some(target) = finding.target() else {
+                return true;
+            };
+            match installs.reached_by(target, finding.authority()) {
+                Ok(None) => true,
+                Ok(Some(install)) => {
+                    ctx.diagnostic(
+                        "warn",
+                        format!(
+                            "leaving {} out: it holds or lies inside {}, where npm or pnpm keep installs a running tool loads",
+                            target.display(),
+                            install.display()
+                        ),
+                    );
+                    false
+                }
+                Err(error) => {
+                    unread.push(UnreadFolder::new(target, &error));
+                    false
+                }
+            }
+        });
         if !unread.is_empty() {
             findings.push(unread_folders_finding("caches", &unread));
         }
@@ -223,12 +252,15 @@ impl Op for Caches {
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
         let mut outcome = ApplyOutcome::new(self.name());
+        // Asked afresh, never taken from the preview; an `npm` that fails now
+        // leaves npm's default folders as the install caches judged.
+        let installs = InstallCaches::new(&ctx.home, npm_reported_root(ctx).unwrap_or(None));
         for finding in findings {
             if !matches!(finding.action, Action::Trash | Action::Shred) {
                 continue;
             }
             let result = (|| -> Result<()> {
-                match authorize_cache_finding(finding, ctx)? {
+                match authorize_cache_finding(finding, ctx, &installs)? {
                     CacheKind::Plain => {}
                     CacheKind::Gradle => {
                         // Probed again at each finding: a build can start while
@@ -539,7 +571,11 @@ enum CacheKind {
     GoModules,
 }
 
-fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
+fn authorize_cache_finding(
+    finding: &Finding,
+    ctx: &Ctx,
+    installs: &InstallCaches,
+) -> Result<CacheKind> {
     let home = &ctx.home;
     let target = finding
         .target()
@@ -572,12 +608,20 @@ fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
             is_brew_cache_entry(target, home)?.then_some(CacheKind::Plain)
         }
     };
-    kind.ok_or_else(|| {
+    let kind = kind.ok_or_else(|| {
         anyhow::anyhow!(
             "cache target is outside its authorized namespace: {}",
             target.display()
         )
-    })
+    })?;
+    if let Some(install) = installs.reached_by(target, finding.authority())? {
+        anyhow::bail!(
+            "refusing {}: it holds or lies inside {}, where npm or pnpm keep installs a running tool loads",
+            target.display(),
+            install.display()
+        );
+    }
+    Ok(kind)
 }
 
 /// A finding for a cache whose owner could not be asked: it offers nothing,
@@ -602,9 +646,7 @@ fn gradle_user_home(home: &Path) -> Result<Option<PathBuf>> {
         return Ok(None);
     }
     let resolved = resolved_owner_path("gradle", configured)?;
-    Ok(normalized_absolute(&resolved).filter(|path| {
-        path.starts_with(home) && path != home && !overlaps_install_cache(path, home)
-    }))
+    Ok(normalized_absolute(&resolved).filter(|path| path.starts_with(home) && path != home))
 }
 
 fn is_gradle_cache(target: &Path, home: &Path) -> Result<bool> {
@@ -690,7 +732,7 @@ fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
         Ok(None) => {
             ctx.diagnostic(
                 "warn",
-                "the Gradle user home (GRADLE_USER_HOME, or ~/.gradle and where it links) is not a folder inside the home folder, or overlaps npm's or pnpm's cache; skipping Gradle's caches",
+                "the Gradle user home (GRADLE_USER_HOME, or ~/.gradle and where it links) is not a folder inside the home folder; skipping Gradle's caches",
             );
             return Vec::new();
         }
@@ -778,17 +820,14 @@ fn go_module_cache(ctx: &Ctx, warn: bool) -> Result<Option<PathBuf>> {
         Ok(_) => {}
     }
     let corroborated = holds_go_download_cache(&path)?;
-    let inside_home = normalized_absolute(&path).is_some_and(|cache| {
-        cache.starts_with(&ctx.home)
-            && cache != ctx.home
-            && !overlaps_install_cache(&cache, &ctx.home)
-    });
+    let inside_home = normalized_absolute(&path)
+        .is_some_and(|cache| cache.starts_with(&ctx.home) && cache != ctx.home);
     if !(corroborated && inside_home) {
         if warn {
             ctx.diagnostic(
                 "warn",
                 format!(
-                    "`go` reports module cache {} outside the home folder, overlapping npm's or pnpm's cache, or without Go's `cache/download`; skipping",
+                    "`go` reports module cache {} outside the home folder or without Go's `cache/download`; skipping",
                     path.display()
                 ),
             );
@@ -854,40 +893,83 @@ fn is_brew_cache_entry(target: &Path, home: &Path) -> Result<bool> {
     Ok(!(metadata.is_dir() && has_git_marker(target)?))
 }
 
-/// npm's and pnpm's cache folders hold installs a running tool loads (Mole
-/// I-11), so another owner's answer (`GOMODCACHE`, `GRADLE_USER_HOME`) never
-/// makes a cache of a folder inside one or holding one; only their own
-/// authorities reach inside. Checked for the default folders, the only ones
-/// devtrim offers npm and pnpm from, by device and inode and through each
-/// one's real folder, so a case spelling or a cache linked elsewhere matches
-/// too; an unreadable folder counts as overlapping.
-fn overlaps_install_cache(path: &Path, home: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
+/// The folders where npm and pnpm keep installs a running tool loads (Mole
+/// I-11): npm's cache folder, which holds `_npx`, at both defaults and wherever
+/// `npm config get cache` reports it, even a root too unusual to offer from;
+/// and pnpm's cache, which holds `dlx`, at its macOS default and at
+/// `$XDG_CACHE_HOME/pnpm`, where pnpm moves it when that variable is set.
+/// pnpm's own `cache-dir` setting is not asked.
+struct InstallCaches {
+    npm: Vec<PathBuf>,
+    pnpm: Vec<PathBuf>,
+}
 
-    let identity =
-        |candidate: &Path| std::fs::metadata(candidate).map(|meta| (meta.dev(), meta.ino()));
-    let not_found = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
-    let target = match identity(path) {
-        Ok(target) => Some(target),
-        Err(error) if not_found(&error) => None,
-        Err(_) => return true,
-    };
-    [home.join(".npm"), home.join(".cache/npm"), pnpm_cache(home)]
-        .iter()
-        .any(|cache| match identity(cache) {
-            Err(error) => !not_found(&error),
-            Ok(cache_id) => {
-                let Ok(real) = std::fs::canonicalize(cache) else {
-                    return true;
-                };
-                path.ancestors()
-                    .any(|folder| identity(folder).is_ok_and(|id| id == cache_id))
-                    || target.is_some_and(|target| {
-                        real.ancestors()
-                            .any(|folder| identity(folder).is_ok_and(|id| id == target))
-                    })
+impl InstallCaches {
+    fn new(home: &Path, npm_reported: Option<PathBuf>) -> Self {
+        let mut npm = vec![home.join(".npm"), home.join(".cache/npm")];
+        npm.extend(npm_reported);
+        let mut pnpm = vec![pnpm_cache(home)];
+        pnpm.extend(
+            std::env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .filter(|xdg| xdg.is_absolute())
+                .map(|xdg| xdg.join("pnpm")),
+        );
+        Self { npm, pnpm }
+    }
+
+    /// The install cache `target` reaches, if any: one it holds, or one it lies
+    /// inside that its own authority does not own (npm's store sits in npm's
+    /// cache folder, pnpm's metadata in pnpm's). Every cache authority is
+    /// judged by it, at scan and at apply. Folders are compared by device and
+    /// inode and each install cache through its real folder, so a case
+    /// spelling or a cache linked into another owner's folder is caught; one
+    /// that cannot be read refuses `target` rather than passing it.
+    fn reached_by(&self, target: &Path, authority: TargetAuthority) -> Result<Option<&Path>> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let identity =
+            |candidate: &Path| std::fs::metadata(candidate).map(|meta| (meta.dev(), meta.ino()));
+        let not_found = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
+        let target_id = match identity(target) {
+            Ok(id) => id,
+            Err(error) if not_found(&error) => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot inspect {}", target.display()));
             }
-        })
+        };
+        let npm = self
+            .npm
+            .iter()
+            .map(|cache| (cache, authority == TargetAuthority::NpmCacheStore));
+        let pnpm = self
+            .pnpm
+            .iter()
+            .map(|cache| (cache, authority == TargetAuthority::PnpmMetadata));
+        for (cache, owned) in npm.chain(pnpm) {
+            let cache_id = match identity(cache) {
+                Ok(id) => id,
+                Err(error) if not_found(&error) => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("cannot inspect {}", cache.display()));
+                }
+            };
+            let real = std::fs::canonicalize(cache)
+                .with_context(|| format!("cannot resolve {}", cache.display()))?;
+            let holds = real
+                .ancestors()
+                .any(|folder| identity(folder).is_ok_and(|id| id == target_id));
+            let inside = !owned
+                && target
+                    .ancestors()
+                    .any(|folder| identity(folder).is_ok_and(|id| id == cache_id));
+            if holds || inside {
+                return Ok(Some(cache));
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// npm's store is exactly `<root>/_cacache`, `root` being the cache folder npm
@@ -949,6 +1031,14 @@ const NPM_QUIET: &[(&str, &str)] = &[
     ("npm_config_update_notifier", "false"),
 ];
 
+/// The cache folder npm reports, resolved but not yet judged: wherever it is,
+/// it holds npm's `_npx`.
+fn npm_reported_root(ctx: &Ctx) -> Result<Option<PathBuf>> {
+    command_path("npm", &["config", "get", "cache"], &ctx.home, NPM_QUIET)?
+        .map(|path| resolved_owner_path("npm", path))
+        .transpose()
+}
+
 fn owner_cache_path(
     program: &str,
     args: &[&str],
@@ -958,7 +1048,11 @@ fn owner_cache_path(
     let Some(path) = command_path(program, args, &ctx.home, envs)? else {
         return Ok(None);
     };
-    let path = resolved_owner_path(program, path)?;
+    eligible_owner_root(program, resolved_owner_path(program, path)?, ctx)
+}
+
+/// The reported root, when it lies in the owner's own cache namespace.
+fn eligible_owner_root(program: &str, path: PathBuf, ctx: &Ctx) -> Result<Option<PathBuf>> {
     if !is_eligible_owner_cache(program, &path, &ctx.home) {
         ctx.diagnostic(
             "warn",
@@ -1399,6 +1493,80 @@ mod tests {
         }
         assert!(home.join("Library/Caches/pnpm/dlx/1e5f/sentinel").exists());
         crate::ops::remove_test_path(home);
+    }
+
+    /// Mole I-11, at apply: whatever authority a finding claims, a target
+    /// holding npm's or pnpm's cache folder, linked into it from the default
+    /// spelling, is refused, and the same finding passes once the install
+    /// cache lives elsewhere.
+    #[test]
+    fn a_target_holding_an_install_cache_is_refused_at_apply() {
+        // (target, its authority, the install cache's default spelling, the
+        // folder inside the target it is linked to)
+        let rows = [
+            (
+                ".cache/node/corepack",
+                TargetAuthority::Standard,
+                "Library/Caches/pnpm",
+                ".cache/node/corepack/pnpm",
+            ),
+            (
+                "Library/Caches/pip",
+                TargetAuthority::Standard,
+                "Library/Caches/pnpm",
+                "Library/Caches/pip/pnpm",
+            ),
+            (
+                "Library/Caches/pnpm/v11/metadata",
+                TargetAuthority::PnpmMetadata,
+                ".npm",
+                "Library/Caches/pnpm/v11/metadata/npm",
+            ),
+            (
+                "Library/Caches/Homebrew",
+                TargetAuthority::BrewCache,
+                "Library/Caches/pnpm",
+                "Library/Caches/Homebrew/pnpm",
+            ),
+            (
+                "Library/Caches/Homebrew/downloads",
+                TargetAuthority::BrewCacheEntry,
+                ".npm",
+                "Library/Caches/Homebrew/downloads/npm",
+            ),
+        ];
+        for (index, (target, authority, install, linked)) in rows.into_iter().enumerate() {
+            let fixture = crate::ops::TestFixture::new(&format!("devtrim-install-cache-{index}"));
+            std::fs::create_dir_all(fixture.path()).unwrap();
+            let home = fixture.path().canonicalize().unwrap();
+            std::fs::create_dir_all(home.join(linked).join("dlx/1e5f")).unwrap();
+            std::fs::create_dir_all(home.join("elsewhere")).unwrap();
+            std::fs::create_dir_all(home.join(install).parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(home.join(linked), home.join(install)).unwrap();
+            let ctx = Ctx::for_test(home.clone());
+            let finding = Finding::new(
+                "cache",
+                Some(home.join(target)),
+                4,
+                "test",
+                9,
+                Action::Trash,
+            )
+            .with_authority(authority);
+            let installs = InstallCaches::new(&home, None);
+
+            let refused = authorize_cache_finding(&finding, &ctx, &installs);
+            assert!(
+                refused.is_err(),
+                "PV caches/install-cache-apply: {target} holding {install} was authorized"
+            );
+            std::fs::remove_file(home.join(install)).unwrap();
+            std::os::unix::fs::symlink(home.join("elsewhere"), home.join(install)).unwrap();
+            assert!(
+                authorize_cache_finding(&finding, &ctx, &installs).is_ok(),
+                "{target} was refused with no install cache inside it"
+            );
+        }
     }
 
     /// REVIEW: once a stop is asked, a later uv finding must leave its target

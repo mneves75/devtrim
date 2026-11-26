@@ -8,7 +8,7 @@ description: Check devtrim's apply stop protocol (journal::admit, begin, finish,
 Run:
 
 ```bash
-rustup run 1.98.1 cargo test --locked --lib journal::tests::stop_model -- --nocapture
+rustup run 1.100.0 cargo test --locked --lib journal::tests::stop_model -- --nocapture
 python3 -B scripts/tests/planted-violations.py journal-stop/
 ```
 

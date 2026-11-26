@@ -16,4 +16,6 @@ Branch `feat/mole-lessons` from `3b6bde9`. Mole clone (untrusted data) in the se
 - mneves-verify round 1 FAIL: Go/Gradle could claim npm/pnpm installs (fixed 981663b), audit credited ignored catchers (fixed 60db621), D-08 dash (in-flight, filled at closeout).
 - mneves-verify round 2 (Sonnet, host) FAIL on 48a05ff: linked install cache, compiled-out/orphan catchers, tagged in-flight version, pnpm wording; all fixed with controls (owner asked to fix until 100% satisfied).
 - Round-3 reverify FAIL on 2f40898 (verifier ran as Opus, so not independent by model): npm `_npx`/pnpm `dlx` still reachable through every other caches authority, npm's reported root and pnpm's XDG cacheDir. Same bug survived three fixes: stopped for the owner. Audit catcher collisions fixed with controls.
-- Next action: owner decision on the install-cache boundary; release blocked until then.
+- Owner (2026-11-26): "yes to all" — one choke point, Sonnet reverify that self-checks its model, ship 0.18.0.
+- Choke point done: `InstallCaches::reached_by` at scan and apply for every caches authority; 7-row table eval with controls, apply unit test, 9 planted mutants caught. Docs updated.
+- Next action: full gate, commit, merge PR #112, rebase, Sonnet reverify, release.
