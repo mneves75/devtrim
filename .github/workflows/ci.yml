@@ -242,6 +242,9 @@ jobs:
       - name: Tests
         run: cargo test --locked --all-targets --all-features
 
+      - name: Track B negative controls
+        run: python3 -B scripts/tests/prune-negative-controls.py
+
       - name: Real PTY TUI cancel flow
         run: |
           cargo build --locked
