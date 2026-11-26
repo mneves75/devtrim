@@ -1045,15 +1045,21 @@ done
 hooks_fixture=$(mktemp -d "${TMPDIR:-/tmp}/devtrim-hooks-policy.XXXXXX")
 (
   trap 'rm -rf "$hooks_fixture"' EXIT
+  export GIT_CONFIG_NOSYSTEM=1
+  export GIT_CONFIG_GLOBAL=/dev/null
+  unset GIT_DIR GIT_WORK_TREE
   git -C "$hooks_fixture" init -q -b main
   mkdir -p "$hooks_fixture/.githooks" "$hooks_fixture/scripts"
-  printf '#!/bin/sh\nexit 0\n' > "$hooks_fixture/.githooks/pre-commit"
+  cat > "$hooks_fixture/.githooks/pre-commit" <<EOF
+#!/bin/sh
+echo main >> "$hooks_fixture/MAIN_PRECOMMIT"
+EOF
   printf '#!/bin/sh\nexit 0\n' > "$hooks_fixture/.githooks/pre-push"
   chmod +x "$hooks_fixture/.githooks/pre-commit" "$hooks_fixture/.githooks/pre-push"
   cp "$install_hooks_script" "$hooks_fixture/scripts/install-hooks.sh"
   chmod +x "$hooks_fixture/scripts/install-hooks.sh"
   git -C "$hooks_fixture" add .
-  git -C "$hooks_fixture" -c user.name=test -c user.email=test@example.invalid commit -q -m init
+  git -C "$hooks_fixture" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false commit -q -m init
   (cd "$hooks_fixture" && sh scripts/install-hooks.sh)
   installed_path=$(git -C "$hooks_fixture" config --local --get core.hooksPath)
   expected_path="$(git -C "$hooks_fixture" rev-parse --path-format=absolute --git-common-dir)/hooks"
@@ -1064,13 +1070,21 @@ hooks_fixture=$(mktemp -d "${TMPDIR:-/tmp}/devtrim-hooks-policy.XXXXXX")
 #!/bin/sh
 echo ran > "$hooks_fixture/HOOK_RAN"
 EOF
-  chmod +x "$hooks_fixture/.githooks/post-checkout"
-  git -C "$hooks_fixture" add .githooks/post-checkout
-  git -C "$hooks_fixture" -c user.name=test -c user.email=test@example.invalid commit -q -m evil
+  cat > "$hooks_fixture/.githooks/pre-commit" <<EOF
+#!/bin/sh
+echo contrib > "$hooks_fixture/CONTRIB_PRECOMMIT"
+EOF
+  chmod +x "$hooks_fixture/.githooks/post-checkout" "$hooks_fixture/.githooks/pre-commit"
+  git -C "$hooks_fixture" add .githooks/post-checkout .githooks/pre-commit
+  git -C "$hooks_fixture" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false commit -q -m evil
   git -C "$hooks_fixture" checkout -q main
   git -C "$hooks_fixture" checkout -q contributor
   [[ ! -e "$hooks_fixture/HOOK_RAN" ]] ||
     fail "contributor .githooks/post-checkout executed after scripts/install-hooks.sh"
+  [[ ! -e "$hooks_fixture/CONTRIB_PRECOMMIT" ]] ||
+    fail "contributor .githooks/pre-commit replaced installed hook"
+  [[ -f "$hooks_fixture/MAIN_PRECOMMIT" ]] ||
+    fail "installed main pre-commit hook never executed"
 )
 
 echo "release-policy: all checks passed"

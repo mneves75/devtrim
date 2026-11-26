@@ -954,6 +954,10 @@ fn entry_changed_of(stat: &rustix::fs::Stat) -> Option<crate::journal::EntryChan
     })
 }
 
+fn is_apple_fs_name(name: &[u8]) -> bool {
+    name == b"apfs" || name == b"hfs"
+}
+
 #[cfg(target_os = "macos")]
 fn on_apple_fs(dir: &cap_std::fs::Dir) -> bool {
     rustix::fs::fstatfs(dir).is_ok_and(|statfs| {
@@ -963,7 +967,7 @@ fn on_apple_fs(dir: &cap_std::fs::Dir) -> bool {
             .take_while(|byte| **byte != 0)
             .map(|byte| *byte as u8)
             .collect::<Vec<_>>();
-        name == b"apfs" || name == b"hfs"
+        is_apple_fs_name(&name)
     })
 }
 
@@ -3369,5 +3373,32 @@ mod tests {
             error.to_string().contains("non-UTF-8"),
             "PV trash/non-utf8-refused: expected non-UTF-8 Trash refusal, got {error:#}"
         );
+
+        // Positive control: permanent (--shred) removal does not trigger the
+        // Trash-only non-UTF-8 refusal; it proceeds to descriptor-anchored checks.
+        let verified_permanent =
+            crate::safety::validate_path_for_deletion(&target_path, &home, &[]).unwrap();
+        let permanent_error = remove_path(verified_permanent, true, dummy_id).unwrap_err();
+        assert!(
+            !permanent_error.to_string().contains("non-UTF-8"),
+            "permanent removal must not be blocked by the Trash-only non-UTF-8 guard: {permanent_error:#}"
+        );
+
+        assert!(is_apple_fs_name(b"apfs"));
+        assert!(is_apple_fs_name(b"hfs"));
+        for foreign in [
+            b"nfs".as_slice(),
+            b"smbfs",
+            b"exfat",
+            b"msdos",
+            b"macfuse",
+            b"",
+        ] {
+            assert!(
+                !is_apple_fs_name(foreign),
+                "foreign filesystem {:?} must not qualify as Apple FS",
+                String::from_utf8_lossy(foreign)
+            );
+        }
     }
 }

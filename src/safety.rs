@@ -497,11 +497,16 @@ pub(crate) fn roots_note(roots: &[PathBuf], origin: RootsOrigin, home: &Path) ->
 fn verify_execution_identity(
     ruid: u32,
     euid: u32,
+    rgid: u32,
+    egid: u32,
     home_uid: u32,
     canonical_home: &Path,
 ) -> Result<()> {
     if ruid != euid {
         bail!("refusing to run with effective UID {euid} different from real UID {ruid}");
+    }
+    if rgid != egid {
+        bail!("refusing to run with effective GID {egid} different from real GID {rgid}");
     }
     if home_uid != euid {
         bail!(
@@ -522,13 +527,17 @@ fn dirs_home() -> Result<PathBuf> {
     let canonical = home
         .canonicalize()
         .with_context(|| format!("cannot resolve $HOME: {}", home.display()))?;
-    let home_uid = std::fs::metadata(&canonical)
-        .with_context(|| format!("cannot inspect $HOME: {}", canonical.display()))?
-        .uid();
+    let home_metadata = std::fs::metadata(&canonical)
+        .with_context(|| format!("cannot inspect $HOME: {}", canonical.display()))?;
+    if !home_metadata.is_dir() {
+        bail!("$HOME is not a directory: {}", canonical.display());
+    }
     verify_execution_identity(
         rustix::process::getuid().as_raw(),
         rustix::process::geteuid().as_raw(),
-        home_uid,
+        rustix::process::getgid().as_raw(),
+        rustix::process::getegid().as_raw(),
+        home_metadata.uid(),
         &canonical,
     )?;
     Ok(canonical)
@@ -567,7 +576,8 @@ fn load_config(path: &Path) -> Result<FileCfg> {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(FileCfg::default()),
         Err(error) => {
-            return Err(error).with_context(|| format!("cannot inspect config: {}", path.display()));
+            return Err(error)
+                .with_context(|| format!("cannot inspect config: {}", path.display()));
         }
     };
     if link_meta.uid() != euid {
@@ -577,19 +587,22 @@ fn load_config(path: &Path) -> Result<FileCfg> {
             path.display()
         );
     }
-    let fd = match rustix::fs::open(
+    let descriptor = match rustix::fs::open(
         path,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::NOCTTY
+            | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
     ) {
-        Ok(fd) => fd,
+        Ok(descriptor) => descriptor,
         Err(rustix::io::Errno::NOENT) => return Ok(FileCfg::default()),
         Err(error) => {
             return Err(std::io::Error::from(error))
                 .with_context(|| format!("cannot read config: {}", path.display()));
         }
     };
-    let stat = rustix::fs::fstat(&fd)
+    let stat = rustix::fs::fstat(&descriptor)
         .map_err(std::io::Error::from)
         .with_context(|| format!("cannot inspect config: {}", path.display()))?;
     if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
@@ -602,7 +615,7 @@ fn load_config(path: &Path) -> Result<FileCfg> {
             path.display()
         );
     }
-    let mut file = std::fs::File::from(fd);
+    let mut file = std::fs::File::from(descriptor);
     let mut bytes = Vec::new();
     file.by_ref()
         .take(CONFIG_MAX_BYTES + 1)
@@ -1039,13 +1052,20 @@ pub(crate) fn validate_config_protect_for_command(path: &Path, protect: &[PathBu
             resolved.display()
         );
     }
-    if let Ok(canonical_leaf) = resolved.canonicalize() {
-        let canonical_leaf = clean(&canonical_leaf);
-        if is_config_protected_abs(&canonical_leaf, protect) {
-            bail!(
-                "refusing configured protected resolved path: {}",
-                canonical_leaf.display()
-            );
+    match resolved.canonicalize() {
+        Ok(canonical_leaf) => {
+            let canonical_leaf = clean(&canonical_leaf);
+            if is_config_protected_abs(&canonical_leaf, protect) {
+                bail!(
+                    "refusing configured protected resolved path: {}",
+                    canonical_leaf.display()
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot verify target: {}", resolved.display()));
         }
     }
     Ok(())
@@ -4421,14 +4441,67 @@ mod tests {
     #[test]
     fn verify_execution_identity_rejects_euid_or_home_owner_mismatch() {
         let home = Path::new("/Users/alice");
-        assert!(verify_execution_identity(501, 501, 501, home).is_ok());
+        assert!(verify_execution_identity(501, 501, 20, 20, 501, home).is_ok());
         assert!(
-            verify_execution_identity(501, 0, 501, home).is_err(),
+            verify_execution_identity(501, 0, 20, 20, 501, home).is_err(),
             "PV safety/exec-context: setuid ruid != euid must be refused"
         );
         assert!(
-            verify_execution_identity(0, 0, 501, home).is_err(),
+            verify_execution_identity(501, 501, 20, 0, 501, home).is_err(),
+            "PV safety/exec-context: setgid rgid != egid must be refused"
+        );
+        assert!(
+            verify_execution_identity(0, 0, 0, 0, 501, home).is_err(),
             "PV safety/exec-context: sudo HOME owner != euid must be refused"
+        );
+    }
+
+    #[test]
+    fn load_config_rejects_non_regular_and_oversized_files() {
+        let fixture = crate::ops::TestFixture::new("devtrim-config-hardening");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+
+        // Positive control: owned regular file and owned symlink both load.
+        let valid = root.join("valid.toml");
+        std::fs::write(&valid, "active_days = 14\n").unwrap();
+        assert_eq!(load_config(&valid).unwrap().active_days, Some(14));
+        let link = root.join("link.toml");
+        std::os::unix::fs::symlink(&valid, &link).unwrap();
+        assert_eq!(load_config(&link).unwrap().active_days, Some(14));
+
+        // Directory is refused as non-regular.
+        let directory = root.join("dir.toml");
+        std::fs::create_dir(&directory).unwrap();
+        let Err(dir_error) = load_config(&directory) else {
+            panic!("directory config must be refused");
+        };
+        assert!(
+            dir_error.to_string().contains("non-regular"),
+            "directory config refused for unexpected reason: {dir_error:#}"
+        );
+
+        // Oversized file (> 1 MiB) is refused.
+        let oversized = root.join("huge.toml");
+        std::fs::write(&oversized, vec![b'#'; (CONFIG_MAX_BYTES + 16) as usize]).unwrap();
+        let Err(size_error) = load_config(&oversized) else {
+            panic!("oversized config must be refused");
+        };
+        assert!(
+            size_error.to_string().contains("exceeds"),
+            "oversized config refused for unexpected reason: {size_error:#}"
+        );
+
+        // FIFO must fail closed immediately without blocking (O_NONBLOCK).
+        let fifo = root.join("fifo.toml");
+        let status = std::process::Command::new("/usr/bin/mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo failed");
+        assert!(
+            load_config(&fifo).is_err(),
+            "FIFO config must fail closed without blocking"
         );
     }
 
@@ -4453,6 +4526,16 @@ mod tests {
             "PV safety/cmd-protect: protected device must fail closed"
         );
         assert!(validate_config_protect_for_command(&dev_b, &protect).is_ok());
+
+        // A symlink loop at the device path must fail closed (never swallow ELOOP).
+        let loop_a = devices.join("loop-a");
+        let loop_b = devices.join("loop-b");
+        std::os::unix::fs::symlink(&loop_b, &loop_a).unwrap();
+        std::os::unix::fs::symlink(&loop_a, &loop_b).unwrap();
+        assert!(
+            validate_config_protect_for_command(&loop_a, &protect).is_err(),
+            "symlink loop at simulator device must fail closed"
+        );
 
         // A changed symlink alias in protect refuses even an unrelated device.
         let target_one = home.join("alias-one");

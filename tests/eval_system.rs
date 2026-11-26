@@ -1438,7 +1438,7 @@ fn eval_simulators_respect_configured_protect() {
     assert_eq!(
         command_plan(&preview_doc),
         vec![argv(&["xcrun", "simctl", "delete", GONE_TWO])],
-        "PV eval/simulators-protect: protected simulator must be omitted from preview: {preview_doc}"
+        "protected simulator must be omitted from preview: {preview_doc}"
     );
 
     let apply = run(
@@ -1450,7 +1450,7 @@ fn eval_simulators_respect_configured_protect() {
     let executed = calls(&sandbox);
     assert!(
         !executed.contains(&argv(&["xcrun", "simctl", "delete", GONE_ONE])),
-        "PV eval/simulators-protect: protected simulator reached simctl delete: {executed:?}"
+        "protected simulator reached simctl delete: {executed:?}"
     );
     assert!(
         executed.contains(&argv(&["xcrun", "simctl", "delete", GONE_TWO])),

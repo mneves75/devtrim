@@ -2475,8 +2475,8 @@ CASES = (
     Case(
         name="simulators/protect-scan",
         relative_path="src/ops/simulators.rs",
-        before="        if crate::safety::is_config_protected(&path, &ctx.protect) {\n",
-        after="        if false {\n",
+        before="        let protected = crate::safety::is_config_protected(&path, &ctx.protect)\n",
+        after="        let protected = false && crate::safety::is_config_protected(&path, &ctx.protect)\n",
         tests=("ops::simulators::tests::configured_protect_skips_preview_and_refuses_apply_for_simulator_device",),
         marker="PV simulators/protect-scan",
     ),

@@ -1536,6 +1536,19 @@ mod tests {
             io::ErrorKind::PermissionDenied,
             "PV journal/foreign-owner: refused for another reason: {error}"
         );
+
+        // ParentMode::Create must refuse fchmod on a foreign-owned parent directory.
+        let Err(create_error) = JournalLocation::open(
+            &PathBuf::from("/private/tmp/devtrim-foreign-parent-owner-test.jsonl"),
+            ParentMode::Create,
+        ) else {
+            panic!("JournalLocation::open(Create) must refuse a foreign-owned parent directory");
+        };
+        assert_eq!(
+            create_error.kind(),
+            io::ErrorKind::PermissionDenied,
+            "foreign-owned parent refused for unexpected reason: {create_error}"
+        );
         crate::ops::remove_test_path(root);
     }
 

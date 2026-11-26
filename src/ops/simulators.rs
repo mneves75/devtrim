@@ -111,7 +111,11 @@ fn findings_from_simctl(output: &str, ctx: &Ctx) -> Result<Vec<Finding>> {
             continue;
         }
         let path = simulator_device_path(&device_root, &udid)?;
-        if crate::safety::is_config_protected(&path, &ctx.protect) {
+        let protected = crate::safety::is_config_protected(&path, &ctx.protect)
+            || path.canonicalize().ok().is_some_and(|canonical| {
+                crate::safety::is_config_protected(&canonical, &ctx.protect)
+            });
+        if protected {
             ctx.diagnostic(
                 "info",
                 format!("skipping protected simulator device: {}", path.display()),
