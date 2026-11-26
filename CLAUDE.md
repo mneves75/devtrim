@@ -1,6 +1,6 @@
 # AGENTS.md — devtrim
 
-Rust CLI (edition 2024, MSRV 1.88, pinned release toolchain 1.98.1). Sync code,
+Rust CLI (edition 2024, MSRV 1.88, pinned release toolchain 1.100.0). Sync code,
 no async runtime, minimal dependencies. Ratatui 0.30 uses Crossterm 0.29 with
 default features disabled; do not enable its optional layout cache without a new audit.
 
@@ -31,7 +31,7 @@ again for the MSRV or nightly; an exported release compiler would override them.
 
 Every version bump updates the local `devtrim` entry in both `Cargo.lock` and
 `fuzz/Cargo.lock`. Before tagging, with the release compiler selected, run
-`RUSTFLAGS='--cfg fuzzing' rustup run 1.98.1 cargo check --locked --manifest-path fuzz/Cargo.toml --bins`.
+`RUSTFLAGS='--cfg fuzzing' rustup run 1.100.0 cargo check --locked --manifest-path fuzz/Cargo.toml --bins`.
 This catches stale lock metadata early; it does not replace the five nightly fuzz runs.
 
 ## Agent execution
@@ -53,24 +53,24 @@ checked 2026-09-04. User instructions take precedence over skill procedures.
 - Rust-focused local checks: `bash scripts/verify.sh focused`; broader cached/offline checks: `bash scripts/verify.sh offline`. Neither replaces fresh audits, TruffleHog, fuzz, video, or review gates.
 - Live proof after each deploy and before the next tag: `scripts/verify-live.sh [<version>]` checks the served site (HTTP 200 over TLS, CSP meta, bytes equal to `origin/main`) and, given a version, the immutable release, its checksum and attestation; `python3 -B scripts/tests/verify-live-controls.py` proves it fails on drift.
 - Real terminal smoke: `python3 scripts/tests/tui.py target/debug/devtrim` (isolated HOME/PATH, explicit terminal dimensions, visible-content assertions).
-- Feature evals: `rustup run 1.98.1 cargo test --locked --test evals --test eval_system --test eval_reports --test eval_safety` (part of the test gate; every command against planted fixtures through the real binary).
+- Feature evals: `rustup run 1.100.0 cargo test --locked --test evals --test eval_system --test eval_reports --test eval_safety` (part of the test gate; every command against planted fixtures through the real binary).
 - Native Docker (opt-in, needs Apple `container`, the Docker CLI with buildx, and network): `scripts/tests/native-docker.sh target/debug/devtrim`.
 - Page load (opt-in, needs Chrome): serve the checkout with `python3 -m http.server 4173 --bind 127.0.0.1`, then `node scripts/perf/pageload.mjs "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" http://127.0.0.1:4173/ 30 50 index.html MANUAL.html`; `python3 scripts/tests/pageload-controls.py <chrome>` proves it can fail.
 - Paint-control validation (no browser): `python3 -B scripts/tests/pageload-controls-validation.py`; stale LCP candidates must fail even when their timestamps exceed the budget.
 - Read-only views: `python3 scripts/tests/read-only-views.py target/debug/devtrim` (analyze navigation/progress/help/resize; status sampling/resize/blocked-probe quit; terminal restoration).
 - Application device boundaries (also part of macOS integration tests): `python3 -B scripts/tests/app-storage-devices.py target/debug/devtrim` creates its own 16 MiB read-only images below ignored fixtures, verifies all three inventory walks, and detaches each exact test mount before cleanup; no existing volume is changed.
-- Format: `rustup run 1.98.1 cargo fmt --all -- --check`
-- Lint: `rustup run 1.98.1 cargo clippy --locked --all-targets --all-features -- -D warnings`
+- Format: `rustup run 1.100.0 cargo fmt --all -- --check`
+- Lint: `rustup run 1.100.0 cargo clippy --locked --all-targets --all-features -- -D warnings`
 - Structural lint: `ast-grep test --skip-snapshot-tests` then `ast-grep scan --config sgconfig.yml`
 - Local hooks: run `git config core.hooksPath .githooks` once per clone. `pre-commit` runs ast-grep and ShellCheck; `pre-push` runs those plus the AGENTS/CLAUDE comparison, fmt, Clippy and the CSP check on each commit being pushed (in place when it is the clean HEAD, otherwise in a throwaway worktree sharing `target/`; a branch deletion runs nothing), so a push does not wait 25 minutes for CI to find them.
 - CI (`.github/workflows/ci.yml`) runs two jobs side by side. `portable checks` runs on `ubuntu-24.04`: fmt, ast-grep, `cargo audit`, the site and video-audit controls, and the video gate. `verify` is the one macOS job: policy, ShellCheck, full-history secret scans, Clippy, tests, the PTY flows, planted violations, MSRV and the release build. `release-policy.sh` lets CI scope exactly the planted-violation and MSRV steps, found by the command they run, pins the scope step's script and the shape of every gate step (no other shell, directory, defaults or environment, and only simple commands), both workflows' triggers, the step running the policy itself (first line, keys and shell), every checkout's inputs and keys, and the keys of every job running a gate, refuses `continue-on-error` in both workflows, and requires the release jobs those gates run in, and every job `publish` needs, to carry no condition. ast-grep and cargo-audit come from checksum-verified release assets in CI and the release gate, never `cargo install`, which `release-policy.sh` refuses.
-- Test: `rustup run 1.98.1 cargo test --locked --all-targets --all-features`
+- Test: `rustup run 1.100.0 cargo test --locked --all-targets --all-features`
 - MSRV: `rustup run 1.88.0 cargo test --locked --all-targets --all-features`
 - Audit: `cargo audit`
-- Fuzz (local release gate, nightly): with the nightly toolchain's bin dir first on PATH (`PATH="$(dirname "$(rustup which cargo --toolchain nightly-2026-08-25)"):$HOME/.cargo/bin:$PATH"`, the nightly `release.yml` pins), run `cargo fuzz run <target> -- -max_total_time=60` for each target in `fuzz/fuzz_targets/`. A standalone stable cargo earlier on PATH breaks cargo-fuzz's inner build.
+- Fuzz (local release gate, nightly): with the nightly toolchain's bin dir first on PATH (`PATH="$(dirname "$(rustup which cargo --toolchain nightly)"):$HOME/.cargo/bin:$PATH"`; `release.yml` installs the current nightly the same way, unpinned, so each release fuzzes on a fresh compiler), run `cargo fuzz run <target> -- -max_total_time=60` for each target in `fuzz/fuzz_targets/`. A standalone stable cargo earlier on PATH breaks cargo-fuzz's inner build.
 - Video: `cd video && npm ci && python3 -B ../scripts/video-audit.py && npm run lint && npm run format:check && npm run build`. `video-audit.py` fails on any `npm audit` advisory, at any severity, that `video/audit-waivers.json` does not waive in date, on a report whose metadata counts entries it does not list, whose dependency paths reach no advisory, that files an advisory under another package or carries an unknown top-level key, or whose npm exit status contradicts it, and on an expired, malformed or stale waiver; `scripts/tests/video-audit-controls.py` proves each refusal. A waiver names a GHSA ID, a UTC expiry and a reason, and is the owner's decision.
 - Film checks (needs ffmpeg; part of `verify.sh offline`, not CI, which builds no film): `python3 -B scripts/tests/film-controls.py` plants one violation per check in `video/film/scripts/` (audio late, a cut off the beat, a missing click, a frame-0 kick over silence, yuv444p, a variable frame rate, a contact sheet's 0 s tile that is not frame 0, a misquote, a line never shown, a single-quoted unknown id, a stale page, terminal controls in page text reaching the terminal raw, DEL and C1 left raw in the extracted JSON, a faint pair, a seventh colour, a build that renders past a failing lint) and requires each to fail for its reason, beside the passing originals.
-- Build: `rustup run 1.98.1 cargo build --release --locked --target aarch64-apple-darwin`
+- Build: `rustup run 1.100.0 cargo build --release --locked --target aarch64-apple-darwin`
 - Site/manual: `python3 -m http.server 4173`, then open `/index.html` or `/MANUAL.html`
 
 ## Conventions

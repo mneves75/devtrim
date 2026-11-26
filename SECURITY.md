@@ -553,7 +553,7 @@ Non-negotiable boundaries:
   feature adds the safe `kill_process_group`, which `process::BoundedCommand`
   needs to kill a timed-out command's group. It adds no crate to the lockfile;
   std has no group kill and the crate forbids unsafe code.
-- Rust 1.98.1 is pinned in `rust-toolchain.toml` and hosted workflows; `rust-version` records the separate MSRV. This avoids the vtable-generation miscompilation documented in the [Rust 1.98.1 advisory](https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/).
+- Rust 1.100.0, the current stable release, is pinned in `rust-toolchain.toml` and hosted workflows; `rust-version` records the separate MSRV. An exact pin keeps local and hosted builds on one compiler; it moved past 1.98.0 for the vtable-generation miscompilation documented in the [Rust 1.98.1 advisory](https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/). Fuzzing alone uses the floating nightly (cargo-fuzz needs nightly's sanitizers), so a nightly regression can fail a release's fuzz job but never reaches the shipped binary, which the pinned stable compiler builds.
 - GitHub Actions are pinned to immutable commit SHAs.
 - Dependabot checks the root and fuzz Cargo graphs, the demo video's npm graph,
   and Actions weekly, with a seven-day cooldown before a new release is proposed.

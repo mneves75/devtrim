@@ -14,8 +14,8 @@ checks() {
     echo "pre-push: AGENTS.md and CLAUDE.md differ" >&2
     return 1
   fi
-  rustup run 1.98.1 cargo fmt --all -- --check &&
-    rustup run 1.98.1 cargo clippy --locked --all-targets --all-features -- -D warnings &&
+  rustup run 1.100.0 cargo fmt --all -- --check &&
+    rustup run 1.100.0 cargo clippy --locked --all-targets --all-features -- -D warnings &&
     ast-grep test --skip-snapshot-tests &&
     ast-grep scan --config sgconfig.yml &&
     scripts/tests/shellcheck-tracked.sh &&

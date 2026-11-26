@@ -27,8 +27,8 @@ jobs:
 
       - name: Install pinned Rust
         run: |
-          rustup toolchain install 1.98.1 --profile minimal --component rustfmt
-          rustup default 1.98.1
+          rustup toolchain install 1.100.0 --profile minimal --component rustfmt
+          rustup default 1.100.0
 
       - name: Install pinned Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -147,8 +147,8 @@ jobs:
 
       - name: Install pinned Rust
         run: |
-          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
-          rustup default 1.98.1
+          rustup toolchain install 1.100.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.100.0
           rustup target add aarch64-apple-darwin
 
       - name: Install checksum-verified ShellCheck

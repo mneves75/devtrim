@@ -182,10 +182,10 @@ for workflow in "$release_workflow" "$ci_workflow"; do
   require_fixed "$workflow" 'sh -n "$script"'
   require_fixed "$workflow" 'python3 scripts/tests/tui.py target/debug/devtrim'
   require_fixed "$workflow" 'python3 scripts/tests/read-only-views.py target/debug/devtrim'
-  require_fixed "$workflow" 'rustup toolchain install 1.98.1 --profile minimal'
-  require_fixed "$workflow" 'rustup default 1.98.1'
+  require_fixed "$workflow" 'rustup toolchain install 1.100.0 --profile minimal'
+  require_fixed "$workflow" 'rustup default 1.100.0'
 done
-require_fixed "$repo_root/rust-toolchain.toml" 'channel = "1.98.1"'
+require_fixed "$repo_root/rust-toolchain.toml" 'channel = "1.100.0"'
 require_fixed "$release_workflow" 'npm ci --strict-allow-scripts'
 require_fixed "$release_workflow" 'python3 -B ../scripts/video-audit.py'
 require_fixed "$release_workflow" 'python3 -B scripts/tests/video-audit-controls.py'
