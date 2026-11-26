@@ -1473,7 +1473,7 @@ mod tests {
             (
                 "Library/Caches/pnpm",
                 TargetAuthority::Standard,
-                "PV caches/pnpm-whole",
+                "the whole pnpm cache",
             ),
         ] {
             let finding = Finding::new(
@@ -1492,6 +1492,13 @@ mod tests {
             );
         }
         assert!(home.join("Library/Caches/pnpm/dlx/1e5f/sentinel").exists());
+        // The install-cache rule refuses the folder above on its own, so the
+        // carve-out's own shape is asserted directly: a scan never considers
+        // pnpm's cache as one built-in root.
+        assert!(
+            !is_builtin_cache_root(&home.join("Library/Caches/pnpm"), &home),
+            "PV caches/pnpm-whole: pnpm's cache is a built-in root"
+        );
         crate::ops::remove_test_path(home);
     }
 
