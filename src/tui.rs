@@ -4071,8 +4071,11 @@ mod tests {
                 app.handle_key(key(KeyCode::Char('s')));
                 assert!(app.shred);
             }
-            let cleanup_effect = if shred { "PERMANENT" } else { "to Trash" };
-            let expected = [(3, cleanup_effect), (10, cleanup_effect), (0, "read-only")];
+            let expected = if shred {
+                [(9, "PERMANENT"), (10, "PERMANENT"), (0, "read-only")]
+            } else {
+                [(3, "to Trash"), (10, "to Trash"), (0, "read-only")]
+            };
             for width in [usize::from(MIN_WIDTH) - 2, 78, 118] {
                 for (row, (danger, effect)) in expected.into_iter().enumerate() {
                     let text = row_text(&app, row, width);
@@ -4150,11 +4153,11 @@ mod tests {
         assert!(!rows.concat().contains("DATA-LOSS WARNING"), "{rows:#?}");
         assert!(!rows.concat().contains("cannot be undone"), "{rows:#?}");
 
-        let mut permanent = cleanup(vec![trash("first", 3 << 20, 3)]);
+        let mut permanent = cleanup(vec![trash("first", 2 << 30, 3)]);
         permanent.handle_key(key(KeyCode::Char('s')));
         permanent.begin_confirmation();
         let rows = screen_rows(&permanent, MIN_WIDTH, MIN_HEIGHT);
-        let effect = row_of(&rows, "Permanently deletes 1 item (3 MB).");
+        let effect = row_of(&rows, "Permanently deletes 1 item (2.0 GB).");
         let undo = row_of(&rows, "PERMANENT: this cannot be undone.");
         let notice = row_of(&rows, "Applying this plan can delete data.");
         assert!(effect < undo && undo < notice, "{rows:#?}");
@@ -4545,7 +4548,10 @@ mod tests {
                             .starts_with(&format!("{}  {}", item.key, item.label)),
                         "{width}x{height}: {row:?}"
                     );
-                    assert!(row.ends_with(word), "{width}x{height}: {row:?}");
+                    assert!(
+                        row.ends_with(word),
+                        "tui/home-row-effect: expected {word} at {width}x{height}: {row:?}"
+                    );
                 }
                 assert!(
                     !rows.concat().contains('│'),
@@ -5448,7 +5454,7 @@ mod tests {
         assert!(output.contains("1 left out"), "{output}");
         assert!(
             output.contains("Moves 3 items (3.0 GB) to the Trash."),
-            "{output}"
+            "the confirmation must report the selected total: {output}"
         );
     }
 

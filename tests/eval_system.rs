@@ -2679,7 +2679,11 @@ fn eval_toolchains_list_every_finding_past_an_unreadable_toolchain() {
         targets,
         "eval/toolchains-unreadable: one unreadable toolchain hid the others"
     );
-    assert_eq!(document["errors"].as_array().unwrap().len(), 1, "{document}");
+    assert_eq!(
+        document["errors"].as_array().unwrap().len(),
+        1,
+        "eval/toolchains-unreadable: expected one error: {document}"
+    );
     assert!(
         error_text(&document).contains("swift-5.6-RELEASE.xctoolchain"),
         "eval/toolchains-unreadable: the unreadable toolchain must be named: {document}"
@@ -2704,7 +2708,11 @@ fn eval_simulators_list_every_device_past_an_unreadable_one() {
         vec![argv(&["xcrun", "simctl", "delete", GONE_ONE])],
         "eval/simulators-unreadable: one unreadable device hid the others"
     );
-    assert_eq!(document["errors"].as_array().unwrap().len(), 1, "{document}");
+    assert_eq!(
+        document["errors"].as_array().unwrap().len(),
+        1,
+        "eval/simulators-unreadable: expected one error: {document}"
+    );
     assert!(
         error_text(&document).contains(GONE_TWO),
         "eval/simulators-unreadable: the unreadable device must be named: {document}"
@@ -2806,9 +2814,15 @@ fn eval_leftovers_report_every_folder_past_an_unreadable_one() {
         vec![evidence],
         "eval/leftovers-unreadable: an unreadable folder hid the evidence beside it"
     );
-    assert_eq!(document["errors"].as_array().unwrap().len(), 1, "{document}");
     assert_eq!(
-        error_text(&document).matches(sealed.to_str().unwrap()).count(),
+        document["errors"].as_array().unwrap().len(),
+        1,
+        "{document}"
+    );
+    assert_eq!(
+        error_text(&document)
+            .matches(sealed.to_str().unwrap())
+            .count(),
         1,
         "eval/leftovers-unreadable: the unreadable folder must be named exactly once: {document}"
     );
