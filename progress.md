@@ -23,3 +23,6 @@ Branch `feat/mole-lessons` from `3b6bde9`. Mole clone (untrusted data) in the se
 - PR #112 (prune-tests) CI was cancelled by the 30-minute verify limit; raised to 50 (9f85531), rerunning.
 - Owner tagged v0.17.2-beta1/beta2 on main 6ba0b44 from another checkout; beta1 hit the runner's `hdiutil create` "Resource busy" flake; left untouched.
 - Security audit (standard, budget 40): recon 4/4, 18 units, 16 hunters; wave 1 hunters h01–h04 running.
+- `verify.sh offline` caught `caches/pnpm-whole` surviving: the install-cache rule masks the carve-out at apply; the tagged assertion now checks `is_builtin_cache_root` (0814a20). The manual edit left `video/film/facts.json` stale; regenerated (7765c43), film-controls 0 failures.
+- PR #112 green (verify 24 min under the 50-minute limit) and squash-merged as eb3d175; feat/mole-lessons rebases onto it after the audit hunters stop reading the tree.
+- Audit wave 1: h01–h08 ingested (ledger PASS). Candidates: Git discovery escaping an invalid `.git` marker (h01), Trash re-encoding a non-UTF-8 path (h02), configured `protect` ignored by `clean simulators` (h08). h09–h12 running.
