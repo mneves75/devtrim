@@ -123,11 +123,12 @@
     {
       "id": "install-cache-choke-point",
       "what": "owner-approved single rule: no caches target under any authority holds npm's or pnpm's cache folder or lies inside one its authority does not own (InstallCaches::reached_by, scan retain + authorize_cache_finding); defaults, npm's reported root, $XDG_CACHE_HOME/pnpm, linked caches, by identity",
-      "result": "pending-gate",
+      "result": "pass",
       "evidence": [
         "eval_no_cache_holds_an_install_cache: 7 verifier rows (corepack, npm store, pnpm metadata, homebrew, pip, xdg, npm-reported), each with a control offering the victim once the install cache moves",
         "unit a_target_holding_an_install_cache_is_refused_at_apply: 5 authorities with relink control",
-        "planted caches/install-cache-{scan,apply,holder,inside,identity,link,reported,xdg,owned}: 9 CAUGHT (planted-violations.py caches/install-cache exit 0)"
+        "planted caches/install-cache-{scan,apply,holder,inside,identity,link,reported,xdg,owned}: 9 CAUGHT (planted-violations.py caches/install-cache exit 0)",
+        "independent reverify on a6e933d by claude-sonnet-5-5 (Explore, self-reported model): PASS; gates green (eval_safety install_cache 2, eval_no_other_owner 1, lib apply unit 1, planted caches/install-cache 9/9 CAUGHT, audit-incidents 8, controls 18, AGENTS==CLAUDE); 14+ fixture-HOME probes across Standard, Library carve-out, NpmCacheStore, BrewCache, BrewCacheEntry, Gradle, Go, npm-reported root, XDG, case variants: no _npx/dlx offered or removed"
       ]
     }
   ]

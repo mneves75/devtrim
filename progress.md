@@ -19,3 +19,7 @@ Branch `feat/mole-lessons` from `3b6bde9`. Mole clone (untrusted data) in the se
 - Owner (2026-11-26): "yes to all" — one choke point, Sonnet reverify that self-checks its model, ship 0.18.0.
 - Choke point done: `InstallCaches::reached_by` at scan and apply for every caches authority; 7-row table eval with controls, apply unit test, 9 planted mutants caught. Docs updated.
 - Next action: full gate, commit, merge PR #112, rebase, Sonnet reverify, release.
+- Sonnet 5.5 reverify of a6e933d PASS: no caches authority offers `_npx`, `dlx` or an install cache whole (14+ fixture probes, 9/9 planted).
+- PR #112 (prune-tests) CI was cancelled by the 30-minute verify limit; raised to 50 (9f85531), rerunning.
+- Owner tagged v0.17.2-beta1/beta2 on main 6ba0b44 from another checkout; beta1 hit the runner's `hdiutil create` "Resource busy" flake; left untouched.
+- Security audit (standard, budget 40): recon 4/4, 18 units, 16 hunters; wave 1 hunters h01–h04 running.
