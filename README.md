@@ -8,7 +8,7 @@ Swift toolchains.
 
 **[Website](https://mneves75.github.io/devtrim/)** · **[Manual](https://mneves75.github.io/devtrim/MANUAL.html)** · **[llms.txt](https://mneves75.github.io/devtrim/llms.txt)** · **[Releases](https://github.com/mneves75/devtrim/releases)**
 
-This source tree and its packaged documentation describe devtrim v0.17.1.
+This source tree and its packaged documentation describe devtrim v0.17.2.
 
 ## Install
 
@@ -807,7 +807,7 @@ devtrim refuses to invent an estimate when traversal or metadata is incomplete.
 
 ## Build and verify
 
-Use the pinned Rust 1.98.1 toolchain for builds; a standalone Cargo installed
+Use the pinned Rust 1.100.0 toolchain for builds; a standalone Cargo installed
 before rustup on PATH can otherwise bypass `rust-toolchain.toml`. MSRV remains
 1.88.0. Install the toolchains and gate tools once, then use the local helper:
 
@@ -882,15 +882,15 @@ checks that the harness accepts equivalent work and rejects invalid evidence.
 The individual delivery gates remain available below:
 
 ```bash
-rustup run 1.98.1 cargo fmt --all -- --check
+rustup run 1.100.0 cargo fmt --all -- --check
 ast-grep test --skip-snapshot-tests
 ast-grep scan --config sgconfig.yml
-rustup run 1.98.1 cargo clippy --locked --all-targets --all-features -- -D warnings
-rustup run 1.98.1 cargo test --locked --all-targets --all-features
+rustup run 1.100.0 cargo clippy --locked --all-targets --all-features -- -D warnings
+rustup run 1.100.0 cargo test --locked --all-targets --all-features
 rustup run 1.88.0 cargo test --locked --all-targets --all-features
 cargo audit
 cargo audit --file fuzz/Cargo.lock
-rustup run 1.98.1 cargo build --release --locked --target aarch64-apple-darwin
+rustup run 1.100.0 cargo build --release --locked --target aarch64-apple-darwin
 (cd video && npm ci --strict-allow-scripts && python3 -B ../scripts/video-audit.py && npm run lint && npm run format:check && npm run build)
 bash scripts/tests/release-policy.sh
 (for script in scripts/verify.sh scripts/release.sh scripts/update-homebrew.sh scripts/tests/release-policy.sh scripts/tests/update-homebrew-formula.sh scripts/perf/ab.sh scripts/perf/corpus.sh; do
@@ -907,7 +907,7 @@ gitleaks git --redact --no-banner .
 trufflehog git "file://$(pwd)" --results=verified,unknown --fail --fail-on-scan-errors --no-update --no-color
 ```
 
-Run each target under `fuzz/fuzz_targets/` for 60 seconds with the configured
+Run each target under `fuzz/fuzz_targets/` for 60 seconds with the current
 nightly compiler before release; the exact PATH setup is in `AGENTS.md`.
 Keep output and exit status for each gate. A push request authorizes source
 delivery; publishing a release and promoting it to production are separate

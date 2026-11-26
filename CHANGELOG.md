@@ -2,7 +2,17 @@
 
 All notable changes to devtrim. Format follows Keep a Changelog; versioning is semver.
 
-## [Unreleased]
+## [0.17.2] - 2026-11-26
+
+### Changed
+- Build and release with Rust 1.100.0, the current stable release, in place
+  of 1.98.1: `rust-toolchain.toml`, both hosted workflows, the pre-push hook,
+  the planted-violation harness and the release policy move together. MSRV
+  stays 1.88.0. No source change.
+- The release fuzz job installs the current nightly instead of the dated
+  `nightly-2026-08-25`, so each release fuzzes on a fresh compiler. Only
+  fuzzing uses nightly; the shipped binary is still built by the pinned
+  stable compiler.
 
 ## [0.17.1] - 2026-11-23
 

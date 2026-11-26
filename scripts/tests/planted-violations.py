@@ -44,7 +44,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-TOOLCHAIN = "1.98.1"
+TOOLCHAIN = "1.100.0"
 # Every mutant recompiles the devtrim crate; a feature-eval mutant also relinks
 # the binary and runs it against real fixtures.
 TOTAL_DEADLINE_SECONDS = 3600

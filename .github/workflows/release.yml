@@ -129,8 +129,8 @@ jobs:
 
       - name: Install pinned Rust toolchains
         run: |
-          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
-          rustup default 1.98.1
+          rustup toolchain install 1.100.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.100.0
           rustup toolchain install 1.88.0 --profile minimal
 
       - name: Install pinned Node.js
@@ -297,18 +297,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install pinned fuzz toolchains
+      - name: Install fuzz toolchains
         run: |
-          rustup toolchain install 1.98.1 --profile minimal
-          rustup default 1.98.1
-          rustup toolchain install nightly-2026-08-25 --profile minimal --component rust-src
+          rustup toolchain install 1.100.0 --profile minimal
+          rustup default 1.100.0
+          rustup toolchain install nightly --profile minimal --component rust-src
           cargo install cargo-fuzz --locked --version 0.13.2
 
       - name: Fuzz all five release targets for 60 seconds each
         shell: bash
         run: |
           set -euo pipefail
-          nightly_bin=$(dirname "$(rustup which cargo --toolchain nightly-2026-08-25)")
+          nightly_bin=$(dirname "$(rustup which cargo --toolchain nightly)")
           fuzz_path="${nightly_bin}:${HOME}/.cargo/bin:${PATH}"
           for target in validate_path clean_path docker_size probe_parsers config_parse; do
             echo "==> fuzzing $target for 60 seconds"
@@ -364,8 +364,8 @@ jobs:
       - name: Install pinned Rust
         if: needs.validate.outputs.is_beta == 'true' && needs.validate.outputs.release_exists == 'false'
         run: |
-          rustup toolchain install 1.98.1 --profile minimal
-          rustup default 1.98.1
+          rustup toolchain install 1.100.0 --profile minimal
+          rustup default 1.100.0
           rustup target add aarch64-apple-darwin
 
       - name: Build beta artifact
