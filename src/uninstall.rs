@@ -478,8 +478,10 @@ mod tests {
         symlink(&outside, &linked_app).unwrap();
 
         // Exact real bundle path is accepted.
-        assert!(is_approved_app_bundle(&real_app, &home).unwrap());
-        assert!(BundlePlist::for_app(&real_app, &home).is_ok());
+        assert_eq!(
+            resolve_app(real_app.to_str().unwrap(), &home).unwrap(),
+            real_app
+        );
 
         // Symlinked bundle and any trailing `/` or `/.` or `//` or `/./` spelling
         // must be rejected for both symlinked and real bundles.
@@ -494,16 +496,8 @@ mod tests {
         ];
         for raw in rejected {
             assert!(
-                !is_approved_app_bundle(Path::new(&raw), &home).unwrap(),
-                "must reject {raw}"
-            );
-            assert!(
                 resolve_app(&raw, &home).is_err(),
                 "resolve_app must reject {raw}"
-            );
-            assert!(
-                BundlePlist::for_app(Path::new(&raw), &home).is_err(),
-                "BundlePlist::for_app must reject {raw}"
             );
         }
         crate::ops::remove_test_path(home);
@@ -519,10 +513,8 @@ mod tests {
         symlink(&outside_apps, home.join("Applications")).unwrap();
 
         let via_link = home.join("Applications/OutsideApp.app");
-        assert!(!is_approved_app_bundle(&via_link, &home).unwrap());
         assert!(resolve_app(via_link.to_str().unwrap(), &home).is_err());
         assert!(resolve_app("OutsideApp", &home).is_err());
-        assert!(BundlePlist::for_app(&via_link, &home).is_err());
         crate::ops::remove_test_path(home);
     }
 

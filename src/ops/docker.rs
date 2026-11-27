@@ -898,6 +898,7 @@ fn validate_docker_plugin_dir(candidate: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
 struct ValidatedDockerConfig {
     source_config: PathBuf,
     plugin_dirs: Vec<String>,
@@ -1018,6 +1019,17 @@ fn validated_docker_state_subdir(source_config: &Path, name: &str) -> Result<Opt
             let canonical = path
                 .canonicalize()
                 .with_context(|| format!("cannot resolve Docker state path {}", path.display()))?;
+            if canonical.as_os_str().as_encoded_bytes().contains(&b'\n') {
+                anyhow::bail!(
+                    "refusing Docker state path with newline in resolved path: {}",
+                    canonical.display()
+                );
+            }
+            super::project::refuse_path_acl_grants(
+                [canonical.as_path()],
+                &canonical,
+                "Docker state path",
+            )?;
             Ok(Some(canonical))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -1262,6 +1274,12 @@ fn isolated_docker_scan_dir_from(
             );
         }
     }
+    let scan_config_path = scan_dir.join("config.json");
+    super::project::refuse_path_acl_grants(
+        [scan_dir.as_path(), scan_config_path.as_path()],
+        &scan_dir,
+        "isolated Docker scan directory",
+    )?;
     Ok(scan_dir)
 }
 
@@ -1380,6 +1398,22 @@ fn allocate_private_docker_config(
     let canonical_state_dir = state_dir
         .canonicalize()
         .with_context(|| format!("cannot resolve state directory {}", state_dir.display()))?;
+    if canonical_state_dir
+        .as_os_str()
+        .as_encoded_bytes()
+        .contains(&b'\n')
+    {
+        anyhow::bail!(
+            "refusing Docker state directory {}: its path holds a newline",
+            canonical_state_dir.display()
+        );
+    }
+    validate_trusted_ancestors(&canonical_state_dir, true, "Docker private state directory")?;
+    super::project::refuse_path_acl_grants(
+        canonical_state_dir.ancestors(),
+        &canonical_state_dir,
+        "Docker private state directory",
+    )?;
     let pin_base = open_private_dir_child(&state_file, "buildx-pin", current_uid)?;
     // Allocate a fresh per-attempt subdirectory (`O_EXCL` via `mkdirat`) so
     // concurrent applies never share or overwrite each other's isolated config,
@@ -1436,6 +1470,19 @@ fn allocate_private_docker_config(
         "cliPluginsExtraDirs": plugin_dirs,
     });
     write_private_json_file(&pin_root, "config.json", &config_payload, current_uid)?;
+    let pin_base_path = canonical_state_dir.join("buildx-pin");
+    let buildx_path = guard.path().join("buildx");
+    let config_path = guard.path().join("config.json");
+    super::project::refuse_path_acl_grants(
+        [
+            pin_base_path.as_path(),
+            guard.path(),
+            buildx_path.as_path(),
+            config_path.as_path(),
+        ],
+        guard.path(),
+        "private Docker config directory",
+    )?;
     Ok(PrivateDockerConfigAttempt {
         guard,
         buildx_dir,
@@ -2226,9 +2273,7 @@ mod tests {
         let target_file = home.join("external.json");
         std::fs::write(&target_file, "{}").unwrap();
         std::os::unix::fs::symlink(&target_file, symlink_config.join("config.json")).unwrap();
-        assert!(
-            resolve_docker_cli_plugin_dirs_from(Some(symlink_config.as_os_str()), home).is_err()
-        );
+        assert!(validate_docker_config_from(Some(symlink_config.as_os_str()), home).is_err());
 
         // FIFO config.json fails closed without blocking (`O_NONBLOCK` + regular-file check).
         let fifo_config = home.join("fifo-config");
@@ -2239,7 +2284,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "mkfifo failed");
-        let error = resolve_docker_cli_plugin_dirs_from(Some(fifo_config.as_os_str()), home)
+        let error = validate_docker_config_from(Some(fifo_config.as_os_str()), home)
             .expect_err("FIFO config.json must fail closed");
         assert!(
             format!("{error:#}").contains("non-regular Docker config"),
@@ -2250,13 +2295,9 @@ mod tests {
         let bad_json_config = home.join("bad-json-config");
         std::fs::create_dir_all(&bad_json_config).unwrap();
         std::fs::write(bad_json_config.join("config.json"), "{not-json").unwrap();
-        assert!(
-            resolve_docker_cli_plugin_dirs_from(Some(bad_json_config.as_os_str()), home).is_err()
-        );
+        assert!(validate_docker_config_from(Some(bad_json_config.as_os_str()), home).is_err());
         std::fs::write(bad_json_config.join("config.json"), "[]").unwrap();
-        assert!(
-            resolve_docker_cli_plugin_dirs_from(Some(bad_json_config.as_os_str()), home).is_err()
-        );
+        assert!(validate_docker_config_from(Some(bad_json_config.as_os_str()), home).is_err());
     }
 
     #[test]
@@ -2293,7 +2334,7 @@ mod tests {
             )
             .unwrap();
             assert!(
-                resolve_docker_cli_plugin_dirs_from(Some(source_config.as_os_str()), home).is_err(),
+                validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
                 "must refuse unsafe cliPluginsExtraDirs entry: {bad_entry}"
             );
         }
@@ -2310,8 +2351,9 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let plugin_dirs =
-            resolve_docker_cli_plugin_dirs_from(Some(source_config.as_os_str()), home).unwrap();
+        let plugin_dirs = validate_docker_config_from(Some(source_config.as_os_str()), home)
+            .unwrap()
+            .plugin_dirs;
         assert_eq!(
             plugin_dirs,
             vec![
@@ -2337,7 +2379,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            resolve_docker_cli_plugin_dirs_from(Some(source_config.as_os_str()), home).is_err(),
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
             "plugin dir under writable ancestor must fail closed"
         );
         std::fs::set_permissions(&writable_parent, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -2350,7 +2392,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            resolve_docker_cli_plugin_dirs_from(Some(source_config.as_os_str()), home).is_err(),
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
             "group-writable config.json must fail closed"
         );
         std::fs::set_permissions(
@@ -2362,7 +2404,7 @@ mod tests {
         // Group/world-writable DOCKER_CONFIG directory fails closed.
         std::fs::set_permissions(&source_config, std::fs::Permissions::from_mode(0o775)).unwrap();
         assert!(
-            resolve_docker_cli_plugin_dirs_from(Some(source_config.as_os_str()), home).is_err(),
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
             "group-writable DOCKER_CONFIG dir must fail closed"
         );
         std::fs::set_permissions(&source_config, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -2411,8 +2453,8 @@ mod tests {
 
         let plugin_dirs = vec!["/opt/homebrew/lib/docker/cli-plugins".to_string()];
         let isolated_path = {
-            let guard = write_isolated_builder_config(&ctx, &plugin_dirs).unwrap();
-            let path = guard.path().to_path_buf();
+            let attempt = allocate_private_docker_config(&ctx, &plugin_dirs).unwrap();
+            let path = attempt.guard.path().to_path_buf();
             assert!(path.join("config.json").is_file());
             assert!(path.join("buildx").is_dir());
             path
