@@ -84,7 +84,8 @@ pub(crate) fn run_command_authority(
     // the `ApplyStopped` nothing-written invariant and fail-closed FIFO handling.
     let docker_plugin_dirs = matches!(
         authority,
-        crate::report::CommandAuthority::DockerBuildxPrune { .. }
+        crate::report::CommandAuthority::DockerImagePrune { .. }
+            | crate::report::CommandAuthority::DockerBuildxPrune { .. }
             | crate::report::CommandAuthority::DockerBuilderPrune { .. }
     )
     .then(|| crate::ops::docker::resolve_docker_cli_plugin_dirs(&ctx.home))
@@ -118,7 +119,8 @@ pub(crate) fn run_command_authority(
                     .env_remove("BUILDX_BUILDER");
                 Some(pinned_config)
             }
-            crate::report::CommandAuthority::DockerBuilderPrune { .. } => {
+            crate::report::CommandAuthority::DockerBuilderPrune { .. }
+            | crate::report::CommandAuthority::DockerImagePrune { .. } => {
                 let isolated_config = crate::ops::docker::write_isolated_builder_config(
                     ctx,
                     docker_plugin_dirs.as_deref().unwrap_or(&[]),
@@ -130,13 +132,6 @@ pub(crate) fn run_command_authority(
                     .env_remove("DOCKER_CONTEXT")
                     .env_remove("BUILDX_BUILDER");
                 Some(isolated_config)
-            }
-            crate::report::CommandAuthority::DockerImagePrune { .. } => {
-                child
-                    .current_dir(&ctx.home)
-                    .env_remove("DOCKER_CONTEXT")
-                    .env_remove("BUILDX_BUILDER");
-                None
             }
             _ => None,
         };

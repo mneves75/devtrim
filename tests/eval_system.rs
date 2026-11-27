@@ -1526,16 +1526,41 @@ const DOCKER_HOST: &str = "unix:///var/run/docker.sock";
 /// never be pruned. Every `system df` row carries four tab-separated fields.
 fn docker_stub(sandbox: &Sandbox) {
     let body = r#"case "$*" in
-  'context inspect') printf '%s\n' '[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]' ;;
-  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\n' ;;
+  'context inspect')
+    case "${DOCKER_CONFIG:-}" in
+      */devtrim-docker-scan-*) ;;
+      *) exit 11 ;;
+    esac
+    printf '%s\n' '[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]' ;;
+  '--host unix:///var/run/docker.sock version')
+    case "${DOCKER_CONFIG:-}" in
+      */devtrim-docker-scan-*) ;;
+      *) exit 11 ;;
+    esac
+    printf 'Docker version 28.0.0\n' ;;
   '--host unix:///var/run/docker.sock system df'*)
+    case "${DOCKER_CONFIG:-}" in
+      */devtrim-docker-scan-*) ;;
+      *) exit 11 ;;
+    esac
     printf 'Images\t2GB\t1GB (50%%)\t0\n'
     printf 'Containers\t1MB\t0B (0%%)\t0\n'
     printf 'Local Volumes\t5GB\t4GB (80%%)\t0\n'
     printf 'Build Cache\t3GB\t1GB\t0\n' ;;
-  '--host unix:///var/run/docker.sock buildx ls'*) ;;
+  '--host unix:///var/run/docker.sock buildx ls'*)
+    case "${DOCKER_CONFIG:-}" in
+      */devtrim-docker-scan-*) ;;
+      *) exit 11 ;;
+    esac ;;
   '--host unix:///var/run/docker.sock image prune -a -f')
-    [ -z "${DOCKER_CONTEXT:-}" ] && [ -z "${BUILDX_BUILDER:-}" ] || exit 4
+    [ -n "${DOCKER_CONFIG:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ] && [ -z "${BUILDX_BUILDER:-}" ] || exit 4
+    [ "${BUILDX_CONFIG:-}" = "$DOCKER_CONFIG/buildx" ] || exit 8
+    case "$DOCKER_CONFIG" in
+      */buildx-pin/attempt-*) ;;
+      *) exit 9 ;;
+    esac
+    [ ! -e "$DOCKER_CONFIG/contexts" ] || exit 5
+    [ -d "$DOCKER_CONFIG/buildx" ] || exit 6
     printf 'Total reclaimed space: 1GB\n' ;;
   '--host unix:///var/run/docker.sock builder prune -a -f')
     [ -n "${DOCKER_CONFIG:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ] && [ -z "${BUILDX_BUILDER:-}" ] || exit 4

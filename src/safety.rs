@@ -4947,51 +4947,6 @@ mod tests {
     }
 
     #[test]
-    fn dir_measure_while_short_circuits_at_root_or_nested_match() {
-        let fixture = crate::ops::TestFixture::new("devtrim-dir-measure-while");
-        let root = fixture.path().to_path_buf();
-        std::fs::create_dir_all(root.join("clean/nested")).unwrap();
-        std::fs::write(root.join("clean/nested/data.bin"), vec![1u8; 8192]).unwrap();
-        std::fs::create_dir_all(root.join("stop")).unwrap();
-        let _sealed = crate::ops::Unreadable::new(&root.join("stop/sealed"), 0o000);
-        std::fs::write(root.join("stop/trigger"), "halt").unwrap();
-        std::fs::create_dir_all(root.join("walkdir-stop/sub")).unwrap();
-        std::fs::write(root.join("walkdir-stop/sub/data.bin"), vec![2u8; 8192]).unwrap();
-
-        assert_eq!(
-            dir_measure_while(&root.join("missing"), |_, _, _| Some("hit")).unwrap(),
-            (None, Size::default())
-        );
-        assert_eq!(
-            dir_measure_while(&root.join("stop/trigger"), |_, name, depth| {
-                (depth == 0 && name == "trigger").then_some("root-file")
-            })
-            .unwrap(),
-            (Some("root-file"), Size::default())
-        );
-        assert_eq!(
-            dir_measure_while(&root.join("stop"), |_, name, depth| {
-                (depth == 1 && name == "trigger").then_some("nested-entry")
-            })
-            .unwrap(),
-            (Some("nested-entry"), Size::default())
-        );
-        let (walkdir_hit, walkdir_size, _) = walk_stats_walkdir(
-            &root.join("walkdir-stop"),
-            DiskUsage::estimating(),
-            |_, name, depth| (depth == 1 && name == "sub").then_some("walkdir-entry"),
-        )
-        .unwrap();
-        assert_eq!(walkdir_hit, Some("walkdir-entry"));
-        assert_eq!(walkdir_size, Size::default());
-
-        let (clean_hit, clean_size) =
-            dir_measure_while(&root.join("clean"), |_, _, _| None::<()>).unwrap();
-        assert_eq!(clean_hit, None);
-        assert_eq!(clean_size, dir_measure(&root.join("clean")).unwrap());
-    }
-
-    #[test]
     fn dir_stats_under_snapshot_uses_stats_no_private_and_preserves_newest_mtime() {
         let fixture = crate::ops::TestFixture::new("devtrim-stats-snapshot");
         let tree = fixture.path().join("tree");

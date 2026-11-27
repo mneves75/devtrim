@@ -16,6 +16,7 @@ pub(crate) struct LargestResult {
 struct BulkUnsupported;
 
 struct LinkedFile {
+    path: PathBuf,
     sub_index: Option<usize>,
     dev: u64,
     ino: u64,
@@ -261,6 +262,7 @@ fn measure_top_dir(
                     }
                     if entry.nlink > 1 {
                         linked.push(LinkedFile {
+                            path: top_path.join(entry.name),
                             sub_index: None,
                             dev: entry.dev,
                             ino: entry.ino,
@@ -333,6 +335,7 @@ fn measure_sub_dir(
                         }
                         if entry.nlink > 1 {
                             linked.push(LinkedFile {
+                                path: directory.join(entry.name),
                                 sub_index: Some(sub_index),
                                 dev: entry.dev,
                                 ino: entry.ino,
@@ -370,10 +373,9 @@ fn merge_top_measurement(
     if !measurement.linked.is_empty() {
         let sub_totals = &mut measurement.sub_totals;
         measurement.linked.sort_by(|left, right| {
-            let left_sub = left.sub_index.map(|index| sub_totals[index].0.as_path());
-            let right_sub = right.sub_index.map(|index| sub_totals[index].0.as_path());
-            left_sub
-                .cmp(&right_sub)
+            left.path
+                .components()
+                .cmp(right.path.components())
                 .then_with(|| left.dev.cmp(&right.dev))
                 .then_with(|| left.ino.cmp(&right.ino))
         });
@@ -509,16 +511,22 @@ mod tests {
     fn bulk_scan_deduplicates_hard_links_across_parallel_subtrees_and_counts_unreadable_dirs() {
         let fixture = TestFixture::new("devtrim-largest-hardlinks");
         let root = fixture.path().join("root");
+        std::fs::create_dir_all(root.join("alpha/a-sub")).unwrap();
         std::fs::create_dir_all(root.join("alpha/sub")).unwrap();
         std::fs::create_dir_all(root.join("beta/sub")).unwrap();
         std::fs::write(root.join("top-file"), vec![b't'; 128 * 1024]).unwrap();
         let source = root.join("alpha/sub/shared.bin");
         std::fs::write(&source, vec![b'a'; 128 * 1024]).unwrap();
         std::fs::hard_link(&source, root.join("beta/sub/shared.bin")).unwrap();
+        // Direct file sorting BEFORE a sibling directory (`direct.bin` < `sub`).
         let direct_alpha = root.join("alpha/direct.bin");
         std::fs::write(&direct_alpha, vec![b'd'; 64 * 1024]).unwrap();
         std::fs::hard_link(&direct_alpha, root.join("alpha/sub/direct.bin")).unwrap();
         std::fs::hard_link(&direct_alpha, root.join("root-hardlink.bin")).unwrap();
+        // Nested directory sorting BEFORE a direct sibling file (`a-sub` < `z-direct.bin`).
+        let nested_first = root.join("alpha/a-sub/nested-first.bin");
+        std::fs::write(&nested_first, vec![b'n'; 32 * 1024]).unwrap();
+        std::fs::hard_link(&nested_first, root.join("alpha/z-direct.bin")).unwrap();
         let _sealed = crate::ops::Unreadable::new(&root.join("beta/locked"), 0o000);
 
         let result = scan_roots(std::slice::from_ref(&root), Some(100));
@@ -539,25 +547,35 @@ mod tests {
             &direct_alpha,
         )
         .unwrap();
-        let size = |name: &str| {
-            let path = root.join(name);
-            result
-                .findings
-                .iter()
-                .find(|finding| finding.path.as_deref() == path.to_str())
-                .unwrap()
-                .size_bytes
-        };
+        let nested_first_bytes = crate::safety::allocated_bytes(
+            &std::fs::symlink_metadata(&nested_first).unwrap(),
+            &nested_first,
+        )
+        .unwrap();
+        let bulk_totals: BTreeMap<PathBuf, u64> = result
+            .findings
+            .iter()
+            .map(|finding| {
+                (
+                    PathBuf::from(finding.path.as_deref().unwrap()),
+                    finding.size_bytes,
+                )
+            })
+            .collect();
+        let size = |name: &str| bulk_totals[&root.join(name)];
 
-        assert_eq!(size("alpha"), shared_bytes + direct_bytes);
+        assert_eq!(
+            size("alpha"),
+            shared_bytes + direct_bytes + nested_first_bytes
+        );
+        assert_eq!(size("alpha/a-sub"), nested_first_bytes);
         assert_eq!(size("alpha/sub"), shared_bytes);
         assert_eq!(size("beta"), 0);
         assert_eq!(size("beta/sub"), 0);
         assert_eq!(size("beta/locked"), 0);
         assert_eq!(
-            walkdir_totals.get(&root.join("alpha")).copied(),
-            Some(size("alpha")),
-            "walkdir fallback must match bulk walk when a root-level hard link aliases a descendant file"
+            bulk_totals, walkdir_totals,
+            "bulk walk and walkdir fallback must agree on every parent and child bucket"
         );
         assert_eq!(walkdir_skipped, 1);
         assert!(
