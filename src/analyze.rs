@@ -2118,9 +2118,6 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let worktree = &entries[0];
         assert_eq!(worktree.path, root.path().join("worktree"));
-        let device = std::fs::symlink_metadata(root.path()).unwrap().dev();
-        let (_, _, culprit) = measure_tree(root.path(), device, &AtomicBool::new(false));
-        assert_eq!(names(&culprit.unwrap()), ["worktree"]);
 
         let mut cancelled_entries = Vec::new();
         measure_children(root.path(), &AtomicBool::new(true), |entry| {

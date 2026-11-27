@@ -810,7 +810,7 @@ fn read_docker_config_json(
     Ok(Some(object))
 }
 
-fn validate_docker_plugin_dir(candidate: &Path) -> Result<()> {
+fn validate_docker_plugin_dir(candidate: &Path) -> Result<Option<PathBuf>> {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     if !is_safe_absolute_dir(candidate) {
@@ -823,7 +823,7 @@ fn validate_docker_plugin_dir(candidate: &Path) -> Result<()> {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             validate_trusted_ancestors(candidate, false, "Docker CLI plugin directory")?;
-            return Ok(());
+            return Ok(None);
         }
         Err(error) => {
             return Err(error).with_context(|| {
@@ -982,7 +982,7 @@ fn validate_docker_plugin_dir(candidate: &Path) -> Result<()> {
             "Docker CLI plugin executable",
         )?;
     }
-    Ok(())
+    Ok(Some(canonical))
 }
 
 #[derive(Debug)]
@@ -1000,11 +1000,13 @@ fn validate_docker_config_from(
     let mut plugin_dirs = Vec::new();
     let mut current_context = None;
     let mut push_validated = |candidate: PathBuf| -> Result<()> {
-        validate_docker_plugin_dir(&candidate)?;
-        let text = candidate.to_str().ok_or_else(|| {
+        let Some(canonical_dir) = validate_docker_plugin_dir(&candidate)? else {
+            return Ok(());
+        };
+        let text = canonical_dir.to_str().ok_or_else(|| {
             anyhow::anyhow!(
                 "refusing non-UTF-8 Docker CLI plugin directory: {}",
-                candidate.display()
+                canonical_dir.display()
             )
         })?;
         if !plugin_dirs.iter().any(|existing| existing == text) {
@@ -1112,11 +1114,53 @@ fn validated_docker_state_subdir(source_config: &Path, name: &str) -> Result<Opt
                     canonical.display()
                 );
             }
+            validate_trusted_ancestors(&canonical, true, "Docker state path")?;
             super::project::refuse_path_acl_grants(
                 [canonical.as_path()],
                 &canonical,
                 "Docker state path",
             )?;
+            let nested_name = match name {
+                "buildx" => Some("instances"),
+                "contexts" => Some("meta"),
+                _ => None,
+            };
+            if let Some(child_name) = nested_name {
+                let child = canonical.join(child_name);
+                match std::fs::symlink_metadata(&child) {
+                    Ok(child_meta) => {
+                        if !child_meta.file_type().is_dir() {
+                            anyhow::bail!(
+                                "refusing symlinked or non-directory Docker state subdir: {}",
+                                child.display()
+                            );
+                        }
+                        if child_meta.uid() != current_uid && child_meta.uid() != 0 {
+                            anyhow::bail!(
+                                "refusing Docker state subdir not owned by current user or root: {}",
+                                child.display()
+                            );
+                        }
+                        if child_meta.permissions().mode() & 0o022 != 0 {
+                            anyhow::bail!(
+                                "refusing group- or world-writable Docker state subdir: {}",
+                                child.display()
+                            );
+                        }
+                        super::project::refuse_path_acl_grants(
+                            [child.as_path()],
+                            &child,
+                            "Docker state subdir",
+                        )?;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("cannot inspect Docker state subdir {}", child.display())
+                        });
+                    }
+                }
+            }
             Ok(Some(canonical))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -1126,11 +1170,14 @@ fn validated_docker_state_subdir(source_config: &Path, name: &str) -> Result<Opt
 }
 
 /// Materializes a deterministic private `0700` `DOCKER_CONFIG` snapshot under
-/// `std::env::temp_dir()` containing ONLY the validated `config.json`
-/// (`cliPluginsExtraDirs` and optional `currentContext`, no `aliases` or
-/// ambient fields) plus verified symlinks to existing `contexts/` and `buildx/`
-/// directories. Every `docker` probe runs against this snapshot so Docker never
-/// rereads ambient `$DOCKER_CONFIG/config.json` after validation.
+/// `std::env::temp_dir()` containing ONLY the sanitized `config.json`
+/// (canonical validated `cliPluginsExtraDirs` and optional `currentContext`,
+/// stripping `aliases` and untrusted entries) plus verified symlinks to
+/// validated read-only `contexts/` and `buildx/` discovery state directories
+/// needed by `docker context inspect` and `docker buildx ls`/`du`. Prune
+/// mutations (`DockerImagePrune`, `DockerBuilderPrune`, `DockerBuildxPrune`)
+/// use per-attempt private configs that never link ambient `contexts` or
+/// `buildx` state.
 fn isolated_docker_scan_dir(home: &Path) -> Result<PathBuf> {
     let raw_docker_config = std::env::var_os("DOCKER_CONFIG");
     isolated_docker_scan_dir_from(raw_docker_config.as_deref(), home, &std::env::temp_dir())
@@ -2426,7 +2473,8 @@ mod tests {
             );
         }
 
-        // Safe absolute 0755 owned plugin directories (and nonexistent absolute ones) pass.
+        // Safe absolute 0755 owned plugin directories resolve to canonical paths;
+        // nonexistent absolute paths with safe ancestors pass and are omitted.
         std::fs::write(
             source_config.join("config.json"),
             serde_json::json!({
@@ -2441,16 +2489,10 @@ mod tests {
         let plugin_dirs = validate_docker_config_from(Some(source_config.as_os_str()), home)
             .unwrap()
             .plugin_dirs;
+        let canonical_safe_plugins = safe_plugins.canonicalize().unwrap();
         assert_eq!(
             plugin_dirs,
-            vec![
-                safe_plugins.to_string_lossy().into_owned(),
-                "/nonexistent/devtrim-test-docker-plugins".to_string(),
-                source_config
-                    .join("cli-plugins")
-                    .to_string_lossy()
-                    .into_owned(),
-            ]
+            vec![canonical_safe_plugins.to_string_lossy().into_owned()]
         );
 
         // Writable ancestor above an otherwise 0755 plugin directory fails closed.
@@ -2542,10 +2584,7 @@ mod tests {
         assert!(scan_json.get("aliases").is_none());
         assert_eq!(
             scan_json["cliPluginsExtraDirs"],
-            serde_json::json!([
-                safe_plugins.to_string_lossy(),
-                source_config.join("cli-plugins").to_string_lossy()
-            ])
+            serde_json::json!([canonical_safe_plugins.to_string_lossy()])
         );
     }
 
