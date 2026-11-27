@@ -140,6 +140,131 @@ fn library_caches(home: &Path) -> impl Iterator<Item = (&'static str, PathBuf)> 
         })
 }
 
+#[derive(Default)]
+struct CacheBranchOutput {
+    findings: Vec<Finding>,
+    unread: Vec<UnreadFolder>,
+    diagnostics: Vec<(&'static str, String)>,
+}
+
+fn join_branch<T>(handle: std::thread::ScopedJoinHandle<'_, T>, label: &str) -> Result<T> {
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("{label} cache scan thread panicked"))
+}
+
+fn measure_static_caches(home: &Path) -> Result<(Vec<Finding>, Vec<UnreadFolder>)> {
+    let entries: Vec<(&'static str, PathBuf)> = CACHES
+        .iter()
+        .map(|entry| (entry.label, home.join(entry.relative)))
+        .chain(library_caches(home))
+        .collect();
+    let measured_entries = super::project::map_indexed_parallel(&entries, |(label, path)| {
+        let mut unread = Vec::new();
+        let size = measured(path, &mut unread);
+        let finding = (size.allocated > 0).then(|| cache_finding(label, path.clone(), size, 3));
+        (finding, unread)
+    })?;
+    let mut findings = Vec::new();
+    let mut unread = Vec::new();
+    for (finding, mut entry_unread) in measured_entries {
+        if let Some(finding) = finding {
+            findings.push(finding);
+        }
+        unread.append(&mut entry_unread);
+    }
+    Ok((findings, unread))
+}
+
+fn scan_pnpm_branch(home: &Path) -> CacheBranchOutput {
+    let mut output = CacheBranchOutput::default();
+    match pnpm_metadata_findings(home, &mut output.unread) {
+        Ok(pnpm) => output.findings.extend(pnpm),
+        Err(error) => output
+            .unread
+            .push(UnreadFolder::new(&pnpm_cache(home), &error)),
+    }
+    output
+}
+
+fn scan_npm_branch(ctx: &Ctx) -> (Option<PathBuf>, CacheBranchOutput) {
+    let mut output = CacheBranchOutput::default();
+    let npm_root = npm_reported_root(ctx);
+    let npm_reported = npm_root.as_ref().ok().cloned().flatten();
+    match npm_root.map(|root| {
+        root.and_then(|root| {
+            eligible_owner_root_into("npm", root, &ctx.home, &mut output.diagnostics)
+        })
+    }) {
+        Ok(Some(path)) => {
+            let store = path.join(NPM_STORE);
+            let size = measured(&store, &mut output.unread);
+            if size.allocated > 0 {
+                let mut finding = cache_finding("npm package cache", store, size, 2)
+                    .with_authority(TargetAuthority::NpmCacheStore);
+                finding.note = "what `npm cache clean --force` removes: packages download \
+                                again on next install; npx installs (`_npx`) stay, since a \
+                                running npx tool loads them"
+                    .to_string();
+                output.findings.push(finding);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => output.findings.push(not_judged("npm cache folder", &error)),
+    }
+    (npm_reported, output)
+}
+
+fn scan_brew_branch(ctx: &Ctx) -> CacheBranchOutput {
+    let mut output = CacheBranchOutput::default();
+    let brew_root = command_path("brew", &["--cache"], &ctx.home, &[])
+        .and_then(|path| {
+            path.map(|path| resolved_owner_path("brew", path))
+                .transpose()
+        })
+        .map(|path| {
+            path.and_then(|path| {
+                eligible_owner_root_into("brew", path, &ctx.home, &mut output.diagnostics)
+            })
+        });
+    match brew_root {
+        Ok(Some(path)) => match brew_cache_findings(&path, &ctx.home, &mut output.unread) {
+            Ok(brew) => output.findings.extend(brew),
+            Err(error) => output.unread.push(UnreadFolder::new(&path, &error)),
+        },
+        Ok(None) => {}
+        Err(error) => output.findings.push(not_judged("Homebrew cache", &error)),
+    }
+    output
+}
+
+fn scan_gradle_branch(home: &Path) -> CacheBranchOutput {
+    let mut output = CacheBranchOutput::default();
+    output.findings = gradle_findings(home, &mut output.unread, &mut output.diagnostics);
+    output
+}
+
+fn scan_go_branch(ctx: &Ctx) -> CacheBranchOutput {
+    let mut output = CacheBranchOutput::default();
+    match go_module_cache(ctx, Some(&mut output.diagnostics)) {
+        Ok(Some(path)) => {
+            let size = measured(&path, &mut output.unread);
+            if size.allocated > 0 {
+                let mut finding = cache_finding("Go module cache", path, size, 3);
+                finding.note = "Go downloads modules again on next build; moved to the Trash, \
+                                `devtrim trash-empty` frees it; Go keeps the cache read-only, \
+                                so permanent removal in place is refused (`go clean -modcache` \
+                                is Go's own way)"
+                    .to_string();
+                output.findings.push(finding);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => output.findings.push(not_judged("Go module cache", &error)),
+    }
+    output
+}
+
 impl Op for Caches {
     fn name(&self) -> &'static str {
         "caches"
@@ -150,77 +275,45 @@ impl Op for Caches {
         ctx: &Ctx,
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
-        let mut findings = Vec::new();
         // A cache whose size cannot be measured offers nothing and is named in
         // one error finding (S8): it must not stop the caches listed after it.
-        let mut unread = Vec::new();
-        for entry in CACHES {
-            let path = ctx.home.join(entry.relative);
-            let size = measured(&path, &mut unread);
-            if size.allocated > 0 {
-                findings.push(cache_finding(entry.label, path, size, 3));
-            }
+        // An owner command that fails withholds only its own cache; the caches
+        // listed after it are still judged, against npm's default folders alone.
+        let (static_result, pnpm_branch, npm_result, brew_branch, gradle_branch, go_branch) =
+            std::thread::scope(|scope| {
+                let pnpm_handle = scope.spawn(|| scan_pnpm_branch(&ctx.home));
+                let npm_handle = scope.spawn(|| scan_npm_branch(ctx));
+                let brew_handle = scope.spawn(|| scan_brew_branch(ctx));
+                let gradle_handle = scope.spawn(|| scan_gradle_branch(&ctx.home));
+                let go_handle = scope.spawn(|| scan_go_branch(ctx));
+                let static_result = measure_static_caches(&ctx.home);
+                (
+                    static_result,
+                    join_branch(pnpm_handle, "pnpm"),
+                    join_branch(npm_handle, "npm"),
+                    join_branch(brew_handle, "brew"),
+                    join_branch(gradle_handle, "gradle"),
+                    join_branch(go_handle, "go"),
+                )
+            });
+        let (mut findings, mut unread) = static_result?;
+        let (npm_reported, npm_branch) = npm_result?;
+        let mut diagnostics = Vec::new();
+        for mut branch in [
+            pnpm_branch?,
+            npm_branch,
+            brew_branch?,
+            gradle_branch?,
+            go_branch?,
+        ] {
+            findings.append(&mut branch.findings);
+            unread.append(&mut branch.unread);
+            diagnostics.append(&mut branch.diagnostics);
         }
-        for (label, path) in library_caches(&ctx.home) {
-            let size = measured(&path, &mut unread);
-            if size.allocated > 0 {
-                findings.push(cache_finding(label, path, size, 3));
-            }
+        for (level, message) in diagnostics {
+            ctx.diagnostic(level, message);
         }
-        match pnpm_metadata_findings(&ctx.home, &mut unread) {
-            Ok(pnpm) => findings.extend(pnpm),
-            Err(error) => unread.push(UnreadFolder::new(&pnpm_cache(&ctx.home), &error)),
-        }
-        // An owner command that fails withholds only its own cache, as `go`
-        // does below; the caches listed after it are still judged, against
-        // npm's default folders alone.
-        let npm_root = npm_reported_root(ctx);
-        let installs = InstallCaches::new(&ctx.home, npm_root.as_ref().ok().cloned().flatten());
-        match npm_root.and_then(|root| match root {
-            Some(root) => eligible_owner_root("npm", root, ctx),
-            None => Ok(None),
-        }) {
-            Ok(Some(path)) => {
-                let store = path.join(NPM_STORE);
-                let size = measured(&store, &mut unread);
-                if size.allocated > 0 {
-                    let mut finding = cache_finding("npm package cache", store, size, 2)
-                        .with_authority(TargetAuthority::NpmCacheStore);
-                    finding.note = "what `npm cache clean --force` removes: packages download \
-                                    again on next install; npx installs (`_npx`) stay, since a \
-                                    running npx tool loads them"
-                        .to_string();
-                    findings.push(finding);
-                }
-            }
-            Ok(None) => {}
-            Err(error) => findings.push(not_judged("npm cache folder", &error)),
-        }
-        match owner_cache_path("brew", &["--cache"], &[], ctx) {
-            Ok(Some(path)) => match brew_cache_findings(&path, &ctx.home, &mut unread) {
-                Ok(brew) => findings.extend(brew),
-                Err(error) => unread.push(UnreadFolder::new(&path, &error)),
-            },
-            Ok(None) => {}
-            Err(error) => findings.push(not_judged("Homebrew cache", &error)),
-        }
-        findings.extend(gradle_findings(ctx, &mut unread));
-        match go_module_cache(ctx, true) {
-            Ok(Some(path)) => {
-                let size = measured(&path, &mut unread);
-                if size.allocated > 0 {
-                    let mut finding = cache_finding("Go module cache", path, size, 3);
-                    finding.note = "Go downloads modules again on next build; moved to the Trash, \
-                                    `devtrim trash-empty` frees it; Go keeps the cache read-only, \
-                                    so permanent removal in place is refused (`go clean -modcache` \
-                                    is Go's own way)"
-                        .to_string();
-                    findings.push(finding);
-                }
-            }
-            Ok(None) => {}
-            Err(error) => findings.push(not_judged("Go module cache", &error)),
-        }
+        let installs = InstallCaches::new(&ctx.home, npm_reported);
         findings.retain(|finding| {
             let Some(target) = finding.target() else {
                 return true;
@@ -587,7 +680,7 @@ fn authorize_cache_finding(
         // devtrim to ask `go`, and a Gradle lookup that fails (an unreadable
         // GRADLE_USER_HOME) must refuse only what Gradle could claim.
         TargetAuthority::Standard if holds_go_download_cache(target)? => {
-            go_module_cache(ctx, false)?
+            go_module_cache(ctx, None)?
                 .is_some_and(|cache| cache == target)
                 .then_some(CacheKind::GoModules)
         }
@@ -726,28 +819,32 @@ fn gradle_processes() -> Result<Vec<u32>> {
 }
 
 /// Gradle's caches and Wrapper distributions, unless a Gradle process runs.
-fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
-    let gradle = match gradle_user_home(&ctx.home) {
+fn gradle_findings(
+    home: &Path,
+    unread: &mut Vec<UnreadFolder>,
+    diagnostics: &mut Vec<(&'static str, String)>,
+) -> Vec<Finding> {
+    let gradle = match gradle_user_home(home) {
         Ok(Some(gradle)) => gradle,
         Ok(None) => {
-            ctx.diagnostic(
+            diagnostics.push((
                 "warn",
-                "the Gradle user home (GRADLE_USER_HOME, or ~/.gradle and where it links) is not a folder inside the home folder; skipping Gradle's caches",
-            );
+                "the Gradle user home (GRADLE_USER_HOME, or ~/.gradle and where it links) is not a folder inside the home folder; skipping Gradle's caches".to_string(),
+            ));
             return Vec::new();
         }
         Err(error) => return vec![not_judged("Gradle caches", &error)],
     };
-    match gradle_home_in_repository(&gradle, &ctx.home) {
+    match gradle_home_in_repository(&gradle, home) {
         Ok(false) => {}
         Ok(true) => {
-            ctx.diagnostic(
+            diagnostics.push((
                 "warn",
                 format!(
                     "the Gradle user home {} is inside a Git repository; skipping Gradle's caches",
                     gradle.display()
                 ),
-            );
+            ));
             return Vec::new();
         }
         Err(error) => return vec![not_judged("Gradle caches", &error)],
@@ -771,13 +868,13 @@ fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
     match gradle_processes() {
         Ok(running) if running.is_empty() => {}
         Ok(running) => {
-            ctx.diagnostic(
+            diagnostics.push((
                 "info",
                 format!(
                     "Gradle is running ({} process(es)); skipping its caches until `gradle --stop` ends its daemons",
                     running.len()
                 ),
-            );
+            ));
             return Vec::new();
         }
         Err(error) => return vec![not_judged("Gradle caches", &error)],
@@ -801,7 +898,10 @@ fn gradle_findings(ctx: &Ctx, unread: &mut Vec<UnreadFolder>) -> Vec<Finding> {
 /// the installed toolchain: a `go.mod` asking for a newer Go would otherwise
 /// make `go` download one (go.dev/doc/toolchain). `go` absent, or no cache yet,
 /// is nothing to offer; `go` failing is an error for this cache alone.
-fn go_module_cache(ctx: &Ctx, warn: bool) -> Result<Option<PathBuf>> {
+fn go_module_cache(
+    ctx: &Ctx,
+    diagnostics: Option<&mut Vec<(&'static str, String)>>,
+) -> Result<Option<PathBuf>> {
     let Some(path) = command_path(
         "go",
         &["env", "GOMODCACHE"],
@@ -823,14 +923,14 @@ fn go_module_cache(ctx: &Ctx, warn: bool) -> Result<Option<PathBuf>> {
     let inside_home = normalized_absolute(&path)
         .is_some_and(|cache| cache.starts_with(&ctx.home) && cache != ctx.home);
     if !(corroborated && inside_home) {
-        if warn {
-            ctx.diagnostic(
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.push((
                 "warn",
                 format!(
                     "`go` reports module cache {} outside the home folder or without Go's `cache/download`; skipping",
                     path.display()
                 ),
-            );
+            ));
         }
         return Ok(None);
     }
@@ -1051,19 +1151,33 @@ fn owner_cache_path(
     eligible_owner_root(program, resolved_owner_path(program, path)?, ctx)
 }
 
-/// The reported root, when it lies in the owner's own cache namespace.
-fn eligible_owner_root(program: &str, path: PathBuf, ctx: &Ctx) -> Result<Option<PathBuf>> {
-    if !is_eligible_owner_cache(program, &path, &ctx.home) {
-        ctx.diagnostic(
+fn eligible_owner_root_into(
+    program: &str,
+    path: PathBuf,
+    home: &Path,
+    diagnostics: &mut Vec<(&'static str, String)>,
+) -> Option<PathBuf> {
+    if !is_eligible_owner_cache(program, &path, home) {
+        diagnostics.push((
             "warn",
             format!(
                 "`{program}` reports cache root {} outside a home cache location; skipping",
                 path.display()
             ),
-        );
-        return Ok(None);
+        ));
+        return None;
     }
-    Ok(Some(path))
+    Some(path)
+}
+
+/// The reported root, when it lies in the owner's own cache namespace.
+fn eligible_owner_root(program: &str, path: PathBuf, ctx: &Ctx) -> Result<Option<PathBuf>> {
+    let mut diagnostics = Vec::new();
+    let eligible = eligible_owner_root_into(program, path, &ctx.home, &mut diagnostics);
+    for (level, message) in diagnostics {
+        ctx.diagnostic(level, message);
+    }
+    Ok(eligible)
 }
 
 /// Runs from `$HOME` so a project-level `.npmrc` (or `go.mod`) in whatever

@@ -50,7 +50,25 @@ enum SystemTool {
     Processes,
 }
 
+const SYSTEM_TOOL_COUNT: usize = 11;
+
 impl SystemTool {
+    const fn index(self) -> usize {
+        match self {
+            Self::BootTime => 0,
+            Self::LoadAverage => 1,
+            Self::LogicalCpuCount => 2,
+            Self::PhysicalMemory => 3,
+            Self::VmStat => 4,
+            Self::DataVolume => 5,
+            Self::RootFilesystem => 6,
+            Self::Battery => 7,
+            Self::Thermal => 8,
+            Self::NetworkInterfaces => 9,
+            Self::Processes => 10,
+        }
+    }
+
     fn parts(self) -> (&'static str, &'static [&'static str]) {
         match self {
             Self::BootTime => ("sysctl", &["-n", "kern.boottime"]),
@@ -598,8 +616,78 @@ fn disk_tool(data_layout: std::io::Result<bool>) -> Result<SystemTool> {
     }
 }
 
+std::thread_local! {
+    static CAPTURED_TOOLS: std::cell::RefCell<[Option<Result<String>>; SYSTEM_TOOL_COUNT]> =
+        const { std::cell::RefCell::new([const { None }; SYSTEM_TOOL_COUNT]) };
+}
+
+struct CapturedToolsGuard;
+
+impl CapturedToolsGuard {
+    fn install(captured: [Option<Result<String>>; SYSTEM_TOOL_COUNT]) -> Self {
+        CAPTURED_TOOLS.with(|slot| *slot.borrow_mut() = captured);
+        Self
+    }
+
+    fn take(tool: SystemTool) -> Option<Result<String>> {
+        CAPTURED_TOOLS.with(|slot| slot.borrow_mut()[tool.index()].take())
+    }
+}
+
+impl Drop for CapturedToolsGuard {
+    fn drop(&mut self) {
+        CAPTURED_TOOLS.with(|slot| *slot.borrow_mut() = [const { None }; SYSTEM_TOOL_COUNT]);
+    }
+}
+
+fn join_probe(
+    tool: SystemTool,
+    handle: std::thread::ScopedJoinHandle<'_, Result<String>>,
+) -> Result<String> {
+    handle.join().unwrap_or_else(|_| {
+        Err(anyhow::anyhow!(
+            "system probe thread panicked for {}",
+            tool.metric()
+        ))
+    })
+}
+
+fn collect_captured_tools(
+    disk_probe: &Result<SystemTool>,
+) -> [Option<Result<String>>; SYSTEM_TOOL_COUNT] {
+    let mut spawned_tools = Vec::with_capacity(9);
+    spawned_tools.extend([
+        SystemTool::LoadAverage,
+        SystemTool::LogicalCpuCount,
+        SystemTool::PhysicalMemory,
+        SystemTool::VmStat,
+        SystemTool::Battery,
+        SystemTool::Thermal,
+        SystemTool::NetworkInterfaces,
+        SystemTool::Processes,
+    ]);
+    if let Ok(tool) = disk_probe {
+        spawned_tools.push(*tool);
+    }
+    let mut captured = [const { None }; SYSTEM_TOOL_COUNT];
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = spawned_tools
+            .into_iter()
+            .map(|tool| (tool, scope.spawn(move || capture(tool))))
+            .collect();
+        captured[SystemTool::BootTime.index()] = Some(capture(SystemTool::BootTime));
+        for (tool, handle) in handles {
+            captured[tool.index()] = Some(join_probe(tool, handle));
+        }
+    });
+    captured
+}
+
 fn collect() -> StatusReport {
     let mut unavailable = Vec::new();
+    let disk_probe =
+        disk_tool(std::fs::metadata("/System/Volumes/Data").map(|metadata| metadata.is_dir()));
+    let _captured_guard = CapturedToolsGuard::install(collect_captured_tools(&disk_probe));
 
     /// Reads one metric, recording the reason under the tool's own metric name
     /// on failure. Written once: ten hand-copied match arms are ten chances to
@@ -609,7 +697,8 @@ fn collect() -> StatusReport {
         tool: SystemTool,
         parse: impl FnOnce(String) -> Result<T>,
     ) -> Option<T> {
-        match capture(tool).and_then(parse) {
+        let output = CapturedToolsGuard::take(tool).unwrap_or_else(|| capture(tool));
+        match output.and_then(parse) {
             Ok(value) => Some(value),
             Err(error) => {
                 unavailable.push(format!("{}: {error:#}", tool.metric()));
@@ -652,9 +741,7 @@ fn collect() -> StatusReport {
     // `/Users`, so no metadata comparison can find this boundary. Metadata
     // establishes only the layout: root is valid only when Data is absent.
     // A present Data volume whose metric fails must remain unavailable.
-    let disk = match disk_tool(
-        std::fs::metadata("/System/Volumes/Data").map(|metadata| metadata.is_dir()),
-    ) {
+    let disk = match disk_probe {
         Ok(tool) => read(&mut unavailable, tool, |output| parse_df(&output)),
         Err(error) => {
             unavailable.push(format!("disk: {error:#}"));

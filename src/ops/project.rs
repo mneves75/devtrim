@@ -337,6 +337,54 @@ pub(crate) fn normalized_roots(roots: &[PathBuf]) -> Vec<&Path> {
     normalized
 }
 
+fn take_next_item<'a, T>(
+    items: &'a [T],
+    next_index: &std::sync::atomic::AtomicUsize,
+) -> Option<(usize, &'a T)> {
+    let index = next_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    items.get(index).map(|item| (index, item))
+}
+
+/// Evaluates `items` across up to `min(8, available_parallelism)` scoped
+/// worker threads and returns results in exact slice order.
+pub(super) fn map_indexed_parallel<T, U>(
+    items: &[T],
+    evaluate: impl Fn(&T) -> U + Sync,
+) -> Result<Vec<U>>
+where
+    T: Sync,
+    U: Send,
+{
+    let max_workers = std::thread::available_parallelism()
+        .map_or(4, std::num::NonZeroUsize::get)
+        .min(8);
+    let workers = items.len().min(max_workers);
+    if workers <= 1 {
+        return Ok(items.iter().map(evaluate).collect());
+    }
+    let next_index = std::sync::atomic::AtomicUsize::new(0);
+    let run_worker = || -> Vec<(usize, U)> {
+        let mut results = Vec::new();
+        while let Some((index, item)) = take_next_item(items, &next_index) {
+            results.push((index, evaluate(item)));
+        }
+        results
+    };
+    let mut indexed = std::thread::scope(|scope| -> Result<Vec<(usize, U)>> {
+        let handles: Vec<_> = (1..workers).map(|_| scope.spawn(run_worker)).collect();
+        let mut combined = run_worker();
+        for handle in handles {
+            let worker_results = handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("parallel worker thread panicked"))?;
+            combined.extend(worker_results);
+        }
+        Ok(combined)
+    })?;
+    indexed.sort_by_key(|(index, _)| *index);
+    Ok(indexed.into_iter().map(|(_, value)| value).collect())
+}
+
 pub(crate) fn is_directory_if_present(path: &Path) -> Result<bool> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => std::fs::metadata(path)
@@ -430,15 +478,26 @@ fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> {
     // Both dates are rendered in UTC, the clock `iso_days_ago` counts in.
     // `%cs` and `--date=format:` use each entry's recorded offset instead, so
     // west of Greenwich an evening's activity read as the previous day.
-    let commit = iso_date(
-        &hardened_git_log(root, git, &["--date=format-local:%Y-%m-%d", "--format=%cd"])?,
-        root,
-    )?;
-    let reflog = hardened_git_log(
-        root,
-        git,
-        &["-g", "--date=format-local:%Y-%m-%d", "--format=%gd"],
-    )?;
+    let (commit_raw, reflog_raw) = std::thread::scope(|scope| {
+        let reflog_handle = scope.spawn(|| {
+            hardened_git_log(
+                root,
+                git,
+                &["-g", "--date=format-local:%Y-%m-%d", "--format=%gd"],
+            )
+        });
+        let commit = hardened_git_log(root, git, &["--date=format-local:%Y-%m-%d", "--format=%cd"]);
+        let reflog = match reflog_handle.join() {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!(
+                "Git reflog thread panicked for {}",
+                root.display()
+            )),
+        };
+        (commit, reflog)
+    });
+    let commit = iso_date(&commit_raw?, root)?;
+    let reflog = reflog_raw?;
     if reflog.is_empty() {
         return Ok(commit);
     }

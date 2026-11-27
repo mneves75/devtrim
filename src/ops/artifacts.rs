@@ -36,6 +36,19 @@ const EXCLUDED_NAMES: &[&str] = &[
 
 pub(crate) struct Artifacts;
 
+enum ArtifactRepoOutcome {
+    Orphaned(usize),
+    Busy(usize),
+    Unborn,
+    Active(usize),
+    Judged {
+        tracked: usize,
+        keypairs: usize,
+        repositories: usize,
+        states: usize,
+    },
+}
+
 #[derive(Debug)]
 pub(super) struct ArtifactCandidate {
     pub(super) path: PathBuf,
@@ -113,7 +126,9 @@ impl Op for Artifacts {
         let mut orphaned = 0usize;
         let mut orphans = Vec::new();
         let mut unborn = Vec::new();
-        for (owner, candidates) in groups {
+        let process_cwds = observations.process_cwds()?;
+        let grouped: Vec<(PathBuf, Vec<&ArtifactCandidate>)> = groups.into_iter().collect();
+        let evaluated = super::project::map_indexed_parallel(&grouped, |(owner, candidates)| {
             // A repository whose checks fail offers nothing — not even a
             // finding judged before the failure — and reports the error; every
             // other repository is judged as usual.
@@ -122,31 +137,23 @@ impl Op for Artifacts {
             // repository that then fails is reported as an error, not a skip.
             let (mut tracked_here, mut keypairs_here, mut repositories_here, mut states_here) =
                 (0usize, 0, 0, 0);
-            let result = (|| -> Result<()> {
-                if orphaned_worktree(&owner)? {
-                    orphaned = orphaned.saturating_add(candidates.len());
-                    orphans.push(owner.clone());
-                    return Ok(());
+            let result = (|| -> Result<ArtifactRepoOutcome> {
+                if orphaned_worktree(owner)? {
+                    return Ok(ArtifactRepoOutcome::Orphaned(candidates.len()));
                 }
-                if repo_has_active_build(&owner, observations.process_cwds()?, &ctx.home)? {
-                    build_active = build_active.saturating_add(candidates.len());
-                    busy.push(owner.clone());
-                    return Ok(());
+                if repo_has_active_build(owner, process_cwds, &ctx.home)? {
+                    return Ok(ArtifactRepoOutcome::Busy(candidates.len()));
                 }
-                let last_activity = match observations.last_activity(&owner) {
+                let last_activity = match observations.last_activity(owner) {
                     Ok(last_activity) => last_activity,
-                    Err(_) if unborn_branch(&owner) => {
-                        unborn.push(owner.clone());
-                        return Ok(());
-                    }
+                    Err(_) if unborn_branch(owner) => return Ok(ArtifactRepoOutcome::Unborn),
                     Err(error) => return Err(error),
                 };
                 if last_activity.as_str() > cutoff.as_str() {
-                    active = active.saturating_add(candidates.len());
-                    return Ok(());
+                    return Ok(ArtifactRepoOutcome::Active(candidates.len()));
                 }
-                for candidate in &candidates {
-                    if observations.holds_tracked_files(&owner, &candidate.path)? {
+                for candidate in candidates {
+                    if observations.holds_tracked_files(owner, &candidate.path)? {
                         tracked_here += 1;
                         continue;
                     }
@@ -179,13 +186,36 @@ impl Op for Artifacts {
                             escalate(5, size.allocated),
                             Action::Trash,
                         )
-                        .with_project(&owner),
+                        .with_project(owner),
                     );
                 }
-                Ok(())
+                Ok(ArtifactRepoOutcome::Judged {
+                    tracked: tracked_here,
+                    keypairs: keypairs_here,
+                    repositories: repositories_here,
+                    states: states_here,
+                })
             })();
+            (owner.clone(), judged, result)
+        })?;
+        for (owner, mut judged, result) in evaluated {
             match result {
-                Ok(()) => {
+                Ok(ArtifactRepoOutcome::Orphaned(count)) => {
+                    orphaned = orphaned.saturating_add(count);
+                    orphans.push(owner);
+                }
+                Ok(ArtifactRepoOutcome::Busy(count)) => {
+                    build_active = build_active.saturating_add(count);
+                    busy.push(owner);
+                }
+                Ok(ArtifactRepoOutcome::Unborn) => unborn.push(owner),
+                Ok(ArtifactRepoOutcome::Active(count)) => active = active.saturating_add(count),
+                Ok(ArtifactRepoOutcome::Judged {
+                    tracked: tracked_here,
+                    keypairs: keypairs_here,
+                    repositories: repositories_here,
+                    states: states_here,
+                }) => {
                     findings.append(&mut judged);
                     tracked = tracked.saturating_add(tracked_here);
                     keypairs = keypairs.saturating_add(keypairs_here);
