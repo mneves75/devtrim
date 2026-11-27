@@ -7,10 +7,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::project::{
-    ScanObservations, TrackedIndex, UnreadFolder, activity_window, has_git_marker,
-    is_directory_if_present, iso_days_ago, listed_repositories, nearest_repo, normalized_roots,
-    orphaned_worktree, owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under,
-    unborn_branch, unjudged_finding, unread_folders_finding,
+    ScanObservations, UnreadFolder, activity_window, has_git_marker, is_directory_if_present,
+    iso_days_ago, listed_repositories, nearest_repo, normalized_roots, orphaned_worktree,
+    owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under, unborn_branch,
+    unjudged_finding, unread_folders_finding,
 };
 use super::{
     Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_measure,
@@ -35,18 +35,18 @@ const EXCLUDED_NAMES: &[&str] = &[
 pub(crate) struct Artifacts;
 
 #[derive(Debug)]
-struct ArtifactCandidate {
-    path: PathBuf,
-    evidence: ArtifactEvidence,
+pub(super) struct ArtifactCandidate {
+    pub(super) path: PathBuf,
+    pub(super) evidence: ArtifactEvidence,
 }
 
 #[derive(Debug)]
 pub(super) struct ArtifactEvidence {
-    label: String,
-    corroboration: String,
+    pub(super) label: String,
+    pub(super) corroboration: String,
     /// How the output comes back, named only where its corroboration says
     /// which tool made it; display only.
-    comes_back_with: Option<&'static str>,
+    pub(super) comes_back_with: Option<&'static str>,
 }
 
 impl Op for Artifacts {
@@ -61,7 +61,7 @@ impl Op for Artifacts {
     fn scan(&self, ctx: &Ctx, observations: &ScanObservations) -> Result<Vec<Finding>> {
         observations.process_cwds()?;
         let cutoff = iso_days_ago(ctx.active_days);
-        let mut groups: BTreeMap<PathBuf, Vec<ArtifactCandidate>> = BTreeMap::new();
+        let mut root_scans = Vec::new();
         let mut findings = Vec::new();
         let mut unread = Vec::new();
         let mut home_held = 0usize;
@@ -69,7 +69,21 @@ impl Op for Artifacts {
             if !is_directory_if_present(root)? {
                 continue;
             }
-            for candidate in find_artifacts(root, &mut unread)? {
+            let Some(root) = eligible_project_root(root) else {
+                continue;
+            };
+            let scanned = observations.project_root(root)?;
+            if let Some(error) = &scanned.artifact_root_error {
+                return Err(anyhow::anyhow!("{error}"));
+            }
+            if !scanned.artifacts_stopped {
+                unread.extend(scanned.unread.iter().cloned());
+            }
+            root_scans.push(scanned);
+        }
+        let mut groups: BTreeMap<PathBuf, Vec<&ArtifactCandidate>> = BTreeMap::new();
+        for scanned in &root_scans {
+            for candidate in &scanned.artifacts {
                 match owning_repo(&candidate.path, &ctx.home) {
                     Ok(Some(owner)) => groups.entry(owner).or_default().push(candidate),
                     Ok(None) => {
@@ -129,9 +143,8 @@ impl Op for Artifacts {
                     active = active.saturating_add(candidates.len());
                     return Ok(());
                 }
-                let mut index = TrackedIndex::list(&owner)?;
                 for candidate in &candidates {
-                    if index.holds_tracked_files(&candidate.path)? {
+                    if observations.holds_tracked_files(&owner, &candidate.path)? {
                         tracked_here += 1;
                         continue;
                     }
@@ -508,7 +521,7 @@ impl SiblingHints {
     const BUILD_ZIG: Self = Self(1 << 13);
     const TERRAGRUNT_HCL: Self = Self(1 << 14);
     const NUXT_CONFIG: Self = Self(1 << 15);
-    const ALL: Self = Self(u32::MAX);
+    pub(super) const ALL: Self = Self(u32::MAX);
 
     const fn with(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -603,115 +616,38 @@ fn required_sibling_hint(name: &str) -> Option<SiblingHints> {
     })
 }
 
-/// Corroborated build output under `root`. A folder the walk cannot read is
-/// recorded in `unread` and skipped with everything below it, as a scan root
-/// that cannot be read is; only the root itself failing fails the walk.
-fn find_artifacts(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<ArtifactCandidate>> {
+fn eligible_project_root(root: &Path) -> Option<&Path> {
     if has_node_modules_ancestor(root)
         || root
             .components()
             .any(|component| is_git_metadata_name(component.as_os_str()))
     {
-        return Ok(Vec::new());
+        return None;
     }
-    match std::fs::symlink_metadata(root) {
-        // `walkdir` follows a symlink at the root itself while refusing links
-        // below it; delegate symlink roots there for exact parity.
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            return find_artifacts_walkdir(root, unread);
-        }
-        Ok(metadata) if !metadata.file_type().is_dir() => return Ok(Vec::new()),
-        Ok(_) => {}
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("cannot scan artifacts under {}", root.display()));
-        }
-    }
-    if root.file_name().is_some_and(is_node_modules_name) {
-        return Ok(Vec::new());
-    }
-    find_artifacts_bulk(root, unread)
+    Some(root)
 }
 
-/// Batched `getattrlistbulk(2)` artifact discovery, falling back to `walkdir`
-/// on volumes that do not support it.
-fn find_artifacts_bulk(
-    root: &Path,
-    unread: &mut Vec<UnreadFolder>,
-) -> Result<Vec<ArtifactCandidate>> {
-    let unread_start = unread.len();
-    let mut found = Vec::new();
-    let mut buffer = apfs_size::BulkBuffer::new();
-    let mut subdirs: Vec<std::ffi::OsString> = Vec::new();
-    let mut pending = vec![(root.to_path_buf(), 0usize, SiblingHints::default())];
-    while let Some((directory, depth, parent_siblings)) = pending.pop() {
-        subdirs.clear();
-        let mut has_git = false;
-        let mut hints = DirHints::default();
-        let visit = apfs_size::visit_dir_names(&directory, &mut buffer, |entry| {
-            if is_git_metadata_name(entry.name) {
-                has_git = true;
-                return;
-            }
-            match entry.kind {
-                apfs_size::EntryKind::Directory => {
-                    if !is_node_modules_name(entry.name) {
-                        subdirs.push(entry.name.to_os_string());
-                    }
-                }
-                apfs_size::EntryKind::File => hints.observe_file(entry.name),
-                apfs_size::EntryKind::Other => {}
-            }
-        });
-        match visit {
-            Ok(()) => {}
-            Err(apfs_size::BulkError::Unsupported) => {
-                unread.truncate(unread_start);
-                return find_artifacts_walkdir(root, unread);
-            }
-            Err(apfs_size::BulkError::Io(error)) if depth > 0 => {
-                unread.push(UnreadFolder::new(&directory, &anyhow::Error::from(error)));
-                continue;
-            }
-            Err(apfs_size::BulkError::Io(error)) => {
-                return Err(error)
-                    .with_context(|| format!("cannot scan artifacts under {}", root.display()));
-            }
-        }
-        let evidence = match artifact_evidence_for_dir(
-            &directory,
-            depth,
-            parent_siblings,
-            hints.has_pyvenv_cfg,
-            hints.has_cachedir_tag,
-        ) {
-            Ok(evidence) => evidence,
-            Err(error) if depth > 0 => {
-                unread.push(UnreadFolder::new(&directory, &error));
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        if let Some(evidence) = evidence {
-            if !has_git {
-                found.push(ArtifactCandidate {
-                    path: directory,
-                    evidence,
-                });
-            }
-            continue;
-        }
-        for child in subdirs.drain(..) {
-            pending.push((directory.join(child), depth + 1, hints.siblings));
-        }
+/// Corroborated build output under `root`. A folder the walk cannot read is
+/// recorded in `unread` and skipped with everything below it, as a scan root
+/// that cannot be read is; only the root itself failing fails the walk.
+#[cfg(test)]
+fn find_artifacts(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<ArtifactCandidate>> {
+    let Some(root) = eligible_project_root(root) else {
+        return Ok(Vec::new());
+    };
+    let scanned = super::node_modules::scan_project_root(root)?;
+    if let Some(error) = scanned.artifact_root_error {
+        return Err(anyhow::anyhow!("{error}"));
     }
-    found.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(found)
+    if !scanned.artifacts_stopped {
+        unread.extend(scanned.unread);
+    }
+    Ok(scanned.artifacts)
 }
 
 /// Fallback artifact discovery for symlink roots and volumes without bulk
 /// directory support.
-fn find_artifacts_walkdir(
+pub(super) fn find_artifacts_walkdir(
     root: &Path,
     unread: &mut Vec<UnreadFolder>,
 ) -> Result<Vec<ArtifactCandidate>> {
@@ -768,25 +704,6 @@ fn find_artifacts_walkdir(
 /// name, corroboration and `CACHEDIR.TAG` evidence, whatever its staleness.
 pub(super) fn is_build_output(path: &Path) -> Result<bool> {
     Ok(artifact_evidence(path)?.is_some())
-}
-
-/// Whether a directory already confirmed not to be a symlink is build output,
-/// using parent-directory and contained-file hints collected by the bulk walk.
-pub(super) fn is_build_output_for_dir(
-    path: &Path,
-    depth: usize,
-    parent_siblings: SiblingHints,
-    has_pyvenv_cfg: bool,
-    has_cachedir_tag: bool,
-) -> Result<bool> {
-    Ok(artifact_evidence_for_dir(
-        path,
-        depth,
-        parent_siblings,
-        has_pyvenv_cfg,
-        has_cachedir_tag,
-    )?
-    .is_some())
 }
 
 /// The build output of `owner` that holds `path`: a directory strictly

@@ -30,8 +30,16 @@ impl Op for Purge {
     }
 
     fn scan(&self, ctx: &Ctx, observations: &ScanObservations) -> Result<Vec<Finding>> {
-        let mut findings = NodeModules.scan(ctx, observations)?;
-        findings.extend(Artifacts.scan(ctx, observations)?);
+        let (node_modules_result, artifacts_result) = std::thread::scope(|scope| {
+            let node_modules_handle = scope.spawn(|| NodeModules.scan(ctx, observations));
+            let artifacts_handle = scope.spawn(|| Artifacts.scan(ctx, observations));
+            (node_modules_handle.join(), artifacts_handle.join())
+        });
+        let mut findings = node_modules_result
+            .map_err(|_| anyhow::anyhow!("node-modules scan thread terminated abnormally"))??;
+        let artifact_findings = artifacts_result
+            .map_err(|_| anyhow::anyhow!("artifacts scan thread terminated abnormally"))??;
+        findings.extend(artifact_findings);
         order_by_project(&mut findings);
         Ok(findings)
     }

@@ -52,7 +52,7 @@ impl Op for Leftovers {
     fn scan(
         &self,
         ctx: &Ctx,
-        _observations: &super::project::ScanObservations,
+        observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         let mut unread = Vec::new();
@@ -70,30 +70,44 @@ impl Op for Leftovers {
             if !is_directory_if_present(root)? {
                 continue;
             }
-            for repository in project::repositories_under(root, &mut unread)? {
+            let scanned;
+            let fallback;
+            let repositories: &[PathBuf] = if super::has_node_modules_ancestor(root)
+                || root
+                    .components()
+                    .any(|component| crate::safety::is_git_metadata_name(component.as_os_str()))
+            {
+                fallback = project::repositories_under(root, &mut unread)?;
+                &fallback
+            } else {
+                scanned = observations.project_root(root)?;
+                unread.extend(scanned.repo_unread.iter().cloned());
+                &scanned.repositories
+            };
+            for repository in repositories {
                 // Git fails every query in a worktree whose repository is
                 // gone; there is nothing of its own to judge, as in `worktrees`.
-                if project::orphaned_worktree(&repository).unwrap_or(false) {
+                if project::orphaned_worktree(repository).unwrap_or(false) {
                     continue;
                 }
                 // Refuse to run Git (`.scratch` check-ignore) or inspect
                 // `tmp_objdir` on a `.git` file pointing outside the repository
                 // or normalized scan roots, or through a symlinked ancestor.
-                if has_out_of_scope_gitfile(&repository, &scoped_roots) {
+                if has_out_of_scope_gitfile(repository, &scoped_roots) {
                     continue;
                 }
-                if let Err(error) = scratch_findings(&repository, &mut findings) {
-                    findings.push(project::unjudged_finding(".scratch", &repository, &error));
+                if let Err(error) = scratch_findings(repository, &mut findings) {
+                    findings.push(project::unjudged_finding(".scratch", repository, &error));
                 }
                 if let Err(error) = tmp_objdir_findings(
-                    &repository,
+                    repository,
                     &scoped_roots,
                     &mut seen_objects_dirs,
                     &mut findings,
                 ) {
                     findings.push(project::unjudged_finding(
                         "Git tmp_objdir",
-                        &repository,
+                        repository,
                         &error,
                     ));
                 }

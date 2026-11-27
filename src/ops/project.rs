@@ -12,12 +12,64 @@ use crate::report::{Action, Finding};
 use crate::safety::is_git_metadata_name;
 
 type ActivityObservation = Arc<OnceLock<std::result::Result<String, String>>>;
+type ProjectRootObservation = Arc<OnceLock<std::result::Result<Arc<ProjectRootScan>, String>>>;
+type TrackedObservation = Arc<OnceLock<std::result::Result<Arc<Mutex<TrackedIndex>>, String>>>;
+
+#[derive(Default)]
+pub(crate) struct ProjectRootScan {
+    pub(crate) node_modules: Vec<PathBuf>,
+    pub(super) artifacts: Vec<super::artifacts::ArtifactCandidate>,
+    pub(crate) repositories: Vec<PathBuf>,
+    pub(crate) unread: Vec<UnreadFolder>,
+    pub(crate) repo_unread: Vec<UnreadFolder>,
+    pub(super) artifacts_stopped: bool,
+    pub(super) artifact_root_error: Option<String>,
+}
+
+impl ProjectRootScan {
+    pub(super) fn merge(&mut self, other: Self) {
+        self.node_modules.extend(other.node_modules);
+        self.artifacts.extend(other.artifacts);
+        self.repositories.extend(other.repositories);
+        self.unread.extend(other.unread);
+        self.repo_unread.extend(other.repo_unread);
+    }
+
+    pub(super) fn sort(&mut self) {
+        self.node_modules.sort();
+        self.artifacts
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        self.repositories.sort();
+        self.unread
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        self.unread.dedup_by(|left, right| left.path == right.path);
+        self.repo_unread
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        self.repo_unread
+            .dedup_by(|left, right| left.path == right.path);
+    }
+}
+
+fn observation_slot<T>(
+    observations: &Mutex<BTreeMap<PathBuf, Arc<OnceLock<T>>>>,
+    key: &Path,
+) -> Arc<OnceLock<T>> {
+    let mut map = observations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(
+        map.entry(key.to_path_buf())
+            .or_insert_with(|| Arc::new(OnceLock::new())),
+    )
+}
 
 /// Observations belong to one preview only; apply always probes again.
 #[derive(Default)]
 pub(crate) struct ScanObservations {
     process_cwds: OnceLock<std::result::Result<Vec<PathBuf>, String>>,
     commits: Mutex<BTreeMap<PathBuf, ActivityObservation>>,
+    project_roots: Mutex<BTreeMap<PathBuf, ProjectRootObservation>>,
+    tracked: Mutex<BTreeMap<PathBuf, TrackedObservation>>,
 }
 
 impl ScanObservations {
@@ -34,17 +86,7 @@ impl ScanObservations {
     }
 
     pub(crate) fn last_activity(&self, root: &Path) -> Result<String> {
-        let commit = {
-            let mut commits = self
-                .commits
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(
-                commits
-                    .entry(root.to_path_buf())
-                    .or_insert_with(|| Arc::new(OnceLock::new())),
-            )
-        };
+        let commit = observation_slot(&self.commits, root);
         match commit.get_or_init(|| repo_last_activity(root).map_err(|error| format!("{error:#}")))
         {
             Ok(last_activity) => Ok(last_activity.clone()),
@@ -52,11 +94,39 @@ impl ScanObservations {
         }
     }
 
+    pub(crate) fn project_root(&self, root: &Path) -> Result<Arc<ProjectRootScan>> {
+        let slot = observation_slot(&self.project_roots, root);
+        match slot.get_or_init(|| {
+            super::node_modules::scan_project_root(root)
+                .map(Arc::new)
+                .map_err(|error| format!("{error:#}"))
+        }) {
+            Ok(scanned) => Ok(Arc::clone(scanned)),
+            Err(error) => Err(anyhow::anyhow!("{error}")),
+        }
+    }
+
+    pub(crate) fn holds_tracked_files(&self, root: &Path, target: &Path) -> Result<bool> {
+        let slot = observation_slot(&self.tracked, root);
+        let index = match slot.get_or_init(|| {
+            TrackedIndex::list(root)
+                .map(|index| Arc::new(Mutex::new(index)))
+                .map_err(|error| format!("{error:#}"))
+        }) {
+            Ok(index) => Arc::clone(index),
+            Err(error) => return Err(anyhow::anyhow!("{error}")),
+        };
+        let mut index = index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        index.holds_tracked_files(target)
+    }
+
     #[cfg(test)]
     pub(crate) fn with_process_cwds(process_cwds: Vec<PathBuf>) -> Self {
         Self {
             process_cwds: OnceLock::from(Ok(process_cwds)),
-            commits: Mutex::new(BTreeMap::new()),
+            ..Self::default()
         }
     }
 }
@@ -136,12 +206,34 @@ fn repositories_under_bulk(root: &Path, unread: &mut Vec<UnreadFolder>) -> Resul
     let unread_start = unread.len();
     let mut found = Vec::new();
     let mut buffer = apfs_size::BulkBuffer::new();
+    let supported = collect_repositories_in_subtrees(
+        vec![(root.to_path_buf(), 0usize)],
+        &mut buffer,
+        &mut found,
+        unread,
+    )
+    .with_context(|| format!("cannot look for repositories under {}", root.display()))?;
+    if !supported {
+        unread.truncate(unread_start);
+        return repositories_under_walkdir(root, unread);
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Walks `pending` `(directory, depth)` roots for repositories and worktrees
+/// using `buffer`, returning `false` if any directory lacks bulk support.
+pub(super) fn collect_repositories_in_subtrees(
+    mut pending: Vec<(PathBuf, usize)>,
+    buffer: &mut apfs_size::BulkBuffer,
+    found: &mut Vec<PathBuf>,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<bool> {
     let mut subdirs: Vec<std::ffi::OsString> = Vec::new();
-    let mut pending = vec![(root.to_path_buf(), 0usize)];
     while let Some((directory, depth)) = pending.pop() {
         subdirs.clear();
         let mut saw_git_marker = false;
-        let visit = apfs_size::visit_dir_names(&directory, &mut buffer, |entry| {
+        let visit = apfs_size::visit_dir_names(&directory, buffer, |entry| {
             if is_git_metadata_name(entry.name) {
                 saw_git_marker = true;
                 return;
@@ -154,18 +246,13 @@ fn repositories_under_bulk(root: &Path, unread: &mut Vec<UnreadFolder>) -> Resul
         });
         match visit {
             Ok(()) => {}
-            Err(apfs_size::BulkError::Unsupported) => {
-                unread.truncate(unread_start);
-                return repositories_under_walkdir(root, unread);
-            }
+            Err(apfs_size::BulkError::Unsupported) => return Ok(false),
             Err(apfs_size::BulkError::Io(error)) if depth > 0 => {
                 unread.push(UnreadFolder::new(&directory, &anyhow::Error::from(error)));
                 continue;
             }
             Err(apfs_size::BulkError::Io(error)) => {
-                return Err(error).with_context(|| {
-                    format!("cannot look for repositories under {}", root.display())
-                });
+                return Err(error.into());
             }
         }
         if saw_git_marker {
@@ -187,13 +274,15 @@ fn repositories_under_bulk(root: &Path, unread: &mut Vec<UnreadFolder>) -> Resul
             pending.push((directory.join(child), depth + 1));
         }
     }
-    found.sort();
-    Ok(found)
+    Ok(true)
 }
 
 /// Fallback repository discovery for symlink roots and volumes without bulk
 /// directory support.
-fn repositories_under_walkdir(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<PathBuf>> {
+pub(super) fn repositories_under_walkdir(
+    root: &Path,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     let mut entries = walkdir::WalkDir::new(root)
         .follow_links(false)
@@ -1267,6 +1356,7 @@ fn holds_no_commit(listing: &[u8]) -> bool {
 /// A folder a project walk could not read, and why. Like a scan root that
 /// cannot be read, it bounds where the scan looked, never what may go: nothing
 /// in it is offered, and the scan says so.
+#[derive(Clone)]
 pub(crate) struct UnreadFolder {
     pub(crate) path: PathBuf,
     pub(crate) reason: String,
