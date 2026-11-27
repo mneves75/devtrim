@@ -844,7 +844,7 @@ It uses an isolated HOME and PATH, explicit terminal dimensions, visible
 content assertions, and bounded waits.
 
 Feature evals (`tests/evals.rs`, `tests/eval_system.rs`,
-`tests/eval_reports.rs`, `tests/eval_safety.rs`) run the real binary against
+`tests/eval_reports.rs`, `tests/eval_safety.rs`, `tests/eval_review.rs`) run the real binary against
 planted fixtures. Report evals check fixture-derived content and exit codes;
 previews must change nothing on disk, and applies must change exactly the
 previewed targets while preserving near misses. Named planted mutants in
