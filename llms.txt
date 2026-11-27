@@ -1,6 +1,6 @@
 # devtrim
 
-> Safe macOS developer-machine disk hygiene CLI & TUI (`v0.17.1`): measure, classify, and trim caches, stale build artifacts, `node_modules`, Xcode DerivedData/DeviceSupport, simulators, Docker/Buildx caches, Swift toolchains, installers, and agent caches — preview-by-default, Trash-first for filesystem targets, identity-verified, and write-ahead journaled.
+> Safe macOS developer-machine disk hygiene CLI & TUI (`v0.17.2`): measure, classify, and trim caches, stale build artifacts, `node_modules`, Xcode DerivedData/DeviceSupport, simulators, Docker/Buildx caches, Swift toolchains, installers, and agent caches — preview-by-default, Trash-first for filesystem targets, identity-verified, and write-ahead journaled.
 
 - Website: https://mneves75.github.io/devtrim/
 - Full Manual: https://mneves75.github.io/devtrim/MANUAL.html
