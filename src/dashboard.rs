@@ -100,9 +100,360 @@ fn volume(root: &Path) -> Volume {
     }
 }
 
+struct BulkUnsupported;
+
+struct BulkChild {
+    name: std::ffi::OsString,
+    kind: apfs_size::EntryKind,
+    dev: u64,
+    ino: u64,
+    nlink: u32,
+    allocated: u64,
+}
+
+struct DirFrame {
+    path: PathBuf,
+    child_depth: usize,
+    parent_node: usize,
+    children: Vec<BulkChild>,
+}
+
+fn read_sorted_bulk_children(
+    directory: &Path,
+    buffer: &mut apfs_size::BulkBuffer,
+    nodes: &mut [Node],
+    node_index: usize,
+    coverage: &mut Coverage,
+) -> std::result::Result<Vec<BulkChild>, BulkUnsupported> {
+    let mut children = Vec::new();
+    let visit =
+        apfs_size::visit_dir_bulk(directory, apfs_size::BulkMode::SizeOnly, buffer, |entry| {
+            children.push(BulkChild {
+                name: entry.name.to_os_string(),
+                kind: entry.kind,
+                dev: entry.dev,
+                ino: entry.ino,
+                nlink: entry.nlink,
+                allocated: entry.allocated,
+            });
+            Ok::<(), std::convert::Infallible>(())
+        });
+    match visit {
+        Ok(()) => {}
+        Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Unsupported)) => {
+            return Err(BulkUnsupported);
+        }
+        Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Io(error))) => {
+            nodes[node_index].partial = true;
+            coverage.issue(format!("cannot read {}: {error}", directory.display()));
+        }
+        Err(apfs_size::BulkVisitError::Visitor(never)) => match never {},
+    }
+    // Descending order so `pop()` visits children in ascending `file_name` order.
+    children.sort_by(|left, right| right.name.cmp(&left.name));
+    Ok(children)
+}
+
+fn allocate_node_or_summarize(
+    retained: bool,
+    parent: usize,
+    make_path: impl FnOnce() -> PathBuf,
+    kind: &'static str,
+    nodes: &mut Vec<Node>,
+    parents: &mut Vec<usize>,
+    coverage: &mut Coverage,
+) -> usize {
+    if retained {
+        nodes.push(Node::new(&make_path(), kind));
+        parents.push(parent);
+        nodes.len() - 1
+    } else {
+        nodes[parent].summarized_entries += 1;
+        coverage.summarized_entries += 1;
+        parent
+    }
+}
+
+fn add_node_bytes(
+    node: &mut Node,
+    bytes: u64,
+    retained: bool,
+    make_path: impl FnOnce() -> PathBuf,
+    coverage: &mut Coverage,
+) {
+    match node.bytes.checked_add(bytes) {
+        Some(total) => {
+            node.bytes = total;
+            if !retained {
+                node.summarized_bytes = total;
+            }
+        }
+        None => {
+            node.partial = true;
+            coverage.issue(format!("cannot size {}", make_path().display()));
+        }
+    }
+}
+
+struct InventoryState<'a> {
+    device: u64,
+    nodes: &'a mut Vec<Node>,
+    parents: &'a mut Vec<usize>,
+    usage: &'a mut crate::safety::DiskUsage,
+    coverage: &'a mut Coverage,
+}
+
+fn process_other_entry(
+    child_path: &Path,
+    parent: usize,
+    retained: bool,
+    state: &mut InventoryState<'_>,
+) {
+    let metadata = match fs::symlink_metadata(child_path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            state.nodes[parent].partial = true;
+            state
+                .coverage
+                .issue(format!("cannot inspect {}: {error}", child_path.display()));
+            return;
+        }
+    };
+    let kind = if metadata.is_symlink() {
+        "symlink"
+    } else if metadata.is_dir() {
+        "directory"
+    } else if metadata.is_file() {
+        "file"
+    } else {
+        "special"
+    };
+    let current = allocate_node_or_summarize(
+        retained,
+        parent,
+        || child_path.to_path_buf(),
+        kind,
+        state.nodes,
+        state.parents,
+        state.coverage,
+    );
+    if metadata.dev() != state.device {
+        state.nodes[current].partial = true;
+        state.coverage.issue(format!(
+            "foreign filesystem not traversed: {}",
+            child_path.display()
+        ));
+    } else if metadata.is_file() || metadata.is_symlink() {
+        let Some(bytes) = state.usage.add(&metadata, child_path).ok() else {
+            state.nodes[current].partial = true;
+            state
+                .coverage
+                .issue(format!("cannot size {}", child_path.display()));
+            return;
+        };
+        add_node_bytes(
+            &mut state.nodes[current],
+            bytes,
+            retained,
+            || child_path.to_path_buf(),
+            state.coverage,
+        );
+    }
+}
+
+fn fold_inventory_nodes(
+    mut nodes: Vec<Node>,
+    mut parents: Vec<usize>,
+    mut coverage: Coverage,
+) -> Result<(Node, Coverage)> {
+    coverage.retained_nodes = nodes.len();
+    // Preorder puts every node after its parent, so popping from the end folds
+    // each node into its parent only once all its descendants are folded into
+    // it. Memory was already bounded during the walk, by `MAX_NODES`.
+    while nodes.len() > 1 {
+        if let (Some(mut child), Some(parent)) = (nodes.pop(), parents.pop()) {
+            child.children.sort_by(|left, right| {
+                right
+                    .bytes
+                    .cmp(&left.bytes)
+                    .then_with(|| left.path.cmp(&right.path))
+            });
+            let owner = &mut nodes[parent];
+            owner.partial |= child.partial;
+            if let Some(bytes) = owner.bytes.checked_add(child.bytes) {
+                owner.bytes = bytes;
+            } else {
+                owner.partial = true;
+                coverage.issue(format!("size overflow at {}", owner.path));
+            }
+            owner.children.push(child);
+        }
+    }
+    let mut root = nodes.pop().context("inventory root missing")?;
+    root.children.sort_by(|left, right| {
+        right
+            .bytes
+            .cmp(&left.bytes)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok((root, coverage))
+}
+
 /// One preorder walk; each measured byte is assigned once, then folded into
 /// retained ancestors in reverse order. Omitting visual detail never omits bytes.
 fn inventory(root: &Path) -> Result<(Node, Coverage)> {
+    let root_metadata =
+        fs::symlink_metadata(root).with_context(|| format!("cannot inspect {}", root.display()))?;
+    if root_metadata.file_type().is_symlink() {
+        return inventory_walkdir(root);
+    }
+    let device = root_metadata.dev();
+    match inventory_bulk(root, device) {
+        Ok(result) => Ok(result),
+        Err(BulkUnsupported) => inventory_walkdir(root),
+    }
+}
+
+fn inventory_bulk(
+    root: &Path,
+    device: u64,
+) -> std::result::Result<(Node, Coverage), BulkUnsupported> {
+    let mut nodes = vec![Node::new(root, "directory")];
+    let mut usage = crate::safety::DiskUsage::default();
+    let mut parents = vec![0];
+    let mut coverage = Coverage {
+        max_depth: MAX_DEPTH,
+        max_nodes: MAX_NODES,
+        ..Coverage::default()
+    };
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let root_children = read_sorted_bulk_children(root, &mut buffer, &mut nodes, 0, &mut coverage)?;
+    let mut stack = vec![DirFrame {
+        path: root.to_path_buf(),
+        child_depth: 1,
+        parent_node: 0,
+        children: root_children,
+    }];
+    let mut state = InventoryState {
+        device,
+        nodes: &mut nodes,
+        parents: &mut parents,
+        usage: &mut usage,
+        coverage: &mut coverage,
+    };
+
+    while let Some(frame) = stack.last_mut() {
+        let Some(entry) = frame.children.pop() else {
+            stack.pop();
+            continue;
+        };
+        let retained = frame.child_depth <= MAX_DEPTH
+            && state.nodes.len() < MAX_NODES
+            && (frame.child_depth == 1 || state.nodes.len() < MAX_NODES - ROOT_RESERVE);
+        if let Some(child_frame) = visit_bulk_entry(
+            entry,
+            &frame.path,
+            frame.child_depth,
+            frame.parent_node,
+            retained,
+            &mut state,
+            &mut buffer,
+        )? {
+            stack.push(child_frame);
+        }
+    }
+
+    match fold_inventory_nodes(nodes, parents, coverage) {
+        Ok(result) => Ok(result),
+        Err(_) => Err(BulkUnsupported),
+    }
+}
+
+fn visit_bulk_entry(
+    entry: BulkChild,
+    dir_path: &Path,
+    child_depth: usize,
+    parent: usize,
+    retained: bool,
+    state: &mut InventoryState<'_>,
+    buffer: &mut apfs_size::BulkBuffer,
+) -> std::result::Result<Option<DirFrame>, BulkUnsupported> {
+    match entry.kind {
+        apfs_size::EntryKind::Other => {
+            let child_path = dir_path.join(&entry.name);
+            process_other_entry(&child_path, parent, retained, state);
+            Ok(None)
+        }
+        apfs_size::EntryKind::File => {
+            let current = allocate_node_or_summarize(
+                retained,
+                parent,
+                || dir_path.join(&entry.name),
+                "file",
+                state.nodes,
+                state.parents,
+                state.coverage,
+            );
+            if entry.dev != state.device {
+                state.nodes[current].partial = true;
+                state.coverage.issue(format!(
+                    "foreign filesystem not traversed: {}",
+                    dir_path.join(&entry.name).display()
+                ));
+            } else {
+                let bytes =
+                    if entry.nlink > 1 && !state.usage.record_hard_link(entry.dev, entry.ino) {
+                        0
+                    } else {
+                        entry.allocated
+                    };
+                add_node_bytes(
+                    &mut state.nodes[current],
+                    bytes,
+                    retained,
+                    || dir_path.join(&entry.name),
+                    state.coverage,
+                );
+            }
+            Ok(None)
+        }
+        apfs_size::EntryKind::Directory => {
+            let child_path = dir_path.join(&entry.name);
+            let current = allocate_node_or_summarize(
+                retained,
+                parent,
+                || child_path.clone(),
+                "directory",
+                state.nodes,
+                state.parents,
+                state.coverage,
+            );
+            if entry.dev != state.device {
+                state.nodes[current].partial = true;
+                state.coverage.issue(format!(
+                    "foreign filesystem not traversed: {}",
+                    child_path.display()
+                ));
+                return Ok(None);
+            }
+            let grandchildren = read_sorted_bulk_children(
+                &child_path,
+                buffer,
+                state.nodes,
+                current,
+                state.coverage,
+            )?;
+            Ok((!grandchildren.is_empty()).then_some(DirFrame {
+                path: child_path,
+                child_depth: child_depth + 1,
+                parent_node: current,
+                children: grandchildren,
+            }))
+        }
+    }
+}
+
+fn inventory_walkdir(root: &Path) -> Result<(Node, Coverage)> {
     let device = fs::metadata(root)
         .with_context(|| format!("cannot inspect {}", root.display()))?
         .dev();
@@ -194,37 +545,7 @@ fn inventory(root: &Path) -> Result<(Node, Coverage)> {
             ancestors.push(current);
         }
     }
-    coverage.retained_nodes = nodes.len();
-    // Preorder puts every node after its parent, so popping from the end folds
-    // each node into its parent only once all its descendants are folded into
-    // it. Memory was already bounded during the walk, by `MAX_NODES`.
-    while nodes.len() > 1 {
-        if let (Some(mut child), Some(parent)) = (nodes.pop(), parents.pop()) {
-            child.children.sort_by(|left, right| {
-                right
-                    .bytes
-                    .cmp(&left.bytes)
-                    .then_with(|| left.path.cmp(&right.path))
-            });
-            let owner = &mut nodes[parent];
-            owner.partial |= child.partial;
-            if let Some(bytes) = owner.bytes.checked_add(child.bytes) {
-                owner.bytes = bytes;
-            } else {
-                owner.partial = true;
-                coverage.issue(format!("size overflow at {}", owner.path));
-            }
-            owner.children.push(child);
-        }
-    }
-    let mut root = nodes.pop().context("inventory root missing")?;
-    root.children.sort_by(|left, right| {
-        right
-            .bytes
-            .cmp(&left.bytes)
-            .then_with(|| left.path.cmp(&right.path))
-    });
-    Ok((root, coverage))
+    fold_inventory_nodes(nodes, parents, coverage)
 }
 
 #[derive(Serialize)]
@@ -491,9 +812,21 @@ pub(crate) fn run(
     {
         bail!("dashboard root is not a directory: {}", root.display());
     }
-    let (inventory, coverage) = inventory(&root)?;
-    let volume = volume(&root);
-    let recommendations = recommendations(ctx, &root);
+    let (inventory_result, volume_result, recommendations_result) = std::thread::scope(|scope| {
+        let volume_handle = scope.spawn(|| volume(&root));
+        let recommendations_handle = scope.spawn(|| recommendations(ctx, &root));
+        let inventory_result = inventory(&root);
+        let volume_result = volume_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("dashboard volume worker panicked"));
+        let recommendations_result = recommendations_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("dashboard recommendations worker panicked"));
+        (inventory_result, volume_result, recommendations_result)
+    });
+    let (inventory, coverage) = inventory_result?;
+    let volume = volume_result?;
+    let recommendations = recommendations_result?;
     let mut errors = Vec::new();
     if coverage.partial {
         errors.push(format!(

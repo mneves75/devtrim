@@ -2157,6 +2157,12 @@ impl DiskUsage {
         allocated
     }
 
+    /// Records `(dev, ino)` for a file with multiple links; returns `true` the
+    /// first time that identity is seen so callers allocate it once.
+    pub(crate) fn record_hard_link(&mut self, dev: u64, ino: u64) -> bool {
+        self.linked.insert((dev, ino))
+    }
+
     /// The walk's `Size`, given the allocated bytes `add` returned in total.
     pub(crate) fn size(&self, allocated: u64) -> Size {
         Size::new(
@@ -2231,6 +2237,96 @@ impl Measured {
 }
 
 pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            return Measured {
+                bytes: 0,
+                unread: 1,
+            };
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return measure_lenient_walkdir(path, skip);
+    }
+    if metadata.file_type().is_file() {
+        return match allocated_bytes(&metadata, path) {
+            Ok(bytes) => Measured { bytes, unread: 0 },
+            Err(_) => Measured {
+                bytes: 0,
+                unread: 1,
+            },
+        };
+    }
+    if !metadata.file_type().is_dir() {
+        return Measured {
+            bytes: 0,
+            unread: 0,
+        };
+    }
+    match measure_lenient_bulk(path, metadata.dev(), skip) {
+        Some(measured) => measured,
+        None => measure_lenient_walkdir(path, skip),
+    }
+}
+
+fn measure_lenient_bulk(path: &Path, root_dev: u64, skip: &BTreeSet<PathBuf>) -> Option<Measured> {
+    let mut measured = Measured {
+        bytes: 0,
+        unread: 0,
+    };
+    let mut hard_links = std::collections::HashSet::new();
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let visit = apfs_size::visit_dir_bulk(
+            &directory,
+            apfs_size::BulkMode::SizeOnly,
+            &mut buffer,
+            |entry| {
+                match entry.kind {
+                    apfs_size::EntryKind::Directory => {
+                        if entry.dev == root_dev {
+                            let child = directory.join(entry.name);
+                            if skip.is_empty() || !skip.contains(&child) {
+                                pending.push(child);
+                            }
+                        }
+                    }
+                    apfs_size::EntryKind::File => {
+                        if entry.dev != root_dev {
+                            return Ok(());
+                        }
+                        let bytes = if entry.nlink > 1 && !hard_links.insert((entry.dev, entry.ino))
+                        {
+                            0
+                        } else {
+                            entry.allocated
+                        };
+                        measured.bytes = measured.bytes.saturating_add(bytes);
+                    }
+                    apfs_size::EntryKind::Other => {}
+                }
+                Ok::<(), std::convert::Infallible>(())
+            },
+        );
+        match visit {
+            Ok(()) => {}
+            Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Unsupported)) => {
+                return None;
+            }
+            Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Io(_))) => {
+                measured.unread = measured.unread.saturating_add(1);
+            }
+            Err(apfs_size::BulkVisitError::Visitor(never)) => match never {},
+        }
+    }
+    Some(measured)
+}
+
+fn measure_lenient_walkdir(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured {
     let mut measured = Measured {
         bytes: 0,
         unread: 0,
@@ -3160,6 +3256,34 @@ mod tests {
         let size = file_size(&std::fs::symlink_metadata(&file).unwrap(), &file).unwrap();
         assert!(about(1).contains(&size.allocated));
         assert_eq!(size.frees_at_least, Some(0), "{size:?}");
+    }
+
+    #[test]
+    fn measure_lenient_respects_skip_counts_unread_and_deduplicates_hard_links() {
+        let fixture = crate::ops::TestFixture::new("devtrim-measure-lenient");
+        let root = fixture.path().join("tree");
+        let skipped = root.join("nested-worktree");
+        std::fs::create_dir_all(root.join("keep")).unwrap();
+        std::fs::create_dir_all(&skipped).unwrap();
+        let kept_file = root.join("keep/data.bin");
+        std::fs::write(&kept_file, vec![b'k'; 64 * 1024]).unwrap();
+        std::fs::hard_link(&kept_file, root.join("keep/alias.bin")).unwrap();
+        std::fs::write(skipped.join("ignored.bin"), vec![b's'; 256 * 1024]).unwrap();
+        let _sealed = crate::ops::Unreadable::new(&root.join("locked"), 0o000);
+
+        let mut skip = BTreeSet::new();
+        skip.insert(skipped);
+        let measured = measure_lenient(&root, &skip);
+        let expected_bytes =
+            allocated_bytes(&std::fs::symlink_metadata(&kept_file).unwrap(), &kept_file).unwrap();
+        assert_eq!(measured.bytes, expected_bytes);
+        assert_eq!(measured.unread, 1);
+
+        let link = fixture.path().join("tree-link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let mut skip_via_link = BTreeSet::new();
+        skip_via_link.insert(link.join("nested-worktree"));
+        assert_eq!(measure_lenient(&link, &skip_via_link).bytes, expected_bytes);
     }
 
     /// A tree holding a file and its clone allocates two copies, a further

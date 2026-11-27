@@ -12,14 +12,14 @@
 //! a real home directory takes minutes and a frozen interface is not an
 //! acceptable way to spend them. Leaving a directory cancels its in-flight walk.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
@@ -171,6 +171,103 @@ impl Level {
     }
 }
 
+struct BulkUnsupported;
+
+enum BulkTreeStop {
+    Overflow,
+}
+
+struct PendingDir {
+    path: PathBuf,
+    name: OsString,
+    subdirs: Vec<(PathBuf, OsString)>,
+    level: Level,
+    opened: bool,
+}
+
+struct BulkTreeState<'a> {
+    device: u64,
+    total: u64,
+    partial: bool,
+    linked: bool,
+    hard_links: HashSet<(u64, u64)>,
+    cancel: &'a AtomicBool,
+}
+
+impl BulkTreeState<'_> {
+    fn open_frame(
+        &mut self,
+        frame: &mut PendingDir,
+        buffer: &mut apfs_size::BulkBuffer,
+    ) -> std::result::Result<bool, BulkUnsupported> {
+        let dir_path = &frame.path;
+        let level = &mut frame.level;
+        let mut subdirs = Vec::new();
+        let visit =
+            apfs_size::visit_dir_bulk(dir_path, apfs_size::BulkMode::SizeOnly, buffer, |entry| {
+                if crate::safety::is_git_metadata_name(entry.name) {
+                    level.repository = true;
+                }
+                match entry.kind {
+                    apfs_size::EntryKind::Directory => {
+                        if entry.dev != self.device {
+                            self.partial = true;
+                            level.offer(0, entry.name, true, None);
+                        } else {
+                            subdirs.push((dir_path.join(entry.name), entry.name.to_os_string()));
+                        }
+                    }
+                    apfs_size::EntryKind::File => self.visit_file(level, entry)?,
+                    apfs_size::EntryKind::Other => {}
+                }
+                Ok(())
+            });
+        match visit {
+            Ok(()) => {}
+            Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Unsupported)) => {
+                return Err(BulkUnsupported);
+            }
+            Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Io(_))) => {
+                self.partial = true;
+            }
+            Err(apfs_size::BulkVisitError::Visitor(BulkTreeStop::Overflow)) => {
+                return Ok(true);
+            }
+        }
+        subdirs.reverse();
+        frame.subdirs = subdirs;
+        Ok(false)
+    }
+
+    fn visit_file(
+        &mut self,
+        level: &mut Level,
+        entry: apfs_size::BulkEntryRef<'_>,
+    ) -> std::result::Result<(), BulkTreeStop> {
+        if entry.dev != self.device {
+            self.partial = true;
+            return Ok(());
+        }
+        let bytes = if entry.nlink > 1 {
+            self.linked = true;
+            if self.hard_links.insert((entry.dev, entry.ino)) {
+                entry.allocated
+            } else {
+                0
+            }
+        } else {
+            entry.allocated
+        };
+        level.offer(bytes, entry.name, false, None);
+        let Some(sum) = self.total.checked_add(bytes) else {
+            self.partial = true;
+            return Err(BulkTreeStop::Overflow);
+        };
+        self.total = sum;
+        Ok(())
+    }
+}
+
 /// Recursively sums regular-file sizes below `path`, and finds in the same
 /// walk where most of them are ([`Culprit`]).
 ///
@@ -179,6 +276,90 @@ impl Level {
 /// that followed a link would attribute another tree's bytes to this one.
 /// Returns the total, whether anything was unreadable, and the culprit.
 fn measure_tree(path: &Path, device: u64, cancel: &AtomicBool) -> (u64, bool, Option<Culprit>) {
+    if !std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_dir()) {
+        return measure_tree_walkdir(path, device, cancel);
+    }
+    match measure_tree_bulk(path, device, cancel) {
+        Ok(result) => result,
+        Err(BulkUnsupported) => measure_tree_walkdir(path, device, cancel),
+    }
+}
+
+fn measure_tree_bulk(
+    path: &Path,
+    device: u64,
+    cancel: &AtomicBool,
+) -> std::result::Result<(u64, bool, Option<Culprit>), BulkUnsupported> {
+    let mut state = BulkTreeState {
+        device,
+        total: 0,
+        partial: false,
+        linked: false,
+        hard_links: HashSet::new(),
+        cancel,
+    };
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let mut root_chain = None;
+    let mut stack = vec![PendingDir {
+        path: path.to_path_buf(),
+        name: OsString::new(),
+        subdirs: Vec::new(),
+        level: Level::default(),
+        opened: false,
+    }];
+
+    while let Some(frame) = stack.last_mut() {
+        if state.cancel.load(Ordering::Relaxed) {
+            return Ok((state.total, true, None));
+        }
+        if !frame.opened {
+            frame.opened = true;
+            if state.open_frame(frame, &mut buffer)? {
+                return Ok((state.total, true, None));
+            }
+        }
+        if let Some((child_path, child_name)) = frame.subdirs.pop() {
+            stack.push(PendingDir {
+                path: child_path,
+                name: child_name,
+                subdirs: Vec::new(),
+                level: Level::default(),
+                opened: false,
+            });
+            continue;
+        }
+        let Some(finished) = stack.pop() else {
+            break;
+        };
+        let own_total = finished.level.total;
+        let unit = finished.level.repository || is_whole_unit(&finished.name);
+        let chain = finished.level.chain();
+        if let Some(parent) = stack.last_mut() {
+            parent.level.offer(
+                own_total,
+                &finished.name,
+                true,
+                if unit { None } else { chain },
+            );
+        } else {
+            root_chain = chain;
+        }
+    }
+
+    let culprit = root_chain.map(|(chain, bytes, last_is_dir)| Culprit {
+        chain,
+        bytes,
+        last_is_dir,
+        lower_bound: state.partial || state.linked,
+    });
+    Ok((state.total, state.partial, culprit))
+}
+
+fn measure_tree_walkdir(
+    path: &Path,
+    device: u64,
+    cancel: &AtomicBool,
+) -> (u64, bool, Option<Culprit>) {
     let mut total = 0u64;
     let mut usage = crate::safety::DiskUsage::default();
     let mut partial = false;
@@ -303,6 +484,65 @@ fn child_paths(directory: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+fn measure_child(path: PathBuf, device: u64, cancel: &AtomicBool) -> Result<Option<Entry>> {
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        // Only a genuine disappearance between listing and stat is a race
+        // worth ignoring. Any other error would otherwise drop a child from
+        // the view with no `(partial)` marker and no error, which
+        // contradicts this command's lower-bound disclosure.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
+        }
+    };
+    // A symlink is listed at its own size, never resolved: its target may
+    // live outside this tree entirely.
+    if metadata.file_type().is_dir() {
+        // A foreign mount must be refused BEFORE the walk starts.
+        // Entering a mount would authorize that mount's device and traverse
+        // all of it, which is exactly the network-mount hang the boundary
+        // exists to prevent.
+        //
+        // What this does NOT catch, and cannot: the macOS system/data
+        // firmlink. `/`, `/System/Volumes/Data` and `/Users` all report the
+        // same `st_dev` even though `df` shows separate APFS volumes, so
+        // only `statfs` distinguishes them. That is correct to allow —
+        // walking `/` into the user's own data is what analyzing `/` means
+        // — but it is why measuring `/` is slow, not a broken boundary.
+        if metadata.dev() != device {
+            return Ok(Some(Entry {
+                path,
+                size: 0,
+                is_dir: true,
+                partial: true,
+                culprit: None,
+            }));
+        }
+        let (size, partial, culprit) = measure_tree(&path, device, cancel);
+        Ok(Some(Entry {
+            path,
+            size,
+            is_dir: true,
+            partial,
+            culprit,
+        }))
+    } else {
+        // A file that cannot be sized is a lower bound, never a guess.
+        let (size, partial) = match crate::safety::allocated_bytes(&metadata, &path) {
+            Ok(size) => (size, false),
+            Err(_) => (0, true),
+        };
+        Ok(Some(Entry {
+            path,
+            size,
+            is_dir: false,
+            partial,
+            culprit: None,
+        }))
+    }
+}
+
 /// Measures every immediate child of `directory`, reporting each as it finishes.
 fn measure_children(
     directory: &Path,
@@ -312,71 +552,62 @@ fn measure_children(
     let device = std::fs::symlink_metadata(directory)
         .with_context(|| format!("cannot inspect {}", directory.display()))?
         .dev();
-    for path in child_paths(directory)? {
-        if cancel.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-        let metadata = match std::fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            // Only a genuine disappearance between listing and stat is a race
-            // worth ignoring. Any other error would otherwise drop a child from
-            // the view with no `(partial)` marker and no error, which
-            // contradicts this command's lower-bound disclosure.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
+    let paths = child_paths(directory)?;
+    let max_workers = std::thread::available_parallelism()
+        .map_or(4, std::num::NonZeroUsize::get)
+        .min(8);
+    let workers = paths.len().min(max_workers);
+    if workers <= 1 {
+        for path in paths {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(());
             }
-        };
-        // A symlink is listed at its own size, never resolved: its target may
-        // live outside this tree entirely.
-        if metadata.file_type().is_dir() {
-            // A foreign mount must be refused BEFORE the walk starts.
-            // `measure_tree` roots a new `WalkDir` at this child, and
-            // `same_file_system` takes its boundary from the walk's own root —
-            // so entering a mount would authorize that mount's device and
-            // traverse all of it, which is exactly the network-mount hang the
-            // boundary exists to prevent.
-            //
-            // What this does NOT catch, and cannot: the macOS system/data
-            // firmlink. `/`, `/System/Volumes/Data` and `/Users` all report the
-            // same `st_dev` even though `df` shows separate APFS volumes, so
-            // only `statfs` distinguishes them. That is correct to allow —
-            // walking `/` into the user's own data is what analyzing `/` means
-            // — but it is why measuring `/` is slow, not a broken boundary.
-            if metadata.dev() != device {
-                report_entry(Entry {
-                    path,
-                    size: 0,
-                    is_dir: true,
-                    partial: true,
-                    culprit: None,
-                });
-                continue;
+            if let Some(entry) = measure_child(path, device, cancel)? {
+                report_entry(entry);
             }
-            let (size, partial, culprit) = measure_tree(&path, device, cancel);
-            report_entry(Entry {
-                path,
-                size,
-                is_dir: true,
-                partial,
-                culprit,
-            });
-        } else {
-            // A file that cannot be sized is a lower bound, never a guess.
-            let (size, partial) = match crate::safety::allocated_bytes(&metadata, &path) {
-                Ok(size) => (size, false),
-                Err(_) => (0, true),
-            };
-            report_entry(Entry {
-                path,
-                size,
-                is_dir: false,
-                partial,
-                culprit: None,
-            });
         }
+        return Ok(());
     }
-    Ok(())
+    let next_index = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let (sender, receiver) = channel::<Result<Option<Entry>>>();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let worker_sender = sender.clone();
+            let paths = &paths;
+            let next_index = &next_index;
+            let stop = &stop;
+            scope.spawn(move || {
+                while !cancel.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
+                    let index = next_index.fetch_add(1, Ordering::Relaxed);
+                    let Some(path) = paths.get(index) else {
+                        break;
+                    };
+                    let result = measure_child(path.clone(), device, cancel);
+                    let failed = result.is_err();
+                    if worker_sender.send(result).is_err() || failed {
+                        stop.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        for message in receiver {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            match message {
+                Ok(Some(entry)) => report_entry(entry),
+                Ok(None) => {}
+                Err(error) => {
+                    stop.store(true, Ordering::Relaxed);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    })
 }
 
 /// What devtrim's own categories say about one entry, from one fresh scan.
@@ -1853,6 +2084,35 @@ mod tests {
         let (_, partial, culprit) = measure_tree(root.path(), device, &AtomicBool::new(true));
         assert!(partial);
         assert_eq!(culprit, None);
+    }
+
+    #[test]
+    fn measure_children_handles_single_child_git_file_and_cancellation() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-analyze-single")
+            .tempdir()
+            .unwrap();
+        write(&root.path().join("worktree/.git"), 16);
+        write(&root.path().join("worktree/deep/blob"), 200_000);
+
+        let mut entries = Vec::new();
+        measure_children(root.path(), &AtomicBool::new(false), |entry| {
+            entries.push(entry)
+        })
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        let worktree = &entries[0];
+        assert_eq!(worktree.path, root.path().join("worktree"));
+        let device = std::fs::symlink_metadata(root.path()).unwrap().dev();
+        let (_, _, culprit) = measure_tree(root.path(), device, &AtomicBool::new(false));
+        assert_eq!(names(&culprit.unwrap()), ["worktree"]);
+
+        let mut cancelled_entries = Vec::new();
+        measure_children(root.path(), &AtomicBool::new(true), |entry| {
+            cancelled_entries.push(entry)
+        })
+        .unwrap();
+        assert!(cancelled_entries.is_empty());
     }
 
     /// What would give analyze a way to remove something: an `Op`'s apply,
