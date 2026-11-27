@@ -840,14 +840,14 @@ fn resolve_trusted_path(
     }
 
     let mut current = PathBuf::from("/");
-    let mut pending: VecDeque<OsString> = VecDeque::new();
+    let mut pending: VecDeque<(OsString, bool)> = VecDeque::new();
     for component in start.components() {
         if let Component::Normal(segment) = component {
-            pending.push_back(segment.to_os_string());
+            pending.push_back((segment.to_os_string(), false));
         }
     }
     let mut hops = 0usize;
-    let mut symlink_chain_remaining = 0usize;
+    let mut current_from_symlink = false;
     let mut last_parent_mode: Option<u32> = None;
 
     loop {
@@ -857,7 +857,7 @@ fn resolve_trusted_path(
         let metadata = match std::fs::symlink_metadata(&current) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if allow_missing && symlink_chain_remaining == 0 {
+                if allow_missing && !current_from_symlink {
                     if let Some(parent_mode) = last_parent_mode
                         && parent_mode & 0o022 != 0
                     {
@@ -907,21 +907,17 @@ fn resolve_trusted_path(
                     }
                 }
             }
-            let added = next_components.len();
             for segment in next_components.into_iter().rev() {
-                pending.push_front(segment);
+                pending.push_front((segment, true));
             }
-            symlink_chain_remaining = symlink_chain_remaining.saturating_add(added);
             if target.is_absolute() {
                 current = PathBuf::from("/");
                 last_parent_mode = None;
             } else {
                 current.pop();
             }
-            // Empty target (e.g. symlink to `/` or `.`) still needs current checked.
-            if added == 0 && pending.is_empty() {
-                continue;
-            }
+            current_from_symlink = true;
+            continue;
         } else if pending.is_empty() {
             let right_kind = if expect_dir {
                 metadata.is_dir()
@@ -963,15 +959,14 @@ fn resolve_trusted_path(
             last_parent_mode = Some(mode);
         }
 
-        while let Some(next_segment) = pending.pop_front() {
-            symlink_chain_remaining = symlink_chain_remaining.saturating_sub(1);
+        if let Some((next_segment, from_symlink)) = pending.pop_front() {
             if next_segment == ".." {
                 current.pop();
                 last_parent_mode = None;
-                continue;
+            } else {
+                current.push(next_segment);
             }
-            current.push(next_segment);
-            break;
+            current_from_symlink = from_symlink;
         }
     }
 }
@@ -2621,6 +2616,42 @@ mod tests {
         );
         std::fs::set_permissions(&writable_hop_dir, std::fs::Permissions::from_mode(0o755))
             .unwrap();
+
+        // Dangling plugin-directory symlinks (both 1-component relative and absolute,
+        // and under `$DOCKER_CONFIG/cli-plugins`) must fail closed rather than looking absent.
+        let dangling_rel_dir = home.join("dangling-rel-plugin-dir");
+        std::os::unix::fs::symlink("missing-plugin-target", &dangling_rel_dir).unwrap();
+        std::fs::write(
+            source_config.join("config.json"),
+            serde_json::json!({ "cliPluginsExtraDirs": [dangling_rel_dir.to_string_lossy()] })
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling relative plugin directory symlink must fail closed"
+        );
+        let dangling_abs_dir = home.join("dangling-abs-plugin-dir");
+        std::os::unix::fs::symlink(home.join("no-such-plugin-dir/nested"), &dangling_abs_dir)
+            .unwrap();
+        std::fs::write(
+            source_config.join("config.json"),
+            serde_json::json!({ "cliPluginsExtraDirs": [dangling_abs_dir.to_string_lossy()] })
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling absolute plugin directory symlink must fail closed"
+        );
+        std::fs::write(source_config.join("config.json"), "{}").unwrap();
+        let dangling_cli_plugins = source_config.join("cli-plugins");
+        std::os::unix::fs::symlink("missing-cli-plugins", &dangling_cli_plugins).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling $DOCKER_CONFIG/cli-plugins symlink must fail closed"
+        );
+        std::fs::remove_file(&dangling_cli_plugins).unwrap();
 
         // Group/world-writable config.json (even owned by current user) fails closed.
         std::fs::write(source_config.join("config.json"), "{}").unwrap();
