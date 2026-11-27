@@ -108,6 +108,92 @@ pub(crate) fn repositories_under(
     root: &Path,
     unread: &mut Vec<UnreadFolder>,
 ) -> Result<Vec<PathBuf>> {
+    match std::fs::symlink_metadata(root) {
+        // `walkdir` follows a symlink at the root itself while refusing links
+        // below it; delegate symlink roots there for exact parity.
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return repositories_under_walkdir(root, unread);
+        }
+        Ok(metadata) if !metadata.file_type().is_dir() => return Ok(Vec::new()),
+        Ok(_) => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot look for repositories under {}", root.display()));
+        }
+    }
+    if root
+        .file_name()
+        .is_some_and(|name| is_git_metadata_name(name) || super::is_node_modules_name(name))
+    {
+        return Ok(Vec::new());
+    }
+    repositories_under_bulk(root, unread)
+}
+
+/// Batched `getattrlistbulk(2)` repository discovery, falling back to `walkdir`
+/// on volumes that do not support it.
+fn repositories_under_bulk(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<PathBuf>> {
+    let unread_start = unread.len();
+    let mut found = Vec::new();
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let mut subdirs: Vec<std::ffi::OsString> = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    while let Some((directory, depth)) = pending.pop() {
+        subdirs.clear();
+        let mut saw_git_marker = false;
+        let visit = apfs_size::visit_dir_names(&directory, &mut buffer, |entry| {
+            if is_git_metadata_name(entry.name) {
+                saw_git_marker = true;
+                return;
+            }
+            if entry.kind == apfs_size::EntryKind::Directory
+                && !super::is_node_modules_name(entry.name)
+            {
+                subdirs.push(entry.name.to_os_string());
+            }
+        });
+        match visit {
+            Ok(()) => {}
+            Err(apfs_size::BulkError::Unsupported) => {
+                unread.truncate(unread_start);
+                return repositories_under_walkdir(root, unread);
+            }
+            Err(apfs_size::BulkError::Io(error)) if depth > 0 => {
+                unread.push(UnreadFolder::new(&directory, &anyhow::Error::from(error)));
+                continue;
+            }
+            Err(apfs_size::BulkError::Io(error)) => {
+                return Err(error).with_context(|| {
+                    format!("cannot look for repositories under {}", root.display())
+                });
+            }
+        }
+        if saw_git_marker {
+            // Confirm exact `.git` visibility via `symlink_metadata` so
+            // case-sensitive volumes still ignore non-lowercase markers.
+            match std::fs::symlink_metadata(directory.join(".git")) {
+                Ok(_) => {
+                    found.push(directory);
+                    continue;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    unread.push(UnreadFolder::new(&directory, &error.into()));
+                    continue;
+                }
+            }
+        }
+        for child in subdirs.drain(..) {
+            pending.push((directory.join(child), depth + 1));
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Fallback repository discovery for symlink roots and volumes without bulk
+/// directory support.
+fn repositories_under_walkdir(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     let mut entries = walkdir::WalkDir::new(root)
         .follow_links(false)
@@ -2218,5 +2304,52 @@ mod tests {
             child_date, "2000-01-01",
             "valid child repo must still report its own date"
         );
+    }
+
+    #[test]
+    fn repositories_under_finds_git_dirs_and_worktrees_skips_node_modules_and_reports_unread() {
+        let fixture = crate::ops::TestFixture::new("repos-under-bulk");
+        let root = fixture.path().join("scan");
+        let repo_a = root.join("alpha");
+        let repo_b = root.join("nested/zeta");
+        let worktree = root.join("beta-worktree");
+        let skipped = root.join("node_modules/hidden-repo");
+        let nested_in_repo = repo_a.join("vendor/sub-repo");
+        let blocked = root.join("blocked");
+        std::fs::create_dir_all(repo_a.join(".git")).unwrap();
+        std::fs::create_dir_all(repo_b.join(".git")).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: ../alpha/.git/worktrees/beta\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(skipped.join(".git")).unwrap();
+        std::fs::create_dir_all(nested_in_repo.join(".git")).unwrap();
+        let _locked = crate::ops::Unreadable::new(&blocked, 0o000);
+
+        let mut unread = Vec::new();
+        let found = repositories_under(&root, &mut unread).unwrap();
+        assert_eq!(
+            found,
+            vec![repo_a.clone(), worktree.clone(), repo_b.clone()]
+        );
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].path, blocked);
+
+        let alias = fixture.path().join("scan-alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let mut alias_unread = Vec::new();
+        let alias_found = repositories_under(&alias, &mut alias_unread).unwrap();
+        assert_eq!(
+            alias_found,
+            vec![
+                alias.join("alpha"),
+                alias.join("beta-worktree"),
+                alias.join("nested/zeta"),
+            ]
+        );
+        assert_eq!(alias_unread.len(), 1);
+        drop(_locked);
     }
 }

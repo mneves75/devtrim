@@ -41,7 +41,7 @@ struct ArtifactCandidate {
 }
 
 #[derive(Debug)]
-struct ArtifactEvidence {
+pub(super) struct ArtifactEvidence {
     label: String,
     corroboration: String,
     /// How the output comes back, named only where its corroboration says
@@ -483,6 +483,126 @@ fn is_program_keypair_name(name: &OsStr) -> bool {
     }
 }
 
+/// Bitmask of known sibling corroboration filenames observed in a directory.
+/// Checking this mask before `sibling_evidence` avoids per-directory `lstat`
+/// calls when the parent holds none of a candidate's owner files, while
+/// `observe_file` matches ASCII case-insensitively so case-insensitive APFS
+/// never misses a match.
+#[derive(Clone, Copy, Default)]
+pub(super) struct SiblingHints(u32);
+
+impl SiblingHints {
+    const CARGO_TOML: Self = Self(1 << 0);
+    const TOX_INI: Self = Self(1 << 1);
+    const SETUP_CFG: Self = Self(1 << 2);
+    const PYPROJECT_TOML: Self = Self(1 << 3);
+    const NOXFILE_PY: Self = Self(1 << 4);
+    const PACKAGE_JSON: Self = Self(1 << 5);
+    const PODFILE: Self = Self(1 << 6);
+    const SETTINGS_GRADLE: Self = Self(1 << 7);
+    const SETTINGS_GRADLE_KTS: Self = Self(1 << 8);
+    const BUILD_GRADLE: Self = Self(1 << 9);
+    const BUILD_GRADLE_KTS: Self = Self(1 << 10);
+    const PACKAGE_SWIFT: Self = Self(1 << 11);
+    const PUBSPEC_YAML: Self = Self(1 << 12);
+    const BUILD_ZIG: Self = Self(1 << 13);
+    const TERRAGRUNT_HCL: Self = Self(1 << 14);
+    const NUXT_CONFIG: Self = Self(1 << 15);
+    const ALL: Self = Self(u32::MAX);
+
+    const fn with(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    const fn intersects(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+
+    /// Records a regular file's name if it matches any known sibling
+    /// corroboration manifest.
+    pub(super) fn observe_file(&mut self, name: &OsStr) {
+        const KNOWN: [(&[u8], u32); 21] = [
+            (b"Cargo.toml", SiblingHints::CARGO_TOML.0),
+            (b"tox.ini", SiblingHints::TOX_INI.0),
+            (b"setup.cfg", SiblingHints::SETUP_CFG.0),
+            (b"pyproject.toml", SiblingHints::PYPROJECT_TOML.0),
+            (b"noxfile.py", SiblingHints::NOXFILE_PY.0),
+            (b"package.json", SiblingHints::PACKAGE_JSON.0),
+            (b"Podfile", SiblingHints::PODFILE.0),
+            (b"settings.gradle", SiblingHints::SETTINGS_GRADLE.0),
+            (b"settings.gradle.kts", SiblingHints::SETTINGS_GRADLE_KTS.0),
+            (b"build.gradle", SiblingHints::BUILD_GRADLE.0),
+            (b"build.gradle.kts", SiblingHints::BUILD_GRADLE_KTS.0),
+            (b"Package.swift", SiblingHints::PACKAGE_SWIFT.0),
+            (b"pubspec.yaml", SiblingHints::PUBSPEC_YAML.0),
+            (b"build.zig", SiblingHints::BUILD_ZIG.0),
+            (b"terragrunt.hcl", SiblingHints::TERRAGRUNT_HCL.0),
+            (b"nuxt.config.ts", SiblingHints::NUXT_CONFIG.0),
+            (b"nuxt.config.js", SiblingHints::NUXT_CONFIG.0),
+            (b"nuxt.config.mjs", SiblingHints::NUXT_CONFIG.0),
+            (b"nuxt.config.mts", SiblingHints::NUXT_CONFIG.0),
+            (b"nuxt.config.cjs", SiblingHints::NUXT_CONFIG.0),
+            (b"nuxt.config.cts", SiblingHints::NUXT_CONFIG.0),
+        ];
+        let bytes = name.as_encoded_bytes();
+        if !(7..=19).contains(&bytes.len()) {
+            return;
+        }
+        for (filename, bit) in KNOWN {
+            if bytes.eq_ignore_ascii_case(filename) {
+                self.0 |= bit;
+                return;
+            }
+        }
+    }
+}
+
+/// Directory-entry hints collected in one `visit_dir_names` pass for
+/// [`artifact_evidence_for_dir`] and child `parent_siblings`.
+#[derive(Clone, Copy, Default)]
+pub(super) struct DirHints {
+    pub(super) siblings: SiblingHints,
+    pub(super) has_pyvenv_cfg: bool,
+    pub(super) has_cachedir_tag: bool,
+}
+
+impl DirHints {
+    /// Observes one regular file entry from the current directory.
+    pub(super) fn observe_file(&mut self, name: &OsStr) {
+        self.siblings.observe_file(name);
+        let bytes = name.as_encoded_bytes();
+        if bytes.eq_ignore_ascii_case(b"pyvenv.cfg") {
+            self.has_pyvenv_cfg = true;
+        } else if bytes.eq_ignore_ascii_case(b"CACHEDIR.TAG") {
+            self.has_cachedir_tag = true;
+        }
+    }
+}
+
+fn required_sibling_hint(name: &str) -> Option<SiblingHints> {
+    Some(match name {
+        "target" => SiblingHints::CARGO_TOML,
+        ".tox" => SiblingHints::TOX_INI
+            .with(SiblingHints::SETUP_CFG)
+            .with(SiblingHints::PYPROJECT_TOML),
+        ".nox" => SiblingHints::NOXFILE_PY,
+        ".next" | ".nuxt" | ".turbo" | ".parcel-cache" | ".svelte-kit" | ".astro" | ".expo"
+        | ".angular" => SiblingHints::PACKAGE_JSON,
+        "Pods" => SiblingHints::PODFILE,
+        ".gradle" => SiblingHints::SETTINGS_GRADLE
+            .with(SiblingHints::SETTINGS_GRADLE_KTS)
+            .with(SiblingHints::BUILD_GRADLE)
+            .with(SiblingHints::BUILD_GRADLE_KTS),
+        ".build" => SiblingHints::PACKAGE_SWIFT,
+        ".dart_tool" => SiblingHints::PUBSPEC_YAML,
+        ".zig-cache" | "zig-out" => SiblingHints::BUILD_ZIG,
+        ".cxx" => SiblingHints::BUILD_GRADLE.with(SiblingHints::BUILD_GRADLE_KTS),
+        ".terragrunt-cache" => SiblingHints::TERRAGRUNT_HCL,
+        ".output" => SiblingHints::NUXT_CONFIG,
+        _ => return None,
+    })
+}
+
 /// Corroborated build output under `root`. A folder the walk cannot read is
 /// recorded in `unread` and skipped with everything below it, as a scan root
 /// that cannot be read is; only the root itself failing fails the walk.
@@ -494,6 +614,107 @@ fn find_artifacts(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<Art
     {
         return Ok(Vec::new());
     }
+    match std::fs::symlink_metadata(root) {
+        // `walkdir` follows a symlink at the root itself while refusing links
+        // below it; delegate symlink roots there for exact parity.
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return find_artifacts_walkdir(root, unread);
+        }
+        Ok(metadata) if !metadata.file_type().is_dir() => return Ok(Vec::new()),
+        Ok(_) => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot scan artifacts under {}", root.display()));
+        }
+    }
+    if root.file_name().is_some_and(is_node_modules_name) {
+        return Ok(Vec::new());
+    }
+    find_artifacts_bulk(root, unread)
+}
+
+/// Batched `getattrlistbulk(2)` artifact discovery, falling back to `walkdir`
+/// on volumes that do not support it.
+fn find_artifacts_bulk(
+    root: &Path,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<Vec<ArtifactCandidate>> {
+    let unread_start = unread.len();
+    let mut found = Vec::new();
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let mut subdirs: Vec<std::ffi::OsString> = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), 0usize, SiblingHints::default())];
+    while let Some((directory, depth, parent_siblings)) = pending.pop() {
+        subdirs.clear();
+        let mut has_git = false;
+        let mut hints = DirHints::default();
+        let visit = apfs_size::visit_dir_names(&directory, &mut buffer, |entry| {
+            if is_git_metadata_name(entry.name) {
+                has_git = true;
+                return;
+            }
+            match entry.kind {
+                apfs_size::EntryKind::Directory => {
+                    if !is_node_modules_name(entry.name) {
+                        subdirs.push(entry.name.to_os_string());
+                    }
+                }
+                apfs_size::EntryKind::File => hints.observe_file(entry.name),
+                apfs_size::EntryKind::Other => {}
+            }
+        });
+        match visit {
+            Ok(()) => {}
+            Err(apfs_size::BulkError::Unsupported) => {
+                unread.truncate(unread_start);
+                return find_artifacts_walkdir(root, unread);
+            }
+            Err(apfs_size::BulkError::Io(error)) if depth > 0 => {
+                unread.push(UnreadFolder::new(&directory, &anyhow::Error::from(error)));
+                continue;
+            }
+            Err(apfs_size::BulkError::Io(error)) => {
+                return Err(error)
+                    .with_context(|| format!("cannot scan artifacts under {}", root.display()));
+            }
+        }
+        let evidence = match artifact_evidence_for_dir(
+            &directory,
+            depth,
+            parent_siblings,
+            hints.has_pyvenv_cfg,
+            hints.has_cachedir_tag,
+        ) {
+            Ok(evidence) => evidence,
+            Err(error) if depth > 0 => {
+                unread.push(UnreadFolder::new(&directory, &error));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(evidence) = evidence {
+            if !has_git {
+                found.push(ArtifactCandidate {
+                    path: directory,
+                    evidence,
+                });
+            }
+            continue;
+        }
+        for child in subdirs.drain(..) {
+            pending.push((directory.join(child), depth + 1, hints.siblings));
+        }
+    }
+    found.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(found)
+}
+
+/// Fallback artifact discovery for symlink roots and volumes without bulk
+/// directory support.
+fn find_artifacts_walkdir(
+    root: &Path,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<Vec<ArtifactCandidate>> {
     let mut found = Vec::new();
     let mut entries = walkdir::WalkDir::new(root).follow_links(false).into_iter();
     while let Some(result) = entries.next() {
@@ -549,6 +770,25 @@ pub(super) fn is_build_output(path: &Path) -> Result<bool> {
     Ok(artifact_evidence(path)?.is_some())
 }
 
+/// Whether a directory already confirmed not to be a symlink is build output,
+/// using parent-directory and contained-file hints collected by the bulk walk.
+pub(super) fn is_build_output_for_dir(
+    path: &Path,
+    depth: usize,
+    parent_siblings: SiblingHints,
+    has_pyvenv_cfg: bool,
+    has_cachedir_tag: bool,
+) -> Result<bool> {
+    Ok(artifact_evidence_for_dir(
+        path,
+        depth,
+        parent_siblings,
+        has_pyvenv_cfg,
+        has_cachedir_tag,
+    )?
+    .is_some())
+}
+
 /// The build output of `owner` that holds `path`: a directory strictly
 /// between the repository and `path` that this category would offer.
 /// Everything below it belongs to that output, so whether it goes is decided
@@ -568,18 +808,18 @@ pub(super) fn build_output_between(owner: &Path, path: &Path) -> Result<Option<P
     Ok(None)
 }
 
-fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("cannot inspect artifact target {}", path.display()));
-        }
-    };
-    if !metadata.file_type().is_dir() {
-        return Ok(None);
-    }
+/// Classifies a directory already confirmed not to be a symlink, skipping
+/// `sibling_evidence`, `contained_evidence`, and `cachedir_tag_matches`
+/// syscalls when directory-entry hints show the required markers are absent.
+/// Callers at `depth == 0` did not read the parent, so siblings are checked
+/// directly on disk.
+pub(super) fn artifact_evidence_for_dir(
+    path: &Path,
+    depth: usize,
+    parent_siblings: SiblingHints,
+    has_pyvenv_cfg: bool,
+    has_cachedir_tag: bool,
+) -> Result<Option<ArtifactEvidence>> {
     let name = path.file_name().and_then(|name| name.to_str());
     // macOS filesystems are commonly case-insensitive and case-preserving, so
     // `Build` or `DIST` must hit the ambiguous-name denylist exactly like
@@ -593,6 +833,14 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
     }
 
     let named: Result<Option<String>> = match name {
+        Some(".venv" | "venv") if !has_pyvenv_cfg => Ok(None),
+        Some(dir_name)
+            if depth > 0
+                && required_sibling_hint(dir_name)
+                    .is_some_and(|required| !parent_siblings.intersects(required)) =>
+        {
+            Ok(None)
+        }
         Some("target") => sibling_evidence(path, &["Cargo.toml"]),
         Some(".venv" | "venv") => contained_evidence(path, "pyvenv.cfg"),
         Some(name @ ("__pycache__" | ".pytest_cache" | ".mypy_cache" | ".ruff_cache")) => {
@@ -653,7 +901,7 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
             comes_back_with: comes_back_with(name),
         }));
     }
-    if cachedir_tag_matches(path)? {
+    if has_cachedir_tag && cachedir_tag_matches(path)? {
         return Ok(Some(ArtifactEvidence {
             label: "stale CACHEDIR.TAG cache".into(),
             corroboration: "CACHEDIR.TAG signature".into(),
@@ -661,6 +909,21 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
         }));
     }
     Ok(None)
+}
+
+fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot inspect artifact target {}", path.display()));
+        }
+    };
+    if !metadata.file_type().is_dir() {
+        return Ok(None);
+    }
+    artifact_evidence_for_dir(path, 0, SiblingHints::ALL, true, true)
 }
 
 /// What rebuilds a corroborated output, by the name whose owner file was
@@ -1536,5 +1799,56 @@ mod tests {
         ] {
             assert!(!is_program_keypair_name(OsStr::new(name)), "{name}");
         }
+    }
+
+    #[test]
+    fn bulk_discovery_handles_cachedir_fallback_root_shapes_and_symlinks() {
+        let root = temp("bulk-edge-cases");
+        let fallback_target = root.join("uncorroborated/target");
+        std::fs::create_dir_all(&fallback_target).unwrap();
+        std::fs::write(fallback_target.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).unwrap();
+        let own_repo_target = root.join("self-git/target");
+        std::fs::create_dir_all(own_repo_target.join(".git")).unwrap();
+        std::fs::write(root.join("self-git/Cargo.toml"), "[package]").unwrap();
+        let linked_root = root.join("alias-root");
+        symlink(root.join("uncorroborated"), &linked_root).unwrap();
+        let file_root = root.join("plain-file");
+        std::fs::write(&file_root, "x").unwrap();
+
+        let mut unread = Vec::new();
+        let found = find_artifacts(&root, &mut unread).unwrap();
+        assert!(unread.is_empty());
+        assert_eq!(
+            found
+                .iter()
+                .map(|candidate| candidate.path.as_path())
+                .collect::<Vec<_>>(),
+            vec![fallback_target.as_path()]
+        );
+        assert_eq!(found[0].evidence.label, "stale CACHEDIR.TAG cache");
+
+        let direct = find_artifacts(&fallback_target, &mut unread).unwrap();
+        assert_eq!(direct.len(), 1);
+        assert_eq!(direct[0].path, fallback_target);
+        assert_eq!(
+            find_artifacts(&linked_root, &mut unread)
+                .unwrap()
+                .iter()
+                .map(|candidate| candidate.path.as_path())
+                .collect::<Vec<_>>(),
+            vec![linked_root.join("target").as_path()]
+        );
+        assert!(find_artifacts(&file_root, &mut unread).unwrap().is_empty());
+        assert!(
+            find_artifacts(&root.join("node_modules"), &mut unread).is_err(),
+            "missing node_modules root must still fail"
+        );
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        assert!(
+            find_artifacts(&root.join("node_modules"), &mut unread)
+                .unwrap()
+                .is_empty()
+        );
+        crate::ops::remove_test_path(root);
     }
 }
