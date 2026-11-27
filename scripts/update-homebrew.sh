@@ -92,10 +92,33 @@ checksum=$(shasum -a 256 "$verify_dir/$asset" | awk '{print $1}')
   echo "ERROR: downloaded checksum does not match the GitHub asset digest"
   exit 1
 }
-release_commit=$(gh api "repos/${source_repo}/commits/${tag}" --jq .sha) || {
-  echo "ERROR: cannot resolve the release commit for ${tag}"
+tag_ref=$(gh api "repos/${source_repo}/git/ref/tags/${tag}" \
+  --jq "if type == \"object\" and .ref == \"refs/tags/${tag}\" then [.object.type, .object.sha] | @tsv else empty end") || {
+  echo "ERROR: cannot resolve tag ref refs/tags/${tag}"
   exit 1
 }
+IFS=$'\t' read -r ref_type ref_sha <<< "$tag_ref"
+[[ "$ref_sha" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "ERROR: GitHub returned an invalid object SHA for refs/tags/${tag}"
+  exit 1
+}
+if [[ "$ref_type" == "commit" ]]; then
+  release_commit="$ref_sha"
+elif [[ "$ref_type" == "tag" ]]; then
+  tag_target=$(gh api "repos/${source_repo}/git/tags/${ref_sha}" \
+    --jq '[.object.type, .object.sha] | @tsv') || {
+    echo "ERROR: cannot dereference annotated tag ${tag}"
+    exit 1
+  }
+  IFS=$'\t' read -r target_type release_commit <<< "$tag_target"
+  [[ "$target_type" == "commit" ]] || {
+    echo "ERROR: annotated tag ${tag} does not point to a commit"
+    exit 1
+  }
+else
+  echo "ERROR: unexpected tag object type for ${tag}: ${ref_type:-none}"
+  exit 1
+fi
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || {
   echo "ERROR: GitHub returned an invalid release commit for ${tag}"
   exit 1

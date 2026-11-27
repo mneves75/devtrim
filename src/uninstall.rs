@@ -82,7 +82,13 @@ impl BundlePlist {
         if !is_approved_app_bundle(app, home)? {
             bail!("refusing to inspect a path outside the Applications directories");
         }
-        let plist = app.join("Contents/Info.plist");
+        let contents = app.join("Contents");
+        let contents_metadata = std::fs::symlink_metadata(&contents)
+            .with_context(|| format!("cannot inspect {}", contents.display()))?;
+        if !contents_metadata.file_type().is_dir() {
+            bail!("{} is not a real directory", contents.display());
+        }
+        let plist = contents.join("Info.plist");
         let metadata = std::fs::symlink_metadata(&plist)
             .with_context(|| format!("cannot inspect {}", plist.display()))?;
         if !metadata.file_type().is_file() {
@@ -140,24 +146,53 @@ fn application_roots(home: &Path) -> Vec<PathBuf> {
     roots
 }
 
-fn is_approved_app_bundle(app: &Path, home: &Path) -> Result<bool> {
-    let Some(parent) = app.parent() else {
-        return Ok(false);
+fn is_verified_application_root(root: &Path) -> Result<bool> {
+    let metadata = match std::fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", root.display()));
+        }
     };
-    if !application_roots(home).iter().any(|root| parent == root) {
+    if !metadata.file_type().is_dir() {
         return Ok(false);
     }
+    let canonical = std::fs::canonicalize(root)
+        .with_context(|| format!("cannot resolve {}", root.display()))?;
+    Ok(canonical.as_os_str() == root.as_os_str())
+}
+
+fn is_approved_app_bundle(app: &Path, home: &Path) -> Result<bool> {
+    let Some(file_name) = app.file_name() else {
+        return Ok(false);
+    };
+    // Enforce exact raw path equality against `root.join(file_name)` so
+    // trailing `/`, `/.`, `/./`, `//`, and `..` never slip past `lstat`.
+    let Some(root) = application_roots(home)
+        .into_iter()
+        .find(|root| app.as_os_str() == root.join(file_name).as_os_str())
+    else {
+        return Ok(false);
+    };
     if !app
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
     {
         return Ok(false);
     }
+    if !is_verified_application_root(&root)? {
+        return Ok(false);
+    }
     let metadata = std::fs::symlink_metadata(app)
         .with_context(|| format!("cannot inspect {}", app.display()))?;
     // A symlinked bundle is refused: its target may live anywhere, and every
     // check after this one would be describing a different directory.
-    Ok(metadata.file_type().is_dir())
+    if !metadata.file_type().is_dir() {
+        return Ok(false);
+    }
+    let canonical =
+        std::fs::canonicalize(app).with_context(|| format!("cannot resolve {}", app.display()))?;
+    Ok(canonical.as_os_str() == app.as_os_str())
 }
 
 /// Resolves a user-supplied name to exactly one installed bundle.
@@ -183,6 +218,9 @@ fn resolve_app(name: &str, home: &Path) -> Result<PathBuf> {
     let wanted = name.strip_suffix(".app").unwrap_or(name);
     let mut matches = Vec::new();
     for root in application_roots(home) {
+        if !is_verified_application_root(&root)? {
+            continue;
+        }
         let entries = match std::fs::read_dir(&root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -236,7 +274,8 @@ fn describe_roots(home: &Path) -> String {
 /// authenticated executable path, so this is a courtesy check against reviewing
 /// a live app's files, not a security boundary. Nothing here deletes anything.
 fn parse_running_bundle(output: &str, app: &Path) -> bool {
-    let prefix = format!("{}/", app.display());
+    let normalized: PathBuf = app.components().collect();
+    let prefix = format!("{}/", normalized.display());
     output.lines().any(|line| line.starts_with(&prefix))
 }
 
@@ -410,4 +449,125 @@ boundary, for every command rather than only this one.",
         eprintln!("{} {}", "warn".yellow(), report::terminal_safe(error));
     }
     Ok(status)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn test_home(name: &str) -> (crate::ops::TestFixture, PathBuf) {
+        let fixture = crate::ops::TestFixture::new(&format!("devtrim-uninstall-{name}"));
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        (fixture, home)
+    }
+
+    #[test]
+    fn trailing_slash_and_dot_variants_are_rejected() {
+        let (_fixture, home) = test_home("trailing-variants");
+        let apps = home.join("Applications");
+        let real_app = apps.join("Real.app");
+        std::fs::create_dir_all(real_app.join("Contents")).unwrap();
+        std::fs::write(real_app.join("Contents/Info.plist"), "plist").unwrap();
+
+        let outside = home.join("outside/Target.app");
+        std::fs::create_dir_all(outside.join("Contents")).unwrap();
+        std::fs::write(outside.join("Contents/Info.plist"), "plist").unwrap();
+        let linked_app = apps.join("Symlinked.app");
+        symlink(&outside, &linked_app).unwrap();
+
+        // Exact real bundle path is accepted.
+        assert!(is_approved_app_bundle(&real_app, &home).unwrap());
+        assert!(BundlePlist::for_app(&real_app, &home).is_ok());
+
+        // Symlinked bundle and any trailing `/` or `/.` or `//` or `/./` spelling
+        // must be rejected for both symlinked and real bundles.
+        let rejected = [
+            linked_app.display().to_string(),
+            format!("{}/", linked_app.display()),
+            format!("{}/.", linked_app.display()),
+            format!("{}/", real_app.display()),
+            format!("{}/.", real_app.display()),
+            format!("{}/./Real.app", apps.display()),
+            format!("{}//Real.app", apps.display()),
+        ];
+        for raw in rejected {
+            assert!(
+                !is_approved_app_bundle(Path::new(&raw), &home).unwrap(),
+                "must reject {raw}"
+            );
+            assert!(
+                resolve_app(&raw, &home).is_err(),
+                "resolve_app must reject {raw}"
+            );
+            assert!(
+                BundlePlist::for_app(Path::new(&raw), &home).is_err(),
+                "BundlePlist::for_app must reject {raw}"
+            );
+        }
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn symlinked_user_applications_root_is_rejected() {
+        let (_fixture, home) = test_home("symlinked-apps-root");
+        let outside_apps = home.join("outside/OutsideApps");
+        let outside_app = outside_apps.join("OutsideApp.app");
+        std::fs::create_dir_all(outside_app.join("Contents")).unwrap();
+        std::fs::write(outside_app.join("Contents/Info.plist"), "plist").unwrap();
+        symlink(&outside_apps, home.join("Applications")).unwrap();
+
+        let via_link = home.join("Applications/OutsideApp.app");
+        assert!(!is_approved_app_bundle(&via_link, &home).unwrap());
+        assert!(resolve_app(via_link.to_str().unwrap(), &home).is_err());
+        assert!(resolve_app("OutsideApp", &home).is_err());
+        assert!(BundlePlist::for_app(&via_link, &home).is_err());
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn symlinked_contents_directory_is_rejected_by_bundle_plist() {
+        let (_fixture, home) = test_home("symlinked-contents");
+        let outside_contents = home.join("outside/OutsideContents");
+        std::fs::create_dir_all(&outside_contents).unwrap();
+        std::fs::write(outside_contents.join("Info.plist"), "plist").unwrap();
+
+        let app = home.join("Applications/LinkedContents.app");
+        std::fs::create_dir_all(&app).unwrap();
+        symlink(&outside_contents, app.join("Contents")).unwrap();
+
+        // The bundle directory itself is real, but `Contents` is a symlink.
+        assert!(is_approved_app_bundle(&app, &home).unwrap());
+        let error = BundlePlist::for_app(&app, &home)
+            .err()
+            .expect("symlinked Contents must be rejected");
+        assert!(
+            format!("{error:#}").contains("not a real directory"),
+            "{error:#}"
+        );
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn parse_running_bundle_handles_trailing_slash_and_dot() {
+        let ps_output = "/Applications/Other.app/Contents/MacOS/Other\n\
+                         /Users/example/Applications/Running.app/Contents/MacOS/Running\n";
+        assert!(parse_running_bundle(
+            ps_output,
+            Path::new("/Users/example/Applications/Running.app")
+        ));
+        assert!(parse_running_bundle(
+            ps_output,
+            Path::new("/Users/example/Applications/Running.app/")
+        ));
+        assert!(parse_running_bundle(
+            ps_output,
+            Path::new("/Users/example/Applications/Running.app/.")
+        ));
+        assert!(!parse_running_bundle(
+            ps_output,
+            Path::new("/Users/example/Applications/RunningExtra.app/")
+        ));
+    }
 }

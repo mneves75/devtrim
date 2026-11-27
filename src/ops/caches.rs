@@ -297,19 +297,51 @@ impl Op for Caches {
                 )
             });
         let (mut findings, mut unread) = static_result?;
-        let (npm_reported, npm_branch) = npm_result?;
+        let (npm_reported, mut npm_branch) = npm_result?;
+        let mut pnpm_branch = pnpm_branch?;
+        let mut brew_branch = brew_branch?;
+        let mut gradle_branch = gradle_branch?;
+        let mut go_branch = go_branch?;
         let mut diagnostics = Vec::new();
-        for mut branch in [
-            pnpm_branch?,
-            npm_branch,
-            brew_branch?,
-            gradle_branch?,
-            go_branch?,
-        ] {
-            findings.append(&mut branch.findings);
+        let mut other_findings = Vec::new();
+        other_findings.append(&mut findings);
+        for branch in [&mut pnpm_branch, &mut npm_branch, &mut brew_branch] {
+            other_findings.append(&mut branch.findings);
             unread.append(&mut branch.unread);
             diagnostics.append(&mut branch.diagnostics);
         }
+        unread.append(&mut gradle_branch.unread);
+        diagnostics.append(&mut gradle_branch.diagnostics);
+        let mut go_findings = Vec::new();
+        go_findings.append(&mut go_branch.findings);
+        unread.append(&mut go_branch.unread);
+        diagnostics.append(&mut go_branch.diagnostics);
+
+        let gradle_home = gradle_user_home(&ctx.home).ok().flatten();
+        let mut gradle_running: Option<Result<Vec<u32>, String>> = None;
+        filter_non_gradle_findings(
+            &mut other_findings,
+            &ctx.home,
+            gradle_home.as_deref(),
+            &mut gradle_running,
+            gradle_processes,
+            &mut unread,
+            &mut diagnostics,
+        );
+        filter_non_gradle_findings(
+            &mut go_findings,
+            &ctx.home,
+            gradle_home.as_deref(),
+            &mut gradle_running,
+            gradle_processes,
+            &mut unread,
+            &mut diagnostics,
+        );
+
+        let mut findings = other_findings;
+        findings.append(&mut gradle_branch.findings);
+        findings.append(&mut go_findings);
+        deduplicate_findings(&mut findings);
         for (level, message) in diagnostics {
             ctx.diagnostic(level, message);
         }
@@ -353,9 +385,9 @@ impl Op for Caches {
                 continue;
             }
             let result = (|| -> Result<()> {
-                match authorize_cache_finding(finding, ctx, &installs)? {
-                    CacheKind::Plain => {}
-                    CacheKind::Gradle => {
+                let guards = authorize_cache_finding(finding, ctx, &installs)?;
+                if let Some(target) = finding.target() {
+                    if guards.gradle {
                         // Probed again at each finding: a build can start while
                         // earlier caches are removed.
                         let running = gradle_processes()?;
@@ -367,10 +399,8 @@ impl Op for Caches {
                             );
                         }
                     }
-                    CacheKind::GoModules => {
-                        if let Some(target) = finding.target() {
-                            go_removal_preflight(target)?;
-                        }
+                    if guards.go_modules {
+                        go_removal_preflight(target)?;
                     }
                 }
                 let uv_cache = ctx.home.join(UV_CACHE);
@@ -655,58 +685,53 @@ fn cache_note(path: &Path) -> String {
     }
 }
 
-/// Which cache an authorized finding is, for the checks its owner needs before
-/// the sink.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CacheKind {
-    Plain,
-    Gradle,
-    GoModules,
+/// Which owner-specific checks an authorized finding needs before the sink.
+/// Guards are additive so overlapping authorities (such as `GOMODCACHE`
+/// pointing at a Gradle cache) cannot skip another owner's liveness or
+/// repository boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CacheGuards {
+    gradle: bool,
+    go_modules: bool,
 }
 
 fn authorize_cache_finding(
     finding: &Finding,
     ctx: &Ctx,
     installs: &InstallCaches,
-) -> Result<CacheKind> {
+) -> Result<CacheGuards> {
     let home = &ctx.home;
     let target = finding
         .target()
         .ok_or_else(|| anyhow::anyhow!("cache finding missing internal target"))?;
-    let kind = match finding.authority() {
-        TargetAuthority::Standard if is_builtin_cache_root(target, home) => Some(CacheKind::Plain),
-        // Both owner roots are recomputed now, never taken from the preview.
-        // Go is judged first: only a folder holding Go's download cache sends
-        // devtrim to ask `go`, and a Gradle lookup that fails (an unreadable
-        // GRADLE_USER_HOME) must refuse only what Gradle could claim.
-        TargetAuthority::Standard if holds_go_download_cache(target)? => {
-            go_module_cache(ctx, None)?
-                .is_some_and(|cache| cache == target)
-                .then_some(CacheKind::GoModules)
+    let mut guards = CacheGuards::default();
+    let authorized = match finding.authority() {
+        TargetAuthority::Standard => {
+            let builtin = is_builtin_cache_root(target, home);
+            let go_modules = if holds_go_download_cache(target)? {
+                go_module_cache(ctx, None)?.is_some_and(|cache| cache == target)
+            } else {
+                false
+            };
+            let gradle = is_gradle_cache(target, home)?;
+            guards.go_modules = go_modules;
+            guards.gradle = gradle;
+            builtin || go_modules || gradle
         }
-        TargetAuthority::Standard if is_gradle_cache(target, home)? => Some(CacheKind::Gradle),
-        TargetAuthority::Standard => None,
         TargetAuthority::NpmCacheStore => {
             owner_cache_path("npm", &["config", "get", "cache"], NPM_QUIET, ctx)?
                 .is_some_and(|root| is_npm_store(target, &root))
-                .then_some(CacheKind::Plain)
         }
-        TargetAuthority::PnpmMetadata => {
-            is_pnpm_metadata(target, home)?.then_some(CacheKind::Plain)
-        }
-        TargetAuthority::BrewCache => {
-            is_eligible_owner_cache("brew", target, home).then_some(CacheKind::Plain)
-        }
-        TargetAuthority::BrewCacheEntry => {
-            is_brew_cache_entry(target, home)?.then_some(CacheKind::Plain)
-        }
+        TargetAuthority::PnpmMetadata => is_pnpm_metadata(target, home)?,
+        TargetAuthority::BrewCache => is_eligible_owner_cache("brew", target, home),
+        TargetAuthority::BrewCacheEntry => is_brew_cache_entry(target, home)?,
     };
-    let kind = kind.ok_or_else(|| {
-        anyhow::anyhow!(
+    if !authorized {
+        anyhow::bail!(
             "cache target is outside its authorized namespace: {}",
             target.display()
-        )
-    })?;
+        );
+    }
     if let Some(install) = installs.reached_by(target, finding.authority())? {
         anyhow::bail!(
             "refusing {}: it holds or lies inside {}, where npm or pnpm keep installs a running tool loads",
@@ -714,7 +739,19 @@ fn authorize_cache_finding(
             install.display()
         );
     }
-    Ok(kind)
+    if let Some(gradle) = gradle_user_home(home)?
+        && overlaps_gradle(target, &gradle)?
+    {
+        if gradle_home_in_repository(&gradle, home)? {
+            anyhow::bail!(
+                "refusing {}: it overlaps the Gradle user home {} inside a Git repository",
+                target.display(),
+                gradle.display()
+            );
+        }
+        guards.gradle = true;
+    }
+    Ok(guards)
 }
 
 /// A finding for a cache whose owner could not be asked: it offers nothing,
@@ -746,11 +783,11 @@ fn is_gradle_cache(target: &Path, home: &Path) -> Result<bool> {
     let Some(gradle) = gradle_user_home(home)? else {
         return Ok(false);
     };
-    if gradle_home_in_repository(&gradle, home)? {
-        return Ok(false);
-    }
     for entry in GRADLE {
         if target == gradle.join(entry.relative) {
+            if gradle_home_in_repository(&gradle, home)? {
+                return Ok(false);
+            }
             return holds_gradle_layout(entry.relative, target);
         }
     }
@@ -762,6 +799,165 @@ fn is_gradle_cache(target: &Path, home: &Path) -> Result<bool> {
 fn gradle_home_in_repository(gradle: &Path, home: &Path) -> Result<bool> {
     Ok(super::project::has_git_marker(gradle)?
         || super::project::owning_repo(gradle, home)?.is_some())
+}
+
+/// Whether `target` equals, lies inside, or contains `candidate`, judged by
+/// normalized path, canonical path, and `(dev, ino)` across ancestors so
+/// symlinks and APFS case-folded spellings cannot separate overlapping roots.
+fn paths_overlap(target: &Path, candidate: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if let (Some(norm_target), Some(norm_candidate)) =
+        (normalized_absolute(target), normalized_absolute(candidate))
+        && (norm_target.starts_with(&norm_candidate) || norm_candidate.starts_with(&norm_target))
+    {
+        return Ok(true);
+    }
+    let stat_id = |path: &Path| std::fs::metadata(path).map(|meta| (meta.dev(), meta.ino()));
+    let not_found = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
+    let target_id = match stat_id(target) {
+        Ok(id) => id,
+        Err(error) if not_found(&error) => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", target.display()));
+        }
+    };
+    let candidate_id = match stat_id(candidate) {
+        Ok(id) => id,
+        Err(error) if not_found(&error) => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", candidate.display()));
+        }
+    };
+    let real_target = std::fs::canonicalize(target)
+        .with_context(|| format!("cannot resolve {}", target.display()))?;
+    let real_candidate = std::fs::canonicalize(candidate)
+        .with_context(|| format!("cannot resolve {}", candidate.display()))?;
+    if real_target.starts_with(&real_candidate) || real_candidate.starts_with(&real_target) {
+        return Ok(true);
+    }
+    let target_contains_candidate = real_candidate
+        .ancestors()
+        .any(|folder| stat_id(folder).is_ok_and(|id| id == target_id));
+    let target_inside_candidate = real_target
+        .ancestors()
+        .any(|folder| stat_id(folder).is_ok_and(|id| id == candidate_id));
+    Ok(target_contains_candidate || target_inside_candidate)
+}
+
+/// Whether `target` overlaps Gradle's user home or either of its cache folders.
+fn overlaps_gradle(target: &Path, gradle: &Path) -> Result<bool> {
+    if paths_overlap(target, gradle)? {
+        return Ok(true);
+    }
+    for entry in GRADLE {
+        if paths_overlap(target, &gradle.join(entry.relative))? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Filters non-Gradle findings so another cache authority (such as Go) cannot
+/// offer a target overlapping an active or repository-owned Gradle home/cache.
+fn filter_non_gradle_findings<F>(
+    entries: &mut Vec<Finding>,
+    home: &Path,
+    gradle_home: Option<&Path>,
+    gradle_running: &mut Option<Result<Vec<u32>, String>>,
+    probe_gradle: F,
+    unread: &mut Vec<UnreadFolder>,
+    diagnostics: &mut Vec<(&'static str, String)>,
+) where
+    F: Fn() -> Result<Vec<u32>>,
+{
+    let Some(gradle) = gradle_home else {
+        return;
+    };
+    let mut kept = Vec::with_capacity(entries.len());
+    for entry in entries.drain(..) {
+        let Some(target) = entry.target() else {
+            kept.push(entry);
+            continue;
+        };
+        let overlaps = match overlaps_gradle(target, gradle) {
+            Ok(overlaps) => overlaps,
+            Err(error) => {
+                unread.push(UnreadFolder::new(target, &error));
+                continue;
+            }
+        };
+        if !overlaps {
+            kept.push(entry);
+            continue;
+        }
+        match gradle_home_in_repository(gradle, home) {
+            Ok(true) => {
+                diagnostics.push((
+                    "warn",
+                    format!(
+                        "leaving {} out: it overlaps the Gradle user home {} inside a Git repository",
+                        target.display(),
+                        gradle.display()
+                    ),
+                ));
+                continue;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                unread.push(UnreadFolder::new(target, &error));
+                continue;
+            }
+        }
+        let running = gradle_running
+            .get_or_insert_with(|| probe_gradle().map_err(|error| format!("{error:#}")));
+        match running {
+            Ok(pids) if pids.is_empty() => kept.push(entry),
+            Ok(pids) => {
+                diagnostics.push((
+                    "info",
+                    format!(
+                        "leaving {} out: Gradle is running ({} process(es)); skipping overlapping cache until `gradle --stop` ends its daemons",
+                        target.display(),
+                        pids.len()
+                    ),
+                ));
+            }
+            Err(message) => {
+                unread.push(UnreadFolder::new(target, &anyhow::anyhow!("{message}")));
+            }
+        }
+    }
+    *entries = kept;
+}
+
+/// Drops duplicate findings naming the same target path or filesystem identity,
+/// preserving the first finding in branch order.
+fn deduplicate_findings(entries: &mut Vec<Finding>) {
+    use std::collections::HashSet;
+    use std::os::unix::fs::MetadataExt as _;
+
+    let mut seen_paths = HashSet::new();
+    let mut seen_ids = HashSet::new();
+    let mut unique = Vec::with_capacity(entries.len());
+    for entry in entries.drain(..) {
+        let Some(target) = entry.target() else {
+            unique.push(entry);
+            continue;
+        };
+        let id = std::fs::symlink_metadata(target)
+            .ok()
+            .map(|meta| (meta.dev(), meta.ino()));
+        if seen_paths.contains(target) || id.is_some_and(|identity| seen_ids.contains(&identity)) {
+            continue;
+        }
+        seen_paths.insert(target.to_path_buf());
+        if let Some(identity) = id {
+            seen_ids.insert(identity);
+        }
+        unique.push(entry);
+    }
+    *entries = unique;
 }
 
 /// Whether one of Gradle's entries holds what Gradle writes there, per the
@@ -810,8 +1006,9 @@ const GRADLE_PROCESS_PATTERN: &str = "org\\.gradle\\.(launcher\\.daemon\\.bootst
 /// runs. A probe that fails refuses as well. `-a` keeps a Gradle build that
 /// started devtrim visible to the probe.
 fn gradle_processes() -> Result<Vec<u32>> {
+    let uid = rustix::process::getuid().as_raw().to_string();
     crate::safety::pgrep_pids(
-        std::process::Command::new("pgrep").args(["-a", "-f", GRADLE_PROCESS_PATTERN]),
+        std::process::Command::new("pgrep").args(["-a", "-U", &uid, "-f", GRADLE_PROCESS_PATTERN]),
         PROBE_TIMEOUT,
         "the Gradle process probe",
     )
@@ -911,6 +1108,14 @@ fn go_module_cache(
     else {
         return Ok(None);
     };
+    validate_go_module_cache(path, &ctx.home, diagnostics)
+}
+
+fn validate_go_module_cache(
+    path: PathBuf,
+    home: &Path,
+    diagnostics: Option<&mut Vec<(&'static str, String)>>,
+) -> Result<Option<PathBuf>> {
     let path = resolved_owner_path("go", path)?;
     match std::fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -920,14 +1125,27 @@ fn go_module_cache(
         Ok(_) => {}
     }
     let corroborated = holds_go_download_cache(&path)?;
-    let inside_home = normalized_absolute(&path)
-        .is_some_and(|cache| cache.starts_with(&ctx.home) && cache != ctx.home);
+    let inside_home =
+        normalized_absolute(&path).is_some_and(|cache| cache.starts_with(home) && cache != home);
     if !(corroborated && inside_home) {
         if let Some(diagnostics) = diagnostics {
             diagnostics.push((
                 "warn",
                 format!(
                     "`go` reports module cache {} outside the home folder or without Go's `cache/download`; skipping",
+                    path.display()
+                ),
+            ));
+        }
+        return Ok(None);
+    }
+    if super::project::has_git_marker(&path)? || super::project::owning_repo(&path, home)?.is_some()
+    {
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.push((
+                "warn",
+                format!(
+                    "`go` reports module cache {} inside a Git repository; skipping",
                     path.display()
                 ),
             ));
@@ -1721,5 +1939,168 @@ mod tests {
             !created,
             "PV journal-stop/uv-lock: a stopped apply created <uv cache>/.lock before begin refused it"
         );
+    }
+
+    #[test]
+    fn go_module_cache_inside_git_repository_is_rejected() {
+        let fixture = crate::ops::TestFixture::new("devtrim-go-repo");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+
+        // Subdirectory inside a Git repository holding Go's `cache/download`.
+        let repo = home.join("dev/myrepo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let in_repo = repo.join("gomodcache");
+        std::fs::create_dir_all(in_repo.join("cache/download")).unwrap();
+        std::fs::write(in_repo.join("cache/download/mod.zip"), "zip").unwrap();
+
+        // Repository root itself holding Go's `cache/download`.
+        std::fs::create_dir_all(repo.join("cache/download")).unwrap();
+
+        // Control: legitimate module cache outside any Git repository.
+        let outside = home.join("go/pkg/mod");
+        std::fs::create_dir_all(outside.join("cache/download")).unwrap();
+
+        for rejected in [&in_repo, &repo] {
+            let mut diagnostics = Vec::new();
+            let scan_result =
+                validate_go_module_cache(rejected.clone(), &home, Some(&mut diagnostics)).unwrap();
+            assert_eq!(
+                scan_result,
+                None,
+                "scan must reject GOMODCACHE inside Git repository: {}",
+                rejected.display()
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|(level, msg)| *level == "warn" && msg.contains("inside a Git repository")),
+                "expected repository warning for {}: {diagnostics:?}",
+                rejected.display()
+            );
+            // Apply path passes `diagnostics: None` and must also reject.
+            let apply_result = validate_go_module_cache(rejected.clone(), &home, None).unwrap();
+            assert_eq!(apply_result, None);
+        }
+
+        let accepted = validate_go_module_cache(outside.clone(), &home, None).unwrap();
+        assert_eq!(accepted.as_deref(), Some(outside.as_path()));
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn overlapping_go_and_gradle_cache_enforces_gradle_liveness_and_repo_guards() {
+        let fixture = crate::ops::TestFixture::new("devtrim-go-gradle-overlap");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+
+        // Default ~/.gradle/caches containing both Gradle and Go layouts.
+        let gradle_home = home.join(".gradle");
+        let gradle_caches = gradle_home.join("caches");
+        std::fs::create_dir_all(gradle_caches.join("modules-2/files-2.1")).unwrap();
+        std::fs::write(gradle_caches.join("modules-2/files-2.1/x.jar"), "jar").unwrap();
+        std::fs::create_dir_all(gradle_caches.join("cache/download")).unwrap();
+        std::fs::write(gradle_caches.join("cache/download/x.zip"), "zip").unwrap();
+
+        // Overlap detection covers direct paths and symlinked Gradle caches.
+        assert!(overlaps_gradle(&gradle_caches, &gradle_home).unwrap());
+        let linked_target = home.join("go/pkg/mod");
+        std::fs::create_dir_all(linked_target.join("cache/download")).unwrap();
+        let linked_gradle = home.join("linked-gradle");
+        std::fs::create_dir_all(&linked_gradle).unwrap();
+        std::os::unix::fs::symlink(&linked_target, linked_gradle.join("caches")).unwrap();
+        assert!(overlaps_gradle(&linked_target, &linked_gradle).unwrap());
+
+        // Scan filter drops overlapping Go finding when Gradle is running.
+        let go_finding = || cache_finding("Go module cache", gradle_caches.clone(), 16, 3);
+        let mut running_entries = vec![go_finding()];
+        let mut cached_probe = None;
+        let mut unread = Vec::new();
+        let mut diagnostics = Vec::new();
+        filter_non_gradle_findings(
+            &mut running_entries,
+            &home,
+            Some(&gradle_home),
+            &mut cached_probe,
+            || Ok(vec![4242]),
+            &mut unread,
+            &mut diagnostics,
+        );
+        assert!(
+            running_entries.is_empty(),
+            "overlapping Go finding must be dropped while Gradle runs"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|(level, msg)| *level == "info" && msg.contains("Gradle is running")),
+            "{diagnostics:?}"
+        );
+
+        // Scan filter keeps overlapping Go finding when Gradle is idle, and
+        // deduplication collapses identical Gradle + Go findings to one.
+        let mut idle_entries = vec![go_finding()];
+        let mut idle_probe = None;
+        filter_non_gradle_findings(
+            &mut idle_entries,
+            &home,
+            Some(&gradle_home),
+            &mut idle_probe,
+            || Ok(Vec::new()),
+            &mut unread,
+            &mut diagnostics,
+        );
+        assert_eq!(idle_entries.len(), 1);
+        let mut combined = vec![
+            cache_finding("Gradle caches", gradle_caches.clone(), 16, 3),
+            idle_entries.remove(0),
+        ];
+        deduplicate_findings(&mut combined);
+        assert_eq!(combined.len(), 1);
+        assert_eq!(combined[0].label, "Gradle caches");
+
+        // Scan filter drops any finding overlapping a repo-nested Gradle home.
+        let repo_gradle = home.join("dev/repo");
+        std::fs::create_dir_all(repo_gradle.join(".git")).unwrap();
+        std::fs::write(repo_gradle.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let repo_caches = repo_gradle.join("caches");
+        std::fs::create_dir_all(repo_caches.join("cache/download")).unwrap();
+        let mut repo_entries = vec![cache_finding("Go module cache", repo_caches, 16, 3)];
+        let mut repo_probe = None;
+        let mut repo_diag = Vec::new();
+        filter_non_gradle_findings(
+            &mut repo_entries,
+            &home,
+            Some(&repo_gradle),
+            &mut repo_probe,
+            || Ok(Vec::new()),
+            &mut unread,
+            &mut repo_diag,
+        );
+        assert!(
+            repo_entries.is_empty(),
+            "finding overlapping repo-owned Gradle home must be dropped"
+        );
+        assert!(
+            repo_diag
+                .iter()
+                .any(|(level, msg)| *level == "warn" && msg.contains("inside a Git repository")),
+            "{repo_diag:?}"
+        );
+
+        // Apply authorization sets `guards.gradle = true` for ~/.gradle/caches
+        // even when `cache/download` is also present.
+        if std::env::var_os("GRADLE_USER_HOME").is_none() {
+            let ctx = Ctx::for_test(home.clone());
+            let installs = InstallCaches::new(&home, None);
+            let guards = authorize_cache_finding(&combined[0], &ctx, &installs).unwrap();
+            assert!(
+                guards.gradle,
+                "overlapping ~/.gradle/caches must require Gradle liveness at apply"
+            );
+        }
+
+        crate::ops::remove_test_path(home);
     }
 }

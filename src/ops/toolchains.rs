@@ -256,6 +256,10 @@ struct SwiftlyConfig {
     installed_toolchains: Vec<String>,
 }
 
+/// Upper bound on swiftly's `config.json` read so a pathological file cannot
+/// exhaust memory while checking toolchain ownership.
+const MAX_SWIFTLY_CONFIG_BYTES: u64 = 1024 * 1024;
+
 /// Every toolchain folder in `directory` that swiftly records.
 ///
 /// swiftly, the installer swift.org recommends on macOS, selects the toolchain
@@ -272,7 +276,15 @@ fn swiftly_toolchains(
     home: &Path,
     directory: &Path,
 ) -> Result<BTreeMap<(u64, u64), SwiftlyToolchain>> {
-    let config = match std::env::var_os("SWIFTLY_HOME_DIR") {
+    swiftly_toolchains_with_env(home, directory, std::env::var_os("SWIFTLY_HOME_DIR"))
+}
+
+fn swiftly_toolchains_with_env(
+    home: &Path,
+    directory: &Path,
+    env_swiftly_home: Option<std::ffi::OsString>,
+) -> Result<BTreeMap<(u64, u64), SwiftlyToolchain>> {
+    let (swiftly_home, explicit_env) = match env_swiftly_home {
         Some(swiftly_home) => {
             let swiftly_home = PathBuf::from(swiftly_home);
             if !swiftly_home.is_absolute() {
@@ -281,20 +293,13 @@ fn swiftly_toolchains(
                     swiftly_home.display()
                 );
             }
-            swiftly_home.join("config.json")
+            (swiftly_home, true)
         }
-        None => home.join(".swiftly/config.json"),
+        None => (home.join(".swiftly"), false),
     };
-    let contents = match std::fs::read(&config) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(BTreeMap::new());
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!("cannot read swiftly's configuration {}", config.display())
-            });
-        }
+    let config = swiftly_home.join("config.json");
+    let Some(contents) = read_swiftly_config(&swiftly_home, &config, explicit_env)? else {
+        return Ok(BTreeMap::new());
     };
     let parsed: SwiftlyConfig = serde_json::from_slice(&contents)
         .with_context(|| format!("cannot parse swiftly's configuration {}", config.display()))?;
@@ -330,6 +335,134 @@ fn swiftly_toolchains(
         }
     }
     Ok(owned)
+}
+
+/// Reads swiftly's `config.json` without blocking on FIFOs or trusting broken
+/// symlinks. Returns `Ok(None)` only when `SWIFTLY_HOME_DIR` was unset and
+/// default `~/.swiftly` / `config.json` is genuinely absent.
+fn read_swiftly_config(
+    swiftly_home: &Path,
+    config: &Path,
+    explicit_env: bool,
+) -> Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+
+    let descriptor = match rustix::fs::open(
+        config,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::NOCTTY
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT) => {
+            if explicit_env {
+                anyhow::bail!(
+                    "refusing Swift toolchains: SWIFTLY_HOME_DIR is set, but swiftly's configuration is missing or broken at {}",
+                    config.display()
+                );
+            }
+            verify_default_swiftly_absent(swiftly_home, config)?;
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(std::io::Error::from(error)).with_context(|| {
+                format!("cannot read swiftly's configuration {}", config.display())
+            });
+        }
+    };
+    let stat = rustix::fs::fstat(&descriptor)
+        .map_err(std::io::Error::from)
+        .with_context(|| {
+            format!(
+                "cannot inspect swiftly's configuration {}",
+                config.display()
+            )
+        })?;
+    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
+        anyhow::bail!(
+            "refusing non-regular swiftly configuration {}",
+            config.display()
+        );
+    }
+    let mut file = std::fs::File::from(descriptor);
+    let mut contents = Vec::new();
+    file.by_ref()
+        .take(MAX_SWIFTLY_CONFIG_BYTES + 1)
+        .read_to_end(&mut contents)
+        .with_context(|| format!("cannot read swiftly's configuration {}", config.display()))?;
+    if contents.len() as u64 > MAX_SWIFTLY_CONFIG_BYTES {
+        anyhow::bail!(
+            "swiftly's configuration {} exceeds {MAX_SWIFTLY_CONFIG_BYTES} bytes",
+            config.display()
+        );
+    }
+    Ok(Some(contents))
+}
+
+/// Proves that default `~/.swiftly/config.json` is absent rather than a
+/// dangling symlink, non-directory, unreadable path, or race.
+fn verify_default_swiftly_absent(swiftly_home: &Path, config: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(swiftly_home) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("cannot inspect swiftly home {}", swiftly_home.display())
+            });
+        }
+        Ok(meta) if meta.file_type().is_symlink() => match std::fs::metadata(swiftly_home) {
+            Ok(target) if target.is_dir() => {}
+            Ok(_) => {
+                anyhow::bail!(
+                    "cannot read swiftly's configuration {}: {} does not point to a directory",
+                    config.display(),
+                    swiftly_home.display()
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!(
+                    "cannot read swiftly's configuration {}: {} is a broken symlink",
+                    config.display(),
+                    swiftly_home.display()
+                );
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot resolve swiftly home {}", swiftly_home.display())
+                });
+            }
+        },
+        Ok(meta) if meta.file_type().is_dir() => {}
+        Ok(_) => {
+            anyhow::bail!(
+                "cannot read swiftly's configuration {}: {} is not a directory",
+                config.display(),
+                swiftly_home.display()
+            );
+        }
+    }
+    match std::fs::symlink_metadata(config) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "cannot inspect swiftly's configuration {}",
+                config.display()
+            )
+        }),
+        Ok(meta) if meta.file_type().is_symlink() => {
+            anyhow::bail!(
+                "cannot read swiftly's configuration {}: broken symlink",
+                config.display()
+            );
+        }
+        Ok(_) => {
+            anyhow::bail!(
+                "cannot read swiftly's configuration {}: appeared while verifying absence",
+                config.display()
+            );
+        }
+    }
 }
 
 /// The `.xctoolchain` folder names, without the extension, swiftly has given
@@ -532,5 +665,83 @@ mod tests {
             error.contains(&*directory.to_string_lossy()),
             "apply's error must name the folder: {error}"
         );
+    }
+
+    #[test]
+    fn swiftly_dangling_config_symlink_fails_closed() {
+        let (_fixture, root) = target_temp("swiftly-dangling-config");
+        let home = root.canonicalize().unwrap();
+        let directory = home.join("Library/Developer/Toolchains");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::create_dir_all(home.join(".swiftly")).unwrap();
+        symlink(
+            root.join("nonexistent-config.json"),
+            home.join(".swiftly/config.json"),
+        )
+        .unwrap();
+
+        let error = swiftly_toolchains_with_env(&home, &directory, None)
+            .err()
+            .expect("dangling config.json symlink must fail closed");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("broken symlink"),
+            "unexpected error for dangling config.json: {message}"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn swiftly_dangling_home_symlink_fails_closed() {
+        let (_fixture, root) = target_temp("swiftly-dangling-home");
+        let home = root.canonicalize().unwrap();
+        let directory = home.join("Library/Developer/Toolchains");
+        std::fs::create_dir_all(&directory).unwrap();
+        symlink(root.join("nonexistent-swiftly-home"), home.join(".swiftly")).unwrap();
+
+        let error = swiftly_toolchains_with_env(&home, &directory, None)
+            .err()
+            .expect("dangling ~/.swiftly symlink must fail closed");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("broken symlink"),
+            "unexpected error for dangling ~/.swiftly: {message}"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn swiftly_explicit_nonexistent_home_dir_fails_closed() {
+        let (_fixture, root) = target_temp("swiftly-explicit-missing");
+        let home = root.canonicalize().unwrap();
+        let directory = home.join("Library/Developer/Toolchains");
+        std::fs::create_dir_all(&directory).unwrap();
+        let missing = home.join("does-not-exist-swiftly");
+
+        let error = swiftly_toolchains_with_env(&home, &directory, Some(missing.into_os_string()))
+            .err()
+            .expect("explicit nonexistent SWIFTLY_HOME_DIR must fail closed");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("SWIFTLY_HOME_DIR"),
+            "unexpected error for explicit missing SWIFTLY_HOME_DIR: {message}"
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn swiftly_valid_symlinked_home_without_config_is_empty() {
+        let (_fixture, root) = target_temp("swiftly-valid-symlink-no-config");
+        let home = root.canonicalize().unwrap();
+        let directory = home.join("Library/Developer/Toolchains");
+        std::fs::create_dir_all(&directory).unwrap();
+        let target_dir = home.join("dotfiles/swiftly");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        symlink(&target_dir, home.join(".swiftly")).unwrap();
+
+        let owned = swiftly_toolchains_with_env(&home, &directory, None)
+            .expect("valid symlinked ~/.swiftly without config.json must succeed as empty");
+        assert!(owned.is_empty());
+        crate::ops::remove_test_path(root);
     }
 }
