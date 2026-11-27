@@ -755,7 +755,7 @@ fn create_output(explicit: Option<&Path>) -> Result<(File, PathBuf)> {
 
 fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::new();
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let bits = (u32::from(chunk[0]) << 16)
             | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
@@ -773,14 +773,30 @@ fn base64(bytes: &[u8]) -> String {
     encoded
 }
 
+fn escape_script_json(raw: &str) -> String {
+    let mut escaped = String::with_capacity(raw.len());
+    let mut last = 0;
+    for (index, character) in raw.char_indices() {
+        let replacement = match character {
+            '&' => "\\u0026",
+            '<' => "\\u003c",
+            '>' => "\\u003e",
+            '\u{2028}' => "\\u2028",
+            '\u{2029}' => "\\u2029",
+            _ => continue,
+        };
+        escaped.push_str(&raw[last..index]);
+        escaped.push_str(replacement);
+        last = index + character.len_utf8();
+    }
+    escaped.push_str(&raw[last..]);
+    escaped
+}
+
 fn document(snapshot: &Snapshot) -> Result<String> {
     // Script data is inert, but its HTML raw-text terminator still needs escaping.
-    let data = serde_json::to_string(snapshot)?
-        .replace('&', "\\u0026")
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('\u{2028}', "\\u2028")
-        .replace('\u{2029}', "\\u2029");
+    let raw = serde_json::to_string(snapshot)?;
+    let data = escape_script_json(&raw);
     let policy = format!(
         "default-src 'none'; script-src 'sha256-{}'; style-src 'sha256-{}'; img-src 'none'; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
         base64(&Sha256::digest(JS.as_bytes())),

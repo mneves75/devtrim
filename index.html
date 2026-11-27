@@ -4,7 +4,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="devtrim is a local-first disk cleaner for macOS developer machines. It measures, classifies and trims caches and build output, previews every action, scores its danger and moves files to the Trash first.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-svmqRG5H8/956M8JttFlE/nGQH5IoIpPbLHDrtyXYwI='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'sha256-ddEQDABY8QwZhiRjQq08zr3XNgTTSs/tfkRSNIp3rag='; img-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>devtrim — measure · classify · trim</title><link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles.css">
@@ -156,7 +156,7 @@ each action 1–10 for danger, and moves files to the Trash, recoverable until y
 </dl></div>
 </section><section class="demo band" aria-labelledby="demo-h"><div class="wrap">
 <h2 id="demo-h">Preview first. Approve once.</h2><div class="video-card">
-<video controls preload="none" src="media/demo.mp4" poster="media/demo-poster.webp" width="1920" height="1080" aria-describedby="demo-transcript">
+<video controls loading="lazy" preload="none" src="media/demo.mp4" poster="media/demo-poster.webp" width="1920" height="1080" aria-describedby="demo-transcript">
 <track kind="captions" srclang="en" label="English" src="media/demo-captions.vtt" default>
 </video>
 <div class="video-body">
@@ -255,91 +255,5 @@ cp target/release/devtrim /usr/local/bin/</code></pre><p>Rust 1.88 or newer. No 
 <footer class="site-foot"><div class="wrap">
 <ul><li class="foot-name">devtrim v0.17.2</li><li><a href="MANUAL.html">Manual</a></li><li><a href="llms.txt">llms.txt</a></li><li><a href="https://github.com/mneves75/devtrim">GitHub</a></li><li><a href="https://github.com/mneves75/devtrim/releases/tag/v0.17.2">Releases</a></li><li><a href="https://github.com/mneves75/devtrim/blob/main/SECURITY.md">Security</a></li><li>Apache-2.0</li></ul>
 </div>
-</footer><output class="sr-only" id="copy-status"></output><script>{
-const walk = document.querySelector("[data-walk]");
-const tablist = walk.querySelector("[role=tablist]");
-const panels = [...walk.querySelectorAll(".walk-steps > li")].filter(li => li.querySelector(".term-frame"));
-const tabs = panels.map(panel => {
-const caption = panel.querySelector("figcaption");
-const lead = caption.querySelector("strong").textContent;
-const id = "tab-" + panel.id.replace(/^step-/, "");
-const tab = document.createElement("button");
-tab.type = "button";
-tab.id = id;
-tab.setAttribute("role", "tab");
-const name = document.createElement("span");
-name.className = "tab-name";
-name.id = id + "-name";
-name.textContent = lead.replace(/\.$/, "");
-const note = document.createElement("span");
-note.className = "tab-note";
-note.id = id + "-note";
-note.textContent = caption.textContent.slice(lead.length).trim();
-tab.append(name, note);
-tab.setAttribute("aria-labelledby", name.id);
-tab.setAttribute("aria-describedby", note.id);
-tablist.append(tab);
-panel.setAttribute("role", "tabpanel");
-panel.setAttribute("aria-labelledby", id);
-return tab;
-});
-if (tabs.length > 1) {
-walk.querySelector(".walk-steps").setAttribute("role", "none");
-const wide = matchMedia("(width >= 72rem)");
-const orient = () => tablist.setAttribute("aria-orientation", wide.matches ? "vertical" : "horizontal");
-const show = (index, focus, scroll) => {
-tabs.forEach((tab, i) => {
-const on = i === index;
-tab.setAttribute("aria-selected", String(on));
-tab.tabIndex = on ? 0 : -1;
-panels[i].hidden = on ? false : "until-found";
-panels[i].classList.toggle("is-off", !on);
-});
-if (scroll && !wide.matches) {
-tabs[index].scrollIntoView({ block: "nearest", inline: "nearest" });
-}
-if (focus) tabs[index].focus();
-};
-tabs.forEach((tab, i) => tab.addEventListener("click", () => show(i, false, true)));
-panels.forEach((panel, i) => panel.addEventListener("beforematch", () => show(i, false, true)));
-tablist.addEventListener("keydown", event => {
-const at = tabs.indexOf(document.activeElement);
-const last = tabs.length - 1;
-const keys = wide.matches ? { ArrowDown: at + 1, ArrowUp: at - 1 } : { ArrowRight: at + 1, ArrowLeft: at - 1 };
-const next = { ...keys, Home: 0, End: last }[event.key];
-if (next === undefined || at < 0) return;
-event.preventDefault();
-show(next < 0 ? last : next > last ? 0 : next, true, true);
-});
-if (!CSS.supports("animation-timeline", "scroll(self inline)")) {
-const first = tabs[0], last = tabs[tabs.length - 1];
-const observer = new IntersectionObserver(entries => {
-for (const entry of entries) {
-tablist.classList.toggle(entry.target === first ? "more-start" : "more-end", entry.intersectionRatio < 1);
-}
-}, { root: tablist, threshold: 1, rootMargin: "1px" });
-observer.observe(first);
-observer.observe(last);
-}
-wide.addEventListener("change", orient);
-orient();
-tablist.hidden = false;
-walk.classList.add("is-tabs");
-show(0, false, false);
-}
-const status = document.getElementById("copy-status");
-for (const button of document.querySelectorAll("button[data-copy]")) {
-const source = document.getElementById(button.dataset.copy);
-button.setAttribute("aria-label", "Copy the install command");
-button.hidden = false;
-button.addEventListener("click", async () => {
-let done = true;
-try { await navigator.clipboard.writeText(source.textContent); } catch { done = false; }
-button.dataset.state = done ? "done" : "failed";
-button.textContent = done ? "Copied" : "Select it";
-status.textContent = done ? "Install command copied" : "Copy is blocked; select the command instead";
-setTimeout(() => { button.textContent = "Copy"; delete button.dataset.state; status.textContent = ""; }, 1800);
-});
-}
-}</script></body>
+</footer><output class="sr-only" id="copy-status"></output><script>{const walk=document.querySelector("[data-walk]"),tablist=walk.querySelector("[role=tablist]"),panels=[...walk.querySelectorAll(".walk-steps > li")].filter(li=>li.querySelector(".term-frame")),tabs=panels.map(panel=>{const caption=panel.querySelector("figcaption"),lead=caption.querySelector("strong").textContent,id="tab-"+panel.id.replace(/^step-/,""),tab=document.createElement("button");tab.type="button";tab.id=id;tab.setAttribute("role","tab");const name=document.createElement("span");name.className="tab-name";name.id=id+"-name";name.textContent=lead.replace(/\.$/,"");const note=document.createElement("span");note.className="tab-note";note.id=id+"-note";note.textContent=caption.textContent.slice(lead.length).trim();tab.append(name,note);tab.setAttribute("aria-labelledby",name.id);tab.setAttribute("aria-describedby",note.id);tablist.append(tab);panel.setAttribute("role","tabpanel");panel.setAttribute("aria-labelledby",id);return tab});if(tabs.length>1){walk.querySelector(".walk-steps").setAttribute("role","none");const wide=matchMedia("(width >= 72rem)"),orient=()=>tablist.setAttribute("aria-orientation",wide.matches?"vertical":"horizontal"),show=(index,focus,scroll)=>{tabs.forEach((tab,i)=>{const on=i===index;tab.setAttribute("aria-selected",String(on));tab.tabIndex=on?0:-1;panels[i].hidden=on?false:"until-found";panels[i].classList.toggle("is-off",!on)});if(scroll&&!wide.matches)tabs[index].scrollIntoView({block:"nearest",inline:"nearest"});if(focus)tabs[index].focus()};tabs.forEach((tab,i)=>tab.addEventListener("click",()=>show(i,false,true)));panels.forEach((panel,i)=>panel.addEventListener("beforematch",()=>show(i,false,true)));tablist.addEventListener("keydown",event=>{const at=tabs.indexOf(document.activeElement),last=tabs.length-1,keys=wide.matches?{ArrowDown:at+1,ArrowUp:at-1}:{ArrowRight:at+1,ArrowLeft:at-1},next={...keys,Home:0,End:last}[event.key];if(next===undefined||at<0)return;event.preventDefault();show(next<0?last:next>last?0:next,true,true)});if(!CSS.supports("animation-timeline","scroll(self inline)")){const first=tabs[0],last=tabs[tabs.length-1],observer=new IntersectionObserver(entries=>{for(const entry of entries)tablist.classList.toggle(entry.target===first?"more-start":"more-end",entry.intersectionRatio<1)},{root:tablist,threshold:1,rootMargin:"1px"});observer.observe(first);observer.observe(last)}wide.addEventListener("change",orient);orient();tablist.hidden=false;walk.classList.add("is-tabs");show(0,false,false)}const status=document.getElementById("copy-status");for(const button of document.querySelectorAll("button[data-copy]")){const source=document.getElementById(button.dataset.copy);button.setAttribute("aria-label","Copy the install command");button.hidden=false;button.addEventListener("click",async()=>{let done=true;try{await navigator.clipboard.writeText(source.textContent)}catch{done=false}button.dataset.state=done?"done":"failed";button.textContent=done?"Copied":"Select it";status.textContent=done?"Install command copied":"Copy is blocked; select the command instead";setTimeout(()=>{button.textContent="Copy";delete button.dataset.state;status.textContent=""},1800)})}}</script></body>
 </html>
