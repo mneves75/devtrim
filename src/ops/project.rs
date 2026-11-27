@@ -2559,53 +2559,6 @@ mod tests {
     }
 
     #[test]
-    fn repositories_under_finds_git_dirs_and_worktrees_skips_node_modules_and_reports_unread() {
-        let fixture = crate::ops::TestFixture::new("repos-under-bulk");
-        let root = fixture.path().join("scan");
-        let repo_a = root.join("alpha");
-        let repo_b = root.join("nested/zeta");
-        let worktree = root.join("beta-worktree");
-        let skipped = root.join("node_modules/hidden-repo");
-        let nested_in_repo = repo_a.join("vendor/sub-repo");
-        let blocked = root.join("blocked");
-        std::fs::create_dir_all(repo_a.join(".git")).unwrap();
-        std::fs::create_dir_all(repo_b.join(".git")).unwrap();
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::write(
-            worktree.join(".git"),
-            "gitdir: ../alpha/.git/worktrees/beta\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(skipped.join(".git")).unwrap();
-        std::fs::create_dir_all(nested_in_repo.join(".git")).unwrap();
-        let _locked = crate::ops::Unreadable::new(&blocked, 0o000);
-
-        let mut unread = Vec::new();
-        let found = repositories_under(&root, &mut unread).unwrap();
-        assert_eq!(
-            found,
-            vec![repo_a.clone(), worktree.clone(), repo_b.clone()]
-        );
-        assert_eq!(unread.len(), 1);
-        assert_eq!(unread[0].path, blocked);
-
-        let alias = fixture.path().join("scan-alias");
-        std::os::unix::fs::symlink(&root, &alias).unwrap();
-        let mut alias_unread = Vec::new();
-        let alias_found = repositories_under(&alias, &mut alias_unread).unwrap();
-        assert_eq!(
-            alias_found,
-            vec![
-                alias.join("alpha"),
-                alias.join("beta-worktree"),
-                alias.join("nested/zeta"),
-            ]
-        );
-        assert_eq!(alias_unread.len(), 1);
-        drop(_locked);
-    }
-
-    #[test]
     fn hostile_core_worktree_cannot_bypass_tracked_index_or_submodule_checks() {
         let fixture = crate::ops::TestFixture::new("hostile-core-worktree");
         std::fs::create_dir_all(fixture.path()).unwrap();

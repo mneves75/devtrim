@@ -810,6 +810,132 @@ fn read_docker_config_json(
     Ok(Some(object))
 }
 
+fn validate_docker_plugin_executable(entry_path: &Path, current_uid: u32) -> Result<()> {
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    const MAX_SYMLINK_HOPS: usize = 40;
+
+    let mut current = entry_path.to_path_buf();
+    let mut pending: VecDeque<OsString> = VecDeque::new();
+    let mut hops = 0usize;
+
+    loop {
+        if current.as_os_str().as_encoded_bytes().contains(&b'\n') {
+            anyhow::bail!(
+                "refusing Docker CLI plugin path with newline: {}",
+                current.display()
+            );
+        }
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                anyhow::bail!(
+                    "refusing broken symlink for Docker CLI plugin entry: {}",
+                    entry_path.display()
+                );
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "cannot inspect Docker CLI plugin path {}",
+                        current.display()
+                    )
+                });
+            }
+        };
+        if metadata.uid() != current_uid && metadata.uid() != 0 {
+            anyhow::bail!(
+                "refusing Docker CLI plugin path not owned by current user or root: {}",
+                current.display()
+            );
+        }
+        super::project::refuse_path_acl_grants(
+            [current.as_path()],
+            &current,
+            "Docker CLI plugin executable",
+        )?;
+
+        if metadata.file_type().is_symlink() {
+            hops += 1;
+            if hops > MAX_SYMLINK_HOPS {
+                anyhow::bail!(
+                    "refusing Docker CLI plugin symlink chain exceeding {MAX_SYMLINK_HOPS} hops: {}",
+                    entry_path.display()
+                );
+            }
+            let target = std::fs::read_link(&current).with_context(|| {
+                format!(
+                    "cannot read Docker CLI plugin symlink {}",
+                    current.display()
+                )
+            })?;
+            let mut next_components = Vec::new();
+            for component in target.components() {
+                match component {
+                    Component::RootDir => {}
+                    Component::CurDir => {}
+                    Component::ParentDir => next_components.push(OsString::from("..")),
+                    Component::Normal(segment) => next_components.push(segment.to_os_string()),
+                    Component::Prefix(_) => {
+                        anyhow::bail!(
+                            "refusing unexpected prefix in Docker CLI plugin symlink {}",
+                            current.display()
+                        );
+                    }
+                }
+            }
+            for segment in next_components.into_iter().rev() {
+                pending.push_front(segment);
+            }
+            if target.is_absolute() {
+                current = PathBuf::from("/");
+            } else {
+                current.pop();
+            }
+        } else if pending.is_empty() {
+            if !metadata.is_file() {
+                anyhow::bail!(
+                    "refusing non-regular Docker CLI plugin entry: {}",
+                    entry_path.display()
+                );
+            }
+            if metadata.permissions().mode() & 0o022 != 0 {
+                anyhow::bail!(
+                    "refusing group- or world-writable Docker CLI plugin executable: {}",
+                    current.display()
+                );
+            }
+            validate_trusted_ancestors(&current, true, "Docker CLI plugin executable")?;
+            return Ok(());
+        } else {
+            if !metadata.is_dir() {
+                anyhow::bail!(
+                    "refusing non-directory ancestor in Docker CLI plugin path: {}",
+                    current.display()
+                );
+            }
+            let mode = metadata.permissions().mode();
+            if (mode & 0o022 != 0) && (mode & 0o1000 == 0) {
+                anyhow::bail!(
+                    "refusing group- or world-writable ancestor in Docker CLI plugin path: {}",
+                    current.display()
+                );
+            }
+        }
+
+        while let Some(next_segment) = pending.pop_front() {
+            if next_segment == ".." {
+                current.pop();
+                continue;
+            }
+            current.push(next_segment);
+            break;
+        }
+    }
+}
+
 fn validate_docker_plugin_dir(candidate: &Path) -> Result<Option<PathBuf>> {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
@@ -911,76 +1037,7 @@ fn validate_docker_plugin_dir(candidate: &Path) -> Result<Option<PathBuf>> {
         if !name.as_encoded_bytes().starts_with(b"docker-") {
             continue;
         }
-        let entry_path = entry.path();
-        let entry_link_meta = std::fs::symlink_metadata(&entry_path).with_context(|| {
-            format!(
-                "cannot inspect Docker CLI plugin entry {}",
-                entry_path.display()
-            )
-        })?;
-        if entry_link_meta.uid() != current_uid && entry_link_meta.uid() != 0 {
-            anyhow::bail!(
-                "refusing Docker CLI plugin entry not owned by current user or root: {}",
-                entry_path.display()
-            );
-        }
-        let resolved_plugin = match entry_path.canonicalize() {
-            Ok(resolved) => resolved,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                anyhow::bail!(
-                    "refusing broken symlink for Docker CLI plugin entry: {}",
-                    entry_path.display()
-                );
-            }
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "cannot resolve Docker CLI plugin entry {}",
-                        entry_path.display()
-                    )
-                });
-            }
-        };
-        if resolved_plugin
-            .as_os_str()
-            .as_encoded_bytes()
-            .contains(&b'\n')
-        {
-            anyhow::bail!(
-                "refusing Docker CLI plugin executable with newline in resolved path: {}",
-                resolved_plugin.display()
-            );
-        }
-        validate_trusted_ancestors(&resolved_plugin, true, "Docker CLI plugin executable")?;
-        let target_meta = std::fs::symlink_metadata(&resolved_plugin).with_context(|| {
-            format!(
-                "cannot inspect resolved Docker CLI plugin executable {}",
-                resolved_plugin.display()
-            )
-        })?;
-        if !target_meta.is_file() {
-            anyhow::bail!(
-                "refusing non-regular Docker CLI plugin entry: {}",
-                entry_path.display()
-            );
-        }
-        if target_meta.uid() != current_uid && target_meta.uid() != 0 {
-            anyhow::bail!(
-                "refusing Docker CLI plugin executable not owned by current user or root: {}",
-                resolved_plugin.display()
-            );
-        }
-        if target_meta.permissions().mode() & 0o022 != 0 {
-            anyhow::bail!(
-                "refusing group- or world-writable Docker CLI plugin executable: {}",
-                resolved_plugin.display()
-            );
-        }
-        super::project::refuse_path_acl_grants(
-            [resolved_plugin.as_path()],
-            &resolved_plugin,
-            "Docker CLI plugin executable",
-        )?;
+        validate_docker_plugin_executable(&entry.path(), current_uid)?;
     }
     Ok(Some(canonical))
 }
@@ -2533,6 +2590,25 @@ mod tests {
             validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
             "symlinked docker-* plugin pointing to writable executable must fail closed"
         );
+        std::fs::remove_file(&linked_plugin).unwrap();
+
+        // Symlinked docker-* plugin passing through a writable intermediate hop fails closed.
+        let safe_plugin_bin = home.join("safe-plugin-bin");
+        std::fs::write(&safe_plugin_bin, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&safe_plugin_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let writable_hop_dir = home.join("writable-hop");
+        std::fs::create_dir_all(&writable_hop_dir).unwrap();
+        let hop_link = writable_hop_dir.join("hop-buildx");
+        std::os::unix::fs::symlink(&safe_plugin_bin, &hop_link).unwrap();
+        std::fs::set_permissions(&writable_hop_dir, std::fs::Permissions::from_mode(0o777))
+            .unwrap();
+        std::os::unix::fs::symlink(&hop_link, &linked_plugin).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "docker-* plugin with writable intermediate symlink hop must fail closed"
+        );
+        std::fs::set_permissions(&writable_hop_dir, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
         std::fs::remove_file(&linked_plugin).unwrap();
 
         // Group/world-writable config.json (even owned by current user) fails closed.
