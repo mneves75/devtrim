@@ -53,6 +53,7 @@ const OUTPUT_LIMIT: u64 = 256 * 1024 * 1024;
 const REAP_GRACE: Duration = Duration::from_secs(5);
 
 const FIRST_POLL: Duration = Duration::from_millis(1);
+const MAX_CLOSED_PIPE_POLL: Duration = Duration::from_millis(5);
 const LONGEST_POLL: Duration = Duration::from_millis(32);
 
 pub(crate) trait BoundedCommand {
@@ -195,13 +196,16 @@ impl PipeWake {
         if state.open == 0 {
             let yield_once = !std::mem::replace(&mut state.yielded, true);
             drop(state);
-            *delay = FIRST_POLL;
-            // Yield once so a child mid-exit reaps in microseconds; sleep if it kept running.
+            // Yield once so a child mid-exit reaps in microseconds; back off up to
+            // MAX_CLOSED_PIPE_POLL if it stays alive after closing stdout/stderr.
             if yield_once {
+                *delay = FIRST_POLL;
                 thread::yield_now();
                 return;
             }
-            thread::sleep(FIRST_POLL.min(remaining));
+            let sleep = (*delay).min(MAX_CLOSED_PIPE_POLL).min(remaining);
+            thread::sleep(sleep);
+            *delay = (*delay * 2).min(MAX_CLOSED_PIPE_POLL);
             return;
         }
 

@@ -84,6 +84,11 @@ pub struct BulkEntryRef<'a> {
     /// or `None` when APFS withholds it or [`BulkMode`] did not request it.
     pub private: Option<u64>,
     pub modified: Option<SystemTime>,
+    /// True when a directory entry is a filesystem mount point or autofs trigger
+    /// (`DIR_MNTSTATUS_MNTPOINT | DIR_MNTSTATUS_TRIGGER`). `getattrlistbulk(2)`
+    /// reports the underlying filesystem's `dev_t` on mount points, so callers
+    /// enforcing a single-device boundary must check this flag before descending.
+    pub mountpoint: bool,
 }
 
 /// One directory entry yielded by [`visit_dir_names`], borrowing `name` from the caller's [`BulkBuffer`].
@@ -92,6 +97,8 @@ pub struct NameEntryRef<'a> {
     pub name: &'a OsStr,
     pub kind: EntryKind,
     pub dev: u64,
+    /// True when a directory entry is a filesystem mount point or autofs trigger.
+    pub mountpoint: bool,
 }
 
 /// One directory entry returned by [`read_dir_bulk`].
@@ -107,6 +114,8 @@ pub struct BulkEntry {
     /// APFS withholds it (compressed file, non-APFS volume, or non-regular entry).
     pub private: Option<u64>,
     pub modified: Option<SystemTime>,
+    /// True when a directory entry is a filesystem mount point or autofs trigger.
+    pub mountpoint: bool,
 }
 
 /// Why [`read_dir_bulk`], [`visit_dir_bulk`], or [`visit_dir_names`] could not read a directory.
@@ -170,6 +179,7 @@ pub fn read_dir_bulk(directory: &Path) -> Result<Vec<BulkEntry>, BulkError> {
             allocated: entry.allocated,
             private: entry.private,
             modified: entry.modified,
+            mountpoint: entry.mountpoint,
         });
         Ok::<(), std::convert::Infallible>(())
     }) {
@@ -209,6 +219,7 @@ pub fn visit_dir_names(
             name: entry.name,
             kind: entry.kind,
             dev: entry.dev,
+            mountpoint: entry.mountpoint,
         });
         Ok::<(), std::convert::Infallible>(())
     }) {
@@ -276,6 +287,9 @@ const ATTR_CMN_FLAGS: u32 = 0x0004_0000;
 const ATTR_CMN_FILEID: u32 = 0x0200_0000;
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
 const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
+const ATTR_DIR_MOUNTSTATUS: u32 = 0x0000_0004;
+const DIR_MNTSTATUS_MNTPOINT: u32 = 0x0000_0001;
+const DIR_MNTSTATUS_TRIGGER: u32 = 0x0000_0002;
 const ATTR_FILE_LINKCOUNT: u32 = 0x0000_0001;
 const ATTR_FILE_ALLOCSIZE: u32 = 0x0000_0004;
 const ATTR_CMNEXT_PRIVATESIZE: u32 = 0x0000_0008;
@@ -301,6 +315,7 @@ const OPTIONS: u32 = FSOPT_NOFOLLOW | FSOPT_PACK_INVAL_ATTRS | FSOPT_ATTR_CMN_EX
 // `attribute_set_t` (common, vol, dir, file, fork), then each value in group
 // and bit order, each aligned to 4 bytes, 64-bit values included.
 const RETURNED_COMMON: usize = 4;
+const RETURNED_DIR: usize = 12;
 const RETURNED_FILE: usize = 16;
 const RETURNED_EXTENDED: usize = 20;
 const DEVID: usize = 24; // dev_t (i32)
@@ -393,7 +408,11 @@ struct LayoutSpec {
 
 const FULL_SPEC: LayoutSpec = LayoutSpec {
     file_attr: FILE,
-    required_common: ATTR_CMN_NAME | ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_FILEID,
+    required_common: ATTR_CMN_NAME
+        | ATTR_CMN_DEVID
+        | ATTR_CMN_OBJTYPE
+        | ATTR_CMN_FLAGS
+        | ATTR_CMN_FILEID,
     common_end: BULK_COMMON_END,
     file_end: BULK_FILE_END,
     modtime_offset: Some(BULK_MODTIME_SEC),
@@ -487,7 +506,7 @@ impl BulkLayout {
                 reserved: 0,
                 commonattr,
                 volattr: 0,
-                dirattr: 0,
+                dirattr: ATTR_DIR_MOUNTSTATUS,
                 fileattr,
                 forkattr,
             },
@@ -693,6 +712,8 @@ fn parse_bulk_batch_with_layout<E>(
 
         let common =
             u32_at(record, RETURNED_COMMON).ok_or(BulkVisitError::Bulk(BulkError::Unsupported))?;
+        let dir =
+            u32_at(record, RETURNED_DIR).ok_or(BulkVisitError::Bulk(BulkError::Unsupported))?;
         let file =
             u32_at(record, RETURNED_FILE).ok_or(BulkVisitError::Bulk(BulkError::Unsupported))?;
         let extended = u32_at(record, RETURNED_EXTENDED)
@@ -732,7 +753,10 @@ fn parse_bulk_batch_with_layout<E>(
             .position(|&byte| byte == 0)
             .unwrap_or(raw_name.len());
         let name_bytes = &raw_name[..nul_pos];
-        if name_bytes.is_empty() {
+        if name_bytes.is_empty()
+            || name_bytes.contains(&b'/')
+            || raw_name[nul_pos..].iter().any(|&byte| byte != 0)
+        {
             return Err(BulkVisitError::Bulk(BulkError::Unsupported));
         }
         if name_bytes == b"." || name_bytes == b".." {
@@ -767,11 +791,26 @@ fn parse_bulk_batch_with_layout<E>(
             _ => None,
         };
 
+        // Per `getattrlistbulk(2)`, `dirattr` slots are packed immediately after
+        // common attributes for `VDIR` records only (never for `VREG`), and
+        // `ATTR_DIR_MOUNTSTATUS` is the sole indicator of a mount point because
+        // `ATTR_CMN_DEVID` carries the underlying parent filesystem's `dev_t`.
+        let mountpoint = if kind == EntryKind::Directory {
+            if dir & ATTR_DIR_MOUNTSTATUS == 0 {
+                return Err(BulkVisitError::Bulk(BulkError::Unsupported));
+            }
+            let status = u32_at(record, spec.common_end)
+                .ok_or(BulkVisitError::Bulk(BulkError::Unsupported))?;
+            status & (DIR_MNTSTATUS_MNTPOINT | DIR_MNTSTATUS_TRIGGER) != 0
+        } else {
+            false
+        };
+
         let (nlink, allocated, private) = if kind == EntryKind::File
             && let (Some(linkcount_offset), Some(allocsize_offset)) =
                 (spec.linkcount_offset, spec.allocsize_offset)
         {
-            if record.len() < spec.file_end || file & spec.file_attr != spec.file_attr {
+            if dir != 0 || record.len() < spec.file_end || file & spec.file_attr != spec.file_attr {
                 return Err(BulkVisitError::Bulk(BulkError::Unsupported));
             }
             let nlink = u32_at(record, linkcount_offset)
@@ -804,6 +843,7 @@ fn parse_bulk_batch_with_layout<E>(
             allocated,
             private,
             modified,
+            mountpoint,
         })
         .map_err(BulkVisitError::Visitor)?;
     }
@@ -987,6 +1027,7 @@ mod tests {
                 allocated: entry.allocated,
                 private: entry.private,
                 modified: entry.modified,
+                mountpoint: entry.mountpoint,
             });
             Ok::<(), std::convert::Infallible>(())
         }) {
@@ -1103,6 +1144,142 @@ mod tests {
             Err::<(), &str>("stop")
         });
         assert!(matches!(aborted, Err(BulkVisitError::Visitor("stop"))));
+    }
+
+    #[test]
+    fn bulk_parser_decodes_mountstatus_and_enforces_hardening() {
+        let layouts = [
+            (BulkLayout::Full, ATTR_CMN_RETURNED_ATTRS | BULK_COMMON),
+            (
+                BulkLayout::StatsNoPrivate,
+                ATTR_CMN_RETURNED_ATTRS | BULK_COMMON_STATS_NO_PRIVATE,
+            ),
+            (
+                BulkLayout::SizeOnly,
+                ATTR_CMN_RETURNED_ATTRS | BULK_COMMON_SIZE_ONLY,
+            ),
+            (
+                BulkLayout::Names,
+                ATTR_CMN_RETURNED_ATTRS | BULK_COMMON_NAMES,
+            ),
+        ];
+
+        for (layout, common_bits) in layouts {
+            let spec = layout.spec();
+            let dir_end = spec.common_end + 4;
+
+            // Build a VDIR record for `status` and `dir_bits`.
+            let make_dir = |name: &[u8], dir_bits: u32, status: u32| {
+                let mut record = vec![0u8; dir_end + name.len()];
+                let total = record.len() as u32;
+                record[0..4].copy_from_slice(&total.to_ne_bytes());
+                record[RETURNED_COMMON..RETURNED_COMMON + 4]
+                    .copy_from_slice(&common_bits.to_ne_bytes());
+                record[RETURNED_DIR..RETURNED_DIR + 4].copy_from_slice(&dir_bits.to_ne_bytes());
+                let name_offset = (dir_end - BULK_NAME_REF) as i32;
+                record[BULK_NAME_REF..BULK_NAME_REF + 4]
+                    .copy_from_slice(&name_offset.to_ne_bytes());
+                record[BULK_NAME_REF + 4..BULK_NAME_REF + 8]
+                    .copy_from_slice(&(name.len() as u32).to_ne_bytes());
+                record[BULK_OBJTYPE..BULK_OBJTYPE + 4].copy_from_slice(&VDIR.to_ne_bytes());
+                record[spec.common_end..dir_end].copy_from_slice(&status.to_ne_bytes());
+                record[dir_end..].copy_from_slice(name);
+                record
+            };
+
+            for (status, expected_mount) in [
+                (0, false),
+                (DIR_MNTSTATUS_MNTPOINT, true),
+                (DIR_MNTSTATUS_TRIGGER, true),
+                (DIR_MNTSTATUS_MNTPOINT | DIR_MNTSTATUS_TRIGGER, true),
+            ] {
+                let record = make_dir(b"mnt\0", ATTR_DIR_MOUNTSTATUS, status);
+                let mut out = Vec::new();
+                parse_bulk_for_test(&record, 1, layout, &mut out).unwrap();
+                assert_eq!(out.len(), 1);
+                assert_eq!(out[0].name, "mnt");
+                assert_eq!(out[0].kind, EntryKind::Directory);
+                assert_eq!(out[0].mountpoint, expected_mount);
+            }
+
+            // VDIR missing ATTR_DIR_MOUNTSTATUS must fall back to Unsupported.
+            let missing_dir = make_dir(b"mnt\0", 0, DIR_MNTSTATUS_MNTPOINT);
+            let mut out = Vec::new();
+            assert!(matches!(
+                parse_bulk_for_test(&missing_dir, 1, layout, &mut out),
+                Err(BulkError::Unsupported)
+            ));
+
+            // Names containing '/' or an embedded NUL followed by bytes are rejected.
+            for bad_name in [b"a/b\0".as_slice(), b"a\0b\0".as_slice()] {
+                let bad = make_dir(bad_name, ATTR_DIR_MOUNTSTATUS, 0);
+                let mut out = Vec::new();
+                assert!(matches!(
+                    parse_bulk_for_test(&bad, 1, layout, &mut out),
+                    Err(BulkError::Unsupported)
+                ));
+            }
+
+            // VREG carries fileattr at `common_end` with `dirattr == 0`.
+            let file_name = b"data.bin\0";
+            let mut file_record = vec![0u8; spec.file_end + file_name.len()];
+            let total = file_record.len() as u32;
+            file_record[0..4].copy_from_slice(&total.to_ne_bytes());
+            file_record[RETURNED_COMMON..RETURNED_COMMON + 4]
+                .copy_from_slice(&common_bits.to_ne_bytes());
+            file_record[RETURNED_FILE..RETURNED_FILE + 4]
+                .copy_from_slice(&spec.file_attr.to_ne_bytes());
+            let name_offset = (spec.file_end - BULK_NAME_REF) as i32;
+            file_record[BULK_NAME_REF..BULK_NAME_REF + 4]
+                .copy_from_slice(&name_offset.to_ne_bytes());
+            file_record[BULK_NAME_REF + 4..BULK_NAME_REF + 8]
+                .copy_from_slice(&(file_name.len() as u32).to_ne_bytes());
+            file_record[BULK_OBJTYPE..BULK_OBJTYPE + 4].copy_from_slice(&VREG.to_ne_bytes());
+            if let Some(offset) = spec.linkcount_offset {
+                file_record[offset..offset + 4].copy_from_slice(&2u32.to_ne_bytes());
+            }
+            if let Some(offset) = spec.allocsize_offset {
+                file_record[offset..offset + 8].copy_from_slice(&4096i64.to_ne_bytes());
+            }
+            file_record[spec.file_end..].copy_from_slice(file_name);
+
+            let mut out = Vec::new();
+            parse_bulk_for_test(&file_record, 1, layout, &mut out).unwrap();
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].kind, EntryKind::File);
+            assert!(!out[0].mountpoint);
+            if spec.linkcount_offset.is_some() {
+                assert_eq!(out[0].nlink, 2);
+                assert_eq!(out[0].allocated, 4096);
+                // Unexpected non-zero dirattr on VREG would shift fileattr slots -> Unsupported.
+                file_record[RETURNED_DIR..RETURNED_DIR + 4]
+                    .copy_from_slice(&ATTR_DIR_MOUNTSTATUS.to_ne_bytes());
+                let mut shifted = Vec::new();
+                assert!(matches!(
+                    parse_bulk_for_test(&file_record, 1, layout, &mut shifted),
+                    Err(BulkError::Unsupported)
+                ));
+            }
+        }
+
+        // BulkLayout::Full requires ATTR_CMN_FLAGS so UF_COMPRESSED cannot be skipped silently.
+        let mut missing_flags = vec![0u8; BULK_FILE_END + 4];
+        let total = missing_flags.len() as u32;
+        missing_flags[0..4].copy_from_slice(&total.to_ne_bytes());
+        let without_flags = (ATTR_CMN_RETURNED_ATTRS | BULK_COMMON) & !ATTR_CMN_FLAGS;
+        missing_flags[RETURNED_COMMON..RETURNED_COMMON + 4]
+            .copy_from_slice(&without_flags.to_ne_bytes());
+        missing_flags[RETURNED_FILE..RETURNED_FILE + 4].copy_from_slice(&FILE.to_ne_bytes());
+        let name_offset = (BULK_FILE_END - BULK_NAME_REF) as i32;
+        missing_flags[BULK_NAME_REF..BULK_NAME_REF + 4].copy_from_slice(&name_offset.to_ne_bytes());
+        missing_flags[BULK_NAME_REF + 4..BULK_NAME_REF + 8].copy_from_slice(&2u32.to_ne_bytes());
+        missing_flags[BULK_OBJTYPE..BULK_OBJTYPE + 4].copy_from_slice(&VREG.to_ne_bytes());
+        missing_flags[BULK_FILE_END] = b'f';
+        let mut out = Vec::new();
+        assert!(matches!(
+            parse_bulk_for_test(&missing_flags, 1, BulkLayout::Full, &mut out),
+            Err(BulkError::Unsupported)
+        ));
     }
 
     #[cfg(target_os = "macos")]
@@ -1239,6 +1416,7 @@ mod tests {
         );
 
         assert_eq!(by_name("nested").kind, EntryKind::Directory);
+        assert!(!by_name("nested").mountpoint);
         assert_eq!(by_name("link").kind, EntryKind::Other);
         assert_eq!(by_name("hardlink").ino, source_meta.ino());
         assert_eq!(by_name("hardlink").nlink, 2);
@@ -1256,6 +1434,7 @@ mod tests {
                 allocated: entry.allocated,
                 private: entry.private,
                 modified: entry.modified,
+                mountpoint: entry.mountpoint,
             });
             Ok::<(), std::convert::Infallible>(())
         })
@@ -1274,6 +1453,7 @@ mod tests {
                     allocated: entry.allocated,
                     private: entry.private,
                     modified: entry.modified,
+                    mountpoint: entry.mountpoint,
                 });
                 Ok::<(), std::convert::Infallible>(())
             })
@@ -1290,6 +1470,7 @@ mod tests {
                 assert_eq!(actual.nlink, expected.nlink);
                 assert_eq!(actual.allocated, expected.allocated);
                 assert_eq!(actual.private, None);
+                assert_eq!(actual.mountpoint, expected.mountpoint);
                 match mode {
                     BulkMode::SizeOnly => assert_eq!(actual.modified, None),
                     BulkMode::StatsNoPrivate => assert_eq!(actual.modified, expected.modified),
@@ -1300,17 +1481,23 @@ mod tests {
 
         let mut names = Vec::new();
         visit_dir_names(&directory, &mut buffer, |entry| {
-            names.push((entry.name.to_os_string(), entry.kind, entry.dev));
+            names.push((
+                entry.name.to_os_string(),
+                entry.kind,
+                entry.dev,
+                entry.mountpoint,
+            ));
         })
         .unwrap();
         assert_eq!(names.len(), bulk.len());
         for expected in &bulk {
             let actual = names
                 .iter()
-                .find(|(name, _, _)| *name == expected.name)
+                .find(|(name, _, _, _)| *name == expected.name)
                 .unwrap();
             assert_eq!(actual.1, expected.kind);
             assert_eq!(actual.2, expected.dev);
+            assert_eq!(actual.3, expected.mountpoint);
         }
 
         // Verify early visitor cancellation stops cleanly.
@@ -1351,5 +1538,51 @@ mod tests {
         let survivor = survivor.unwrap();
         assert_eq!(survivor.private, survivor.allocated);
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// Real macOS mount points report the parent's underlying `dev_t` in
+    /// `ATTR_CMN_DEVID`, so `mountpoint` must flag every mounted volume whose
+    /// `lstat` device differs from its parent directory.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bulk_mountpoint_flags_mounted_volumes_under_volumes_dir() {
+        use std::os::unix::fs::MetadataExt;
+
+        let volumes = Path::new("/Volumes");
+        let Ok(parent_meta) = std::fs::symlink_metadata(volumes) else {
+            return;
+        };
+        let parent_dev = parent_meta.dev();
+        let mut buffer = BulkBuffer::new();
+        let mut entries = Vec::new();
+        if visit_dir_bulk(volumes, BulkMode::SizeOnly, &mut buffer, |entry| {
+            entries.push((entry.name.to_os_string(), entry.kind, entry.mountpoint));
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .is_err()
+        {
+            return;
+        }
+        let mut name_entries = Vec::new();
+        visit_dir_names(volumes, &mut buffer, |entry| {
+            name_entries.push((entry.name.to_os_string(), entry.kind, entry.mountpoint));
+        })
+        .unwrap();
+        assert_eq!(entries, name_entries);
+        for (name, kind, mountpoint) in entries {
+            if kind != EntryKind::Directory {
+                continue;
+            }
+            if let Ok(meta) = std::fs::symlink_metadata(volumes.join(&name))
+                && meta.file_type().is_dir()
+                && meta.dev() != parent_dev
+            {
+                assert!(
+                    mountpoint,
+                    "mounted volume {} reported mountpoint=false",
+                    volumes.join(&name).display()
+                );
+            }
+        }
     }
 }

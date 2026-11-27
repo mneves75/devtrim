@@ -109,6 +109,7 @@ struct BulkChild {
     ino: u64,
     nlink: u32,
     allocated: u64,
+    mountpoint: bool,
 }
 
 struct DirFrame {
@@ -135,6 +136,7 @@ fn read_sorted_bulk_children(
                 ino: entry.ino,
                 nlink: entry.nlink,
                 allocated: entry.allocated,
+                mountpoint: entry.mountpoint,
             });
             Ok::<(), std::convert::Infallible>(())
         });
@@ -428,7 +430,7 @@ fn visit_bulk_entry(
                 state.parents,
                 state.coverage,
             );
-            if entry.dev != state.device {
+            if entry.mountpoint || entry.dev != state.device {
                 state.nodes[current].partial = true;
                 state.coverage.issue(format!(
                     "foreign filesystem not traversed: {}",
@@ -574,7 +576,10 @@ fn shell_argument(value: &str) -> String {
     let mut quoted = String::from("$'");
     for character in value.chars() {
         match character {
-            '\'' => quoted.push_str("\\'"),
+            // 3-digit octal keeps following digits literal and prevents GNU Bash 3.2
+            // interactive history expansion from closing `$'...'` at `\'` or expanding `!`.
+            '\'' => quoted.push_str("\\047"),
+            '!' => quoted.push_str("\\041"),
             '\\' => quoted.push_str("\\\\"),
             control if control.is_control() => {
                 for byte in control.encode_utf8(&mut [0; 4]).bytes() {

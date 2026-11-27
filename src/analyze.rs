@@ -214,7 +214,7 @@ impl BulkTreeState<'_> {
                 }
                 match entry.kind {
                     apfs_size::EntryKind::Directory => {
-                        if entry.dev != self.device {
+                        if entry.mountpoint || entry.dev != self.device {
                             self.partial = true;
                             level.offer(0, entry.name, true, None);
                         } else {
@@ -553,9 +553,15 @@ fn measure_children(
     cancel: &AtomicBool,
     mut report_entry: impl FnMut(Entry),
 ) -> Result<()> {
-    let device = std::fs::symlink_metadata(directory)
-        .with_context(|| format!("cannot inspect {}", directory.display()))?
-        .dev();
+    let metadata = std::fs::symlink_metadata(directory)
+        .with_context(|| format!("cannot inspect {}", directory.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!("refusing to follow symlink {}", directory.display());
+    }
+    if !metadata.file_type().is_dir() {
+        bail!("{} is not a directory", directory.display());
+    }
+    let device = metadata.dev();
     let paths = child_paths(directory)?;
     let max_workers = std::thread::available_parallelism()
         .map_or(4, std::num::NonZeroUsize::get)

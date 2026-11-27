@@ -37,12 +37,19 @@ pub(crate) fn scan(ctx: &Ctx, top: Option<usize>) -> LargestResult {
 fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
     let mut totals = BTreeMap::<PathBuf, u64>::new();
     let mut skipped = 0usize;
+    let mut extra_errors = Vec::new();
     let mut usage = crate::safety::DiskUsage::default();
 
     // Overlapping roots (e.g. ~/work and ~/work/project) would count the same
     // files twice; keep only roots not contained in another configured root.
     for root in crate::ops::project::normalized_roots(roots) {
-        scan_root(root, &mut totals, &mut skipped, &mut usage);
+        scan_root(
+            root,
+            &mut totals,
+            &mut skipped,
+            &mut extra_errors,
+            &mut usage,
+        );
     }
 
     let mut ranked = totals.into_iter().collect::<Vec<_>>();
@@ -52,7 +59,7 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
             .then_with(|| left_path.cmp(right_path))
     });
     let limit = top.unwrap_or(20).clamp(1, 100);
-    let note = if skipped > 0 {
+    let note = if skipped > 0 || !extra_errors.is_empty() {
         "report-only; sizes are estimated allocated bytes and lower bounds: unreadable entries were skipped"
     } else {
         "report-only; sizes are estimated allocated bytes"
@@ -64,10 +71,13 @@ fn scan_roots(roots: &[PathBuf], top: Option<usize>) -> LargestResult {
             Finding::new("large directory", Some(path), size, note, 1, Action::Info)
         })
         .collect();
-    let errors = (skipped > 0)
-        .then(|| format!("skipped {skipped} unreadable entries; totals are lower bounds"))
-        .into_iter()
-        .collect();
+    let mut errors = Vec::new();
+    if skipped > 0 {
+        errors.push(format!(
+            "skipped {skipped} unreadable entries; totals are lower bounds"
+        ));
+    }
+    errors.extend(extra_errors);
 
     LargestResult { findings, errors }
 }
@@ -76,6 +86,7 @@ fn scan_root(
     root: &Path,
     totals: &mut BTreeMap<PathBuf, u64>,
     skipped: &mut usize,
+    extra_errors: &mut Vec<String>,
     usage: &mut crate::safety::DiskUsage,
 ) {
     let Ok(metadata) = std::fs::symlink_metadata(root) else {
@@ -94,7 +105,7 @@ fn scan_root(
     if !metadata.file_type().is_dir() {
         return;
     }
-    if scan_root_bulk(root, metadata.dev(), totals, skipped, usage).is_err() {
+    if scan_root_bulk(root, metadata.dev(), totals, skipped, extra_errors, usage).is_err() {
         scan_root_walkdir(root, totals, skipped, usage);
     }
 }
@@ -104,6 +115,7 @@ fn scan_root_bulk(
     root_dev: u64,
     totals: &mut BTreeMap<PathBuf, u64>,
     skipped: &mut usize,
+    extra_errors: &mut Vec<String>,
     usage: &mut crate::safety::DiskUsage,
 ) -> Result<(), BulkUnsupported> {
     let mut buffer = apfs_size::BulkBuffer::new();
@@ -114,7 +126,7 @@ fn scan_root_bulk(
         apfs_size::visit_dir_bulk(root, apfs_size::BulkMode::SizeOnly, &mut buffer, |entry| {
             if entry.kind == apfs_size::EntryKind::Directory {
                 let child = root.join(entry.name);
-                if entry.dev == root_dev {
+                if !entry.mountpoint && entry.dev == root_dev {
                     top_dirs.push(child);
                 } else {
                     foreign_top_dirs.push(child);
@@ -133,11 +145,17 @@ fn scan_root_bulk(
         Err(apfs_size::BulkVisitError::Visitor(never)) => match never {},
     }
 
-    let mut measurements = measure_top_dirs(&top_dirs, root_dev, &mut buffer)?;
+    let (mut measurements, worker_panics) = measure_top_dirs(&top_dirs, root_dev, &mut buffer)?;
     for directory in foreign_top_dirs {
         totals.entry(directory).or_default();
     }
     *skipped = skipped.saturating_add(root_skipped);
+    if worker_panics > 0 {
+        *skipped = skipped.saturating_add(worker_panics);
+        extra_errors.push(format!(
+            "{worker_panics} directory scan worker thread(s) panicked; totals are lower bounds"
+        ));
+    }
     measurements.sort_by(|left, right| left.path.cmp(&right.path));
     for measurement in measurements {
         merge_top_measurement(measurement, totals, skipped, usage);
@@ -149,7 +167,7 @@ fn measure_top_dirs(
     top_dirs: &[PathBuf],
     root_dev: u64,
     primary_buffer: &mut apfs_size::BulkBuffer,
-) -> Result<Vec<TopDirMeasurement>, BulkUnsupported> {
+) -> Result<(Vec<TopDirMeasurement>, usize), BulkUnsupported> {
     let max_workers = std::thread::available_parallelism()
         .map_or(4, std::num::NonZeroUsize::get)
         .min(8);
@@ -163,7 +181,7 @@ fn measure_top_dirs(
                 primary_buffer,
             )?);
         }
-        return Ok(measurements);
+        return Ok((measurements, 0));
     }
 
     let next_index = AtomicUsize::new(0);
@@ -185,6 +203,7 @@ fn measure_top_dirs(
         }
         Ok(local)
     };
+    let mut panicked = 0usize;
     let (first_result, spawned_results) = std::thread::scope(|scope| {
         let handles: Vec<_> = (1..workers)
             .map(|_| {
@@ -197,7 +216,10 @@ fn measure_top_dirs(
         let first_result = run_worker(primary_buffer);
         let mut spawned_results = Vec::with_capacity(handles.len());
         for handle in handles {
-            spawned_results.push(handle.join().unwrap_or(Ok(Vec::new())));
+            match handle.join() {
+                Ok(result) => spawned_results.push(result),
+                Err(_) => panicked = panicked.saturating_add(1),
+            }
         }
         (first_result, spawned_results)
     });
@@ -208,7 +230,7 @@ fn measure_top_dirs(
     for batch in spawned_results {
         measurements.extend(batch?);
     }
-    Ok(measurements)
+    Ok((measurements, panicked))
 }
 
 fn measure_top_dir(
@@ -228,7 +250,7 @@ fn measure_top_dir(
                 apfs_size::EntryKind::Directory => {
                     let sub_index = sub_totals.len();
                     sub_totals.push((top_path.join(entry.name), 0u64));
-                    if entry.dev == root_dev {
+                    if !entry.mountpoint && entry.dev == root_dev {
                         walk_indices.push(sub_index);
                     }
                 }
@@ -300,7 +322,7 @@ fn measure_sub_dir(
             apfs_size::visit_dir_bulk(&directory, apfs_size::BulkMode::SizeOnly, buffer, |entry| {
                 match entry.kind {
                     apfs_size::EntryKind::Directory => {
-                        if entry.dev == root_dev {
+                        if !entry.mountpoint && entry.dev == root_dev {
                             pending.push(directory.join(entry.name));
                         }
                     }
