@@ -1042,12 +1042,20 @@ fn validate_docker_plugin_dir(candidate: &Path) -> Result<Option<PathBuf>> {
                 canonical.display()
             )
         })?;
-        let name = entry.file_name();
-        let bytes = name.as_encoded_bytes();
-        if bytes.len() < 7 || !bytes[..7].eq_ignore_ascii_case(b"docker-") {
+        let entry_path = entry.path();
+        let entry_meta = std::fs::symlink_metadata(&entry_path).with_context(|| {
+            format!(
+                "cannot inspect entry in Docker CLI plugin directory {}",
+                entry_path.display()
+            )
+        })?;
+        // Validate every non-directory entry (files and symlinks) regardless of
+        // filename spelling so APFS Unicode case-folding / normalization aliases
+        // (e.g. `doc\u{212a}er-buildx`) can never slip past a name filter.
+        if entry_meta.file_type().is_dir() {
             continue;
         }
-        validate_docker_plugin_executable(&entry.path(), current_uid)?;
+        validate_docker_plugin_executable(&entry_path, current_uid)?;
     }
     Ok(Some(canonical))
 }
@@ -2583,7 +2591,8 @@ mod tests {
         );
         std::fs::set_permissions(&writable_parent, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        // Symlinked docker-* plugin pointing to a group/world-writable executable fails closed.
+        // Symlinked plugin with APFS Unicode case-folded name (`doc\u{212a}er-buildx`)
+        // pointing to a group/world-writable executable fails closed.
         let writable_plugin_target = home.join("writable-plugin-bin");
         std::fs::write(&writable_plugin_target, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(
@@ -2591,7 +2600,7 @@ mod tests {
             std::fs::Permissions::from_mode(0o777),
         )
         .unwrap();
-        let linked_plugin = safe_plugins.join("Docker-Buildx");
+        let linked_plugin = safe_plugins.join("doc\u{212a}er-buildx");
         std::os::unix::fs::symlink(&writable_plugin_target, &linked_plugin).unwrap();
         std::fs::write(
             source_config.join("config.json"),

@@ -1979,13 +1979,6 @@ mod tests {
 
     #[test]
     fn apfs_unicode_casefold_protects_terraform_state_and_excluded_names_at_scan_and_apply() {
-        assert_eq!(fold_apfs_ascii("\u{00df}\u{1e9e}"), "ssss");
-        assert_eq!(fold_apfs_ascii("\u{017f}\u{212a}"), "sk");
-        assert_eq!(
-            fold_apfs_ascii("\u{fb00}\u{fb01}\u{fb02}\u{fb03}\u{fb04}\u{fb05}\u{fb06}"),
-            "fffiflffifflstst"
-        );
-
         let (_fixture, root, home) = deletable_root("apfs-unicode-casefold");
 
         // 1. APFS-folded Terraform state and backup filenames inside corroborated

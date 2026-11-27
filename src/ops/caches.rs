@@ -2046,16 +2046,31 @@ mod tests {
         std::fs::create_dir_all(gradle_caches.join("cache/download")).unwrap();
         std::fs::write(gradle_caches.join("cache/download/x.zip"), "zip").unwrap();
 
-        // Overlap detection covers direct paths and symlinked Gradle caches.
-        assert!(overlaps_gradle(&gradle_caches, &gradle_home).unwrap());
+        // Scan filter drops overlapping Go finding when Gradle is running (including
+        // when Gradle's cache directory is a symlink to the Go cache path).
         let linked_target = home.join("go/pkg/mod");
         std::fs::create_dir_all(linked_target.join("cache/download")).unwrap();
         let linked_gradle = home.join("linked-gradle");
         std::fs::create_dir_all(&linked_gradle).unwrap();
         std::os::unix::fs::symlink(&linked_target, linked_gradle.join("caches")).unwrap();
-        assert!(overlaps_gradle(&linked_target, &linked_gradle).unwrap());
+        let mut linked_entries = vec![cache_finding("Go module cache", linked_target, 16, 3)];
+        let mut linked_probe = None;
+        let mut linked_unread = Vec::new();
+        let mut linked_diagnostics = Vec::new();
+        filter_non_gradle_findings(
+            &mut linked_entries,
+            &home,
+            Ok(Some(&linked_gradle)),
+            &mut linked_probe,
+            || Ok(vec![4242]),
+            &mut linked_unread,
+            &mut linked_diagnostics,
+        );
+        assert!(
+            linked_entries.is_empty(),
+            "Go finding aliased by symlinked Gradle cache must be dropped while Gradle runs"
+        );
 
-        // Scan filter drops overlapping Go finding when Gradle is running.
         let go_finding = || cache_finding("Go module cache", gradle_caches.clone(), 16, 3);
         let mut running_entries = vec![go_finding()];
         let mut cached_probe = None;
