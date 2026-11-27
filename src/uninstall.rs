@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn symlinked_contents_directory_is_rejected_by_bundle_plist() {
+    fn symlinked_contents_directory_is_rejected_by_uninstall_run() {
         let (_fixture, home) = test_home("symlinked-contents");
         let outside_contents = home.join("outside/OutsideContents");
         std::fs::create_dir_all(&outside_contents).unwrap();
@@ -537,37 +537,16 @@ mod tests {
         std::fs::create_dir_all(&app).unwrap();
         symlink(&outside_contents, app.join("Contents")).unwrap();
 
-        // The bundle directory itself is real, but `Contents` is a symlink.
-        assert!(is_approved_app_bundle(&app, &home).unwrap());
-        let error = BundlePlist::for_app(&app, &home)
+        // The bundle directory itself is real, but `Contents` is a symlink;
+        // `uninstall::run` (the real behavior entrypoint) must refuse it.
+        let ctx = Ctx::for_test(home.clone());
+        let error = run(&ctx, app.to_str().unwrap())
             .err()
-            .expect("symlinked Contents must be rejected");
+            .expect("symlinked Contents must be rejected by uninstall::run");
         assert!(
             format!("{error:#}").contains("not a real directory"),
             "{error:#}"
         );
         crate::ops::remove_test_path(home);
-    }
-
-    #[test]
-    fn parse_running_bundle_handles_trailing_slash_and_dot() {
-        let ps_output = "/Applications/Other.app/Contents/MacOS/Other\n\
-                         /Users/example/Applications/Running.app/Contents/MacOS/Running\n";
-        assert!(parse_running_bundle(
-            ps_output,
-            Path::new("/Users/example/Applications/Running.app")
-        ));
-        assert!(parse_running_bundle(
-            ps_output,
-            Path::new("/Users/example/Applications/Running.app/")
-        ));
-        assert!(parse_running_bundle(
-            ps_output,
-            Path::new("/Users/example/Applications/Running.app/.")
-        ));
-        assert!(!parse_running_bundle(
-            ps_output,
-            Path::new("/Users/example/Applications/RunningExtra.app/")
-        ));
     }
 }

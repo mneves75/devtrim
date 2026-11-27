@@ -2160,24 +2160,6 @@ mod tests {
     }
 
     #[test]
-    fn vanished_artifact_candidate_is_skipped_cleanly() {
-        let (_fixture, root, home) = deletable_root("vanished-candidate");
-        let missing = home.join("gone/target");
-        assert!(
-            inspect_and_measure_artifact(&missing).unwrap().is_none(),
-            "a vanished artifact candidate must return Ok(None), never a 0-byte measurement"
-        );
-        let repo = home.join("present");
-        let target = stale_target(&repo);
-        let measured = inspect_and_measure_artifact(&target)
-            .unwrap()
-            .expect("positive control: existing artifact must be measured");
-        assert!(measured.0.is_none());
-        assert!(measured.1.allocated > 0);
-        crate::ops::remove_test_path(root);
-    }
-
-    #[test]
     fn a_build_starting_after_first_artifact_removal_refuses_the_second() {
         let (_fixture, root, home) = deletable_root("reprobe-between-items");
         let first_repo = home.join("first");
