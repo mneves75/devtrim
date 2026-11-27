@@ -541,8 +541,7 @@ mod tests {
         // `uninstall::run` (the real behavior entrypoint) must refuse it.
         let ctx = Ctx::for_test(home.clone());
         let error = run(&ctx, app.to_str().unwrap())
-            .err()
-            .expect("symlinked Contents must be rejected by uninstall::run");
+            .expect_err("symlinked Contents must be rejected by uninstall::run");
         assert!(
             format!("{error:#}").contains("not a real directory"),
             "{error:#}"

@@ -407,6 +407,7 @@ fn scan_root_walkdir(
         .follow_links(false)
         .follow_root_links(false)
         .same_file_system(true)
+        .sort_by_file_name()
     {
         let entry = match result {
             Ok(entry) => entry,
@@ -421,7 +422,7 @@ fn scan_root_walkdir(
             totals.entry(entry.path().to_path_buf()).or_default();
             continue;
         }
-        if !entry.file_type().is_file() {
+        if !entry.file_type().is_file() || entry.depth() < 2 {
             continue;
         }
         let bytes = match entry
@@ -517,9 +518,19 @@ mod tests {
         let direct_alpha = root.join("alpha/direct.bin");
         std::fs::write(&direct_alpha, vec![b'd'; 64 * 1024]).unwrap();
         std::fs::hard_link(&direct_alpha, root.join("alpha/sub/direct.bin")).unwrap();
+        std::fs::hard_link(&direct_alpha, root.join("root-hardlink.bin")).unwrap();
         let _sealed = crate::ops::Unreadable::new(&root.join("beta/locked"), 0o000);
 
         let result = scan_roots(std::slice::from_ref(&root), Some(100));
+        let mut walkdir_totals = BTreeMap::new();
+        let mut walkdir_skipped = 0usize;
+        let mut walkdir_usage = crate::safety::DiskUsage::default();
+        scan_root_walkdir(
+            &root,
+            &mut walkdir_totals,
+            &mut walkdir_skipped,
+            &mut walkdir_usage,
+        );
         let shared_bytes =
             crate::safety::allocated_bytes(&std::fs::symlink_metadata(&source).unwrap(), &source)
                 .unwrap();
@@ -543,6 +554,12 @@ mod tests {
         assert_eq!(size("beta"), 0);
         assert_eq!(size("beta/sub"), 0);
         assert_eq!(size("beta/locked"), 0);
+        assert_eq!(
+            walkdir_totals.get(&root.join("alpha")).copied(),
+            Some(size("alpha")),
+            "walkdir fallback must match bulk walk when a root-level hard link aliases a descendant file"
+        );
+        assert_eq!(walkdir_skipped, 1);
         assert!(
             result
                 .findings

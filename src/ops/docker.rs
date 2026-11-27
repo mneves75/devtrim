@@ -567,11 +567,6 @@ fn is_safe_absolute_dir(path: &Path) -> bool {
             .any(|segment| segment == b"." || segment == b"..")
 }
 
-fn validate_docker_config_dir(home: &Path) -> Result<PathBuf> {
-    let raw_docker_config = std::env::var_os("DOCKER_CONFIG");
-    validate_docker_config_dir_from(raw_docker_config.as_deref(), home)
-}
-
 fn validate_docker_config_dir_from(
     raw_docker_config: Option<&std::ffi::OsStr>,
     home: &Path,
@@ -685,6 +680,72 @@ fn read_docker_config_json(
     Ok(Some(object))
 }
 
+fn validate_docker_plugin_dir(candidate: &Path) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    if !is_safe_absolute_dir(candidate) {
+        anyhow::bail!(
+            "refusing unsafe Docker CLI plugin directory (must be an absolute path without `.` or `..`): {}",
+            candidate.display()
+        );
+    }
+    let link_metadata = match std::fs::symlink_metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "cannot inspect Docker CLI plugin directory {}",
+                    candidate.display()
+                )
+            });
+        }
+    };
+    let current_uid = rustix::process::geteuid().as_raw();
+    if link_metadata.uid() != current_uid && link_metadata.uid() != 0 {
+        anyhow::bail!(
+            "refusing Docker CLI plugin directory not owned by current user or root: {}",
+            candidate.display()
+        );
+    }
+    let metadata = match std::fs::metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            anyhow::bail!(
+                "refusing broken symlink in Docker CLI plugin directories: {}",
+                candidate.display()
+            );
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "cannot resolve Docker CLI plugin directory {}",
+                    candidate.display()
+                )
+            });
+        }
+    };
+    if !metadata.is_dir() {
+        anyhow::bail!(
+            "refusing non-directory Docker CLI plugin path: {}",
+            candidate.display()
+        );
+    }
+    if metadata.uid() != current_uid && metadata.uid() != 0 {
+        anyhow::bail!(
+            "refusing Docker CLI plugin directory target not owned by current user or root: {}",
+            candidate.display()
+        );
+    }
+    if metadata.permissions().mode() & 0o022 != 0 {
+        anyhow::bail!(
+            "refusing group- or world-writable Docker CLI plugin directory: {}",
+            candidate.display()
+        );
+    }
+    Ok(())
+}
+
 /// Read-only validation and extraction of safe absolute Docker CLI plugin
 /// directories from `DOCKER_CONFIG` and its `config.json`. Called before
 /// `journal::begin` so an invalid or hostile config fails closed without
@@ -700,19 +761,24 @@ fn resolve_docker_cli_plugin_dirs_from(
 ) -> Result<Vec<String>> {
     let source_config = validate_docker_config_dir_from(raw_docker_config, home)?;
     let mut plugin_dirs = Vec::new();
-    let mut push_unique = |candidate: PathBuf| {
-        if is_safe_absolute_dir(&candidate)
-            && let Some(text) = candidate.to_str()
-            && !plugin_dirs.iter().any(|existing| existing == text)
-        {
+    let mut push_validated = |candidate: PathBuf| -> Result<()> {
+        validate_docker_plugin_dir(&candidate)?;
+        let text = candidate.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "refusing non-UTF-8 Docker CLI plugin directory: {}",
+                candidate.display()
+            )
+        })?;
+        if !plugin_dirs.iter().any(|existing| existing == text) {
             plugin_dirs.push(text.to_owned());
         }
+        Ok(())
     };
     // Preserve Docker CLI's exact plugin lookup order
     // (`cli-plugins/manager/manager.go` + `manager_unix.go`): configured
-    // absolute `cliPluginsExtraDirs` first, then `$DOCKER_CONFIG/cli-plugins`,
-    // and let the Docker CLI append its own compiled-in system plugin
-    // directories unchanged.
+    // safe absolute `cliPluginsExtraDirs` first, then `$DOCKER_CONFIG/cli-plugins`,
+    // failing closed on any relative, unowned, or group/world-writable entry so
+    // neither ambient `docker` probes nor isolated prunes load untrusted plugins.
     if let Some(map) = read_docker_config_json(&source_config)?
         && let Some(extra) = map
             .get("cliPluginsExtraDirs")
@@ -724,14 +790,19 @@ fn resolve_docker_cli_plugin_dirs_from(
             .and_then(|value| value.as_array())
     {
         for entry in extra {
-            if let Some(text) = entry.as_str()
-                && !text.is_empty()
-            {
-                push_unique(PathBuf::from(text));
+            let Some(text) = entry.as_str() else {
+                anyhow::bail!(
+                    "refusing non-string entry in Docker config cliPluginsExtraDirs: {}",
+                    source_config.join("config.json").display()
+                );
+            };
+            if text.is_empty() {
+                continue;
             }
+            push_validated(PathBuf::from(text))?;
         }
     }
-    push_unique(source_config.join("cli-plugins"));
+    push_validated(source_config.join("cli-plugins"))?;
     Ok(plugin_dirs)
 }
 
@@ -1207,10 +1278,10 @@ impl Op for Docker {
                             "refusing buildx prune: builder `{builder}` carries no previewed node identity"
                         );
                     }
-                    validate_docker_config_dir(&ctx.home)?;
+                    resolve_docker_cli_plugin_dirs(&ctx.home)?;
                     verify_local_buildx_builder(&ctx.home, host, builder, nodes)?;
                 } else {
-                    validate_docker_config_dir(&ctx.home)?;
+                    resolve_docker_cli_plugin_dirs(&ctx.home)?;
                 }
                 super::run_command_authority(
                     self.name(),
@@ -1700,27 +1771,63 @@ mod tests {
     }
 
     #[test]
-    fn docker_cli_plugin_dirs_strips_relative_entries_and_keeps_absolute_ones() {
+    fn docker_cli_plugin_dirs_refuses_unsafe_entries_and_keeps_safe_ones() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let root = tempfile::Builder::new()
             .prefix("devtrim-docker-plugin-dirs")
             .tempdir()
             .unwrap();
         let home = root.path();
+        let safe_plugins = home.join("safe-plugins");
+        std::fs::create_dir_all(&safe_plugins).unwrap();
+        std::fs::set_permissions(&safe_plugins, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let writable_plugins = home.join("writable-plugins");
+        std::fs::create_dir_all(&writable_plugins).unwrap();
+        std::fs::set_permissions(&writable_plugins, std::fs::Permissions::from_mode(0o777))
+            .unwrap();
+
         let source_config = home.join("docker-config");
         std::fs::create_dir_all(&source_config).unwrap();
+
+        // Relative, traversal, and world-writable plugin directories fail closed.
+        for bad_entry in [
+            "./plugins".to_string(),
+            "relative/dir".to_string(),
+            "/usr/local/../opt/plugins".to_string(),
+            writable_plugins.to_string_lossy().into_owned(),
+        ] {
+            std::fs::write(
+                source_config.join("config.json"),
+                serde_json::json!({ "clipluginsextradirs": [bad_entry] }).to_string(),
+            )
+            .unwrap();
+            assert!(
+                resolve_docker_cli_plugin_dirs_from(Some(source_config.as_os_str()), home).is_err(),
+                "must refuse unsafe cliPluginsExtraDirs entry: {bad_entry}"
+            );
+        }
+
+        // Safe absolute 0755 owned plugin directories (and nonexistent absolute ones) pass.
         std::fs::write(
             source_config.join("config.json"),
-            r#"{"clipluginsextradirs":["./plugins","relative/dir","/opt/homebrew/lib/docker/cli-plugins","/usr/local/../opt/plugins","/usr/local/lib/docker/cli-plugins"]}"#,
+            serde_json::json!({
+                "clipluginsextradirs": [
+                    safe_plugins.to_string_lossy(),
+                    "/nonexistent/devtrim-test-docker-plugins"
+                ]
+            })
+            .to_string(),
         )
         .unwrap();
-
         let plugin_dirs =
             resolve_docker_cli_plugin_dirs_from(Some(source_config.as_os_str()), home).unwrap();
         assert_eq!(
             plugin_dirs,
             vec![
-                "/opt/homebrew/lib/docker/cli-plugins".to_string(),
-                "/usr/local/lib/docker/cli-plugins".to_string(),
+                safe_plugins.to_string_lossy().into_owned(),
+                "/nonexistent/devtrim-test-docker-plugins".to_string(),
                 source_config
                     .join("cli-plugins")
                     .to_string_lossy()
