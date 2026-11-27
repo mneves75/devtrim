@@ -1579,6 +1579,24 @@ fn parse_system_df(output: &str, host: &str) -> Result<Vec<Finding>> {
     Ok(findings)
 }
 
+fn docker_on_path() -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path_var).any(|directory| {
+        let candidate = if directory.as_os_str().is_empty() {
+            PathBuf::from("docker")
+        } else {
+            directory.join("docker")
+        };
+        std::fs::metadata(candidate)
+            .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    })
+}
+
 impl Op for Docker {
     fn name(&self) -> &'static str {
         "docker"
@@ -1589,12 +1607,16 @@ impl Op for Docker {
         ctx: &Ctx,
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
-        let scan_docker_config = isolated_docker_scan_dir(&ctx.home)?;
+        let _ = resolve_docker_cli_plugin_dirs(&ctx.home)?;
         // The host image is disclosed even when the daemon is unreachable. A
         // stopped VM is precisely when its disk image is invisible to `docker`
         // and still occupying the host, so making this disclosure depend on a
         // live daemon would hide the cost in the one state that matters most.
         let mut findings = vm_disk_findings(&ctx.home)?;
+        if !docker_on_path() {
+            return Ok(findings);
+        }
+        let scan_docker_config = isolated_docker_scan_dir(&ctx.home)?;
         // Only an absent `docker` binary becomes an empty success, via
         // `docker_host`'s `ErrorKind::NotFound` handling. Every other failure —
         // a refused endpoint, an unreachable daemon, a malformed response —
