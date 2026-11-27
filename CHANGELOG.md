@@ -10,11 +10,15 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   checking out an untrusted branch could supply and execute hooks (such as
   `post-checkout`) before review. `scripts/install-hooks.sh` copies the
   reviewed `pre-commit` and `pre-push` hooks into `<git-common-dir>/hooks` and
-  replaces local `core.hooksPath` with that out-of-tree path; `release-policy.sh`
+  replaces local `core.hooksPath` with that out-of-tree path. It reads the
+  hooks from local `main`'s commit, so running it on another branch still
+  installs the reviewed ones; `release-policy.sh`
   and `eval_local_hooks_installer_keeps_hooks_outside_working_tree` enforce it.
 - **Confine Git discovery to the marker folder:** `hardened_git` now
   canonicalizes each repository root and sets `GIT_CEILING_DIRECTORIES` to its
-  canonical parent (refusing a colon-bearing or missing parent), so an empty
+  canonical parent (refusing a missing parent, and a parent whose path holds
+  `:`, which the colon-separated setting cannot name, with an error that says
+  so), so an empty
   `.git` directory or dangling `.git` symlink can no longer let an ancestor
   repository (including a stale dotfiles repository at `$HOME`) decide
   staleness or tracked files for `node-modules`, `artifacts`, or `purge`
@@ -29,13 +33,18 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   now refuses non-UTF-8 paths and non-APFS/HFS filesystems before calling
   `NSFileManager` (pointing operators to fd-anchored `--shred`), closing the
   percent-encoding and normalization mismatch on byte-transparent mounts
-  (planted `trash/non-utf8-refused`).
+  (planted `trash/non-utf8-refused` covers the non-UTF-8 refusal; the
+  filesystem check has unit tests only).
 - **Execution-context principal guard:** `dirs_home` now refuses execution when
-  `euid != ruid` or when canonical `$HOME` is owned by a different UID than
-  `euid` (such as `sudo` preserving `$HOME`); `load_config` enforces owner,
-  regular-file, and 1 MiB bounds; journal parent creation verifies owner before
-  `fchmod(0o700)`; and `removable_now` checks `AtFlags::EACCESS` (planted
-  `safety/exec-context`).
+  `euid != ruid`, when `egid != rgid`, or when canonical `$HOME` is owned by a
+  different UID than `euid` (such as `sudo` preserving `$HOME`; planted
+  `safety/exec-context`). `load_config` requires a regular file of at most
+  1 MiB owned by the user or by root (a Nix home-manager link into
+  `/nix/store` keeps working); journal parent creation verifies owner before
+  `fchmod(0o700)`; both rules have unit tests and no planted case.
+  `removable_now` checks `AtFlags::EACCESS`, which with real and effective IDs
+  now required equal behaves as the default does, so no test can tell them
+  apart.
 
 ### Changed
 - Build and release with Rust 1.100.0, the current stable release, in place

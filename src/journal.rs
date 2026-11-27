@@ -612,6 +612,19 @@ struct JournalLocation {
     path: PathBuf,
 }
 
+/// The journal's folder is made private (`0o700`) only when the current user
+/// owns it, so a folder another user owns is never chmodded or written.
+fn require_own_parent(owner: u32, euid: u32) -> io::Result<()> {
+    if owner == euid {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to chmod or write journal in a directory owned by another user",
+        ))
+    }
+}
+
 impl JournalLocation {
     fn open(path: &Path, mode: ParentMode) -> io::Result<Option<Self>> {
         if !path.is_absolute() {
@@ -668,12 +681,7 @@ impl JournalLocation {
         }
         if matches!(mode, ParentMode::Create) && opened_component {
             let status = rustix::fs::fstat(&parent).map_err(io::Error::from)?;
-            if status.st_uid != rustix::process::geteuid().as_raw() {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "refusing to chmod or write journal in a directory owned by another user",
-                ));
-            }
+            require_own_parent(status.st_uid, rustix::process::geteuid().as_raw())?;
             fchmod(&parent, Mode::from(0o700)).map_err(io::Error::from)?;
         }
         Ok(Some(Self {
@@ -1537,18 +1545,17 @@ mod tests {
             "PV journal/foreign-owner: refused for another reason: {error}"
         );
 
-        // ParentMode::Create must refuse fchmod on a foreign-owned parent directory.
-        let Err(create_error) = JournalLocation::open(
-            &PathBuf::from("/private/tmp/devtrim-foreign-parent-owner-test.jsonl"),
-            ParentMode::Create,
-        ) else {
-            panic!("JournalLocation::open(Create) must refuse a foreign-owned parent directory");
-        };
-        assert_eq!(
-            create_error.kind(),
-            io::ErrorKind::PermissionDenied,
-            "foreign-owned parent refused for unexpected reason: {create_error}"
+        // ParentMode::Create refuses to chmod a parent another user owns. The
+        // rule is tested on its own: a real foreign folder (`/private/tmp`)
+        // would be chmodded as root, and as any other user the chmod fails
+        // anyway, which would hide a missing check.
+        assert!(
+            require_own_parent(euid.as_raw(), euid.as_raw()).is_ok(),
+            "positive control: an owned parent is accepted"
         );
+        let owner_error = require_own_parent(euid.as_raw().wrapping_add(1), euid.as_raw())
+            .expect_err("PV journal/foreign-parent: a foreign-owned parent was accepted");
+        assert_eq!(owner_error.kind(), io::ErrorKind::PermissionDenied);
         crate::ops::remove_test_path(root);
     }
 

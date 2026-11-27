@@ -431,13 +431,21 @@ Non-negotiable boundaries:
   `GIT_CEILING_DIRECTORIES` to its canonical parent (refusing if the parent
   contains `:` or cannot be determined), so an invalid `.git` marker never lets
   Git walk upward into an ancestor repository (such as a dotfiles repository at
-  HOME).
-- `dirs_home` refuses execution when `euid != ruid` or when the canonical
-  `$HOME` directory is owned by a different UID than `euid` (such as `sudo`
-  preserving `$HOME`), `load_config` requires config files (and any symlink) to
-  be regular files owned by `euid` and bounded to 1 MiB, journal directory
-  creation verifies parent ownership before `fchmod(0o700)`, and `removable_now`
-  checks `accessat(..., AtFlags::EACCESS)`.
+  HOME). `GIT_CEILING_DIRECTORIES` is colon-separated, so a repository whose
+  parent path holds `:` (Finder's spelling of a `/` in a folder name) is
+  refused with an error naming the colon and is never judged.
+- `dirs_home` refuses execution when `euid != ruid`, when `egid != rgid`, or
+  when the canonical `$HOME` directory is owned by a different UID than `euid`
+  (such as `sudo` preserving `$HOME`). `load_config` requires the config file
+  (and any symlink to it) to be a regular file owned by `euid` or by root (root
+  can already change anything this user runs; Nix home-manager links it into a
+  root-owned `/nix/store`), bounded to 1 MiB. Journal directory creation
+  verifies parent ownership before `fchmod(0o700)`, and `removable_now` checks
+  `accessat(..., AtFlags::EACCESS)`. Planted `safety/exec-context` proves the
+  identity checks; the config owner rule and the journal parent rule have unit
+  tests and no planted case. With real and effective IDs required equal,
+  `EACCESS` behaves as the default does, so `removable_now` has no test that
+  could tell them apart.
 - The Trash move path in `remove_path` refuses non-UTF-8 target paths and
   non-APFS/HFS filesystems before calling `NSFileManager` (directing operators
   to fd-anchored `--shred`), preventing the `trash` crate's percent-encoding of

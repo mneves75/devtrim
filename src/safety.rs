@@ -567,6 +567,13 @@ pub(crate) struct FileCfg {
 
 const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
 
+/// A config owned by the current user or by root: root can already change
+/// anything this user runs, and Nix home-manager links `~/.config/devtrim.toml`
+/// to a root-owned file in `/nix/store`. Any other owner could steer cleanup.
+fn config_owner_trusted(owner: u32, euid: u32) -> bool {
+    owner == euid || owner == 0
+}
+
 fn load_config(path: &Path) -> Result<FileCfg> {
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;
@@ -580,9 +587,9 @@ fn load_config(path: &Path) -> Result<FileCfg> {
                 .with_context(|| format!("cannot inspect config: {}", path.display()));
         }
     };
-    if link_meta.uid() != euid {
+    if !config_owner_trusted(link_meta.uid(), euid) {
         bail!(
-            "refusing config owned by UID {} (expected {euid}): {}",
+            "refusing config owned by UID {} (expected {euid} or root): {}",
             link_meta.uid(),
             path.display()
         );
@@ -608,9 +615,9 @@ fn load_config(path: &Path) -> Result<FileCfg> {
     if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
         bail!("refusing non-regular config: {}", path.display());
     }
-    if stat.st_uid != euid {
+    if !config_owner_trusted(stat.st_uid, euid) {
         bail!(
-            "refusing config owned by UID {} (expected {euid}): {}",
+            "refusing config owned by UID {} (expected {euid} or root): {}",
             stat.st_uid,
             path.display()
         );
@@ -4453,6 +4460,22 @@ mod tests {
         assert!(
             verify_execution_identity(0, 0, 0, 0, 501, home).is_err(),
             "PV safety/exec-context: sudo HOME owner != euid must be refused"
+        );
+    }
+
+    #[test]
+    fn config_owner_is_the_user_or_root() {
+        assert!(
+            config_owner_trusted(501, 501),
+            "the user's own config loads"
+        );
+        assert!(
+            config_owner_trusted(0, 501),
+            "a root-owned config (a /nix/store link target) loads"
+        );
+        assert!(
+            !config_owner_trusted(502, 501),
+            "another user's config is refused"
         );
     }
 

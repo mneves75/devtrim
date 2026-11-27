@@ -300,10 +300,17 @@ fn hardened_git(root: &Path, git: &str) -> Result<Command> {
         .with_context(|| format!("cannot resolve Git root {}", root.display()))?;
     let ceiling = canonical
         .parent()
-        .filter(|parent| {
-            parent.is_absolute() && !parent.as_os_str().as_encoded_bytes().contains(&b':')
-        })
+        .filter(|parent| parent.is_absolute())
         .ok_or_else(|| anyhow::anyhow!("cannot confine Git to {}", canonical.display()))?;
+    // GIT_CEILING_DIRECTORIES is colon-separated, so a parent whose name holds
+    // `:` (how Finder stores a `/` typed in a folder name) cannot be named.
+    if ceiling.as_os_str().as_encoded_bytes().contains(&b':') {
+        anyhow::bail!(
+            "cannot confine Git to {}: its parent folder's path contains ':', which \
+             GIT_CEILING_DIRECTORIES cannot express (rename the folder to judge it)",
+            canonical.display()
+        );
+    }
     let mut command = Command::new(git);
     command
         .env_remove("GIT_DIR")
@@ -2148,6 +2155,24 @@ mod tests {
             worktree_dirty_count(&repo).unwrap(),
             0,
             "worktree_dirty_count followed hostile core.worktree outside validated directory"
+        );
+    }
+
+    #[test]
+    fn a_parent_holding_a_colon_names_why_git_cannot_be_confined() {
+        let fixture = crate::ops::TestFixture::new("git-ceiling-colon");
+        let repo = fixture.path().join("Clients:Acme/repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let error = hardened_git(&repo, "git").unwrap_err().to_string();
+        assert!(
+            error.contains("contains ':'"),
+            "the refusal names the colon: {error}"
+        );
+        let plain = fixture.path().join("Clients/repo");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(
+            hardened_git(&plain, "git").is_ok(),
+            "positive control: a plain parent is confined"
         );
     }
 

@@ -3401,4 +3401,16 @@ mod tests {
             );
         }
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn on_apple_fs_reads_the_folder_volume_type() {
+        // The fixture lives under the checkout's `target/`, on the APFS
+        // system volume; a foreign mount needs a disk image no unit test makes.
+        let fixture = TestFixture::new("apple-fs");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let dir = cap_std::fs::Dir::open_ambient_dir(fixture.path(), cap_std::ambient_authority())
+            .unwrap();
+        assert!(on_apple_fs(&dir), "an APFS folder qualifies for the Trash");
+    }
 }

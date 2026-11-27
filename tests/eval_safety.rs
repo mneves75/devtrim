@@ -1826,4 +1826,27 @@ fn eval_local_hooks_installer_keeps_hooks_outside_working_tree() {
         3,
         "installed main pre-commit must continue running on contributor branch commits"
     );
+
+    // Reinstalling while the contributor branch is checked out still installs
+    // main's committed hooks, never the checked-out files.
+    let reinstall = std::process::Command::new("/bin/sh")
+        .arg(repo.join("scripts/install-hooks.sh"))
+        .current_dir(&repo)
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", "/usr/bin:/bin")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        reinstall.status.success(),
+        "install-hooks.sh on contributor failed: {}",
+        String::from_utf8_lossy(&reinstall.stderr)
+    );
+    git_output(&["commit", "--allow-empty", "-q", "-m", "after reinstall"]);
+    assert!(
+        !contributor_precommit_marker.exists(),
+        "install-hooks.sh installed the checked-out contributor pre-commit instead of main's"
+    );
 }
