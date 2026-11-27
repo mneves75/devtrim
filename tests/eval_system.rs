@@ -1746,12 +1746,14 @@ fn eval_clean_docker_buildx_prunes_deduplicated_local_builder_and_skips_remote()
     printf 'Images\t1GB\t0B (0%%)\t0\n'
     printf 'Build Cache\t0B\t0B\t0\n' ;;
   '--host unix:///var/run/docker.sock buildx ls --format {{json .}}')
+    [ "${BUILDX_CONFIG:-}" = "$DOCKER_CONFIG/buildx" ] && [ -z "${BUILDX_BUILDER:-}" ] || exit 12
     printf '%s\n' '{"Name":"default","Driver":"docker","Current":false,"Nodes":[{"Name":"default","Endpoint":"default","Status":"running","IDs":["def-id"]}]}'
     printf '%s\n' '{"Name":"kiri-build","Driver":"docker-container","Current":false,"Nodes":[{"Name":"kiri-build0","Endpoint":"kiri","Status":"running","IDs":["node-id-1"]}]}'
     printf '%s\n' '{"Name":"kiri","Driver":"docker-container","Current":true,"Nodes":[{"Name":"kiri-build0","Endpoint":"kiri","Status":"running","IDs":["node-id-1"]}]}'
     printf '%s\n' '{"Name":"kiri","Driver":"docker-container","Current":true,"Nodes":[{"Name":"kiri-build0","Endpoint":"kiri","Status":"running","IDs":["node-id-1"]}]}'
     printf '%s\n' '{"Name":"prod-builder","Driver":"docker-container","Current":false,"Nodes":[{"Name":"prod0","Endpoint":"prod","Status":"running","IDs":["remote-id"]}]}' ;;
   '--host unix:///var/run/docker.sock buildx du --builder kiri')
+    [ "${BUILDX_CONFIG:-}" = "$DOCKER_CONFIG/buildx" ] && [ -z "${BUILDX_BUILDER:-}" ] || exit 12
     printf 'Reclaimable:\t2.05GiB\nTotal:\t2.05GiB\n' ;;
   '--host unix:///var/run/docker.sock buildx du --builder prod-builder')
     printf 'Reclaimable:\t1GiB\nTotal:\t1GiB\n' ;;

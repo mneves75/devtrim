@@ -1069,19 +1069,29 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
 /// narrows access and is accepted. Callers pass only paths free of newlines,
 /// so every line `ls` prints is either a file's own line or an ACL entry.
 fn refuse_acl_grants<'a>(paths: impl IntoIterator<Item = &'a Path>, probe: &Path) -> Result<()> {
+    refuse_path_acl_grants(paths, probe, "Git probe directory")
+}
+
+/// Refuses when an ACL on any of `paths` grants access (`allow` entry).
+/// Callers must pass only paths free of newlines.
+pub(super) fn refuse_path_acl_grants<'a>(
+    paths: impl IntoIterator<Item = &'a Path>,
+    subject: &Path,
+    label: &str,
+) -> Result<()> {
     let listed = Command::new("/bin/ls")
         .arg("-lde")
         .arg("--")
         .args(paths)
         .output_within(QUERY_TIMEOUT)
-        .with_context(|| format!("cannot read the ACLs of {}", probe.display()))?;
+        .with_context(|| format!("cannot read the ACLs of {}", subject.display()))?;
     if !listed.status.success() {
-        anyhow::bail!("cannot read the ACLs of {}", probe.display());
+        anyhow::bail!("cannot read the ACLs of {}", subject.display());
     }
     if listed.stdout.split(|byte| *byte == b'\n').any(acl_allows) {
         anyhow::bail!(
-            "refusing Git probe directory {}: an ACL lets another account change it",
-            probe.display()
+            "refusing {label} {}: an ACL lets another account change it",
+            subject.display()
         );
     }
     Ok(())
@@ -2726,7 +2736,7 @@ mod tests {
     }
 
     #[test]
-    fn records_submodule_matches_apfs_casefolded_submodule_and_ignores_nested_gitlinks() {
+    fn repo_has_active_build_matches_apfs_casefolded_submodule_and_ignores_unrecorded_sibling() {
         let fixture = crate::ops::TestFixture::new("records-submodule-identity");
         std::fs::create_dir_all(fixture.path()).unwrap();
         let base = fixture.path().canonicalize().unwrap();
@@ -2750,23 +2760,28 @@ mod tests {
 
         // Rename `vendor/submod` only in case: on case-insensitive APFS, Git's
         // index still records `vendor/submod` while the disk spelling is
-        // `vendor/SubMod`. Identity matching must still recognize it.
+        // `vendor/SubMod`. Identity matching must still keep the submodule live
+        // when the superproject has an active build.
         std::fs::rename(&submod, superproject.join("vendor/renaming")).unwrap();
         let renamed = superproject.join("vendor/SubMod");
         std::fs::rename(superproject.join("vendor/renaming"), &renamed).unwrap();
 
+        let active_super = [crate::safety::ProcessCwd {
+            dev: None,
+            path: superproject.clone(),
+        }];
         assert!(
-            records_submodule(&superproject, &renamed).unwrap(),
-            "case-folded submodule spelling must match recorded gitlink by (dev, ino)"
+            repo_has_active_build(&renamed, &active_super, &base).unwrap(),
+            "case-folded submodule spelling must stay active via superproject (dev, ino) match"
         );
-        // Positive control: a parent directory holding a nested gitlink and an
-        // unrecorded sibling repo must NOT match as recorded submodules.
+        // Positive controls: a parent directory holding a nested gitlink and an
+        // unrecorded sibling repo must NOT be treated as active submodules.
         assert!(
-            !records_submodule(&superproject, &superproject.join("vendor")).unwrap(),
+            !repo_has_active_build(&superproject.join("vendor"), &active_super, &base).unwrap(),
             "directory containing a nested gitlink must not match as a submodule itself"
         );
         assert!(
-            !records_submodule(&superproject, &unrecorded).unwrap(),
+            !repo_has_active_build(&unrecorded, &active_super, &base).unwrap(),
             "unrecorded nested repository must not match as a submodule"
         );
     }

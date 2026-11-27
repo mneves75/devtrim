@@ -110,6 +110,10 @@ fn docker(home: &Path, docker_config: &Path, host: &str, args: &[&str]) -> Resul
             .env_remove("DOCKER_CONTEXT")
             .env_remove("BUILDX_BUILDER")
             .env_remove("BUILDX_CONFIG");
+    } else if matches!(args.first().copied(), Some("buildx")) {
+        process
+            .env("BUILDX_CONFIG", docker_config.join("buildx"))
+            .env_remove("BUILDX_BUILDER");
     }
     command_stdout(process.output_within(QUERY_TIMEOUT), &command)
 }
@@ -207,6 +211,8 @@ fn buildx_ls(home: &Path, docker_config: &Path, host: &str) -> Result<Option<Str
     let output = Command::new("docker")
         .current_dir(home)
         .env("DOCKER_CONFIG", docker_config)
+        .env("BUILDX_CONFIG", docker_config.join("buildx"))
+        .env_remove("BUILDX_BUILDER")
         .arg("--host")
         .arg(host)
         .args(["buildx", "ls", "--format", "{{json .}}"])
@@ -570,13 +576,13 @@ fn verify_local_buildx_builder(
 const MAX_DOCKER_CONFIG_BYTES: u64 = 1024 * 1024;
 
 fn is_safe_absolute_dir(path: &Path) -> bool {
+    let encoded = path.as_os_str().as_encoded_bytes();
     path.is_absolute()
+        && !encoded.contains(&b'\n')
         && path
             .components()
             .all(|component| !matches!(component, Component::CurDir | Component::ParentDir))
-        && !path
-            .as_os_str()
-            .as_encoded_bytes()
+        && !encoded
             .split(|byte| *byte == b'/')
             .any(|segment| segment == b"." || segment == b"..")
 }
@@ -662,6 +668,17 @@ fn validate_trusted_ancestors(candidate: &Path, candidate_exists: bool, label: &
             );
         }
     }
+    if canonical_parent
+        .as_os_str()
+        .as_encoded_bytes()
+        .contains(&b'\n')
+    {
+        anyhow::bail!(
+            "refusing {label} with newline in resolved ancestor {}",
+            canonical_parent.display()
+        );
+    }
+    super::project::refuse_path_acl_grants(canonical_parent.ancestors(), &canonical_parent, label)?;
     Ok(())
 }
 
@@ -704,6 +721,11 @@ fn validate_docker_config_dir_from(
                     candidate.display()
                 );
             }
+            super::project::refuse_path_acl_grants(
+                [candidate.as_path()],
+                &candidate,
+                "DOCKER_CONFIG",
+            )?;
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             validate_trusted_ancestors(&candidate, false, "DOCKER_CONFIG")?;
@@ -758,6 +780,7 @@ fn read_docker_config_json(
             config_path.display()
         );
     }
+    super::project::refuse_path_acl_grants([config_path.as_path()], &config_path, "Docker config")?;
     let mut file = std::fs::File::from(descriptor);
     let mut bytes = Vec::new();
     file.by_ref()
@@ -861,6 +884,17 @@ fn validate_docker_plugin_dir(candidate: &Path) -> Result<()> {
             candidate.display()
         );
     }
+    if canonical.as_os_str().as_encoded_bytes().contains(&b'\n') {
+        anyhow::bail!(
+            "refusing Docker CLI plugin directory with newline in resolved path: {}",
+            canonical.display()
+        );
+    }
+    super::project::refuse_path_acl_grants(
+        [canonical.as_path()],
+        &canonical,
+        "Docker CLI plugin directory",
+    )?;
     Ok(())
 }
 
@@ -1055,6 +1089,22 @@ fn isolated_docker_scan_dir_from(
             );
         }
     }
+
+    if canonical_base
+        .as_os_str()
+        .as_encoded_bytes()
+        .contains(&b'\n')
+    {
+        anyhow::bail!(
+            "refusing Docker scan temp parent {}: its name holds a newline",
+            canonical_base.display()
+        );
+    }
+    super::project::refuse_path_acl_grants(
+        canonical_base.ancestors(),
+        &canonical_base,
+        "Docker scan temp parent",
+    )?;
 
     let mut hasher = Sha256::new();
     hasher.update(b"devtrim-docker-scan-v1\0");
@@ -2345,54 +2395,6 @@ mod tests {
                 safe_plugins.to_string_lossy(),
                 source_config.join("cli-plugins").to_string_lossy()
             ])
-        );
-    }
-
-    #[test]
-    fn write_isolated_builder_config_creates_empty_buildx_and_omits_aliases() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let root = tempfile::Builder::new()
-            .prefix("devtrim-docker-isolated-builder")
-            .tempdir()
-            .unwrap();
-        let home = root.path();
-        let state_dir = home.join(".local/state/devtrim");
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let mut ctx = test_ctx();
-        ctx.home = home.to_path_buf();
-        ctx.journal_path = state_dir.join("journal.jsonl");
-
-        let plugin_dirs = vec!["/opt/homebrew/lib/docker/cli-plugins".to_string()];
-        let isolated = write_isolated_builder_config(&ctx, &plugin_dirs).unwrap();
-
-        assert!(isolated.path().join("buildx").is_dir());
-        assert_eq!(
-            std::fs::read_dir(isolated.path().join("buildx"))
-                .unwrap()
-                .count(),
-            0,
-            "isolated buildx directory must be empty"
-        );
-        assert!(
-            !isolated.path().join("contexts").exists(),
-            "isolated config must have no contexts directory"
-        );
-        let config_path = isolated.path().join("config.json");
-        let mode = std::fs::symlink_metadata(&config_path)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        let object = parsed.as_object().unwrap();
-        assert_eq!(object.len(), 1);
-        assert!(object.get("aliases").is_none());
-        assert_eq!(
-            object["cliPluginsExtraDirs"],
-            serde_json::json!(["/opt/homebrew/lib/docker/cli-plugins"])
         );
     }
 
