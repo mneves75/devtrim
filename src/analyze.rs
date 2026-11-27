@@ -39,8 +39,12 @@ use crate::theme::{Theme, Token};
 /// thousands of children would otherwise let the producer starve key handling.
 const DRAIN_BUDGET: usize = 512;
 
-/// Poll for worker progress without delaying keyboard events.
+/// Poll for worker progress when idle without delaying keyboard events.
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
+
+/// Faster poll while a measurement or verdict worker is active so completions
+/// reach the screen without waiting out an idle tick.
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
 /// Sub-cell bar resolution. A terminal cell is the smallest unit devtrim can
 /// paint, so eighths are the only way to show a proportion honestly at this size.
@@ -1789,7 +1793,12 @@ fn run_loop(
             terminal.draw(|frame| render(frame, &explorer))?;
             redraw = false;
         }
-        if event::poll(POLL_INTERVAL).context("cannot poll terminal input")? {
+        let poll_interval = if explorer.progress.is_some() || explorer.verdicts_loading() {
+            ACTIVE_POLL_INTERVAL
+        } else {
+            POLL_INTERVAL
+        };
+        if event::poll(poll_interval).context("cannot poll terminal input")? {
             match event::read().context("cannot read terminal input")? {
                 Event::Key(key) => match explorer.handle_visible_key(
                     key,

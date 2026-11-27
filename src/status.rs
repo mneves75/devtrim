@@ -892,6 +892,10 @@ const WATCH_INTERVAL: Duration = Duration::from_secs(2);
 /// so a keypress is never waiting on a sample.
 const WATCH_POLL: Duration = Duration::from_millis(80);
 
+/// Shorter input poll while a sample is in flight so a finished snapshot
+/// reaches the screen without waiting out an idle poll tick.
+const ACTIVE_WATCH_POLL: Duration = Duration::from_millis(16);
+
 /// Live dashboard. Sampling runs on a worker thread and the interface redraws
 /// when a report arrives, so a slow probe delays the numbers rather than the
 /// keyboard.
@@ -953,7 +957,13 @@ fn run_watch(ctx: &Ctx) -> Result<std::process::ExitCode> {
                 shown_age = age.map(|age| age.as_secs());
                 redraw = false;
             }
-            if !event::poll(WATCH_POLL).context("cannot poll terminal input")? {
+            let poll_interval =
+                if latest.is_none() || age.is_some_and(|elapsed| elapsed >= WATCH_INTERVAL) {
+                    ACTIVE_WATCH_POLL
+                } else {
+                    WATCH_POLL
+                };
+            if !event::poll(poll_interval).context("cannot poll terminal input")? {
                 continue;
             }
             match event::read().context("cannot read terminal input")? {
