@@ -1703,6 +1703,10 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
         },
         "eval/docker-apply",
     );
+    assert!(
+        apply.status.success(),
+        "PV docker/builder-prune-isolation: {document}"
+    );
     let mut expected = probes;
     expected.push(image_prune.clone());
     expected.push(builder_prune.clone());
@@ -1720,10 +1724,6 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
                 .iter()
                 .any(|call| call.contains(&"volume".to_string())),
         "eval/docker-apply: a volume or system prune ran"
-    );
-    assert!(
-        apply.status.success(),
-        "PV docker/builder-prune-isolation: {document}"
     );
     assert_eq!(document["summary"]["items_touched"], 2);
     assert_journaled_commands(&sandbox, "docker", &[image_prune, builder_prune]);
