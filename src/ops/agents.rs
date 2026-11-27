@@ -1489,10 +1489,17 @@ mod tests {
     }
 
     /// Idles when re-invoked from inside a fixture release; see `execute_from`.
+    /// It runs until the test kills it, or exits once its parent is gone: a
+    /// fixed lifetime ended it mid-test on a busy host, where each system-wide
+    /// `lsof` takes tens of seconds, and apply then rightly removed a release
+    /// nothing executed any more.
     #[test]
     #[ignore = "re-invoked as a child process by execute_from"]
     fn codex_release_resident_child() {
-        std::thread::sleep(Duration::from_secs(60));
+        let parent = std::os::unix::process::parent_id();
+        while std::os::unix::process::parent_id() == parent {
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
 
     /// Runs a real program from inside `release`, as an agent started before an
@@ -1794,6 +1801,7 @@ mod tests {
         let mut running = execute_from(&old);
         let (busy, busy_errors) = scan(&ctx);
         let outcome = Agents.apply(&plan, &ctx);
+        let still_running = running.try_wait().unwrap().is_none();
         running.kill().unwrap();
         running.wait().unwrap();
         let outcome = outcome.unwrap();
@@ -1803,6 +1811,10 @@ mod tests {
             return Err(host);
         }
 
+        assert!(
+            still_running,
+            "control: the program executing from the release exited before apply finished"
+        );
         assert!(
             !busy
                 .iter()
