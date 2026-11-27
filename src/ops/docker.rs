@@ -575,6 +575,15 @@ fn verify_local_buildx_builder(
 
 const MAX_DOCKER_CONFIG_BYTES: u64 = 1024 * 1024;
 
+/// Built-in Unix CLI plugin search directories checked by Docker CLI
+/// (`cli-plugins/manager/manager_unix.go:13-18`).
+const DOCKER_SYSTEM_PLUGIN_DIRS: &[&str] = &[
+    "/usr/local/lib/docker/cli-plugins",
+    "/usr/local/libexec/docker/cli-plugins",
+    "/usr/lib/docker/cli-plugins",
+    "/usr/libexec/docker/cli-plugins",
+];
+
 fn is_safe_absolute_dir(path: &Path) -> bool {
     let encoded = path.as_os_str().as_encoded_bytes();
     path.is_absolute()
@@ -1034,7 +1043,8 @@ fn validate_docker_plugin_dir(candidate: &Path) -> Result<Option<PathBuf>> {
             )
         })?;
         let name = entry.file_name();
-        if !name.as_encoded_bytes().starts_with(b"docker-") {
+        let bytes = name.as_encoded_bytes();
+        if bytes.len() < 7 || !bytes[..7].eq_ignore_ascii_case(b"docker-") {
             continue;
         }
         validate_docker_plugin_executable(&entry.path(), current_uid)?;
@@ -1113,6 +1123,9 @@ fn validate_docker_config_from(
         }
     }
     push_validated(source_config.join("cli-plugins"))?;
+    for system_dir in DOCKER_SYSTEM_PLUGIN_DIRS {
+        let _ = validate_docker_plugin_dir(Path::new(system_dir))?;
+    }
     Ok(ValidatedDockerConfig {
         source_config,
         plugin_dirs,
@@ -2578,7 +2591,7 @@ mod tests {
             std::fs::Permissions::from_mode(0o777),
         )
         .unwrap();
-        let linked_plugin = safe_plugins.join("docker-buildx");
+        let linked_plugin = safe_plugins.join("Docker-Buildx");
         std::os::unix::fs::symlink(&writable_plugin_target, &linked_plugin).unwrap();
         std::fs::write(
             source_config.join("config.json"),

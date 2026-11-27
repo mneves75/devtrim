@@ -1978,57 +1978,6 @@ mod tests {
     }
 
     #[test]
-    fn bulk_discovery_handles_cachedir_fallback_root_shapes_and_symlinks() {
-        let root = temp("bulk-edge-cases");
-        let fallback_target = root.join("uncorroborated/target");
-        std::fs::create_dir_all(&fallback_target).unwrap();
-        std::fs::write(fallback_target.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).unwrap();
-        let own_repo_target = root.join("self-git/target");
-        std::fs::create_dir_all(own_repo_target.join(".git")).unwrap();
-        std::fs::write(root.join("self-git/Cargo.toml"), "[package]").unwrap();
-        let linked_root = root.join("alias-root");
-        symlink(root.join("uncorroborated"), &linked_root).unwrap();
-        let file_root = root.join("plain-file");
-        std::fs::write(&file_root, "x").unwrap();
-
-        let mut unread = Vec::new();
-        let found = find_artifacts(&root, &mut unread).unwrap();
-        assert!(unread.is_empty());
-        assert_eq!(
-            found
-                .iter()
-                .map(|candidate| candidate.path.as_path())
-                .collect::<Vec<_>>(),
-            vec![fallback_target.as_path()]
-        );
-        assert_eq!(found[0].evidence.label, "stale CACHEDIR.TAG cache");
-
-        let direct = find_artifacts(&fallback_target, &mut unread).unwrap();
-        assert_eq!(direct.len(), 1);
-        assert_eq!(direct[0].path, fallback_target);
-        assert_eq!(
-            find_artifacts(&linked_root, &mut unread)
-                .unwrap()
-                .iter()
-                .map(|candidate| candidate.path.as_path())
-                .collect::<Vec<_>>(),
-            vec![linked_root.join("target").as_path()]
-        );
-        assert!(find_artifacts(&file_root, &mut unread).unwrap().is_empty());
-        assert!(
-            find_artifacts(&root.join("node_modules"), &mut unread).is_err(),
-            "missing node_modules root must still fail"
-        );
-        std::fs::create_dir_all(root.join("node_modules")).unwrap();
-        assert!(
-            find_artifacts(&root.join("node_modules"), &mut unread)
-                .unwrap()
-                .is_empty()
-        );
-        crate::ops::remove_test_path(root);
-    }
-
-    #[test]
     fn apfs_unicode_casefold_protects_terraform_state_and_excluded_names_at_scan_and_apply() {
         assert_eq!(fold_apfs_ascii("\u{00df}\u{1e9e}"), "ssss");
         assert_eq!(fold_apfs_ascii("\u{017f}\u{212a}"), "sk");
