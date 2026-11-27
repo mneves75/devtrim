@@ -4966,7 +4966,9 @@ mod tests {
             );
 
         let _snapshot = AssumeSnapshotFree::new(false);
-        let (size, newest) = walk_stats(&tree, DiskUsage::estimating(), true).unwrap();
+        let (stopped, size, newest) =
+            walk_stats_while(&tree, DiskUsage::estimating(), true, |_, _, _| None::<()>).unwrap();
+        assert_eq!(stopped, None);
         assert_eq!(size.allocated, du_bytes(&tree));
         assert_eq!(size.frees_at_least, None);
         assert_eq!(newest, Some(expected_mtime));
