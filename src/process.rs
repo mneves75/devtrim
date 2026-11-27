@@ -97,15 +97,18 @@ impl BoundedCommand for Command {
             )
         };
 
+        let pipe_wake = Arc::new(PipeWake::new(2));
         let stdout = drain(
             child.stdout.take(),
             OUTPUT_LIMIT,
             format!("{program} stdout"),
+            Arc::clone(&pipe_wake),
         );
         let stderr = drain(
             child.stderr.take(),
             OUTPUT_LIMIT,
             format!("{program} stderr"),
+            Arc::clone(&pipe_wake),
         );
         let (stdout, stderr) = match (stdout, stderr) {
             (Ok(stdout), Ok(stderr)) => (stdout, stderr),
@@ -127,8 +130,8 @@ impl BoundedCommand for Command {
                     });
                 }
                 Ok(None) => {
-                    thread::sleep(delay);
-                    delay = (delay * 2).min(LONGEST_POLL);
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    pipe_wake.wait_or_sleep(&mut delay, remaining);
                 }
                 Err(error) => {
                     kill_and_reap(&mut child);
@@ -159,6 +162,70 @@ impl BoundedCommand for Command {
     }
 }
 
+struct PipeState {
+    open: usize,
+    yielded: bool,
+}
+
+struct PipeWake {
+    state: Mutex<PipeState>,
+    changed: Condvar,
+}
+
+impl PipeWake {
+    fn new(open: usize) -> Self {
+        Self {
+            state: Mutex::new(PipeState {
+                open,
+                yielded: false,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn mark_closed(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.open = state.open.saturating_sub(1);
+        drop(state);
+        self.changed.notify_one();
+    }
+
+    fn wait_or_sleep(&self, delay: &mut Duration, remaining: Duration) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.open == 0 {
+            let yield_once = !std::mem::replace(&mut state.yielded, true);
+            drop(state);
+            *delay = FIRST_POLL;
+            // Yield once so a child mid-exit reaps in microseconds; sleep if it kept running.
+            if yield_once {
+                thread::yield_now();
+                return;
+            }
+            thread::sleep(FIRST_POLL.min(remaining));
+            return;
+        }
+
+        let wait = (*delay).min(remaining);
+        let (state, timeout_result) = self
+            .changed
+            .wait_timeout(state, wait)
+            .unwrap_or_else(PoisonError::into_inner);
+        if state.open == 0 {
+            *delay = FIRST_POLL;
+        } else if timeout_result.timed_out() {
+            *delay = (*delay * 2).min(LONGEST_POLL);
+        }
+    }
+}
+
+struct PipeGuard(Arc<PipeWake>);
+
+impl Drop for PipeGuard {
+    fn drop(&mut self) {
+        self.0.mark_closed();
+    }
+}
+
 /// Reads one pipe to the end, or to `limit` bytes, on its own thread and
 /// hands the bytes over; more than `limit` is an error naming `stream`, and
 /// the pipe is closed at once, so its writer is not left blocked on it.
@@ -166,11 +233,14 @@ fn drain(
     pipe: Option<impl Read + Send + 'static>,
     limit: u64,
     stream: String,
+    pipe_wake: Arc<PipeWake>,
 ) -> io::Result<mpsc::Receiver<io::Result<Vec<u8>>>> {
     let (sender, receiver) = mpsc::channel();
     thread::Builder::new()
         .name("devtrim-command-output".into())
         .spawn(move || {
+            // Drop wakes `output_within` after `sender.send`, or during unwinding on panic.
+            let _guard = PipeGuard(pipe_wake);
             let mut bytes = Vec::new();
             let result = match pipe {
                 Some(pipe) => match pipe.take(limit.saturating_add(1)).read_to_end(&mut bytes) {
@@ -499,6 +569,7 @@ mod tests {
                 Some(io::Cursor::new(vec![b'x'; bytes])),
                 10,
                 "test stdout".into(),
+                Arc::new(PipeWake::new(1)),
             )
             .unwrap()
             .recv()
