@@ -301,6 +301,335 @@ fn eval_gradle_caches_need_gradle_and_no_repository() {
     }
 }
 
+/// Mole I-11: npm's and pnpm's caches hold installs a running tool loads, so
+/// neither `go env GOMODCACHE` nor `GRADLE_USER_HOME` pointing into them makes
+/// a cache there, even with Go's or Gradle's layout planted. The control is
+/// the same layouts in their default homes.
+#[test]
+fn eval_no_other_owner_claims_npm_or_pnpm_installs() {
+    let sandbox = Sandbox::in_target("eval-install-cache-owners");
+    let home = sandbox.path().canonicalize().unwrap();
+    // Inside an install cache, in either case, or holding one (`.cache` holds
+    // npm's `.cache/npm`). npm's folder is created as `.NPM`, so only the
+    // volume, not the spelling, says `.npm` is the same folder.
+    let installs = [
+        ".NPM/_npx",
+        ".npm/_npx",
+        "Library/Caches/pnpm",
+        "Library/Caches/pnpm/dlx",
+        ".cache",
+    ];
+    write(&home.join(".cache/npm/_npx/9420/sentinel"), "install");
+    for relative in installs.iter().copied().chain(["go/pkg/mod"]) {
+        write(&home.join(relative).join("cache/download/x.zip"), "module");
+    }
+    for relative in installs.iter().copied().chain([".gradle"]) {
+        write(
+            &home.join(relative).join("caches/modules-2/x.jar"),
+            "module",
+        );
+    }
+    let run_with = |go_root: &str, gradle: Option<&Path>, args: &[&str]| {
+        sandbox.script(
+            "go",
+            &format!(
+                "[ \"${{GOTOOLCHAIN:-}}\" = local ] || exit 3\nprintf '%s\\n' \"$HOME/{go_root}\""
+            ),
+        );
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"));
+        command
+            .args(args)
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", sandbox.bin());
+        if let Some(gradle) = gradle {
+            command.env("GRADLE_USER_HOME", gradle);
+        }
+        command.output().unwrap()
+    };
+    let control = json(&run_with(
+        "go/pkg/mod",
+        None,
+        &["clean", "caches", "--json"],
+    ));
+    assert_eq!(
+        actionable_targets(&control),
+        vec![home.join(".gradle/caches"), home.join("go/pkg/mod")],
+        "{control}"
+    );
+    for relative in installs {
+        let install = home.join(relative);
+        let pristine = Tree::snapshot(&home);
+        let preview = json(&run_with(relative, None, &["clean", "caches", "--json"]));
+        assert_eq!(
+            actionable_targets(&preview),
+            vec![home.join(".gradle/caches")],
+            "PV eval/go-install-cache: GOMODCACHE {relative} was offered: {preview}"
+        );
+        let preview = json(&run_with(
+            "go/pkg/mod",
+            Some(&install),
+            &["clean", "caches", "--json"],
+        ));
+        // `.cache/caches` holds no install cache: only a Gradle home inside
+        // one keeps Gradle's caches out.
+        let mut expected = vec![home.join("go/pkg/mod")];
+        if relative == ".cache" {
+            expected.insert(0, home.join(".cache/caches"));
+        }
+        assert_eq!(
+            actionable_targets(&preview),
+            expected,
+            "PV eval/gradle-install-cache: GRADLE_USER_HOME {relative} was offered: {preview}"
+        );
+        let apply = json(&run_with(
+            relative,
+            Some(&install),
+            &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+        ));
+        let removed: Vec<PathBuf> = [".gradle/caches", "go/pkg/mod", ".cache/caches"]
+            .iter()
+            .map(|default| home.join(default))
+            .filter(|default| !default.exists())
+            .collect();
+        pristine.assert_only(
+            &Tree::snapshot(&home),
+            &Allowed {
+                removed: removed.clone(),
+                scratch: vec![home.join(".local/state/devtrim"), sandbox.bin()],
+            },
+            &format!("install cache owners {apply}"),
+        );
+        for default in removed {
+            write(&default.join("modules-2/restored"), "module");
+        }
+    }
+}
+
+/// An install cache linked into another owner's folder is still held by it:
+/// `~/.npm` linked into the Go module cache, or pnpm's cache linked into
+/// Gradle's, keeps that whole owner's cache from being offered or removed.
+#[test]
+fn eval_a_linked_install_cache_keeps_its_holder() {
+    let sandbox = Sandbox::in_target("eval-linked-install-cache");
+    let home = sandbox.path().canonicalize().unwrap();
+    write(&home.join("go/pkg/mod/cache/download/x.zip"), "module");
+    write(&home.join("go/pkg/mod/npm/_npx/9420/sentinel"), "install");
+    write(&home.join(".gradle/caches/modules-2/x.jar"), "module");
+    write(
+        &home.join(".gradle/caches/pnpm/dlx/1e5f/sentinel"),
+        "install",
+    );
+    std::fs::create_dir_all(home.join("Library/Caches")).unwrap();
+    std::os::unix::fs::symlink(home.join("go/pkg/mod/npm"), home.join(".npm")).unwrap();
+    std::os::unix::fs::symlink(
+        home.join(".gradle/caches/pnpm"),
+        home.join("Library/Caches/pnpm"),
+    )
+    .unwrap();
+    sandbox.script(
+        "go",
+        "[ \"${GOTOOLCHAIN:-}\" = local ] || exit 3\nprintf '%s\\n' \"$HOME/go/pkg/mod\"",
+    );
+    let pristine = Tree::snapshot(&home);
+    let preview = json(&run(&sandbox, &["clean", "caches", "--json"]));
+    assert_eq!(
+        actionable_targets(&preview),
+        Vec::<PathBuf>::new(),
+        "PV eval/install-cache-link: a cache holding a linked install cache was offered: {preview}"
+    );
+    let applied = json(&run(
+        &sandbox,
+        &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+    ));
+    pristine.assert_only(
+        &Tree::snapshot(&home),
+        &Allowed {
+            removed: Vec::new(),
+            scratch: vec![home.join(".local/state/devtrim")],
+        },
+        &format!("linked install cache {applied}"),
+    );
+}
+
+/// How a row's control puts its install cache out of the victim's reach.
+#[derive(Clone, Copy)]
+enum Away {
+    /// The linked default spelling points at a folder outside the victim.
+    Relink,
+    /// `XDG_CACHE_HOME` is unset, so pnpm's cache is its macOS default.
+    NoXdg,
+    /// `npm` is absent, so nothing reports npm's configured cache.
+    NoNpm,
+}
+
+/// Mole I-11 for every caches authority: no cache — built-in, library, npm's
+/// store, pnpm's metadata, Homebrew's or Go's — that holds npm's or pnpm's
+/// cache folder is offered or removed, whether that folder is linked there,
+/// is where `npm config get cache` reports, or is `$XDG_CACHE_HOME/pnpm`.
+/// Each row's control moves the install cache away and the victim is offered.
+#[test]
+fn eval_no_cache_holds_an_install_cache() {
+    struct Row {
+        name: &'static str,
+        files: &'static [&'static str],
+        link: Option<(&'static str, &'static str)>,
+        stubs: &'static [(&'static str, &'static str)],
+        xdg: bool,
+        victim: &'static str,
+        away: Away,
+    }
+    let rows = [
+        Row {
+            name: "corepack",
+            files: &[".cache/node/corepack/pnpm/dlx/1e5f/sentinel"],
+            link: Some(("Library/Caches/pnpm", ".cache/node/corepack/pnpm")),
+            stubs: &[],
+            xdg: false,
+            victim: ".cache/node/corepack",
+            away: Away::Relink,
+        },
+        Row {
+            name: "npm-store",
+            files: &[
+                ".npm/_cacache/index",
+                ".npm/_cacache/pnpm/dlx/1e5f/sentinel",
+            ],
+            link: Some(("Library/Caches/pnpm", ".npm/_cacache/pnpm")),
+            stubs: &[("npm", ".npm")],
+            xdg: false,
+            victim: ".npm/_cacache",
+            away: Away::Relink,
+        },
+        Row {
+            name: "pnpm-metadata",
+            files: &["Library/Caches/pnpm/v11/metadata/npm/_npx/9420/sentinel"],
+            link: Some((".npm", "Library/Caches/pnpm/v11/metadata/npm")),
+            stubs: &[],
+            xdg: false,
+            victim: "Library/Caches/pnpm/v11/metadata",
+            away: Away::Relink,
+        },
+        Row {
+            name: "homebrew",
+            files: &[
+                "Library/Caches/Homebrew/downloads/x.tar.gz",
+                "Library/Caches/Homebrew/pnpm/dlx/1e5f/sentinel",
+            ],
+            link: Some(("Library/Caches/pnpm", "Library/Caches/Homebrew/pnpm")),
+            stubs: &[("brew", "Library/Caches/Homebrew")],
+            xdg: false,
+            victim: "Library/Caches/Homebrew",
+            away: Away::Relink,
+        },
+        Row {
+            name: "pip",
+            files: &["Library/Caches/pip/pnpm/dlx/1e5f/sentinel"],
+            link: Some(("Library/Caches/pnpm", "Library/Caches/pip/pnpm")),
+            stubs: &[],
+            xdg: false,
+            victim: "Library/Caches/pip",
+            away: Away::Relink,
+        },
+        Row {
+            name: "xdg-pnpm",
+            files: &[
+                ".cache/cache/download/x.zip",
+                ".cache/pnpm/dlx/1e5f/sentinel",
+            ],
+            link: None,
+            stubs: &[("go", ".cache")],
+            xdg: true,
+            victim: ".cache",
+            away: Away::NoXdg,
+        },
+        Row {
+            name: "npm-reported",
+            files: &[
+                "go/pkg/mod/cache/download/x.zip",
+                "go/pkg/mod/npmcache/_npx/9420/sentinel",
+            ],
+            link: None,
+            stubs: &[("go", "go/pkg/mod"), ("npm", "go/pkg/mod/npmcache")],
+            xdg: false,
+            victim: "go/pkg/mod",
+            away: Away::NoNpm,
+        },
+    ];
+    for row in rows {
+        let sandbox = Sandbox::in_target(&format!("eval-install-cache-{}", row.name));
+        let home = sandbox.path().canonicalize().unwrap();
+        for file in row.files {
+            write(&home.join(file), "install or cache");
+        }
+        std::fs::create_dir_all(home.join("elsewhere")).unwrap();
+        if let Some((install, linked)) = row.link {
+            std::fs::create_dir_all(home.join(install).parent().unwrap()).unwrap();
+            symlink(home.join(linked), home.join(install)).unwrap();
+        }
+        for (program, root) in row.stubs {
+            sandbox.script(program, &format!("printf '%s\\n' \"$HOME/{root}\""));
+        }
+        let devtrim = |xdg: bool, args: &[&str]| {
+            let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"));
+            command
+                .args(args)
+                .env_clear()
+                .env("HOME", &home)
+                .env("PATH", sandbox.bin());
+            if xdg {
+                command.env("XDG_CACHE_HOME", home.join(".cache"));
+            }
+            json(&command.output().unwrap())
+        };
+        let victim = home.join(row.victim);
+        let pristine = Tree::snapshot(&home);
+        let preview = devtrim(row.xdg, &["clean", "caches", "--json"]);
+        assert!(
+            !actionable_targets(&preview).contains(&victim),
+            "PV eval/holds-install-cache: {}: {} was offered: {preview}",
+            row.name,
+            row.victim
+        );
+        let applied = devtrim(
+            row.xdg,
+            &["clean", "caches", "--apply", "--shred", "--yolo", "--json"],
+        );
+        pristine.assert_only(
+            &Tree::snapshot(&home),
+            &Allowed {
+                removed: actionable_targets(&preview),
+                scratch: vec![home.join(".local/state/devtrim")],
+            },
+            &format!("{}: {applied}", row.name),
+        );
+        for file in row.files.iter().filter(|file| file.ends_with("sentinel")) {
+            assert!(home.join(file).exists(), "{}: {file} was removed", row.name);
+        }
+
+        let xdg = match row.away {
+            Away::Relink => {
+                let (install, _) = row.link.unwrap();
+                std::fs::remove_file(home.join(install)).unwrap();
+                symlink(home.join("elsewhere"), home.join(install)).unwrap();
+                row.xdg
+            }
+            Away::NoXdg => false,
+            Away::NoNpm => {
+                std::fs::remove_file(sandbox.bin().join("npm")).unwrap();
+                row.xdg
+            }
+        };
+        let control = devtrim(xdg, &["clean", "caches", "--json"]);
+        assert!(
+            actionable_targets(&control).contains(&victim),
+            "PV eval/owned-install-cache: {}: control did not offer {}: {control}",
+            row.name,
+            row.victim
+        );
+    }
+}
+
 /// An owner command that fails withholds only its own cache: a broken `npm`
 /// or `brew` (a stale version-manager shim) is one error finding each, the
 /// run exits nonzero, and every other cache is still offered and removed.
@@ -1248,4 +1577,276 @@ fn eval_build_process_liveness_keeps_only_the_busy_repository() {
         );
         assert_journaled(&sandbox, category, "shred", &[eligible]);
     }
+}
+
+#[test]
+fn eval_invalid_git_marker_never_borrows_stale_home_repo() {
+    let sandbox = Sandbox::in_target("eval-git-ceiling");
+    let home = sandbox.path();
+    let stale_date = "2020-01-01T00:00:00Z";
+    support::git(&sandbox, home, stale_date, &["init", "-q"]);
+    write(&home.join(".dotfiles-marker"), "stale");
+    support::git(&sandbox, home, stale_date, &["add", ".dotfiles-marker"]);
+    support::git(
+        &sandbox,
+        home,
+        stale_date,
+        &["commit", "-q", "-m", "old home repo"],
+    );
+    // Drop the fresh reflog entry created by `git commit` so the home repo's
+    // activity date is 2020-01-01 (stale), not today.
+    let _ = std::fs::remove_dir_all(home.join(".git/logs"));
+    // Run the resolved host git binary inside the sandbox and stub pgrep so
+    // ambient build processes do not interfere.
+    sandbox.script(
+        "git",
+        &format!("exec '{}' \"$@\"", support::real_git().display()),
+    );
+    sandbox.script("pgrep", "exit 1");
+
+    let dev = home.join("Developer");
+    let broken_project = dev.join("broken-project");
+    std::fs::create_dir_all(broken_project.join(".git")).unwrap();
+    write(&broken_project.join("package.json"), "{}");
+    write(&broken_project.join("node_modules/pkg/index.js"), "x");
+    write(
+        &broken_project.join("Cargo.toml"),
+        "[package]\nname = \"broken\"\n",
+    );
+    write(&broken_project.join("target/debug/broken"), "bin");
+
+    // Positive control: a valid stale sibling repository in the same scan root
+    // is still offered while the broken-marker sibling fails closed.
+    let valid_stale = dev.join("valid-stale");
+    std::fs::create_dir_all(&valid_stale).unwrap();
+    support::git(&sandbox, &valid_stale, stale_date, &["init", "-q"]);
+    write(&valid_stale.join("package.json"), "{}");
+    write(
+        &valid_stale.join("Cargo.toml"),
+        "[package]\nname = \"valid\"\n",
+    );
+    support::git(
+        &sandbox,
+        &valid_stale,
+        stale_date,
+        &["add", "package.json", "Cargo.toml"],
+    );
+    support::git(
+        &sandbox,
+        &valid_stale,
+        stale_date,
+        &["commit", "-q", "-m", "old valid repo"],
+    );
+    let _ = std::fs::remove_dir_all(valid_stale.join(".git/logs"));
+    write(&valid_stale.join("node_modules/pkg/index.js"), "x");
+    write(&valid_stale.join("target/debug/valid"), "bin");
+
+    let dev_canonical = dev.canonicalize().unwrap();
+    let root = dev_canonical.to_str().unwrap();
+    for (category, leaf) in [("node-modules", "node_modules"), ("artifacts", "target")] {
+        let preview = run(&sandbox, &["clean", category, "--root", root, "--json"]);
+        let document = json(&preview);
+        assert!(
+            !preview.status.success(),
+            "{category} with invalid .git marker must fail closed: {document}"
+        );
+        assert_eq!(
+            actionable_targets(&document),
+            vec![dev_canonical.join("valid-stale").join(leaf)],
+            "{category} must offer only valid-stale and never broken-project: {document}"
+        );
+    }
+}
+
+#[test]
+fn eval_local_hooks_installer_keeps_hooks_outside_working_tree() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let installer = manifest_dir.join("scripts/install-hooks.sh");
+    assert!(installer.is_file(), "scripts/install-hooks.sh must exist");
+    for relative_path in ["AGENTS.md", "CLAUDE.md", ".githooks/pre-push"] {
+        let text = std::fs::read_to_string(manifest_dir.join(relative_path)).unwrap();
+        assert!(
+            !text.contains("core.hooksPath .githooks"),
+            "{relative_path} must not instruct pointing core.hooksPath into .githooks"
+        );
+        assert!(
+            text.contains("scripts/install-hooks.sh"),
+            "{relative_path} must instruct running scripts/install-hooks.sh"
+        );
+    }
+
+    let sandbox = Sandbox::in_target("eval-hooks-installer");
+    let repo = sandbox.path().join("repo");
+    let main_precommit_marker = sandbox.path().join("MAIN_PRECOMMIT_RAN");
+    let contributor_checkout_marker = sandbox.path().join("CONTRIB_CHECKOUT_RAN");
+    let contributor_precommit_marker = sandbox.path().join("CONTRIB_PRECOMMIT_RAN");
+    std::fs::create_dir_all(repo.join(".githooks")).unwrap();
+    std::fs::create_dir_all(repo.join("scripts")).unwrap();
+    write(
+        &repo.join(".githooks/pre-commit"),
+        &format!(
+            "#!/bin/sh\necho main >> '{}'\n",
+            main_precommit_marker.display()
+        ),
+    );
+    write(&repo.join(".githooks/pre-push"), "#!/bin/sh\nexit 0\n");
+    std::fs::copy(&installer, repo.join("scripts/install-hooks.sh")).unwrap();
+    for script_path in [
+        repo.join(".githooks/pre-commit"),
+        repo.join(".githooks/pre-push"),
+        repo.join("scripts/install-hooks.sh"),
+    ] {
+        let mut permissions = std::fs::metadata(&script_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script_path, permissions).unwrap();
+    }
+
+    let git_output = |args: &[&str]| {
+        let output = std::process::Command::new(support::real_git())
+            .env_clear()
+            .env("HOME", sandbox.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "-c",
+                "user.name=devtrim-test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+
+    git_output(&["init", "-q", "-b", "main"]);
+    git_output(&["add", "."]);
+    git_output(&["commit", "-q", "-m", "init"]);
+
+    let install_output = std::process::Command::new("/bin/sh")
+        .arg("scripts/install-hooks.sh")
+        .current_dir(&repo)
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", "/usr/bin:/bin")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        install_output.status.success(),
+        "install-hooks.sh failed: {}",
+        String::from_utf8_lossy(&install_output.stderr)
+    );
+
+    let installed_hooks_path = git_output(&["config", "--local", "--get", "core.hooksPath"]);
+    let expected_hooks_path = format!(
+        "{}/hooks",
+        git_output(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    );
+    assert_eq!(
+        installed_hooks_path, expected_hooks_path,
+        "core.hooksPath must point to the out-of-tree <git-common-dir>/hooks"
+    );
+    assert!(Path::new(&expected_hooks_path).join("pre-commit").is_file());
+    assert!(Path::new(&expected_hooks_path).join("pre-push").is_file());
+
+    // Positive control: committing on main executes the installed main pre-commit.
+    git_output(&["commit", "--allow-empty", "-q", "-m", "positive control"]);
+    assert_eq!(
+        std::fs::read_to_string(&main_precommit_marker)
+            .unwrap()
+            .lines()
+            .count(),
+        1,
+        "installed main pre-commit hook must run on commit"
+    );
+
+    // Contributor branch adds a post-checkout hook and replaces .githooks/pre-commit.
+    git_output(&["checkout", "-q", "-b", "contributor"]);
+    let contributor_post_checkout = repo.join(".githooks/post-checkout");
+    write(
+        &contributor_post_checkout,
+        &format!(
+            "#!/bin/sh\necho ran > '{}'\n",
+            contributor_checkout_marker.display()
+        ),
+    );
+    let contributor_pre_commit = repo.join(".githooks/pre-commit");
+    write(
+        &contributor_pre_commit,
+        &format!(
+            "#!/bin/sh\necho contrib > '{}'\n",
+            contributor_precommit_marker.display()
+        ),
+    );
+    for script_path in [&contributor_post_checkout, &contributor_pre_commit] {
+        let mut permissions = std::fs::metadata(script_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script_path, permissions).unwrap();
+    }
+    git_output(&["add", ".githooks/post-checkout", ".githooks/pre-commit"]);
+    git_output(&["commit", "-q", "-m", "contributor hooks"]);
+
+    git_output(&["checkout", "-q", "main"]);
+    git_output(&["checkout", "-q", "contributor"]);
+    git_output(&[
+        "commit",
+        "--allow-empty",
+        "-q",
+        "-m",
+        "commit on contributor",
+    ]);
+
+    assert!(
+        !contributor_checkout_marker.exists(),
+        "contributor .githooks/post-checkout executed after scripts/install-hooks.sh"
+    );
+    assert!(
+        !contributor_precommit_marker.exists(),
+        "contributor .githooks/pre-commit replaced installed main hook"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&main_precommit_marker)
+            .unwrap()
+            .lines()
+            .count(),
+        3,
+        "installed main pre-commit must continue running on contributor branch commits"
+    );
+
+    // Reinstalling while the contributor branch is checked out still installs
+    // main's committed hooks, never the checked-out files.
+    let reinstall = std::process::Command::new("/bin/sh")
+        .arg(repo.join("scripts/install-hooks.sh"))
+        .current_dir(&repo)
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", "/usr/bin:/bin")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        reinstall.status.success(),
+        "install-hooks.sh on contributor failed: {}",
+        String::from_utf8_lossy(&reinstall.stderr)
+    );
+    git_output(&["commit", "--allow-empty", "-q", "-m", "after reinstall"]);
+    assert!(
+        !contributor_precommit_marker.exists(),
+        "install-hooks.sh installed the checked-out contributor pre-commit instead of main's"
+    );
 }

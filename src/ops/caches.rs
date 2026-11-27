@@ -1,6 +1,7 @@
 //! Regenerable download caches. Filesystem targets remain Trash-first.
 
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use super::project::{UnreadFolder, error_finding, has_git_marker, unread_folders_finding};
@@ -125,13 +126,18 @@ const _: () = assert!(
 /// The `~/Library/Caches` half of the same list, derived from the closed
 /// carve-out in the protection boundary so a cache can never be previewed
 /// without also being deletable, or protected without also being unlisted.
+/// pnpm's cache is offered as its metadata folders instead
+/// ([`pnpm_metadata_findings`]), so it is never a whole-folder target.
 fn library_caches(home: &Path) -> impl Iterator<Item = (&'static str, PathBuf)> {
-    crate::safety::MANAGED_LIBRARY_CACHES.iter().map(|entry| {
-        (
-            entry.label,
-            home.join("Library/Caches").join(entry.relative),
-        )
-    })
+    crate::safety::MANAGED_LIBRARY_CACHES
+        .iter()
+        .filter(|entry| entry.relative != crate::safety::PNPM_CACHE)
+        .map(|entry| {
+            (
+                entry.label,
+                home.join("Library/Caches").join(entry.relative),
+            )
+        })
 }
 
 impl Op for Caches {
@@ -161,19 +167,29 @@ impl Op for Caches {
                 findings.push(cache_finding(label, path, size, 3));
             }
         }
+        match pnpm_metadata_findings(&ctx.home, &mut unread) {
+            Ok(pnpm) => findings.extend(pnpm),
+            Err(error) => unread.push(UnreadFolder::new(&pnpm_cache(&ctx.home), &error)),
+        }
         // An owner command that fails withholds only its own cache, as `go`
-        // does below; the caches listed after it are still judged.
-        match owner_cache_path("npm", &["config", "get", "cache"], NPM_QUIET, ctx) {
+        // does below; the caches listed after it are still judged, against
+        // npm's default folders alone.
+        let npm_root = npm_reported_root(ctx);
+        let installs = InstallCaches::new(&ctx.home, npm_root.as_ref().ok().cloned().flatten());
+        match npm_root.and_then(|root| match root {
+            Some(root) => eligible_owner_root("npm", root, ctx),
+            None => Ok(None),
+        }) {
             Ok(Some(path)) => {
-                let size = measured(&path, &mut unread);
+                let store = path.join(NPM_STORE);
+                let size = measured(&store, &mut unread);
                 if size.allocated > 0 {
-                    let mut finding = cache_finding("npm cache folder", path, size, 2)
-                        .with_authority(TargetAuthority::NpmCache);
-                    finding.note =
-                        "npm's whole cache folder: downloaded packages (`_cacache`) and npx \
-                                installs (`_npx`) are fetched again on next use; its logs \
-                                (`_logs`) do not come back"
-                            .to_string();
+                    let mut finding = cache_finding("npm package cache", store, size, 2)
+                        .with_authority(TargetAuthority::NpmCacheStore);
+                    finding.note = "what `npm cache clean --force` removes: packages download \
+                                    again on next install; npx installs (`_npx`) stay, since a \
+                                    running npx tool loads them"
+                        .to_string();
                     findings.push(finding);
                 }
             }
@@ -205,6 +221,29 @@ impl Op for Caches {
             Ok(None) => {}
             Err(error) => findings.push(not_judged("Go module cache", &error)),
         }
+        findings.retain(|finding| {
+            let Some(target) = finding.target() else {
+                return true;
+            };
+            match installs.reached_by(target, finding.authority()) {
+                Ok(None) => true,
+                Ok(Some(install)) => {
+                    ctx.diagnostic(
+                        "warn",
+                        format!(
+                            "leaving {} out: it holds or lies inside {}, where npm or pnpm keep installs a running tool loads",
+                            target.display(),
+                            install.display()
+                        ),
+                    );
+                    false
+                }
+                Err(error) => {
+                    unread.push(UnreadFolder::new(target, &error));
+                    false
+                }
+            }
+        });
         if !unread.is_empty() {
             findings.push(unread_folders_finding("caches", &unread));
         }
@@ -213,12 +252,15 @@ impl Op for Caches {
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
         let mut outcome = ApplyOutcome::new(self.name());
+        // Asked afresh, never taken from the preview; an `npm` that fails now
+        // leaves npm's default folders as the install caches judged.
+        let installs = InstallCaches::new(&ctx.home, npm_reported_root(ctx).unwrap_or(None));
         for finding in findings {
             if !matches!(finding.action, Action::Trash | Action::Shred) {
                 continue;
             }
             let result = (|| -> Result<()> {
-                match authorize_cache_finding(finding, ctx)? {
+                match authorize_cache_finding(finding, ctx, &installs)? {
                     CacheKind::Plain => {}
                     CacheKind::Gradle => {
                         // Probed again at each finding: a build can start while
@@ -350,6 +392,133 @@ fn brew_cache_findings(
     Ok(findings)
 }
 
+/// npm's package store inside its cache folder: npm 12.2.3 `cache clean
+/// --force` removes `<cache>/_cacache` and nothing else (`@npmcli/config`
+/// `definitions.js`: `flatOptions.cache = join(cache, '_cacache')`, the npx
+/// cache being `join(cache, '_npx')`).
+const NPM_STORE: &str = "_cacache";
+
+fn pnpm_cache(home: &Path) -> PathBuf {
+    home.join("Library/Caches").join(crate::safety::PNPM_CACHE)
+}
+
+/// Whether `name` is a folder pnpm keeps package metadata in. `in_version` is
+/// whether it sits in a `v<digits>` folder (pnpm 11.27.0 `v11/metadata`,
+/// `v11/metadata-full`, `v11/metadata-full-filtered`) rather than directly in
+/// the cache (the earlier `metadata-v1.3`, `metadata-full-v1.3`,
+/// `metadata-ff-v1.3`).
+fn is_pnpm_metadata_name(name: &OsStr, in_version: bool) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    if in_version {
+        return matches!(
+            name,
+            "metadata" | "metadata-full" | "metadata-full-filtered"
+        );
+    }
+    ["metadata-v", "metadata-full-v", "metadata-ff-v"]
+        .iter()
+        .filter_map(|prefix| name.strip_prefix(prefix))
+        .any(|version| {
+            version
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        })
+}
+
+fn is_pnpm_version_name(name: &OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| name.strip_prefix('v'))
+        .is_some_and(|digits| {
+            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn real_subfolders(folder: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot read {}", folder.display()));
+        }
+    };
+    let mut folders = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("cannot read {}", folder.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("cannot inspect {}", entry.path().display()))?;
+        if file_type.is_dir() {
+            folders.push(entry.path());
+        }
+    }
+    folders.sort();
+    Ok(folders)
+}
+
+/// pnpm's metadata folders, each its own finding. Its `cacheDir` also holds
+/// the packages `pnpm dlx` installed, which a running `dlx` command loads, so
+/// the cache is never offered whole; anything pnpm does not name as metadata
+/// stays.
+fn pnpm_metadata_findings(home: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<Finding>> {
+    let cache = pnpm_cache(home);
+    let mut targets = Vec::new();
+    for child in real_subfolders(&cache)? {
+        let name = child.file_name().unwrap_or_default();
+        if is_pnpm_metadata_name(name, false) {
+            targets.push(child);
+        } else if is_pnpm_version_name(name) {
+            targets.extend(real_subfolders(&child)?.into_iter().filter(|folder| {
+                is_pnpm_metadata_name(folder.file_name().unwrap_or_default(), true)
+            }));
+        }
+    }
+    let mut findings = Vec::new();
+    for target in targets {
+        let size = measured(&target, unread);
+        if size.allocated == 0 {
+            continue;
+        }
+        let name = target
+            .strip_prefix(&cache)
+            .unwrap_or(&target)
+            .display()
+            .to_string();
+        let mut finding = cache_finding(&format!("pnpm metadata cache: {name}"), target, size, 3)
+            .with_authority(TargetAuthority::PnpmMetadata);
+        finding.note = "package metadata pnpm fetches again on next install; its `dlx` \
+                        installs stay, since a running `pnpm dlx` command loads them"
+            .to_string();
+        findings.push(finding);
+    }
+    Ok(findings)
+}
+
+/// The shape `pnpm_metadata_findings` offers a folder in, asked again at
+/// apply: a real directory named as metadata, directly in pnpm's cache or in a
+/// real `v<digits>` folder there.
+fn is_pnpm_metadata(target: &Path, home: &Path) -> Result<bool> {
+    let cache = pnpm_cache(home);
+    let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
+        return Ok(false);
+    };
+    let shaped = if parent == cache {
+        is_pnpm_metadata_name(name, false)
+    } else {
+        parent.parent() == Some(cache.as_path())
+            && parent.file_name().is_some_and(is_pnpm_version_name)
+            && is_pnpm_metadata_name(name, true)
+            && std::fs::symlink_metadata(parent)
+                .with_context(|| format!("cannot inspect {}", parent.display()))?
+                .is_dir()
+    };
+    Ok(shaped
+        && std::fs::symlink_metadata(target)
+            .with_context(|| format!("cannot inspect {}", target.display()))?
+            .is_dir())
+}
+
 /// A cache's size, or 0 with the cache recorded in `unread` when it cannot be
 /// measured: an unreadable folder, or a size that overflows. Only a cache that
 /// does not exist (`dir_measure` yields 0) is an ordinary empty one.
@@ -402,7 +571,11 @@ enum CacheKind {
     GoModules,
 }
 
-fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
+fn authorize_cache_finding(
+    finding: &Finding,
+    ctx: &Ctx,
+    installs: &InstallCaches,
+) -> Result<CacheKind> {
     let home = &ctx.home;
     let target = finding
         .target()
@@ -420,8 +593,13 @@ fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
         }
         TargetAuthority::Standard if is_gradle_cache(target, home)? => Some(CacheKind::Gradle),
         TargetAuthority::Standard => None,
-        TargetAuthority::NpmCache => {
-            is_eligible_owner_cache("npm", target, home).then_some(CacheKind::Plain)
+        TargetAuthority::NpmCacheStore => {
+            owner_cache_path("npm", &["config", "get", "cache"], NPM_QUIET, ctx)?
+                .is_some_and(|root| is_npm_store(target, &root))
+                .then_some(CacheKind::Plain)
+        }
+        TargetAuthority::PnpmMetadata => {
+            is_pnpm_metadata(target, home)?.then_some(CacheKind::Plain)
         }
         TargetAuthority::BrewCache => {
             is_eligible_owner_cache("brew", target, home).then_some(CacheKind::Plain)
@@ -430,12 +608,20 @@ fn authorize_cache_finding(finding: &Finding, ctx: &Ctx) -> Result<CacheKind> {
             is_brew_cache_entry(target, home)?.then_some(CacheKind::Plain)
         }
     };
-    kind.ok_or_else(|| {
+    let kind = kind.ok_or_else(|| {
         anyhow::anyhow!(
             "cache target is outside its authorized namespace: {}",
             target.display()
         )
-    })
+    })?;
+    if let Some(install) = installs.reached_by(target, finding.authority())? {
+        anyhow::bail!(
+            "refusing {}: it holds or lies inside {}, where npm or pnpm keep installs a running tool loads",
+            target.display(),
+            install.display()
+        );
+    }
+    Ok(kind)
 }
 
 /// A finding for a cache whose owner could not be asked: it offers nothing,
@@ -707,6 +893,91 @@ fn is_brew_cache_entry(target: &Path, home: &Path) -> Result<bool> {
     Ok(!(metadata.is_dir() && has_git_marker(target)?))
 }
 
+/// The folders where npm and pnpm keep installs a running tool loads (Mole
+/// I-11): npm's cache folder, which holds `_npx`, at both defaults and wherever
+/// `npm config get cache` reports it, even a root too unusual to offer from;
+/// and pnpm's cache, which holds `dlx`, at its macOS default and at
+/// `$XDG_CACHE_HOME/pnpm`, where pnpm moves it when that variable is set.
+/// pnpm's own `cache-dir` setting is not asked.
+struct InstallCaches {
+    npm: Vec<PathBuf>,
+    pnpm: Vec<PathBuf>,
+}
+
+impl InstallCaches {
+    fn new(home: &Path, npm_reported: Option<PathBuf>) -> Self {
+        let mut npm = vec![home.join(".npm"), home.join(".cache/npm")];
+        npm.extend(npm_reported);
+        let mut pnpm = vec![pnpm_cache(home)];
+        pnpm.extend(
+            std::env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .filter(|xdg| xdg.is_absolute())
+                .map(|xdg| xdg.join("pnpm")),
+        );
+        Self { npm, pnpm }
+    }
+
+    /// The install cache `target` reaches, if any: one it holds, or one it lies
+    /// inside that its own authority does not own (npm's store sits in npm's
+    /// cache folder, pnpm's metadata in pnpm's). Every cache authority is
+    /// judged by it, at scan and at apply. Folders are compared by device and
+    /// inode and each install cache through its real folder, so a case
+    /// spelling or a cache linked into another owner's folder is caught; one
+    /// that cannot be read refuses `target` rather than passing it.
+    fn reached_by(&self, target: &Path, authority: TargetAuthority) -> Result<Option<&Path>> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let identity =
+            |candidate: &Path| std::fs::metadata(candidate).map(|meta| (meta.dev(), meta.ino()));
+        let not_found = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
+        let target_id = match identity(target) {
+            Ok(id) => id,
+            Err(error) if not_found(&error) => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot inspect {}", target.display()));
+            }
+        };
+        let npm = self
+            .npm
+            .iter()
+            .map(|cache| (cache, authority == TargetAuthority::NpmCacheStore));
+        let pnpm = self
+            .pnpm
+            .iter()
+            .map(|cache| (cache, authority == TargetAuthority::PnpmMetadata));
+        for (cache, owned) in npm.chain(pnpm) {
+            let cache_id = match identity(cache) {
+                Ok(id) => id,
+                Err(error) if not_found(&error) => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("cannot inspect {}", cache.display()));
+                }
+            };
+            let real = std::fs::canonicalize(cache)
+                .with_context(|| format!("cannot resolve {}", cache.display()))?;
+            let holds = real
+                .ancestors()
+                .any(|folder| identity(folder).is_ok_and(|id| id == target_id));
+            let inside = !owned
+                && target
+                    .ancestors()
+                    .any(|folder| identity(folder).is_ok_and(|id| id == cache_id));
+            if holds || inside {
+                return Ok(Some(cache));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// npm's store is exactly `<root>/_cacache`, `root` being the cache folder npm
+/// reports: the one folder `npm cache clean --force` removes.
+fn is_npm_store(target: &Path, root: &Path) -> bool {
+    target.file_name() == Some(OsStr::new(NPM_STORE)) && target.parent() == Some(root)
+}
+
 fn is_builtin_cache_root(path: &Path, home: &Path) -> bool {
     CACHES.iter().any(|entry| path == home.join(entry.relative))
         || library_caches(home).any(|(_, candidate)| path == candidate)
@@ -760,6 +1031,14 @@ const NPM_QUIET: &[(&str, &str)] = &[
     ("npm_config_update_notifier", "false"),
 ];
 
+/// The cache folder npm reports, resolved but not yet judged: wherever it is,
+/// it holds npm's `_npx`.
+fn npm_reported_root(ctx: &Ctx) -> Result<Option<PathBuf>> {
+    command_path("npm", &["config", "get", "cache"], &ctx.home, NPM_QUIET)?
+        .map(|path| resolved_owner_path("npm", path))
+        .transpose()
+}
+
 fn owner_cache_path(
     program: &str,
     args: &[&str],
@@ -769,7 +1048,11 @@ fn owner_cache_path(
     let Some(path) = command_path(program, args, &ctx.home, envs)? else {
         return Ok(None);
     };
-    let path = resolved_owner_path(program, path)?;
+    eligible_owner_root(program, resolved_owner_path(program, path)?, ctx)
+}
+
+/// The reported root, when it lies in the owner's own cache namespace.
+fn eligible_owner_root(program: &str, path: PathBuf, ctx: &Ctx) -> Result<Option<PathBuf>> {
     if !is_eligible_owner_cache(program, &path, &ctx.home) {
         ctx.diagnostic(
             "warn",
@@ -869,7 +1152,7 @@ mod tests {
             9,
             Action::Shred,
         )
-        .with_authority(TargetAuthority::NpmCache);
+        .with_authority(TargetAuthority::NpmCacheStore);
         let ctx = Ctx {
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             ..Ctx::for_test(home.clone())
@@ -1143,6 +1426,154 @@ mod tests {
         assert_eq!(outcome.errors.len(), 1);
         assert!(sentinel.exists());
         crate::ops::remove_test_path(home);
+    }
+
+    /// Mole I-11: a running npx tool loads its packages from `_npx`, beside
+    /// the store, and from nowhere npm reports as its cache root.
+    #[test]
+    fn the_npm_store_is_only_the_reported_roots_cacache() {
+        let root = Path::new("/Users/u/.npm");
+        assert!(is_npm_store(&root.join("_cacache"), root));
+        assert!(
+            !is_npm_store(&root.join("_npx"), root),
+            "PV caches/npm-store-name: npx installs passed as npm's store"
+        );
+        for elsewhere in [
+            "/Users/u/.npm/_npx/9420/node_modules/pkg/_cacache",
+            "/Users/u/.cache/npm/_cacache",
+        ] {
+            assert!(
+                !is_npm_store(Path::new(elsewhere), root),
+                "PV caches/npm-store-root: {elsewhere} passed outside the reported root"
+            );
+        }
+    }
+
+    /// Mole I-11: a running `pnpm dlx` tool loads its packages from the cache,
+    /// so its install folder may not pass apply whatever authority a finding
+    /// claims, and neither may pnpm's cache whole.
+    #[test]
+    fn dlx_installs_are_refused_at_apply() {
+        let fixture = crate::ops::TestFixture::new("devtrim-cache-installs");
+        let home = fixture.path().to_path_buf();
+        let dlx = home.join("Library/Caches/pnpm/dlx/1e5f");
+        std::fs::create_dir_all(&dlx).unwrap();
+        std::fs::write(dlx.join("sentinel"), "keep").unwrap();
+        let home = home.canonicalize().unwrap();
+        let ctx = Ctx {
+            diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
+            ..Ctx::for_test(home.clone())
+        };
+        for (relative, authority, marker) in [
+            (
+                "Library/Caches/pnpm/dlx",
+                TargetAuthority::PnpmMetadata,
+                "PV caches/pnpm-metadata-name",
+            ),
+            (
+                "Library/Caches/pnpm",
+                TargetAuthority::Standard,
+                "the whole pnpm cache",
+            ),
+        ] {
+            let finding = Finding::new(
+                "forged",
+                Some(home.join(relative)),
+                4,
+                "test",
+                9,
+                Action::Shred,
+            )
+            .with_authority(authority);
+            let outcome = Caches.apply(&[finding], &ctx).unwrap();
+            assert_eq!(
+                outcome.summary.items_touched, 0,
+                "{marker}: {relative} was removed"
+            );
+        }
+        assert!(home.join("Library/Caches/pnpm/dlx/1e5f/sentinel").exists());
+        // The install-cache rule refuses the folder above on its own, so the
+        // carve-out's own shape is asserted directly: a scan never considers
+        // pnpm's cache as one built-in root.
+        assert!(
+            !is_builtin_cache_root(&home.join("Library/Caches/pnpm"), &home),
+            "PV caches/pnpm-whole: pnpm's cache is a built-in root"
+        );
+        crate::ops::remove_test_path(home);
+    }
+
+    /// Mole I-11, at apply: whatever authority a finding claims, a target
+    /// holding npm's or pnpm's cache folder, linked into it from the default
+    /// spelling, is refused, and the same finding passes once the install
+    /// cache lives elsewhere.
+    #[test]
+    fn a_target_holding_an_install_cache_is_refused_at_apply() {
+        // (target, its authority, the install cache's default spelling, the
+        // folder inside the target it is linked to)
+        let rows = [
+            (
+                ".cache/node/corepack",
+                TargetAuthority::Standard,
+                "Library/Caches/pnpm",
+                ".cache/node/corepack/pnpm",
+            ),
+            (
+                "Library/Caches/pip",
+                TargetAuthority::Standard,
+                "Library/Caches/pnpm",
+                "Library/Caches/pip/pnpm",
+            ),
+            (
+                "Library/Caches/pnpm/v11/metadata",
+                TargetAuthority::PnpmMetadata,
+                ".npm",
+                "Library/Caches/pnpm/v11/metadata/npm",
+            ),
+            (
+                "Library/Caches/Homebrew",
+                TargetAuthority::BrewCache,
+                "Library/Caches/pnpm",
+                "Library/Caches/Homebrew/pnpm",
+            ),
+            (
+                "Library/Caches/Homebrew/downloads",
+                TargetAuthority::BrewCacheEntry,
+                ".npm",
+                "Library/Caches/Homebrew/downloads/npm",
+            ),
+        ];
+        for (index, (target, authority, install, linked)) in rows.into_iter().enumerate() {
+            let fixture = crate::ops::TestFixture::new(&format!("devtrim-install-cache-{index}"));
+            std::fs::create_dir_all(fixture.path()).unwrap();
+            let home = fixture.path().canonicalize().unwrap();
+            std::fs::create_dir_all(home.join(linked).join("dlx/1e5f")).unwrap();
+            std::fs::create_dir_all(home.join("elsewhere")).unwrap();
+            std::fs::create_dir_all(home.join(install).parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(home.join(linked), home.join(install)).unwrap();
+            let ctx = Ctx::for_test(home.clone());
+            let finding = Finding::new(
+                "cache",
+                Some(home.join(target)),
+                4,
+                "test",
+                9,
+                Action::Trash,
+            )
+            .with_authority(authority);
+            let installs = InstallCaches::new(&home, None);
+
+            let refused = authorize_cache_finding(&finding, &ctx, &installs);
+            assert!(
+                refused.is_err(),
+                "PV caches/install-cache-apply: {target} holding {install} was authorized"
+            );
+            std::fs::remove_file(home.join(install)).unwrap();
+            std::os::unix::fs::symlink(home.join("elsewhere"), home.join(install)).unwrap();
+            assert!(
+                authorize_cache_finding(&finding, &ctx, &installs).is_ok(),
+                "{target} was refused with no install cache inside it"
+            );
+        }
     }
 
     /// REVIEW: once a stop is asked, a later uv finding must leave its target

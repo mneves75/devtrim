@@ -233,7 +233,12 @@ impl Action {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TargetAuthority {
     Standard,
-    NpmCache,
+    /// npm's package store, `<npm cache>/_cacache`: what `npm cache clean
+    /// --force` removes, never the npx installs beside it.
+    NpmCacheStore,
+    /// One of pnpm's metadata folders inside `~/Library/Caches/pnpm`, never
+    /// the `dlx` installs beside them.
+    PnpmMetadata,
     BrewCache,
     /// A direct child of the Homebrew cache, offered instead of the whole
     /// cache when a Git clone Homebrew keeps sits beside it.

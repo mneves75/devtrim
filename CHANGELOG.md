@@ -4,6 +4,49 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 
 ## [0.17.2] - 2026-11-26
 
+### Security
+- **Local Git hooks installation (`scripts/install-hooks.sh`):** stop pointing
+  `core.hooksPath` directly at the tracked `.githooks/` directory, where
+  checking out an untrusted branch could supply and execute hooks (such as
+  `post-checkout`) before review. `scripts/install-hooks.sh` copies the
+  reviewed `pre-commit` and `pre-push` hooks into `<git-common-dir>/hooks` and
+  replaces local `core.hooksPath` with that out-of-tree path. It reads the
+  hooks from local `main`'s commit, so running it on another branch still
+  installs the reviewed ones; `release-policy.sh`
+  and `eval_local_hooks_installer_keeps_hooks_outside_working_tree` enforce it.
+- **Confine Git discovery to the marker folder:** `hardened_git` now
+  canonicalizes each repository root and sets `GIT_CEILING_DIRECTORIES` to its
+  canonical parent (refusing a missing parent, and a parent whose path holds
+  `:`, which the colon-separated setting cannot name, with an error that says
+  so), so an empty
+  `.git` directory or dangling `.git` symlink can no longer let an ancestor
+  repository (including a stale dotfiles repository at `$HOME`) decide
+  staleness or tracked files for `node-modules`, `artifacts`, or `purge`
+  (planted `git/discovery-ceiling`).
+- **Configured `protect` covers `clean simulators`:** unavailable simulator
+  devices whose device folder (`~/Library/Developer/CoreSimulator/Devices/<UDID>`)
+  matches a configured `protect` entry are skipped during preview and refused
+  fail-closed at apply via `validate_config_protect_for_command` (revalidating
+  protect symlink aliases before invoking `xcrun simctl delete`, planted
+  `simulators/protect-scan`, `simulators/protect-apply`, `safety/cmd-protect`).
+- **Trash path encoding and filesystem guard:** `remove_path`'s Trash branch
+  now refuses non-UTF-8 paths and non-APFS/HFS filesystems before calling
+  `NSFileManager` (pointing operators to fd-anchored `--shred`), closing the
+  percent-encoding and normalization mismatch on byte-transparent mounts
+  (planted `trash/non-utf8-refused` covers the non-UTF-8 refusal; the
+  filesystem check has unit tests only).
+- **Execution-context principal guard:** `dirs_home` now refuses execution when
+  `euid != ruid`, when `egid != rgid`, or when canonical `$HOME` is owned by a
+  different UID than `euid` (such as `sudo` preserving `$HOME`; planted
+  `safety/exec-context` covers the `$HOME` owner check, unit tests the ID
+  checks). `load_config` requires a regular file of at most 1 MiB owned by the
+  user, or by root and writable by no group or other account (a Nix
+  home-manager link into `/nix/store` keeps working); journal parent creation verifies owner before
+  `fchmod(0o700)`; both rules have unit tests and no planted case.
+  `removable_now` checks `AtFlags::EACCESS`, which with real and effective IDs
+  now required equal behaves as the default does, so no test can tell them
+  apart.
+
 ### Changed
 - Build and release with Rust 1.100.0, the current stable release, in place
   of 1.98.1: `rust-toolchain.toml`, both hosted workflows, the pre-push hook,
@@ -13,6 +56,33 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
   `nightly-2026-08-25`, so each release fuzzes on a fresh compiler. Only
   fuzzing uses nightly; the shipped binary is still built by the pinned
   stable compiler.
+
+### Added
+- An incident ledger, `docs/incidents.md`: each defect met after commit, with
+  the check that now catches it. `scripts/tests/audit-incidents.py` runs in
+  `verify.sh` and CI and fails when a row's version or commit no longer
+  exists, or its catcher is no planted case and no test `cargo test` runs. Building it found that 0.11.0 had deleted the two tests
+  0.7.0 added for two of its fixes, unnoticed; the rows name the tests that
+  guard those fixes now.
+- A bounded model of the apply stop protocol (`journal::tests::stop_model`):
+  every plan of one to three attempts, with the stop before each step, through
+  the real `admit`, `begin` and `finish`. 0.15.0's bug, a stop between the
+  stop check and uv's lock leaving the lock unjournaled, is replayed as its
+  negative control, and planted mutants prove the model fails on it.
+
+### Fixed
+- `clean caches` no longer offers npm's whole cache folder. It offers
+  `_cacache`, what `npm cache clean --force` removes, and leaves `_npx`, whose
+  installs a running npx tool (an editor's language server, an MCP server)
+  loads from there. pnpm's cache is offered as its metadata folders, the ones
+  `pnpm cache delete` removes, never its `dlx` installs. Apply refuses the
+  whole folder, `_npx` and `dlx` whatever a finding claims, and asks npm for
+  its cache root again, refusing a `_cacache` anywhere but directly in it.
+  No cache under any authority (built-in, npm's store, pnpm's metadata,
+  Homebrew's, Gradle's or Go's) is offered or removed while it holds npm's
+  or pnpm's cache folder or lies inside one: at their default folders, where
+  `npm config get cache` reports, at `$XDG_CACHE_HOME/pnpm`, and through a
+  link (Mole I-11). pnpm's `cache-dir` setting is not asked.
 
 ## [0.17.1] - 2026-11-23
 

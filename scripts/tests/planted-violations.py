@@ -215,6 +215,96 @@ CASES = (
         marker="PV eval/gradle-authority", target="eval_safety",
     ),
     Case(
+        name="caches/install-cache-scan",
+        relative_path="src/ops/caches.rs",
+        # Without the scan's filter, a cache holding npm's or pnpm's cache
+        # folder is offered (apply still refuses it).
+        before="        findings.retain(|finding| {\n",
+        after="        findings.retain(|finding| true || {\n",
+        tests=("eval_no_cache_holds_an_install_cache",),
+        marker="PV eval/holds-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-apply",
+        relative_path="src/ops/caches.rs",
+        # Without apply's check, a finding whose target holds an install
+        # cache is authorized under every authority.
+        before="    if let Some(install) = installs.reached_by(target, finding.authority())? {\n",
+        after="    if let Some(install) = installs.reached_by(target, finding.authority())?.filter(|_| false) {\n",
+        tests=("ops::caches::tests::a_target_holding_an_install_cache_is_refused_at_apply",),
+        marker="PV caches/install-cache-apply",
+    ),
+    Case(
+        name="caches/install-cache-holder",
+        relative_path="src/ops/caches.rs",
+        # A cache holding pnpm's linked cache (Corepack's, pip's, Homebrew's)
+        # is offered, `dlx` inside it.
+        before="            if holds || inside {\n",
+        after="            if (holds && false) || inside {\n",
+        tests=("eval_no_cache_holds_an_install_cache",),
+        marker="PV eval/holds-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-inside",
+        relative_path="src/ops/caches.rs",
+        # A GOMODCACHE inside npm's or pnpm's cache, holding Go's layout, is
+        # offered and deleted as Go's: `_npx`, `dlx` or pnpm's cache whole.
+        before="            if holds || inside {\n",
+        after="            if holds || (inside && false) {\n",
+        tests=("eval_no_other_owner_claims_npm_or_pnpm_installs",),
+        marker="PV eval/go-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-identity",
+        relative_path="src/ops/caches.rs",
+        # Compared by spelling, npm's cache folder created as `~/.NPM` is
+        # not `~/.npm`, so a GOMODCACHE in it escapes; identity folds it.
+        before="                    .any(|folder| identity(folder).is_ok_and(|id| id == cache_id));\n",
+        after="                    .any(|folder| folder == cache.as_path() && identity(folder).is_ok_and(|id| id == cache_id));\n",
+        tests=("eval_no_other_owner_claims_npm_or_pnpm_installs",),
+        marker="PV eval/go-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-link",
+        relative_path="src/ops/caches.rs",
+        # Walking the spelled `~/.npm` instead of its real folder, a Go module
+        # cache holding npm's linked cache is offered whole.
+        before="            let holds = real\n",
+        after="            let holds = cache\n",
+        tests=("eval_a_linked_install_cache_keeps_its_holder",),
+        marker="PV eval/install-cache-link", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-reported",
+        relative_path="src/ops/caches.rs",
+        # Judging npm's default folders alone, a Go module cache holding the
+        # cache folder `npm config get cache` reports is offered.
+        before="        npm.extend(npm_reported);\n",
+        after="        npm.extend(npm_reported.filter(|_| false));\n",
+        tests=("eval_no_cache_holds_an_install_cache",),
+        marker="PV eval/holds-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-xdg",
+        relative_path="src/ops/caches.rs",
+        # Ignoring `XDG_CACHE_HOME`, a Go module cache holding pnpm's cache
+        # there is offered.
+        before="                .filter(|xdg| xdg.is_absolute())\n",
+        after="                .filter(|xdg| false && xdg.is_absolute())\n",
+        tests=("eval_no_cache_holds_an_install_cache",),
+        marker="PV eval/holds-install-cache", target="eval_safety",
+    ),
+    Case(
+        name="caches/install-cache-owned",
+        relative_path="src/ops/caches.rs",
+        # Denying npm's store its place inside npm's own cache folder, the
+        # store is never offered.
+        before="            .map(|cache| (cache, authority == TargetAuthority::NpmCacheStore));\n",
+        after="            .map(|cache| (cache, false));\n",
+        tests=("eval_no_cache_holds_an_install_cache",),
+        marker="PV eval/owned-install-cache", target="eval_safety",
+    ),
+    Case(
         name="caches/gradle-layout",
         relative_path="src/ops/caches.rs",
         # A folder that only shares Gradle's name is judged Gradle's cache.
@@ -2156,6 +2246,60 @@ CASES = (
         marker="PV caches/unreadable-cache",
         target="cli",
     ),
+    # 0.18.0: npm and pnpm offer only what their own clean commands remove
+    # (Mole I-11); a running npx or `pnpm dlx` tool loads the installs beside it.
+    Case(
+        name="caches/npm-store-name",
+        relative_path="src/ops/caches.rs",
+        before="    target.file_name() == Some(OsStr::new(NPM_STORE)) && target.parent() == Some(root)\n",
+        after="    target.parent() == Some(root)\n",
+        tests=("ops::caches::tests::the_npm_store_is_only_the_reported_roots_cacache",),
+        marker="PV caches/npm-store-name",
+    ),
+    Case(
+        name="caches/npm-store-root",
+        relative_path="src/ops/caches.rs",
+        before="    target.file_name() == Some(OsStr::new(NPM_STORE)) && target.parent() == Some(root)\n",
+        after="    target.file_name() == Some(OsStr::new(NPM_STORE)) && !root.as_os_str().is_empty()\n",
+        tests=("ops::caches::tests::the_npm_store_is_only_the_reported_roots_cacache",),
+        marker="PV caches/npm-store-root",
+    ),
+    Case(
+        name="eval/caches-npm-root",
+        relative_path="src/ops/caches.rs",
+        # Apply trusts the root the preview saw instead of asking npm again.
+        before="                .is_some_and(|root| is_npm_store(target, &root))\n",
+        after="                .is_some_and(|_| target.parent().is_some_and(|root| is_npm_store(target, root)))\n",
+        tests=("eval_clean_caches_refuses_a_store_npm_no_longer_reports",),
+        marker="PV eval/caches-npm-root",
+        target="evals",
+    ),
+    Case(
+        name="caches/pnpm-legacy-version",
+        relative_path="src/ops/caches.rs",
+        # `metadata-v.` and `metadata-v1..3` pass as legacy metadata names.
+        before="                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))\n",
+        after="                .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))\n",
+        tests=("eval_clean_caches_removes_every_listed_cache_and_nothing_else",),
+        marker="PV eval/caches-plan",
+        target="evals",
+    ),
+    Case(
+        name="caches/pnpm-metadata-name",
+        relative_path="src/ops/caches.rs",
+        before="    let shaped = if parent == cache {\n        is_pnpm_metadata_name(name, false)\n",
+        after="    let shaped = if parent == cache {\n        true\n",
+        tests=("ops::caches::tests::dlx_installs_are_refused_at_apply",),
+        marker="PV caches/pnpm-metadata-name",
+    ),
+    Case(
+        name="caches/pnpm-whole",
+        relative_path="src/ops/caches.rs",
+        before="        .filter(|entry| entry.relative != crate::safety::PNPM_CACHE)\n",
+        after="",
+        tests=("ops::caches::tests::dlx_installs_are_refused_at_apply",),
+        marker="PV caches/pnpm-whole",
+    ),
     Case(
         name="liveness/agent-processes",
         relative_path="src/safety.rs",
@@ -2278,16 +2422,6 @@ CASES = (
         tests=("ops::caches::tests::a_stopped_apply_creates_nothing_in_the_uv_cache",),
         marker="PV journal-stop/uv-lock",
     ),
-    # The admission is ignored at begin: a stop arriving after uv's lock was
-    # created refuses the attempt, leaving the lock file unjournaled.
-    Case(
-        name="journal-stop/admitted-begin",
-        relative_path="src/journal.rs",
-        before="    if !admitted {\n        refuse_if_stopped(ctx)?;\n    }\n",
-        after="    let _ = admitted;\n    refuse_if_stopped(ctx)?;\n",
-        tests=("journal::tests::an_admitted_attempt_survives_a_later_stop_and_only_once",),
-        marker="PV journal-stop/admitted-begin",
-    ),
     # An admission dropped before begin keeps admitting: an attempt after a
     # failed uv preparation would pass a stop.
     Case(
@@ -2295,8 +2429,96 @@ CASES = (
         relative_path="src/journal.rs",
         before="            monitor.admitted.store(false, Ordering::SeqCst);\n",
         after="",
-        tests=("journal::tests::an_admitted_attempt_survives_a_later_stop_and_only_once",),
-        marker="PV journal-stop/dropped-admission",
+        tests=("journal::tests::stop_model::the_stop_protocol_holds_in_every_bounded_interleaving",),
+        marker="PV journal-stop/model",
+    ),
+    # begin reads the admission without taking it: a second begin under the
+    # same admission passes the stop.
+    Case(
+        name="journal-stop/one-admission",
+        relative_path="src/journal.rs",
+        before="monitor.admitted.swap(false, Ordering::SeqCst)",
+        after="monitor.admitted.load(Ordering::SeqCst)",
+        tests=("journal::tests::one_admission_lets_one_attempt_past_a_stop",),
+        marker="PV journal-stop/one-admission",
+    ),
+    # The bounded stop model replays D-07: cf7962b's mutation must break it.
+    Case(
+        name="journal-stop/model",
+        relative_path="src/journal.rs",
+        before="    if !admitted {\n        refuse_if_stopped(ctx)?;\n    }\n",
+        after="    let _ = admitted;\n    refuse_if_stopped(ctx)?;\n",
+        tests=("journal::tests::stop_model::the_stop_protocol_holds_in_every_bounded_interleaving",),
+        marker="PV journal-stop/model",
+    ),
+    # An admission granted after the stop lets uv's lock and its attempt past it.
+    Case(
+        name="journal-stop/model-admit",
+        relative_path="src/journal.rs",
+        before="    refuse_if_stopped(ctx)?;\n    let monitor = ctx.apply_monitor();\n",
+        after="    let monitor = ctx.apply_monitor();\n",
+        tests=("journal::tests::stop_model::the_stop_protocol_holds_in_every_bounded_interleaving",),
+        marker="PV journal-stop/model",
+    ),
+    # Removing GIT_CEILING_DIRECTORIES lets an invalid .git marker escape upward
+    # into an ancestor repository (such as a stale dotfiles repo at HOME).
+    Case(
+        name="git/discovery-ceiling",
+        relative_path="src/ops/project.rs",
+        before='        .env("GIT_CEILING_DIRECTORIES", ceiling)\n',
+        after='        .env_remove("GIT_CEILING_DIRECTORIES")\n',
+        tests=("ops::project::tests::invalid_git_marker_never_escapes_to_ancestor_repo",),
+        marker="PV git/discovery-ceiling",
+    ),
+    # Skipping the configured protect check in simulator scanning offers a
+    # simulator device the operator explicitly protected.
+    Case(
+        name="simulators/protect-scan",
+        relative_path="src/ops/simulators.rs",
+        before="        if protected {\n",
+        after="        if false {\n",
+        tests=("ops::simulators::tests::configured_protect_skips_preview_and_refuses_apply_for_simulator_device",),
+        marker="PV simulators/protect-scan",
+    ),
+    # Skipping the configured protect recheck in Simulators::apply lets a
+    # protected device reach `xcrun simctl delete`.
+    Case(
+        name="simulators/protect-apply",
+        relative_path="src/ops/simulators.rs",
+        before="                crate::safety::validate_config_protect_for_command(&device, &ctx.protect)?;\n",
+        after="                let _ = (&device, &ctx.protect);\n",
+        tests=("ops::simulators::tests::configured_protect_skips_preview_and_refuses_apply_for_simulator_device",),
+        marker="PV simulators/protect-apply",
+    ),
+    # Dropping the alias revalidation in validate_config_protect_for_command
+    # lets a changed protect symlink alias pass simulator apply.
+    Case(
+        name="safety/cmd-protect",
+        relative_path="src/safety.rs",
+        before="    if configured_protect_values(protect).is_empty() {\n        return Ok(());\n    }\n    revalidate_configured_protect_aliases(protect)?;\n",
+        after="    if configured_protect_values(protect).is_empty() {\n        return Ok(());\n    }\n",
+        tests=("safety::tests::validate_config_protect_for_command_rejects_protected_and_changed_alias",),
+        marker="PV safety/cmd-protect",
+    ),
+    # Dropping the non-UTF-8 guard in remove_path lets a non-UTF-8 target reach
+    # the macOS Trash crate, which percent-encodes invalid bytes into a literal path.
+    Case(
+        name="trash/non-utf8-refused",
+        relative_path="src/ops/mod.rs",
+        before="    if !permanent && path.to_str().is_none() {\n",
+        after="    if false {\n",
+        tests=("ops::tests::trash_refuses_non_utf8_target_before_calling_trash_crate",),
+        marker="PV trash/non-utf8-refused",
+    ),
+    # Dropping the HOME-owner check lets execution under a mismatched euid
+    # (such as sudo preserving HOME) act as a confused deputy.
+    Case(
+        name="safety/exec-context",
+        relative_path="src/safety.rs",
+        before="    if home_uid != euid {\n",
+        after="    if false {\n",
+        tests=("safety::tests::verify_execution_identity_rejects_euid_or_home_owner_mismatch",),
+        marker="PV safety/exec-context",
     ),
 )
 

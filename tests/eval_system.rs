@@ -1419,6 +1419,46 @@ fn eval_simulators_apply_refuses_a_device_that_changed_after_preview() {
     }
 }
 
+/// Configured `protect` entries cover simulator device folders too: a protected
+/// unavailable device is omitted from preview and never reaches `simctl delete`.
+#[test]
+fn eval_simulators_respect_configured_protect() {
+    let sandbox = Sandbox::in_target("eval-simulators-protect");
+    let devices = simulator_devices(&sandbox);
+    let list = simctl_list(&[(GONE_ONE, false), (GONE_TWO, false)]);
+    simulator_stub(&sandbox, &list, &list);
+    write(
+        &sandbox.path().join(".config/devtrim.toml"),
+        &format!("protect = [\"~/Library/Developer/CoreSimulator/Devices/{GONE_ONE}\"]\n"),
+    );
+
+    let preview = run(&sandbox, &["clean", "simulators", "--json"]);
+    let preview_doc = json(&preview);
+    assert!(preview.status.success(), "{preview_doc}");
+    assert_eq!(
+        command_plan(&preview_doc),
+        vec![argv(&["xcrun", "simctl", "delete", GONE_TWO])],
+        "protected simulator must be omitted from preview: {preview_doc}"
+    );
+
+    let apply = run(
+        &sandbox,
+        &["clean", "simulators", "--apply", "-y", "--json"],
+    );
+    let apply_doc = json(&apply);
+    assert!(apply.status.success(), "{apply_doc}");
+    let executed = calls(&sandbox);
+    assert!(
+        !executed.contains(&argv(&["xcrun", "simctl", "delete", GONE_ONE])),
+        "protected simulator reached simctl delete: {executed:?}"
+    );
+    assert!(
+        executed.contains(&argv(&["xcrun", "simctl", "delete", GONE_TWO])),
+        "positive control: unprotected simulator must still delete: {executed:?}"
+    );
+    assert!(devices.join(GONE_ONE).exists());
+}
+
 /// A Mac with the Command Line Tools but no Xcode has no `simctl`, and one with
 /// no developer tools has no developer directory; Apple's `xcrun` shim answers
 /// each with its own error. Those two answers mean nothing to manage, not a

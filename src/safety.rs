@@ -494,12 +494,53 @@ pub(crate) fn roots_note(roots: &[PathBuf], origin: RootsOrigin, home: &Path) ->
     }
 }
 
+fn verify_execution_identity(
+    ruid: u32,
+    euid: u32,
+    rgid: u32,
+    egid: u32,
+    home_uid: u32,
+    canonical_home: &Path,
+) -> Result<()> {
+    if ruid != euid {
+        bail!("refusing to run with effective UID {euid} different from real UID {ruid}");
+    }
+    if rgid != egid {
+        bail!("refusing to run with effective GID {egid} different from real GID {rgid}");
+    }
+    if home_uid != euid {
+        bail!(
+            "refusing to run as UID {euid} when $HOME ({}) is owned by UID {home_uid} \
+             (do not run devtrim under sudo with a preserved HOME)",
+            canonical_home.display()
+        );
+    }
+    Ok(())
+}
+
 fn dirs_home() -> Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
     let home = std::env::var("HOME")
         .map(PathBuf::from)
         .map_err(|_| anyhow::anyhow!("$HOME not set"))?;
-    home.canonicalize()
-        .with_context(|| format!("cannot resolve $HOME: {}", home.display()))
+    let canonical = home
+        .canonicalize()
+        .with_context(|| format!("cannot resolve $HOME: {}", home.display()))?;
+    let home_metadata = std::fs::metadata(&canonical)
+        .with_context(|| format!("cannot inspect $HOME: {}", canonical.display()))?;
+    if !home_metadata.is_dir() {
+        bail!("$HOME is not a directory: {}", canonical.display());
+    }
+    verify_execution_identity(
+        rustix::process::getuid().as_raw(),
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getgid().as_raw(),
+        rustix::process::getegid().as_raw(),
+        home_metadata.uid(),
+        &canonical,
+    )?;
+    Ok(canonical)
 }
 
 /// `~` is the home folder and `~/rest` a path inside it, as a shell reads
@@ -524,13 +565,90 @@ pub(crate) struct FileCfg {
     codex_homes: Option<Vec<String>>,
 }
 
+const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
+
+/// A config owned by the current user or by root: root can already change
+/// anything this user runs, and Nix home-manager links `~/.config/devtrim.toml`
+/// to a root-owned file in `/nix/store`. Any other owner could steer cleanup.
+fn config_owner_trusted(owner: u32, euid: u32) -> bool {
+    owner == euid || owner == 0
+}
+
+/// A root-owned config is trusted only while no group or other account can
+/// write it; `/nix/store` files are read-only.
+fn config_writable_by_others(owner: u32, mode: u32, euid: u32) -> bool {
+    owner != euid && mode & 0o022 != 0
+}
+
 fn load_config(path: &Path) -> Result<FileCfg> {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => parse_config_str(&contents)
-            .with_context(|| format!("invalid config: {}", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileCfg::default()),
-        Err(error) => Err(error).with_context(|| format!("cannot read config: {}", path.display())),
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+
+    let euid = rustix::process::geteuid().as_raw();
+    let link_meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(FileCfg::default()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot inspect config: {}", path.display()));
+        }
+    };
+    if !config_owner_trusted(link_meta.uid(), euid) {
+        bail!(
+            "refusing config owned by UID {} (expected {euid} or root): {}",
+            link_meta.uid(),
+            path.display()
+        );
     }
+    let descriptor = match rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::NOCTTY
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT) => return Ok(FileCfg::default()),
+        Err(error) => {
+            return Err(std::io::Error::from(error))
+                .with_context(|| format!("cannot read config: {}", path.display()));
+        }
+    };
+    let stat = rustix::fs::fstat(&descriptor)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot inspect config: {}", path.display()))?;
+    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
+        bail!("refusing non-regular config: {}", path.display());
+    }
+    if !config_owner_trusted(stat.st_uid, euid) {
+        bail!(
+            "refusing config owned by UID {} (expected {euid} or root): {}",
+            stat.st_uid,
+            path.display()
+        );
+    }
+    if config_writable_by_others(stat.st_uid, u32::from(stat.st_mode), euid) {
+        bail!(
+            "refusing root-owned config that its group or others can write: {}",
+            path.display()
+        );
+    }
+    let mut file = std::fs::File::from(descriptor);
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(CONFIG_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("cannot read config: {}", path.display()))?;
+    if bytes.len() as u64 > CONFIG_MAX_BYTES {
+        bail!(
+            "config exceeds {CONFIG_MAX_BYTES} bytes: {}",
+            path.display()
+        );
+    }
+    let contents = String::from_utf8(bytes)
+        .with_context(|| format!("config is not valid UTF-8: {}", path.display()))?;
+    parse_config_str(&contents).with_context(|| format!("invalid config: {}", path.display()))
 }
 
 pub(crate) fn parse_config_str(contents: &str) -> Result<FileCfg> {
@@ -924,6 +1042,54 @@ pub(crate) fn validate_path_for_deletion(
     })
 }
 
+/// Fail-closed configured `protect` check for typed command authorities (such as
+/// `clean simulators`) whose underlying data folder lies under a built-in
+/// protected root like `~/Library` and therefore does not pass through
+/// [`validate_path_for_deletion`].
+pub(crate) fn validate_config_protect_for_command(path: &Path, protect: &[PathBuf]) -> Result<()> {
+    if configured_protect_values(protect).is_empty() {
+        return Ok(());
+    }
+    revalidate_configured_protect_aliases(protect)?;
+    let literal = abs(path);
+    if is_config_protected_abs(&literal, protect) {
+        bail!("refusing configured protected path: {}", literal.display());
+    }
+    let parent = literal
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("refusing path without parent: {}", literal.display()))?;
+    let leaf = literal
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("refusing path without leaf: {}", literal.display()))?;
+    let resolved_parent = parent
+        .canonicalize()
+        .with_context(|| format!("cannot verify parent: {}", parent.display()))?;
+    let resolved = clean(&resolved_parent.join(leaf));
+    if is_config_protected_abs(&resolved, protect) {
+        bail!(
+            "refusing configured protected resolved path: {}",
+            resolved.display()
+        );
+    }
+    match resolved.canonicalize() {
+        Ok(canonical_leaf) => {
+            let canonical_leaf = clean(&canonical_leaf);
+            if is_config_protected_abs(&canonical_leaf, protect) {
+                bail!(
+                    "refusing configured protected resolved path: {}",
+                    canonical_leaf.display()
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot verify target: {}", resolved.display()));
+        }
+    }
+    Ok(())
+}
+
 fn revalidate_configured_protect_aliases(protect: &[PathBuf]) -> Result<()> {
     if protect.first().map(PathBuf::as_path) != Some(Path::new(CONFIG_PROTECT_SNAPSHOT_MARKER)) {
         return Ok(());
@@ -1248,6 +1414,9 @@ const _: () = assert!(
     "every managed Library cache needs evidence for why it may be deleted"
 );
 
+/// pnpm's `cacheDir` below `~/Library/Caches`, offered only as its metadata.
+pub(crate) const PNPM_CACHE: &str = "pnpm";
+
 /// Exact `~/Library/Caches` subdirectories devtrim manages, each a
 /// [`DeletionEntry`] whose `relative` is the directory name.
 ///
@@ -1309,10 +1478,17 @@ pub(crate) const MANAGED_LIBRARY_CACHES: &[DeletionEntry] = &[
     },
     DeletionEntry {
         label: "pnpm metadata cache",
-        relative: "pnpm",
-        evidence: "pnpm's `cacheDir` (metadata and dlx). Deliberately NOT the \
-                   content-addressable store at `~/Library/pnpm/store`, which \
-                   every installed `node_modules` hard-links into.",
+        relative: PNPM_CACHE,
+        evidence: "pnpm's `cacheDir`. Carved out of protection whole, so \
+                   `caches` alone keeps it to its metadata folders, at scan \
+                   and at apply (`ops::caches`): pnpm \
+                   11.27.0 names them `v11/metadata`, `v11/metadata-full` and \
+                   `v11/metadata-full-filtered` (`metadata-v1.3`, \
+                   `metadata-full-v1.3`, `metadata-ff-v1.3` before), and its own \
+                   `pnpm cache delete` removes only metadata. Its `dlx` installs, \
+                   which a running `pnpm dlx` command loads, stay. Deliberately \
+                   NOT the content-addressable store at `~/Library/pnpm/store`, \
+                   which every installed `node_modules` hard-links into.",
     },
     // `Caches/gh` is deliberately absent, and it is the reason this field
     // exists. It shipped in 0.9.1 and 0.9.2 on the strength of its name: go-gh
@@ -4278,6 +4454,147 @@ mod tests {
         assert!(
             matches!(denied, Err(BulkWalkError::Failed(_))),
             "unreadable subdirectory must fail closed"
+        );
+    }
+
+    #[test]
+    fn verify_execution_identity_rejects_euid_or_home_owner_mismatch() {
+        let home = Path::new("/Users/alice");
+        assert!(verify_execution_identity(501, 501, 20, 20, 501, home).is_ok());
+        assert!(
+            verify_execution_identity(501, 0, 20, 20, 501, home).is_err(),
+            "PV safety/exec-context: setuid ruid != euid must be refused"
+        );
+        assert!(
+            verify_execution_identity(501, 501, 20, 0, 501, home).is_err(),
+            "PV safety/exec-context: setgid rgid != egid must be refused"
+        );
+        assert!(
+            verify_execution_identity(0, 0, 0, 0, 501, home).is_err(),
+            "PV safety/exec-context: sudo HOME owner != euid must be refused"
+        );
+    }
+
+    #[test]
+    fn config_owner_is_the_user_or_root() {
+        assert!(
+            config_owner_trusted(501, 501),
+            "the user's own config loads"
+        );
+        assert!(
+            config_owner_trusted(0, 501),
+            "a root-owned config (a /nix/store link target) loads"
+        );
+        assert!(
+            !config_owner_trusted(502, 501),
+            "another user's config is refused"
+        );
+        assert!(
+            !config_writable_by_others(0, 0o100444, 501),
+            "a read-only root-owned config loads"
+        );
+        assert!(
+            config_writable_by_others(0, 0o100664, 501)
+                && config_writable_by_others(0, 0o100646, 501),
+            "a root-owned config its group or others can write is refused"
+        );
+    }
+
+    #[test]
+    fn load_config_rejects_non_regular_and_oversized_files() {
+        let fixture = crate::ops::TestFixture::new("devtrim-config-hardening");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+
+        // Positive control: owned regular file and owned symlink both load.
+        let valid = root.join("valid.toml");
+        std::fs::write(&valid, "active_days = 14\n").unwrap();
+        assert_eq!(load_config(&valid).unwrap().active_days, Some(14));
+        let link = root.join("link.toml");
+        std::os::unix::fs::symlink(&valid, &link).unwrap();
+        assert_eq!(load_config(&link).unwrap().active_days, Some(14));
+
+        // Directory is refused as non-regular.
+        let directory = root.join("dir.toml");
+        std::fs::create_dir(&directory).unwrap();
+        let Err(dir_error) = load_config(&directory) else {
+            panic!("directory config must be refused");
+        };
+        assert!(
+            dir_error.to_string().contains("non-regular"),
+            "directory config refused for unexpected reason: {dir_error:#}"
+        );
+
+        // Oversized file (> 1 MiB) is refused.
+        let oversized = root.join("huge.toml");
+        std::fs::write(&oversized, vec![b'#'; (CONFIG_MAX_BYTES + 16) as usize]).unwrap();
+        let Err(size_error) = load_config(&oversized) else {
+            panic!("oversized config must be refused");
+        };
+        assert!(
+            size_error.to_string().contains("exceeds"),
+            "oversized config refused for unexpected reason: {size_error:#}"
+        );
+
+        // FIFO must fail closed immediately without blocking (O_NONBLOCK).
+        let fifo = root.join("fifo.toml");
+        let status = std::process::Command::new("/usr/bin/mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo failed");
+        assert!(
+            load_config(&fifo).is_err(),
+            "FIFO config must fail closed without blocking"
+        );
+    }
+
+    #[test]
+    fn validate_config_protect_for_command_rejects_protected_and_changed_alias() {
+        let fixture = crate::ops::TestFixture::new("devtrim-cmd-protect");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let devices = home.join("Library/Developer/CoreSimulator/Devices");
+        let dev_a = devices.join("11111111-2222-3333-4444-555555555555");
+        let dev_b = devices.join("66666666-7777-8888-9999-aaaaaaaaaaaa");
+        std::fs::create_dir_all(&dev_a).unwrap();
+        std::fs::create_dir_all(&dev_b).unwrap();
+
+        // Empty protect allows any device.
+        assert!(validate_config_protect_for_command(&dev_a, &[]).is_ok());
+
+        // Configured protect refuses matching device and allows sibling.
+        let (protect, _) = configured_protect(vec![dev_a.display().to_string()], &home).unwrap();
+        assert!(
+            validate_config_protect_for_command(&dev_a, &protect).is_err(),
+            "PV safety/cmd-protect: protected device must fail closed"
+        );
+        assert!(validate_config_protect_for_command(&dev_b, &protect).is_ok());
+
+        // A symlink loop at the device path must fail closed (never swallow ELOOP).
+        let loop_a = devices.join("loop-a");
+        let loop_b = devices.join("loop-b");
+        std::os::unix::fs::symlink(&loop_b, &loop_a).unwrap();
+        std::os::unix::fs::symlink(&loop_a, &loop_b).unwrap();
+        assert!(
+            validate_config_protect_for_command(&loop_a, &protect).is_err(),
+            "symlink loop at simulator device must fail closed"
+        );
+
+        // A changed symlink alias in protect refuses even an unrelated device.
+        let target_one = home.join("alias-one");
+        let target_two = home.join("alias-two");
+        std::fs::create_dir_all(&target_one).unwrap();
+        std::fs::create_dir_all(&target_two).unwrap();
+        let alias = home.join("protect-link");
+        std::os::unix::fs::symlink(&target_one, &alias).unwrap();
+        let (aliased_protect, _) =
+            configured_protect(vec![alias.display().to_string()], &home).unwrap();
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&target_two, &alias).unwrap();
+        assert!(
+            validate_config_protect_for_command(&dev_b, &aliased_protect).is_err(),
+            "PV safety/cmd-protect: changed protect alias must fail closed"
         );
     }
 }

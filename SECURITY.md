@@ -423,7 +423,35 @@ Non-negotiable boundaries:
 - User-configured `protect` paths are refused at the deletion sink (literal and
   resolved, ASCII-case-insensitive and Unicode-normalization-insensitive, so
   NFC config text still protects NFD on-disk names) and filtered from previews;
-  malformed entries are a configuration error and unresolved entries warn.
+  `clean simulators` enforces configured `protect` on each simulator device
+  folder at scan and fail-closed at apply (revalidating protect symlink aliases
+  before issuing `xcrun simctl delete`); malformed entries are a configuration
+  error and unresolved entries warn.
+- `hardened_git` canonicalizes each repository root and sets
+  `GIT_CEILING_DIRECTORIES` to its canonical parent (refusing if the parent
+  contains `:` or cannot be determined), so an invalid `.git` marker never lets
+  Git walk upward into an ancestor repository (such as a dotfiles repository at
+  HOME). `GIT_CEILING_DIRECTORIES` is colon-separated, so a repository whose
+  parent path holds `:` (Finder's spelling of a `/` in a folder name) is
+  refused with an error naming the colon and is never judged.
+- `dirs_home` refuses execution when `euid != ruid`, when `egid != rgid`, or
+  when the canonical `$HOME` directory is owned by a different UID than `euid`
+  (such as `sudo` preserving `$HOME`). `load_config` requires the config file
+  (and any symlink to it) to be a regular file owned by `euid` or by root (root
+  can already change anything this user runs; Nix home-manager links it into a
+  root-owned `/nix/store`) and, when root owns it, writable by no group or
+  other account, bounded to 1 MiB. Journal directory creation
+  verifies parent ownership before `fchmod(0o700)`, and `removable_now` checks
+  `accessat(..., AtFlags::EACCESS)`. Planted `safety/exec-context` proves the
+  `$HOME` owner check; the ID checks have unit tests; the config owner rule and the journal parent rule have unit
+  tests and no planted case. With real and effective IDs required equal,
+  `EACCESS` behaves as the default does, so `removable_now` has no test that
+  could tell them apart.
+- The Trash move path in `remove_path` refuses non-UTF-8 target paths and
+  non-APFS/HFS filesystems before calling `NSFileManager` (directing operators
+  to fd-anchored `--shred`), preventing the `trash` crate's percent-encoding of
+  invalid UTF-8 bytes or Foundation NFC/NFD decomposition from addressing a
+  sibling path on a foreign mount.
 - Every deletion and typed command is journaled write-ahead (attempt
   before, result after) to a mode-0600 file in a mode-0700 state directory,
   with every path component opened without following symlinks. Each complete
@@ -468,7 +496,7 @@ Non-negotiable boundaries:
 - The TUI accepts no CLI confirmation bypass. It runs each scan and apply on a worker thread and drops every key typed meanwhile except a quit, then discards input still queued when the result is drawn, so type-ahead cannot approve a plan that was never displayed. Its internal approval must match the current preview and danger requirement; permanent actions use typed size confirmation, Trash purge uses `PURGE <gb>`, and undersized terminals cannot submit hidden confirmations.
 - TUI selection can only narrow a plan. The approved plan is the displayed findings minus those the operator left out; danger and the typed confirmation are computed over that subset, the confirmation states how many findings it covers and how many were left out, and a selection change invalidates an earlier approval. Read-only results and non-actionable rows cannot be selected. Each row shows the action and danger the current Trash or permanent mode gives it, through the same policy the plan uses.
 - `purge` adds no deletion authority. It is the `node-modules` and `artifacts` scanners in one plan, and each finding is applied by its own category, which reasserts its exact target shape, staleness and build liveness; a finding routed to the other category is refused.
-- Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time. The Go module cache `go env GOMODCACHE` reports (asked with `GOTOOLCHAIN=local`, so no toolchain is downloaded) must lie inside the home folder and hold Go's `cache/download`, and `go` is asked again at apply. Go keeps the cache read-only, so a permanent removal is refused before anything changes when any folder in it is read-only, and a move to the Trash when the cache folder itself is. Gradle's `caches` and `wrapper/dists` under `GRADLE_USER_HOME` (default `~/.gradle`, resolved through any link), which must be absolute and inside the home folder, are refused at scan and at each apply while a Gradle process runs (`pgrep -a -f` for the daemon, a daemon-less build and the Wrapper); a probe that fails refuses them.
+- Owner-reported cache roots are limited to the reporting program's exact namespace and revalidated at apply time. The Go module cache `go env GOMODCACHE` reports (asked with `GOTOOLCHAIN=local`, so no toolchain is downloaded) must lie inside the home folder and hold Go's `cache/download`, and `go` is asked again at apply. Go keeps the cache read-only, so a permanent removal is refused before anything changes when any folder in it is read-only, and a move to the Trash when the cache folder itself is. Gradle's `caches` and `wrapper/dists` under `GRADLE_USER_HOME` (default `~/.gradle`, resolved through any link), which must be absolute and inside the home folder, are refused at scan and at each apply while a Gradle process runs (`pgrep -a -f` for the daemon, a daemon-less build and the Wrapper); a probe that fails refuses them. No cache target, under any authority, may hold npm's or pnpm's cache folder or lie inside one its own authority does not own, judged at scan and again at apply by device and inode through each folder's real path, at the default folders, npm's reported root and `$XDG_CACHE_HOME/pnpm`; pnpm's `cache-dir` setting is not asked.
 - Hugging Face cleanup is limited to `~/.cache/huggingface/hub`. Its parent contains authentication and other state and is never an authorized built-in cache target. A real-binary regression requires model data to be removed while synthetic tokens and settings survive.
 - Complete human-facing actions, findings, errors, outcome notes, and command-line parse errors (which quote argv) escape control and bidirectional-control characters before rendering; internal paths remain typed `PathBuf` values and JSON retains its original data.
 - Failed or partial work returns nonzero; successful earlier actions remain visible in the summary.

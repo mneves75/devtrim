@@ -568,6 +568,12 @@ fn remove_path(
 ) -> Result<Option<crate::journal::EntryChanged>> {
     let target_trash_entry = target.required_trash_entry();
     let (path, markers) = target.into_parts();
+    if !permanent && path.to_str().is_none() {
+        anyhow::bail!(
+            "refusing Trash move for non-UTF-8 path {}: macOS Trash re-encodes non-UTF-8 bytes; use --shred for descriptor-anchored permanent removal",
+            path.display()
+        );
+    }
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("refusing target without parent: {}", path.display()))?;
@@ -644,6 +650,13 @@ fn remove_path(
         if final_identity != expected {
             anyhow::bail!(
                 "target identity changed during Trash preflight: {}",
+                path.display()
+            );
+        }
+        #[cfg(target_os = "macos")]
+        if !on_apple_fs(&dir) {
+            anyhow::bail!(
+                "refusing Trash move for {} on a non-APFS/HFS filesystem: use --shred for descriptor-anchored permanent removal",
                 path.display()
             );
         }
@@ -941,6 +954,23 @@ fn entry_changed_of(stat: &rustix::fs::Stat) -> Option<crate::journal::EntryChan
     })
 }
 
+fn is_apple_fs_name(name: &[u8]) -> bool {
+    name == b"apfs" || name == b"hfs"
+}
+
+#[cfg(target_os = "macos")]
+fn on_apple_fs(dir: &cap_std::fs::Dir) -> bool {
+    rustix::fs::fstatfs(dir).is_ok_and(|statfs| {
+        let name = statfs
+            .f_fstypename
+            .iter()
+            .take_while(|byte| **byte != 0)
+            .map(|byte| *byte as u8)
+            .collect::<Vec<_>>();
+        is_apple_fs_name(&name)
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn on_apfs(fd: &rustix::fd::OwnedFd) -> bool {
     rustix::fs::fstatfs(fd).is_ok_and(|statfs| {
@@ -1202,7 +1232,7 @@ fn removable_now(dir: &cap_std::fs::Dir, path: &Path) -> Result<bool> {
         dir,
         ".",
         rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK,
-        rustix::fs::AtFlags::empty(),
+        rustix::fs::AtFlags::EACCESS,
     ) {
         Ok(()) => Ok(true),
         Err(rustix::io::Errno::ACCESS) => Ok(false),
@@ -3320,5 +3350,67 @@ mod tests {
             tally("panics"),
             Err("scan thread terminated abnormally".into())
         );
+    }
+
+    #[test]
+    fn trash_refuses_non_utf8_target_before_calling_trash_crate() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let fixture = TestFixture::new("trash-non-utf8");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let parent = home.join("dev");
+        std::fs::create_dir_all(&parent).unwrap();
+        let mut raw = parent.as_os_str().as_bytes().to_vec();
+        raw.extend_from_slice(b"/repo\xff");
+        let target_path = PathBuf::from(OsStr::from_bytes(&raw));
+
+        let verified = crate::safety::validate_path_for_deletion(&target_path, &home, &[]).unwrap();
+        let dummy_id = FileIdentity::from_std_metadata(&std::fs::metadata(&parent).unwrap());
+        let error = remove_path(verified, false, dummy_id).unwrap_err();
+        assert!(
+            error.to_string().contains("non-UTF-8"),
+            "PV trash/non-utf8-refused: expected non-UTF-8 Trash refusal, got {error:#}"
+        );
+
+        // Positive control: permanent (--shred) removal does not trigger the
+        // Trash-only non-UTF-8 refusal; it proceeds to descriptor-anchored checks.
+        let verified_permanent =
+            crate::safety::validate_path_for_deletion(&target_path, &home, &[]).unwrap();
+        let permanent_error = remove_path(verified_permanent, true, dummy_id).unwrap_err();
+        assert!(
+            !permanent_error.to_string().contains("non-UTF-8"),
+            "permanent removal must not be blocked by the Trash-only non-UTF-8 guard: {permanent_error:#}"
+        );
+
+        assert!(is_apple_fs_name(b"apfs"));
+        assert!(is_apple_fs_name(b"hfs"));
+        for foreign in [
+            b"nfs".as_slice(),
+            b"smbfs",
+            b"exfat",
+            b"msdos",
+            b"macfuse",
+            b"",
+        ] {
+            assert!(
+                !is_apple_fs_name(foreign),
+                "foreign filesystem {:?} must not qualify as Apple FS",
+                String::from_utf8_lossy(foreign)
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn on_apple_fs_reads_the_folder_volume_type() {
+        // The fixture lives under the checkout's `target/`, on the APFS
+        // system volume; a foreign mount needs a disk image no unit test makes.
+        let fixture = TestFixture::new("apple-fs");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let dir = cap_std::fs::Dir::open_ambient_dir(fixture.path(), cap_std::ambient_authority())
+            .unwrap();
+        assert!(on_apple_fs(&dir), "an APFS folder qualifies for the Trash");
     }
 }

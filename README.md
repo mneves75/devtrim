@@ -351,9 +351,15 @@ direct children — `downloads`, `api`, `Cask`, and so on — and the clones sta
 links Homebrew left at the top are left for `brew cleanup`.
 
 Two boundaries inside that are worth stating, because a shorter list would
-over-claim. The pnpm entry is the metadata cache, never the content-addressable
-store at `~/Library/pnpm/store` that installed `node_modules` trees hard-link
-into. And editor *logs* and application data are not covered at all: VS Code
+over-claim. The pnpm entry is offered only as its metadata folders, the ones
+`pnpm cache delete` removes, never its `dlx` installs, which a running
+`pnpm dlx` command loads, and never the content-addressable store at
+`~/Library/pnpm/store` that installed `node_modules` trees hard-link into.
+npm's cache is offered only as `_cacache`, what `npm cache clean --force`
+removes; its `_npx` installs, which a running npx tool such as an editor's
+language server loads, stay. No other cache is offered while it holds npm's
+or pnpm's cache folder, even linked there, or lies inside one, and neither is
+npm's store or pnpm's metadata while it holds the other's. And editor *logs* and application data are not covered at all: VS Code
 keeps its logs, `CachedData` and webview caches under `~/Library/Application
 Support/Code`, and JetBrains keeps logs under `~/Library/Logs` — both outside
 `~/Library/Caches`, both mixed in with real user state, and neither reachable
@@ -843,7 +849,13 @@ planted fixtures. Report evals check fixture-derived content and exit codes;
 previews must change nothing on disk, and applies must change exactly the
 previewed targets while preserving near misses. Named planted mutants in
 `scripts/tests/planted-violations.py` prove the assertions they select can
-fail; other assertions remain review obligations. The shared removal-root
+fail; other assertions remain review obligations. The apply stop protocol has
+a bounded model, `journal::tests::stop_model`. It runs every plan of up to
+three attempts, with the stop arriving before each step, through the real
+journal, and it must fail on the order 0.15.0 fixed. `docs/incidents.md` lists
+each defect met after commit with the check that now catches it, and
+`scripts/tests/audit-incidents.py` fails when that check is renamed or
+removed. The shared removal-root
 device check is tested with injected device metadata, not a real mounted
 volume or a real Trash move, which would land in the developer's own Trash.
 Two opt-in checks go beyond stubs:

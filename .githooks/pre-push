@@ -1,6 +1,6 @@
 #!/bin/sh
 # Fast local checks on the commits being pushed, so CI's 25-minute run does not discover them.
-# Enable once per clone: git config core.hooksPath .githooks
+# Enable once per clone from main: scripts/install-hooks.sh
 set -eu
 
 repo_root=$(git rev-parse --show-toplevel)
