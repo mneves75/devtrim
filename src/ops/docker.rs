@@ -607,6 +607,14 @@ fn validate_trusted_ancestors(candidate: &Path, candidate_exists: bool, label: &
                 if deepest_existing.is_none() {
                     deepest_existing = Some(ancestor);
                 }
+                if !metadata.file_type().is_symlink()
+                    && super::project::ignores_ownership(ancestor)?
+                {
+                    anyhow::bail!(
+                        "refusing {label} with ancestor {}: its volume ignores ownership",
+                        ancestor.display()
+                    );
+                }
                 if metadata.uid() != current_uid && metadata.uid() != 0 {
                     anyhow::bail!(
                         "refusing {label} with ancestor {} not owned by current user or root",
@@ -649,6 +657,12 @@ fn validate_trusted_ancestors(candidate: &Path, candidate_exists: bool, label: &
         )
     })?;
     for (depth, ancestor) in canonical_parent.ancestors().enumerate() {
+        if super::project::ignores_ownership(ancestor)? {
+            anyhow::bail!(
+                "refusing {label} with canonical ancestor {}: its volume ignores ownership",
+                ancestor.display()
+            );
+        }
         let metadata = std::fs::symlink_metadata(ancestor).with_context(|| {
             format!(
                 "cannot inspect canonical ancestor {} of {label}",
@@ -716,6 +730,12 @@ fn validate_docker_config_dir_from(
                 );
             }
             validate_trusted_ancestors(&candidate, true, "DOCKER_CONFIG")?;
+            if super::project::ignores_ownership(&candidate)? {
+                anyhow::bail!(
+                    "refusing DOCKER_CONFIG {}: its volume ignores ownership",
+                    candidate.display()
+                );
+            }
             let current_uid = rustix::process::geteuid().as_raw();
             if metadata.uid() != current_uid && metadata.uid() != 0 {
                 anyhow::bail!(
@@ -772,6 +792,12 @@ fn read_docker_config_json(
     if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
         anyhow::bail!(
             "refusing non-regular Docker config {}",
+            config_path.display()
+        );
+    }
+    if super::project::ignores_ownership(&config_path)? {
+        anyhow::bail!(
+            "refusing Docker config {}: its volume ignores ownership",
             config_path.display()
         );
     }
@@ -875,6 +901,12 @@ fn resolve_trusted_path(
                     .with_context(|| format!("cannot inspect {label} path {}", current.display()));
             }
         };
+        if !metadata.file_type().is_symlink() && super::project::ignores_ownership(&current)? {
+            anyhow::bail!(
+                "refusing {label} path {}: its volume ignores ownership",
+                current.display()
+            );
+        }
         if metadata.uid() != current_uid && metadata.uid() != 0 {
             anyhow::bail!(
                 "refusing {label} path not owned by current user or root: {}",
@@ -1157,6 +1189,12 @@ fn validated_docker_state_subdir(source_config: &Path, name: &str) -> Result<Opt
                 );
             }
             validate_trusted_ancestors(&canonical, true, "Docker state path")?;
+            if super::project::ignores_ownership(&canonical)? {
+                anyhow::bail!(
+                    "refusing Docker state path {}: its volume ignores ownership",
+                    canonical.display()
+                );
+            }
             super::project::refuse_path_acl_grants(
                 [canonical.as_path()],
                 &canonical,
@@ -1174,6 +1212,12 @@ fn validated_docker_state_subdir(source_config: &Path, name: &str) -> Result<Opt
                         if !child_meta.file_type().is_dir() {
                             anyhow::bail!(
                                 "refusing symlinked or non-directory Docker state subdir: {}",
+                                child.display()
+                            );
+                        }
+                        if super::project::ignores_ownership(&child)? {
+                            anyhow::bail!(
+                                "refusing Docker state subdir {}: its volume ignores ownership",
                                 child.display()
                             );
                         }
@@ -1264,6 +1308,12 @@ fn isolated_docker_scan_dir_from(
         .with_context(|| format!("cannot resolve temp directory {}", base.display()))?;
     let current_uid = rustix::process::geteuid().as_raw();
     for ancestor in canonical_base.ancestors() {
+        if super::project::ignores_ownership(ancestor)? {
+            anyhow::bail!(
+                "refusing Docker scan temp parent {}: its volume ignores ownership",
+                ancestor.display()
+            );
+        }
         let metadata = std::fs::symlink_metadata(ancestor)
             .with_context(|| format!("cannot inspect temp ancestor {}", ancestor.display()))?;
         let others_write = metadata.permissions().mode() & 0o022 != 0;
@@ -1585,6 +1635,12 @@ fn allocate_private_docker_config(
         );
     }
     validate_trusted_ancestors(&canonical_state_dir, true, "Docker private state directory")?;
+    if super::project::ignores_ownership(&canonical_state_dir)? {
+        anyhow::bail!(
+            "refusing Docker private state directory {}: its volume ignores ownership",
+            canonical_state_dir.display()
+        );
+    }
     super::project::refuse_path_acl_grants(
         canonical_state_dir.ancestors(),
         &canonical_state_dir,
@@ -2748,5 +2804,112 @@ mod tests {
             pinned_path.display()
         );
         crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn docker_plugin_dir_refuses_volume_that_ignores_ownership() {
+        use crate::process::BoundedCommand as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        const HDIUTIL_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+        let fixture = crate::ops::TestFixture::new("devtrim-docker-owners");
+        let base = fixture.path();
+        std::fs::create_dir_all(base).unwrap();
+        let image = base.join("docker-owners.dmg");
+        let created = std::process::Command::new("/usr/bin/hdiutil")
+            .args([
+                "create",
+                "-quiet",
+                "-size",
+                "16m",
+                "-fs",
+                "HFS+",
+                "-volname",
+                "docker-owners",
+            ])
+            .arg(&image)
+            .output_within(HDIUTIL_LIMIT)
+            .unwrap();
+        assert!(created.status.success(), "hdiutil create failed");
+
+        struct Detach(PathBuf);
+        impl Drop for Detach {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("/usr/bin/hdiutil")
+                    .args(["detach", "-quiet", "-force"])
+                    .arg(&self.0)
+                    .output_within(HDIUTIL_LIMIT);
+            }
+        }
+
+        let source_config = base.join("docker-config");
+        std::fs::create_dir_all(&source_config).unwrap();
+        std::fs::set_permissions(&source_config, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let validate_on = |owners: &str| {
+            let mount = base.join(format!("owners-{owners}"));
+            std::fs::create_dir_all(&mount).unwrap();
+            let attached = std::process::Command::new("/usr/bin/hdiutil")
+                .args([
+                    "attach",
+                    "-quiet",
+                    "-nobrowse",
+                    "-noautoopen",
+                    "-owners",
+                    owners,
+                ])
+                .arg("-mountpoint")
+                .arg(&mount)
+                .arg(&image)
+                .output_within(HDIUTIL_LIMIT)
+                .unwrap();
+            assert!(
+                attached.status.success(),
+                "hdiutil attach -owners {owners} failed"
+            );
+            let _detach = Detach(mount.clone());
+            let plugin_dir = mount.join("cli-plugins");
+            std::fs::create_dir_all(&plugin_dir).unwrap();
+            std::fs::set_permissions(&plugin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let plugin_bin = plugin_dir.join("docker-buildx");
+            std::fs::write(&plugin_bin, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&plugin_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(
+                source_config.join("config.json"),
+                serde_json::json!({ "cliPluginsExtraDirs": [plugin_dir.to_string_lossy()] })
+                    .to_string(),
+            )
+            .unwrap();
+            let plugin_res = validate_docker_config_from(Some(source_config.as_os_str()), base);
+            let docker_dir = mount.join("docker-cfg");
+            std::fs::create_dir_all(&docker_dir).unwrap();
+            std::fs::set_permissions(&docker_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let cfg_res = validate_docker_config_from(Some(docker_dir.as_os_str()), base);
+            (plugin_res, cfg_res)
+        };
+
+        let (plugin_on, cfg_on) = validate_on("on");
+        assert!(
+            plugin_on.is_ok(),
+            "plugin dir on volume enforcing ownership must pass: {plugin_on:?}"
+        );
+        assert!(
+            cfg_on.is_ok(),
+            "DOCKER_CONFIG on volume enforcing ownership must pass: {cfg_on:?}"
+        );
+
+        let (plugin_off, cfg_off) = validate_on("off");
+        assert!(
+            plugin_off
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("ignores ownership")),
+            "plugin dir on MNT_IGNORE_OWNERSHIP volume must fail closed: {plugin_off:?}"
+        );
+        assert!(
+            cfg_off
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("ignores ownership")),
+            "DOCKER_CONFIG on MNT_IGNORE_OWNERSHIP volume must fail closed: {cfg_off:?}"
+        );
     }
 }

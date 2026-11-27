@@ -1116,7 +1116,7 @@ fn acl_allows(line: &[u8]) -> bool {
 /// (`MNT_IGNORE_OWNERSHIP`, `0x00200000` in macOS `<sys/mount.h>`, which
 /// Finder's "Ignore ownership on this volume" and `hdiutil attach -owners off`
 /// set): there every file reads as owned by the current user.
-fn ignores_ownership(path: &Path) -> Result<bool> {
+pub(super) fn ignores_ownership(path: &Path) -> Result<bool> {
     const MNT_IGNORE_OWNERSHIP: u32 = 0x0020_0000;
     let stats = rustix::fs::statfs(path)
         .map_err(std::io::Error::from)
