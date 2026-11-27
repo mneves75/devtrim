@@ -721,15 +721,37 @@ mod tests {
             );
         }
 
+        // Positive controls: a real `.supergoal/evidence` directory and a valid
+        // gitfile without trailing `/` or `/.` must still be reported by scan.
+        let valid_evidence = root.join("clean-proj/.supergoal/evidence");
+        std::fs::create_dir_all(&valid_evidence).unwrap();
+        std::fs::write(valid_evidence.join("run.log"), "ok").unwrap();
+        let valid_repo = root.join("valid-repo");
+        std::fs::create_dir_all(&valid_repo).unwrap();
+        std::fs::write(
+            valid_repo.join(".git"),
+            format!("gitdir: {}\n", real_gitdir.display()),
+        )
+        .unwrap();
+        assert!(
+            !has_out_of_scope_gitfile(&valid_repo, &scoped_roots),
+            "positive control: valid in-scope gitfile without trailing slash/dot must be accepted"
+        );
+
         let ctx = Ctx {
             roots: vec![root],
             roots_origin: crate::safety::RootsOrigin::Flag,
             ..Ctx::for_test(home)
         };
         let findings = Leftovers.scan(&ctx, &Default::default()).unwrap();
-        assert!(
-            findings.is_empty(),
-            "symlinked .supergoal children and trailing-slash gitdirs must produce no findings: {findings:?}"
+        let mut reported: Vec<_> = findings.iter().filter_map(Finding::target).collect();
+        reported.sort();
+        let valid_debris = real_gitdir.join("objects/tmp_objdir-a");
+        let mut expected = vec![valid_evidence.as_path(), valid_debris.as_path()];
+        expected.sort();
+        assert_eq!(
+            reported, expected,
+            "only real .supergoal children and valid in-scope gitdirs may be reported: {findings:?}"
         );
     }
 }

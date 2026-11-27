@@ -411,29 +411,31 @@ fn verify_default_swiftly_absent(swiftly_home: &Path, config: &Path) -> Result<(
                 format!("cannot inspect swiftly home {}", swiftly_home.display())
             });
         }
-        Ok(meta) if meta.file_type().is_symlink() => match std::fs::metadata(swiftly_home) {
-            Ok(target) if target.is_dir() => {}
-            Ok(_) => {
-                anyhow::bail!(
-                    "cannot read swiftly's configuration {}: {} does not point to a directory",
-                    config.display(),
-                    swiftly_home.display()
-                );
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            match std::fs::metadata(swiftly_home) {
+                Ok(target) if target.is_dir() => {}
+                Ok(_) => {
+                    anyhow::bail!(
+                        "cannot read swiftly's configuration {}: {} does not point to a directory",
+                        config.display(),
+                        swiftly_home.display()
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    anyhow::bail!(
+                        "cannot read swiftly's configuration {}: {} is a broken symlink",
+                        config.display(),
+                        swiftly_home.display()
+                    );
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("cannot resolve swiftly home {}", swiftly_home.display())
+                    });
+                }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                anyhow::bail!(
-                    "cannot read swiftly's configuration {}: {} is a broken symlink",
-                    config.display(),
-                    swiftly_home.display()
-                );
-            }
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("cannot resolve swiftly home {}", swiftly_home.display())
-                });
-            }
-        },
-        Ok(meta) if meta.file_type().is_dir() => {}
+        }
+        Ok(metadata) if metadata.file_type().is_dir() => {}
         Ok(_) => {
             anyhow::bail!(
                 "cannot read swiftly's configuration {}: {} is not a directory",
@@ -450,7 +452,7 @@ fn verify_default_swiftly_absent(swiftly_home: &Path, config: &Path) -> Result<(
                 config.display()
             )
         }),
-        Ok(meta) if meta.file_type().is_symlink() => {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
             anyhow::bail!(
                 "cannot read swiftly's configuration {}: broken symlink",
                 config.display()

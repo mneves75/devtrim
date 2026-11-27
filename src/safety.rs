@@ -2655,7 +2655,22 @@ fn build_process_pids() -> Result<BTreeSet<u32>> {
     .collect())
 }
 
-pub(crate) fn build_process_cwds() -> Result<Vec<PathBuf>> {
+/// A build process's working directory: the device `lsof` reports for the
+/// directory itself (when present) and the decoded absolute path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ProcessCwd {
+    pub(crate) dev: Option<u64>,
+    pub(crate) path: PathBuf,
+}
+
+impl ProcessCwd {
+    #[cfg(test)]
+    pub(crate) fn from_path(path: PathBuf) -> Self {
+        Self { dev: None, path }
+    }
+}
+
+pub(crate) fn build_process_cwds() -> Result<Vec<ProcessCwd>> {
     let pids = build_process_pids()?;
     if pids.is_empty() {
         return Ok(Vec::new());
@@ -2676,7 +2691,7 @@ fn lsof_pid_list<'a>(pids: impl IntoIterator<Item = &'a u32>) -> String {
 fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
     let pid_list = lsof_pid_list(pids);
     let lsof = probe_output(
-        Command::new("lsof").args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"]),
+        Command::new("lsof").args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "fDn"]),
         PROBE_TIMEOUT,
         "build-process cwd probe",
     )?;
@@ -2805,11 +2820,11 @@ pub(crate) fn parse_lsof_mappings(
     Ok(mappings)
 }
 
-/// Working directories `lsof -F n` reported, the processes it reported them
+/// Working directories `lsof -F fDn` reported, the processes it reported them
 /// for, and whether it reported every process it was asked about (exit 0).
 #[derive(Debug)]
 pub(crate) struct LsofCwds {
-    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) paths: Vec<ProcessCwd>,
     pub(crate) reported: BTreeSet<u32>,
     pub(crate) complete: bool,
 }
@@ -2838,7 +2853,7 @@ fn resolve_build_process_cwds(
     lsof: LsofCwds,
     mut running_now: impl FnMut() -> Result<BTreeSet<u32>>,
     mut cwds_of: impl FnMut(&BTreeSet<u32>) -> Result<LsofCwds>,
-) -> Result<Vec<PathBuf>> {
+) -> Result<Vec<ProcessCwd>> {
     let mut asked = requested.clone();
     let mut answer = lsof;
     let mut reported = BTreeSet::new();
@@ -3118,42 +3133,84 @@ pub(crate) fn parse_lsof_cwds(output: &[u8], exit_code: Option<i32>) -> Result<L
     let mut reported = BTreeSet::new();
     // The process whose fields follow, and whether it has named a cwd yet.
     let mut current: Option<(u32, bool)> = None;
+    let mut awaiting_name = false;
+    let mut device: Option<&[u8]> = None;
     for line in output.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if let Some(pid) = line.strip_prefix(b"p") {
-            if let Some((previous, false)) = current {
-                bail!("lsof reported process {previous} without a cwd");
+        match line.first() {
+            None => continue,
+            Some(b'p') => {
+                if awaiting_name {
+                    bail!("lsof reported a cwd entry without a name");
+                }
+                if let Some((previous, false)) = current {
+                    bail!("lsof reported process {previous} without a cwd");
+                }
+                let pid = &line[1..];
+                let pid = std::str::from_utf8(pid)
+                    .ok()
+                    .and_then(|pid| pid.parse::<u32>().ok())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "lsof returned invalid pid `{}`",
+                            String::from_utf8_lossy(pid)
+                        )
+                    })?;
+                if !reported.insert(pid) {
+                    bail!("lsof reported process {pid} twice");
+                }
+                current = Some((pid, false));
+                awaiting_name = false;
+                device = None;
             }
-            let pid = std::str::from_utf8(pid)
-                .ok()
-                .and_then(|pid| pid.parse::<u32>().ok())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "lsof returned invalid pid `{}`",
-                        String::from_utf8_lossy(pid)
-                    )
-                })?;
-            if !reported.insert(pid) {
-                bail!("lsof reported process {pid} twice");
+            Some(b'f') => {
+                if current.is_none() || awaiting_name {
+                    bail!("lsof reported a cwd descriptor without a process or name");
+                }
+                awaiting_name = true;
+                device = None;
             }
-            current = Some((pid, false));
-            continue;
+            Some(b'D') => {
+                if current.is_none() || device.is_some() {
+                    bail!("lsof reported a cwd device outside a cwd entry");
+                }
+                device = Some(&line[1..]);
+            }
+            Some(b'n') => {
+                let Some((pid, _)) = current else {
+                    bail!("lsof returned a cwd before naming its process");
+                };
+                let path = &line[1..];
+                if path.is_empty() {
+                    bail!("lsof returned an empty cwd path");
+                }
+                let dev = match device.take() {
+                    Some(raw) => Some(
+                        std::str::from_utf8(raw)
+                            .ok()
+                            .and_then(|raw| raw.strip_prefix("0x"))
+                            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "lsof gave no valid device for build process {pid} cwd"
+                                )
+                            })?,
+                    ),
+                    None => None,
+                };
+                let path = PathBuf::from(OsString::from_vec(decode_lsof_name(path)?));
+                if !path.is_absolute() {
+                    bail!("lsof could not name an absolute cwd for build process {pid}");
+                }
+                paths.push(ProcessCwd { dev, path });
+                current = Some((pid, true));
+                awaiting_name = false;
+            }
+            Some(_) => bail!("lsof returned an unexpected cwd field"),
         }
-        let Some(path) = line.strip_prefix(b"n") else {
-            continue;
-        };
-        let Some((pid, _)) = current else {
-            bail!("lsof returned a cwd before naming its process");
-        };
-        if path.is_empty() {
-            bail!("lsof returned an empty cwd path");
-        }
-        let path = PathBuf::from(OsString::from_vec(decode_lsof_name(path)?));
-        if !path.is_absolute() {
-            bail!("lsof could not name an absolute cwd for build process {pid}");
-        }
-        paths.push(path);
-        current = Some((pid, true));
+    }
+    if awaiting_name {
+        bail!("lsof reported a cwd entry without a name");
     }
     if let Some((pid, false)) = current {
         bail!("lsof reported process {pid} without a cwd");
@@ -4334,13 +4391,26 @@ mod tests {
         assert!(parse_pgrep_pids(b"not-a-pid\n", Some(0)).is_err());
         assert!(parse_pgrep_pids(b"", Some(2)).is_err());
 
-        let cwds = parse_lsof_cwds(b"p12\nfcwd\nn/tmp/a\np34\nfcwd\nn/tmp/b\n", Some(0)).unwrap();
+        let cwds = parse_lsof_cwds(
+            b"p12\nfcwd\nD0x1000004\nn/tmp/a\np34\nfcwd\nD0x1000005\nn/tmp/b\n",
+            Some(0),
+        )
+        .unwrap();
         assert_eq!(
             cwds.paths,
-            vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
+            vec![
+                ProcessCwd {
+                    dev: Some(0x1000004),
+                    path: PathBuf::from("/tmp/a"),
+                },
+                ProcessCwd {
+                    dev: Some(0x1000005),
+                    path: PathBuf::from("/tmp/b"),
+                },
+            ]
         );
         assert_eq!(cwds.reported.into_iter().collect::<Vec<_>>(), vec![12, 34]);
-        assert!(cwds_complete_was(b"p12\nfcwd\nn/tmp/a\n", 0));
+        assert!(cwds_complete_was(b"p12\nfcwd\nD0x1\nn/tmp/a\n", 0));
         let gone = parse_lsof_cwds(b"", Some(1)).unwrap();
         assert!(gone.paths.is_empty() && gone.reported.is_empty() && !gone.complete);
         assert!(parse_lsof_cwds(b"", Some(0)).is_err());
@@ -4353,6 +4423,11 @@ mod tests {
             b"p12\nn/tmp/a\np12\nn/tmp/b\n",
             b"px\nn/tmp/a\n",
             b"p\nn/tmp/a\n",
+            b"p12\nfcwd\nDnothex\nn/tmp/a\n",
+            b"p12\nfcwd\nD0x1\nD0x2\nn/tmp/a\n",
+            b"D0x1\np12\nn/tmp/a\n",
+            b"p12\nfcwd\nfcwd\nn/tmp/a\n",
+            b"p12\nfcwd\nn/tmp/a\nfcwd\n",
         ] {
             assert!(
                 parse_lsof_cwds(malformed, Some(0)).is_err(),
@@ -4376,7 +4451,10 @@ mod tests {
         let cwds =
             resolve_build_process_cwds(&pid_set(&[12, 34]), lsof(), || Ok(pid_set(&[12])), unused)
                 .unwrap();
-        assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+        assert_eq!(
+            cwds,
+            vec![ProcessCwd::from_path(PathBuf::from("/work/live"))]
+        );
 
         // An exit 0 that leaves a running PID out proves nothing about it.
         let silent = || parse_lsof_cwds(b"p12\nfcwd\nn/work/live\n", Some(0)).unwrap();
@@ -4431,7 +4509,10 @@ mod tests {
         let cwds =
             resolve_build_process_cwds(&pid_set(&[12]), complete, || Ok(BTreeSet::new()), unused)
                 .unwrap();
-        assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+        assert_eq!(
+            cwds,
+            vec![ProcessCwd::from_path(PathBuf::from("/work/live"))]
+        );
     }
 
     #[test]
@@ -4454,8 +4535,8 @@ mod tests {
         assert_eq!(
             cwds,
             vec![
-                PathBuf::from("/work/live"),
-                PathBuf::from("/work/next-step")
+                ProcessCwd::from_path(PathBuf::from("/work/live")),
+                ProcessCwd::from_path(PathBuf::from("/work/next-step")),
             ]
         );
 
@@ -4476,7 +4557,10 @@ mod tests {
             |_| parse_lsof_cwds(b"", Some(1)),
         )
         .unwrap();
-        assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+        assert_eq!(
+            cwds,
+            vec![ProcessCwd::from_path(PathBuf::from("/work/live"))]
+        );
 
         // The successor is still running but its directory could not be read.
         let error = resolve_build_process_cwds(
@@ -4536,12 +4620,20 @@ mod tests {
         let parsed = lsof_cwds_of(&requested).unwrap();
         assert!(!parsed.complete, "control: lsof must exit 1 here");
         let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let cwd_dev = std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(&cwd).unwrap());
         let no_successor = |_: &BTreeSet<u32>| -> Result<LsofCwds> { bail!("unexpected lookup") };
 
         let cwds =
             resolve_build_process_cwds(&requested, parsed, || Ok(pid_set(&[this])), no_successor)
                 .unwrap();
-        assert!(cwds.contains(&cwd), "{cwds:?} lacks {}", cwd.display());
+        assert!(
+            cwds.contains(&ProcessCwd {
+                dev: Some(cwd_dev),
+                path: cwd.clone(),
+            }),
+            "{cwds:?} lacks {} on dev 0x{cwd_dev:x}",
+            cwd.display()
+        );
 
         // Control: had the exited PID still been running, the same output refuses.
         let parsed = lsof_cwds_of(&requested).unwrap();
@@ -4798,10 +4890,10 @@ mod tests {
         assert_eq!(
             cwds.paths,
             vec![
-                PathBuf::from("/work/a\nb"),
-                PathBuf::from("/work/c\\x41d"),
-                PathBuf::from("/work/uni\u{202e}q"),
-                PathBuf::from("/work/v1^2"),
+                ProcessCwd::from_path(PathBuf::from("/work/a\nb")),
+                ProcessCwd::from_path(PathBuf::from("/work/c\\x41d")),
+                ProcessCwd::from_path(PathBuf::from("/work/uni\u{202e}q")),
+                ProcessCwd::from_path(PathBuf::from("/work/v1^2")),
             ]
         );
     }

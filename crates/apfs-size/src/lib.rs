@@ -1395,20 +1395,23 @@ mod tests {
         };
 
         let bulk_source = by_name("source");
-        let source_meta = std::fs::symlink_metadata(&source).unwrap();
+        let source_metadata = std::fs::symlink_metadata(&source).unwrap();
         assert_eq!(bulk_source.kind, EntryKind::File);
-        assert_eq!(bulk_source.dev, source_meta.dev());
-        assert_eq!(bulk_source.ino, source_meta.ino());
+        assert_eq!(bulk_source.dev, source_metadata.dev());
+        assert_eq!(bulk_source.ino, source_metadata.ino());
         assert_eq!(bulk_source.nlink, 2);
-        assert_eq!(bulk_source.allocated, source_meta.blocks() * 512);
-        assert_eq!(bulk_source.modified, Some(source_meta.modified().unwrap()));
+        assert_eq!(bulk_source.allocated, source_metadata.blocks() * 512);
+        assert_eq!(
+            bulk_source.modified,
+            Some(source_metadata.modified().unwrap())
+        );
 
         let bulk_clone = by_name("clone");
-        let (_, clone_single, clone_meta) = measure(&clone);
+        let (_, clone_single, clone_metadata) = measure(&clone);
         let clone_single = clone_single.unwrap();
         assert_eq!(bulk_clone.kind, EntryKind::File);
         assert_eq!(bulk_clone.nlink, 1);
-        assert_eq!(bulk_clone.allocated, clone_meta.blocks() * 512);
+        assert_eq!(bulk_clone.allocated, clone_metadata.blocks() * 512);
         assert_eq!(bulk_clone.private, Some(clone_single.private));
         assert!(
             clone_single.private < blocks / 10,
@@ -1418,7 +1421,7 @@ mod tests {
         assert_eq!(by_name("nested").kind, EntryKind::Directory);
         assert!(!by_name("nested").mountpoint);
         assert_eq!(by_name("link").kind, EntryKind::Other);
-        assert_eq!(by_name("hardlink").ino, source_meta.ino());
+        assert_eq!(by_name("hardlink").ino, source_metadata.ino());
         assert_eq!(by_name("hardlink").nlink, 2);
 
         // Verify all streaming modes and `visit_dir_names` match `lstat` while reusing one buffer.
@@ -1548,41 +1551,52 @@ mod tests {
     fn bulk_mountpoint_flags_mounted_volumes_under_volumes_dir() {
         use std::os::unix::fs::MetadataExt;
 
-        let volumes = Path::new("/Volumes");
-        let Ok(parent_meta) = std::fs::symlink_metadata(volumes) else {
-            return;
-        };
-        let parent_dev = parent_meta.dev();
         let mut buffer = BulkBuffer::new();
-        let mut entries = Vec::new();
-        if visit_dir_bulk(volumes, BulkMode::SizeOnly, &mut buffer, |entry| {
-            entries.push((entry.name.to_os_string(), entry.kind, entry.mountpoint));
-            Ok::<(), std::convert::Infallible>(())
-        })
-        .is_err()
-        {
-            return;
-        }
-        let mut name_entries = Vec::new();
-        visit_dir_names(volumes, &mut buffer, |entry| {
-            name_entries.push((entry.name.to_os_string(), entry.kind, entry.mountpoint));
-        })
-        .unwrap();
-        assert_eq!(entries, name_entries);
-        for (name, kind, mountpoint) in entries {
-            if kind != EntryKind::Directory {
+        let mut checked_mountpoints = 0usize;
+        for directory in [
+            Path::new("/Volumes"),
+            Path::new("/System/Volumes"),
+            Path::new("/"),
+        ] {
+            let Ok(parent_metadata) = std::fs::symlink_metadata(directory) else {
+                continue;
+            };
+            let parent_dev = parent_metadata.dev();
+            let mut entries = Vec::new();
+            if visit_dir_bulk(directory, BulkMode::SizeOnly, &mut buffer, |entry| {
+                entries.push((entry.name.to_os_string(), entry.kind, entry.mountpoint));
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .is_err()
+            {
                 continue;
             }
-            if let Ok(meta) = std::fs::symlink_metadata(volumes.join(&name))
-                && meta.file_type().is_dir()
-                && meta.dev() != parent_dev
-            {
-                assert!(
-                    mountpoint,
-                    "mounted volume {} reported mountpoint=false",
-                    volumes.join(&name).display()
-                );
+            let mut name_entries = Vec::new();
+            visit_dir_names(directory, &mut buffer, |entry| {
+                name_entries.push((entry.name.to_os_string(), entry.kind, entry.mountpoint));
+            })
+            .unwrap();
+            assert_eq!(entries, name_entries);
+            for (name, kind, mountpoint) in entries {
+                if kind != EntryKind::Directory {
+                    continue;
+                }
+                if let Ok(metadata) = std::fs::symlink_metadata(directory.join(&name))
+                    && metadata.file_type().is_dir()
+                    && metadata.dev() != parent_dev
+                {
+                    assert!(
+                        mountpoint,
+                        "mounted volume {} reported mountpoint=false",
+                        directory.join(&name).display()
+                    );
+                    checked_mountpoints += 1;
+                }
             }
         }
+        assert!(
+            checked_mountpoints > 0,
+            "expected at least one mounted volume under /Volumes, /System/Volumes, or /"
+        );
     }
 }

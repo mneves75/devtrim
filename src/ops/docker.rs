@@ -578,10 +578,10 @@ fn validate_docker_config_dir_from(
 ) -> Result<PathBuf> {
     use std::os::unix::fs::MetadataExt as _;
 
-    let Some(value) = raw_docker_config.filter(|value| !value.is_empty()) else {
-        return Ok(home.join(".docker"));
+    let candidate = match raw_docker_config.filter(|value| !value.is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => home.join(".docker"),
     };
-    let candidate = PathBuf::from(value);
     if !is_safe_absolute_dir(&candidate) {
         anyhow::bail!(
             "refusing relative or non-normalized DOCKER_CONFIG: {}",
@@ -735,8 +735,29 @@ fn resolve_docker_cli_plugin_dirs_from(
     Ok(plugin_dirs)
 }
 
-struct PrivateDockerConfigAttempt {
+/// RAII guard for a per-attempt private `DOCKER_CONFIG` directory under
+/// `buildx-pin/attempt-<pid>-<seq>`. Keeps the tree alive across `docker`
+/// execution and removes it on drop through `src/ops/mod.rs`'s verified sink.
+pub(crate) struct PrivateDockerConfigGuard {
     path: PathBuf,
+    home: PathBuf,
+    identity: crate::safety::FileIdentity,
+}
+
+impl PrivateDockerConfigGuard {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for PrivateDockerConfigGuard {
+    fn drop(&mut self) {
+        super::cleanup_private_docker_config(&self.path, &self.home, self.identity);
+    }
+}
+
+struct PrivateDockerConfigAttempt {
+    guard: PrivateDockerConfigGuard,
     buildx_dir: std::fs::File,
     current_uid: u32,
 }
@@ -826,13 +847,16 @@ fn allocate_private_docker_config(
             .map_err(std::io::Error::from)
             .with_context(|| format!("cannot open state directory {}", state_dir.display()))?,
     );
+    let canonical_state_dir = state_dir
+        .canonicalize()
+        .with_context(|| format!("cannot resolve state directory {}", state_dir.display()))?;
     let pin_base = open_private_dir_child(&state_file, "buildx-pin", current_uid)?;
     // Allocate a fresh per-attempt subdirectory (`O_EXCL` via `mkdirat`) so
     // concurrent applies never share or overwrite each other's isolated config,
     // and write files with `O_CREAT | O_EXCL` (never `O_TRUNC`).
     static PIN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let pid = std::process::id();
-    let (attempt_name, pin_root) = {
+    let (attempt_name, pin_root, attempt_identity) = {
         let mut chosen = None;
         for _ in 0..64 {
             let sequence = PIN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -856,7 +880,8 @@ fn allocate_private_docker_config(
                     fchmod(&directory, Mode::from(0o700))
                         .map_err(std::io::Error::from)
                         .with_context(|| format!("cannot tighten permissions on `{candidate}`"))?;
-                    chosen = Some((candidate, directory));
+                    let identity = crate::safety::FileIdentity::from_std_metadata(&metadata);
+                    chosen = Some((candidate, directory, identity));
                     break;
                 }
                 Err(rustix::io::Errno::EXIST) => continue,
@@ -871,13 +896,18 @@ fn allocate_private_docker_config(
             anyhow::anyhow!("cannot allocate unique private buildx directory under state dir")
         })?
     };
+    let guard = PrivateDockerConfigGuard {
+        path: canonical_state_dir.join("buildx-pin").join(attempt_name),
+        home: ctx.home.clone(),
+        identity: attempt_identity,
+    };
     let buildx_dir = open_private_dir_child(&pin_root, "buildx", current_uid)?;
     let config_payload = serde_json::json!({
         "cliPluginsExtraDirs": plugin_dirs,
     });
     write_private_json_file(&pin_root, "config.json", &config_payload, current_uid)?;
     Ok(PrivateDockerConfigAttempt {
-        path: state_dir.join("buildx-pin").join(attempt_name),
+        guard,
         buildx_dir,
         current_uid,
     })
@@ -889,9 +919,12 @@ fn allocate_private_docker_config(
 /// directory, with no `contexts/` directory. Running `docker builder prune`
 /// with this `DOCKER_CONFIG` and `BUILDX_CONFIG=<isolated>/buildx` prevents
 /// Buildx aliases or current-builder state from overriding `--host`.
-pub(crate) fn write_isolated_builder_config(ctx: &Ctx, plugin_dirs: &[String]) -> Result<PathBuf> {
+pub(crate) fn write_isolated_builder_config(
+    ctx: &Ctx,
+    plugin_dirs: &[String],
+) -> Result<PrivateDockerConfigGuard> {
     let attempt = allocate_private_docker_config(ctx, plugin_dirs)?;
-    Ok(attempt.path)
+    Ok(attempt.guard)
 }
 
 /// Writes an isolated `0700` `DOCKER_CONFIG` tree inside devtrim's private
@@ -906,7 +939,7 @@ pub(crate) fn write_pinned_buildx_config(
     builder: &str,
     nodes: &[BuildxNodeIdentity],
     plugin_dirs: &[String],
-) -> Result<PathBuf> {
+) -> Result<PrivateDockerConfigGuard> {
     if !is_valid_builder_name(builder) {
         anyhow::bail!("refusing invalid Docker buildx builder name `{builder}`");
     }
@@ -950,7 +983,7 @@ pub(crate) fn write_pinned_buildx_config(
         &instance_payload,
         attempt.current_uid,
     )?;
-    Ok(attempt.path)
+    Ok(attempt.guard)
 }
 
 /// Blocks actually allocated on the host, not the logical length.
@@ -1076,7 +1109,7 @@ impl Op for Docker {
         ctx: &Ctx,
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
-        validate_docker_config_dir(&ctx.home)?;
+        let _ = resolve_docker_cli_plugin_dirs(&ctx.home)?;
         // The host image is disclosed even when the daemon is unreachable. A
         // stopped VM is precisely when its disk image is invisible to `docker`
         // and still occupying the host, so making this disclosure depend on a
@@ -1594,6 +1627,25 @@ mod tests {
             validate_docker_config_dir_from(Some(real_dir.as_os_str()), home).unwrap(),
             real_dir
         );
+        // Missing default `~/.docker` stays allowed, while a symlinked or
+        // non-directory `~/.docker` must be refused.
+        assert_eq!(
+            validate_docker_config_dir_from(None, home).unwrap(),
+            home.join(".docker")
+        );
+        std::os::unix::fs::symlink(&real_dir, home.join(".docker")).unwrap();
+        assert!(
+            validate_docker_config_dir_from(None, home).is_err(),
+            "symlinked default ~/.docker must be refused"
+        );
+        std::fs::remove_file(home.join(".docker")).unwrap();
+        std::fs::write(home.join(".docker"), "{}").unwrap();
+        assert!(
+            validate_docker_config_dir_from(None, home).is_err(),
+            "regular-file default ~/.docker must be refused"
+        );
+        std::fs::remove_file(home.join(".docker")).unwrap();
+        std::fs::create_dir_all(home.join(".docker")).unwrap();
         assert_eq!(
             validate_docker_config_dir_from(None, home).unwrap(),
             home.join(".docker")
@@ -1695,17 +1747,19 @@ mod tests {
         let plugin_dirs = vec!["/opt/homebrew/lib/docker/cli-plugins".to_string()];
         let isolated = write_isolated_builder_config(&ctx, &plugin_dirs).unwrap();
 
-        assert!(isolated.join("buildx").is_dir());
+        assert!(isolated.path().join("buildx").is_dir());
         assert_eq!(
-            std::fs::read_dir(isolated.join("buildx")).unwrap().count(),
+            std::fs::read_dir(isolated.path().join("buildx"))
+                .unwrap()
+                .count(),
             0,
             "isolated buildx directory must be empty"
         );
         assert!(
-            !isolated.join("contexts").exists(),
+            !isolated.path().join("contexts").exists(),
             "isolated config must have no contexts directory"
         );
-        let config_path = isolated.join("config.json");
+        let config_path = isolated.path().join("config.json");
         let mode = std::fs::symlink_metadata(&config_path)
             .unwrap()
             .permissions()
@@ -1721,5 +1775,49 @@ mod tests {
             object["cliPluginsExtraDirs"],
             serde_json::json!(["/opt/homebrew/lib/docker/cli-plugins"])
         );
+    }
+
+    #[test]
+    fn private_docker_config_guard_removes_attempt_dir_on_drop() {
+        let fixture = crate::ops::TestFixture::new("devtrim-docker-pin-cleanup");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let state_dir = home.join(".local/state/devtrim");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let mut ctx = test_ctx();
+        ctx.home = home.clone();
+        ctx.journal_path = state_dir.join("journal.jsonl");
+
+        let plugin_dirs = vec!["/opt/homebrew/lib/docker/cli-plugins".to_string()];
+        let isolated_path = {
+            let guard = write_isolated_builder_config(&ctx, &plugin_dirs).unwrap();
+            let path = guard.path().to_path_buf();
+            assert!(path.join("config.json").is_file());
+            assert!(path.join("buildx").is_dir());
+            path
+        };
+        assert!(
+            !isolated_path.exists(),
+            "isolated attempt dir {} should be cleaned up on drop",
+            isolated_path.display()
+        );
+
+        let nodes = vec![BuildxNodeIdentity {
+            name: "kiri0".into(),
+            endpoint: "unix:///tmp/kiri.sock".into(),
+            ids: vec!["node-1".into()],
+        }];
+        let pinned_path = {
+            let guard = write_pinned_buildx_config(&ctx, "kiri", &nodes, &plugin_dirs).unwrap();
+            let path = guard.path().to_path_buf();
+            assert!(path.join("buildx/instances/kiri").is_file());
+            path
+        };
+        assert!(
+            !pinned_path.exists(),
+            "pinned attempt dir {} should be cleaned up on drop",
+            pinned_path.display()
+        );
+        crate::ops::remove_test_path(home);
     }
 }

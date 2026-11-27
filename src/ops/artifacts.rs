@@ -17,7 +17,7 @@ use super::{
     is_node_modules_name, removal_note,
 };
 use crate::safety::{
-    Ctx, Size, build_process_cwds, dir_measure_while, escalate, is_git_metadata_name,
+    Ctx, ProcessCwd, Size, build_process_cwds, dir_measure_while, escalate, is_git_metadata_name,
 };
 
 /// The fixed first line of a cache directory tag (<https://bford.info/cachedir/>).
@@ -153,11 +153,23 @@ impl Op for Artifacts {
                     return Ok(ArtifactRepoOutcome::Active(candidates.len()));
                 }
                 for candidate in candidates {
+                    match std::fs::symlink_metadata(&candidate.path) {
+                        Ok(_) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!("cannot inspect {}", candidate.path.display())
+                            });
+                        }
+                    }
                     if observations.holds_tracked_files(owner, &candidate.path)? {
                         tracked_here += 1;
                         continue;
                     }
-                    let (authored, size) = inspect_and_measure_artifact(&candidate.path)?;
+                    let Some((authored, size)) = inspect_and_measure_artifact(&candidate.path)?
+                    else {
+                        continue;
+                    };
                     match authored {
                         Some(Authored::ProgramKeypair(_)) => {
                             keypairs_here += 1;
@@ -302,7 +314,7 @@ impl Op for Artifacts {
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
-        self.apply_with_process_cwds(findings, ctx, build_process_cwds())
+        self.apply_with_process_probe(findings, ctx, build_process_cwds)
     }
 }
 
@@ -311,19 +323,44 @@ impl Artifacts {
     fn scan_with_process_cwds(&self, ctx: &Ctx, process_cwds: &[PathBuf]) -> Result<Vec<Finding>> {
         self.scan(
             ctx,
-            &ScanObservations::with_process_cwds(process_cwds.to_vec()),
+            &ScanObservations::with_process_cwds(
+                process_cwds
+                    .iter()
+                    .cloned()
+                    .map(ProcessCwd::from_path)
+                    .collect(),
+            ),
         )
     }
 
-    pub(super) fn apply_with_process_cwds(
+    #[cfg(test)]
+    fn apply_with_process_cwds(
         &self,
         findings: &[Finding],
         ctx: &Ctx,
         process_cwds: Result<Vec<PathBuf>>,
     ) -> Result<ApplyOutcome> {
+        let shared = process_cwds
+            .map(|cwds| {
+                cwds.into_iter()
+                    .map(ProcessCwd::from_path)
+                    .collect::<Vec<_>>()
+            })
+            .map_err(|error| format!("{error:#}"));
+        self.apply_with_process_probe(findings, ctx, || {
+            shared.clone().map_err(|error| anyhow::anyhow!("{error}"))
+        })
+    }
+
+    pub(super) fn apply_with_process_probe(
+        &self,
+        findings: &[Finding],
+        ctx: &Ctx,
+        process_cwds: impl Fn() -> Result<Vec<ProcessCwd>>,
+    ) -> Result<ApplyOutcome> {
         let cutoff = iso_days_ago(ctx.active_days);
         let mut outcome = ApplyOutcome::new(self.name());
-        let process_cwds = match process_cwds {
+        let preflight_cwds = match process_cwds() {
             Ok(process_cwds) => process_cwds,
             Err(error) => {
                 outcome.fail(error.context("cannot verify build-process liveness"));
@@ -331,8 +368,9 @@ impl Artifacts {
             }
         };
         // Everything a finding must still satisfy, judged in the preflight
-        // for the whole plan and again just before its own removal.
-        let recheck = |path: &Path| -> Result<()> {
+        // for the whole plan and again just before its own removal with a
+        // fresh build-process probe.
+        let check_with = |path: &Path, active_cwds: &[ProcessCwd]| -> Result<()> {
             if has_git_marker(path)? {
                 anyhow::bail!(
                     "target gained its own Git marker after preview; refusing {}",
@@ -353,7 +391,7 @@ impl Artifacts {
                     path.display()
                 );
             }
-            if repo_has_active_build(&owner, &process_cwds, &ctx.home)? {
+            if repo_has_active_build(&owner, active_cwds, &ctx.home)? {
                 anyhow::bail!(
                     "build process active in {}; refusing {}",
                     owner.display(),
@@ -419,7 +457,7 @@ impl Artifacts {
                     return Ok(outcome);
                 }
             }
-            let result = recheck(path);
+            let result = check_with(path, &preflight_cwds);
             if let Err(error) = result {
                 outcome.fail(error);
                 return Ok(outcome);
@@ -431,7 +469,12 @@ impl Artifacts {
         // only itself. Each failure is recorded, so the run reports nonzero.
         // The preflight judged every finding before any was removed, but
         // removing the earlier ones takes time: each is judged again just
-        // before its own removal, and a change in between refuses only it.
+        // before its own removal with a fresh build-process probe, and a
+        // change in between refuses only it.
+        let recheck = |path: &Path| -> Result<()> {
+            let fresh_cwds = process_cwds().context("cannot verify build-process liveness")?;
+            check_with(path, &fresh_cwds)
+        };
         for (finding, path) in ready {
             match recheck(path).and_then(|()| apply_filesystem_finding(self.name(), finding, ctx)) {
                 Ok(()) => outcome.record(finding, removal_note(finding, path.display())),
@@ -491,8 +534,20 @@ enum BulkAuthored {
     Unsupported,
 }
 
-fn inspect_and_measure_artifact(path: &Path) -> Result<(Option<Authored>, Size)> {
-    dir_measure_while(path, |parent, name, depth| {
+fn inspect_and_measure_artifact(path: &Path) -> Result<Option<(Option<Authored>, Size)>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "cannot search {} for a program keypair or a Git repository",
+                    path.display()
+                )
+            });
+        }
+    }
+    let result = dir_measure_while(path, |parent, name, depth| {
         Authored::match_entry(AuthoredEntry { parent, name }, depth)
     })
     .with_context(|| {
@@ -500,7 +555,17 @@ fn inspect_and_measure_artifact(path: &Path) -> Result<(Option<Authored>, Size)>
             "cannot search {} for a program keypair or a Git repository",
             path.display()
         )
-    })
+    })?;
+    if result.0.is_none()
+        && result.1.allocated == 0
+        && matches!(
+            std::fs::symlink_metadata(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    {
+        return Ok(None);
+    }
+    Ok(Some(result))
 }
 
 /// The first entry under `path` that no rebuild restores, as Mole V1.56.0
@@ -2021,12 +2086,26 @@ mod tests {
             excl_targets.push(dir);
         }
 
+        // 3. Positive controls: a clean corroborated Rust target and a
+        // non-excluded CACHEDIR.TAG directory in stale repos must be offered.
+        let clean_repo = home.join("clean-control");
+        let clean_target = stale_target(&clean_repo);
+        let cache_repo = home.join("cache-control");
+        init_old_git_repo(&cache_repo).unwrap();
+        let clean_cache = cache_repo.join("custom-cache");
+        std::fs::create_dir_all(&clean_cache).unwrap();
+        std::fs::write(clean_cache.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).unwrap();
+        std::fs::write(clean_cache.join("entry.bin"), "cached").unwrap();
+
         let ctx = context(home.clone());
         let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
-        assert!(
-            offered(&findings).is_empty(),
-            "APFS-folded Terraform state or excluded dir was offered at scan: {:?}",
-            offered(&findings)
+        let mut actual = offered(&findings);
+        actual.sort();
+        let mut expected = vec![clean_cache.as_path(), clean_target.as_path()];
+        expected.sort();
+        assert_eq!(
+            actual, expected,
+            "PV artifacts/apfs-tfstate-fold: only eligible positive controls may be offered, never APFS-folded Terraform state or excluded dirs"
         );
 
         for (target, state) in &tf_targets {
@@ -2048,7 +2127,7 @@ mod tests {
                         .errors
                         .iter()
                         .any(|error| error.contains("Terraform state")),
-                "apply must refuse APFS-folded Terraform state in {}: {outcome:?}",
+                "PV artifacts/apfs-tfstate-fold: apply must refuse APFS-folded Terraform state in {}: {outcome:?}",
                 target.display()
             );
         }
@@ -2066,12 +2145,82 @@ mod tests {
                 .apply_with_process_cwds(&[forged], &ctx, Ok(Vec::new()))
                 .unwrap();
             assert!(
-                outcome.summary.items_touched == 0 && dir.exists() && !outcome.errors.is_empty(),
-                "apply must refuse APFS-folded excluded directory {}: {outcome:?}",
+                outcome.summary.items_touched == 0
+                    && dir.exists()
+                    && outcome
+                        .errors
+                        .iter()
+                        .any(|error| error.contains("artifact corroboration changed after preview")),
+                "apply must refuse APFS-folded excluded directory {} via corroboration check: {outcome:?}",
                 dir.display()
             );
         }
 
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn vanished_artifact_candidate_is_skipped_cleanly() {
+        let (_fixture, root, home) = deletable_root("vanished-candidate");
+        let missing = home.join("gone/target");
+        assert!(
+            inspect_and_measure_artifact(&missing).unwrap().is_none(),
+            "a vanished artifact candidate must return Ok(None), never a 0-byte measurement"
+        );
+        let repo = home.join("present");
+        let target = stale_target(&repo);
+        let measured = inspect_and_measure_artifact(&target)
+            .unwrap()
+            .expect("positive control: existing artifact must be measured");
+        assert!(measured.0.is_none());
+        assert!(measured.1.allocated > 0);
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn a_build_starting_after_first_artifact_removal_refuses_the_second() {
+        let (_fixture, root, home) = deletable_root("reprobe-between-items");
+        let first_repo = home.join("first");
+        let second_repo = home.join("second");
+        let first_target = stale_target(&first_repo);
+        let second_target = stale_target(&second_repo);
+        let ctx = context(home.clone());
+        let mut findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+        crate::report::effective_actions(&mut findings, true);
+        assert_eq!(offered(&findings).len(), 2);
+
+        // Preflight and item 1's pre-removal probe see no active build; after
+        // item 1 is removed, a build starts in `second_repo` before item 2.
+        let calls = std::cell::Cell::new(0usize);
+        let outcome = Artifacts
+            .apply_with_process_probe(&findings, &ctx, || {
+                let call = calls.get();
+                calls.set(call + 1);
+                if call >= 2 {
+                    Ok(vec![ProcessCwd::from_path(second_repo.clone())])
+                } else {
+                    Ok(Vec::new())
+                }
+            })
+            .unwrap();
+
+        assert!(
+            !first_target.exists(),
+            "first target must be removed before the second repo becomes busy"
+        );
+        assert!(
+            second_target.exists(),
+            "second target must survive when a build starts after item 1"
+        );
+        assert_eq!(outcome.summary.items_touched, 1);
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("build process active")),
+            "expected active-build refusal for item 2: {:?}",
+            outcome.errors
+        );
         crate::ops::remove_test_path(root);
     }
 }

@@ -509,7 +509,10 @@ fn derived_data_in_use(
         // For a file it could not name, Apple's lsof prints the mount it lies
         // on followed by that mount's source in parentheses, read from the
         // filesystem (`dmnt.c`, `print.c`): such a name places nothing.
-        let fallback = format!(" ({})", volume_mount_source(&canonical)?.to_string_lossy());
+        let fallback = format!(
+            " ({})",
+            crate::safety::volume_mount_source(&canonical)?.to_string_lossy()
+        );
         if let Some(file) = same_volume.iter().find(|file| {
             file.path
                 .as_os_str()
@@ -549,24 +552,6 @@ fn derived_data_in_use(
         .checked_sub(window)
         .unwrap_or(std::time::UNIX_EPOCH);
     Ok((newest > cutoff).then_some(InUse::Recent))
-}
-
-/// The source the volume holding `path` was mounted from — `/dev/disk3s5`
-/// for the data volume, `server:/export` for a network share — as `statfs`
-/// reports it.
-fn volume_mount_source(path: &Path) -> Result<std::ffi::OsString> {
-    use std::os::unix::ffi::OsStringExt;
-
-    let stats = rustix::fs::statfs(path)
-        .map_err(std::io::Error::from)
-        .with_context(|| format!("cannot read the volume of {}", path.display()))?;
-    let source = stats
-        .f_mntfromname
-        .iter()
-        .take_while(|byte| **byte != 0)
-        .map(|byte| *byte as u8)
-        .collect::<Vec<_>>();
-    Ok(std::ffi::OsString::from_vec(source))
 }
 
 /// Whether an open file lies in `folder` under another spelling: the kernel
@@ -1430,7 +1415,7 @@ mod tests {
         let derived_data = home.join("Library/Developer/Xcode/DerivedData");
         aged_file(&derived_data.join("Old-a/Build/out.o"), 10);
         let device = std::fs::metadata(&derived_data).unwrap().dev();
-        let source = volume_mount_source(&derived_data).unwrap();
+        let source = crate::safety::volume_mount_source(&derived_data).unwrap();
         let fallback = PathBuf::from(format!(
             "/System/Volumes/Data ({})",
             source.to_string_lossy()

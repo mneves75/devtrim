@@ -238,10 +238,16 @@ fn scan_brew_branch(ctx: &Ctx) -> CacheBranchOutput {
     output
 }
 
-fn scan_gradle_branch(home: &Path) -> CacheBranchOutput {
+fn scan_gradle_branch(home: &Path) -> (Result<Option<PathBuf>>, CacheBranchOutput) {
     let mut output = CacheBranchOutput::default();
-    output.findings = gradle_findings(home, &mut output.unread, &mut output.diagnostics);
-    output
+    let gradle_home = gradle_user_home(home);
+    output.findings = gradle_findings(
+        home,
+        gradle_home.as_ref(),
+        &mut output.unread,
+        &mut output.diagnostics,
+    );
+    (gradle_home, output)
 }
 
 fn scan_go_branch(ctx: &Ctx) -> CacheBranchOutput {
@@ -300,7 +306,7 @@ impl Op for Caches {
         let (npm_reported, mut npm_branch) = npm_result?;
         let mut pnpm_branch = pnpm_branch?;
         let mut brew_branch = brew_branch?;
-        let mut gradle_branch = gradle_branch?;
+        let (gradle_home, mut gradle_branch) = gradle_branch?;
         let mut go_branch = go_branch?;
         let mut diagnostics = Vec::new();
         let mut other_findings = Vec::new();
@@ -317,12 +323,12 @@ impl Op for Caches {
         unread.append(&mut go_branch.unread);
         diagnostics.append(&mut go_branch.diagnostics);
 
-        let gradle_home = gradle_user_home(&ctx.home).ok().flatten();
+        let gradle_home_ref = gradle_home.as_ref().map(|path| path.as_deref());
         let mut gradle_running: Option<Result<Vec<u32>, String>> = None;
         filter_non_gradle_findings(
             &mut other_findings,
             &ctx.home,
-            gradle_home.as_deref(),
+            gradle_home_ref,
             &mut gradle_running,
             gradle_processes,
             &mut unread,
@@ -331,7 +337,7 @@ impl Op for Caches {
         filter_non_gradle_findings(
             &mut go_findings,
             &ctx.home,
-            gradle_home.as_deref(),
+            gradle_home_ref,
             &mut gradle_running,
             gradle_processes,
             &mut unread,
@@ -813,7 +819,8 @@ fn paths_overlap(target: &Path, candidate: &Path) -> Result<bool> {
     {
         return Ok(true);
     }
-    let stat_id = |path: &Path| std::fs::metadata(path).map(|meta| (meta.dev(), meta.ino()));
+    let stat_id =
+        |path: &Path| std::fs::metadata(path).map(|metadata| (metadata.dev(), metadata.ino()));
     let not_found = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
     let target_id = match stat_id(target) {
         Ok(id) => id,
@@ -836,13 +843,27 @@ fn paths_overlap(target: &Path, candidate: &Path) -> Result<bool> {
     if real_target.starts_with(&real_candidate) || real_candidate.starts_with(&real_target) {
         return Ok(true);
     }
-    let target_contains_candidate = real_candidate
-        .ancestors()
-        .any(|folder| stat_id(folder).is_ok_and(|id| id == target_id));
-    let target_inside_candidate = real_target
-        .ancestors()
-        .any(|folder| stat_id(folder).is_ok_and(|id| id == candidate_id));
-    Ok(target_contains_candidate || target_inside_candidate)
+    for folder in real_candidate.ancestors() {
+        match stat_id(folder) {
+            Ok(id) if id == target_id => return Ok(true),
+            Ok(_) => {}
+            Err(error) if not_found(&error) => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot inspect {}", folder.display()));
+            }
+        }
+    }
+    for folder in real_target.ancestors() {
+        match stat_id(folder) {
+            Ok(id) if id == candidate_id => return Ok(true),
+            Ok(_) => {}
+            Err(error) if not_found(&error) => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot inspect {}", folder.display()));
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Whether `target` overlaps Gradle's user home or either of its cache folders.
@@ -859,11 +880,12 @@ fn overlaps_gradle(target: &Path, gradle: &Path) -> Result<bool> {
 }
 
 /// Filters non-Gradle findings so another cache authority (such as Go) cannot
-/// offer a target overlapping an active or repository-owned Gradle home/cache.
+/// offer a target overlapping an active, repository-owned, or unreadable
+/// Gradle home/cache.
 fn filter_non_gradle_findings<F>(
     entries: &mut Vec<Finding>,
     home: &Path,
-    gradle_home: Option<&Path>,
+    gradle_home: std::result::Result<Option<&Path>, &anyhow::Error>,
     gradle_running: &mut Option<Result<Vec<u32>, String>>,
     probe_gradle: F,
     unread: &mut Vec<UnreadFolder>,
@@ -871,8 +893,27 @@ fn filter_non_gradle_findings<F>(
 ) where
     F: Fn() -> Result<Vec<u32>>,
 {
-    let Some(gradle) = gradle_home else {
-        return;
+    let gradle = match gradle_home {
+        Ok(Some(gradle)) => gradle,
+        Ok(None) => return,
+        Err(error) => {
+            let mut kept = Vec::with_capacity(entries.len());
+            for entry in entries.drain(..) {
+                if let Some(target) = entry.target() {
+                    diagnostics.push((
+                        "warn",
+                        format!(
+                            "leaving {} out: cannot verify overlap with Gradle user home ({error:#})",
+                            target.display()
+                        ),
+                    ));
+                } else {
+                    kept.push(entry);
+                }
+            }
+            *entries = kept;
+            return;
+        }
     };
     let mut kept = Vec::with_capacity(entries.len());
     for entry in entries.drain(..) {
@@ -947,7 +988,7 @@ fn deduplicate_findings(entries: &mut Vec<Finding>) {
         };
         let id = std::fs::symlink_metadata(target)
             .ok()
-            .map(|meta| (meta.dev(), meta.ino()));
+            .map(|metadata| (metadata.dev(), metadata.ino()));
         if seen_paths.contains(target) || id.is_some_and(|identity| seen_ids.contains(&identity)) {
             continue;
         }
@@ -1018,10 +1059,11 @@ fn gradle_processes() -> Result<Vec<u32>> {
 /// Gradle's caches and Wrapper distributions, unless a Gradle process runs.
 fn gradle_findings(
     home: &Path,
+    gradle_home: std::result::Result<&Option<PathBuf>, &anyhow::Error>,
     unread: &mut Vec<UnreadFolder>,
     diagnostics: &mut Vec<(&'static str, String)>,
 ) -> Vec<Finding> {
-    let gradle = match gradle_user_home(home) {
+    let gradle = match gradle_home {
         Ok(Some(gradle)) => gradle,
         Ok(None) => {
             diagnostics.push((
@@ -1030,9 +1072,9 @@ fn gradle_findings(
             ));
             return Vec::new();
         }
-        Err(error) => return vec![not_judged("Gradle caches", &error)],
+        Err(error) => return vec![not_judged("Gradle caches", error)],
     };
-    match gradle_home_in_repository(&gradle, home) {
+    match gradle_home_in_repository(gradle, home) {
         Ok(false) => {}
         Ok(true) => {
             diagnostics.push((
@@ -1246,8 +1288,9 @@ impl InstallCaches {
     fn reached_by(&self, target: &Path, authority: TargetAuthority) -> Result<Option<&Path>> {
         use std::os::unix::fs::MetadataExt as _;
 
-        let identity =
-            |candidate: &Path| std::fs::metadata(candidate).map(|meta| (meta.dev(), meta.ino()));
+        let identity = |candidate: &Path| {
+            std::fs::metadata(candidate).map(|metadata| (metadata.dev(), metadata.ino()))
+        };
         let not_found = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
         let target_id = match identity(target) {
             Ok(id) => id,
@@ -1973,9 +2016,9 @@ mod tests {
                 rejected.display()
             );
             assert!(
-                diagnostics
-                    .iter()
-                    .any(|(level, msg)| *level == "warn" && msg.contains("inside a Git repository")),
+                diagnostics.iter().any(|(level, message)| {
+                    *level == "warn" && message.contains("inside a Git repository")
+                }),
                 "expected repository warning for {}: {diagnostics:?}",
                 rejected.display()
             );
@@ -2021,7 +2064,7 @@ mod tests {
         filter_non_gradle_findings(
             &mut running_entries,
             &home,
-            Some(&gradle_home),
+            Ok(Some(&gradle_home)),
             &mut cached_probe,
             || Ok(vec![4242]),
             &mut unread,
@@ -2034,7 +2077,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|(level, msg)| *level == "info" && msg.contains("Gradle is running")),
+                .any(|(level, message)| *level == "info" && message.contains("Gradle is running")),
             "{diagnostics:?}"
         );
 
@@ -2045,7 +2088,7 @@ mod tests {
         filter_non_gradle_findings(
             &mut idle_entries,
             &home,
-            Some(&gradle_home),
+            Ok(Some(&gradle_home)),
             &mut idle_probe,
             || Ok(Vec::new()),
             &mut unread,
@@ -2072,7 +2115,7 @@ mod tests {
         filter_non_gradle_findings(
             &mut repo_entries,
             &home,
-            Some(&repo_gradle),
+            Ok(Some(&repo_gradle)),
             &mut repo_probe,
             || Ok(Vec::new()),
             &mut unread,
@@ -2083,10 +2126,37 @@ mod tests {
             "finding overlapping repo-owned Gradle home must be dropped"
         );
         assert!(
-            repo_diag
-                .iter()
-                .any(|(level, msg)| *level == "warn" && msg.contains("inside a Git repository")),
+            repo_diag.iter().any(|(level, message)| {
+                *level == "warn" && message.contains("inside a Git repository")
+            }),
             "{repo_diag:?}"
+        );
+
+        // Unreadable Gradle home withholds target-bearing findings while
+        // preserving non-target error findings (consistent with apply).
+        let gradle_error = anyhow::anyhow!("cannot resolve the cache root `gradle` reports");
+        let mut unreadable_entries = vec![
+            go_finding(),
+            not_judged("npm cache folder", &anyhow::anyhow!("npm failed")),
+        ];
+        let mut unreadable_probe = None;
+        let mut unreadable_diag = Vec::new();
+        filter_non_gradle_findings(
+            &mut unreadable_entries,
+            &home,
+            Err(&gradle_error),
+            &mut unreadable_probe,
+            || Ok(Vec::new()),
+            &mut unread,
+            &mut unreadable_diag,
+        );
+        assert_eq!(unreadable_entries.len(), 1);
+        assert!(unreadable_entries[0].target().is_none());
+        assert!(
+            unreadable_diag.iter().any(|(level, message)| {
+                *level == "warn" && message.contains("cannot verify overlap with Gradle user home")
+            }),
+            "{unreadable_diag:?}"
         );
 
         // Apply authorization sets `guards.gradle = true` for ~/.gradle/caches

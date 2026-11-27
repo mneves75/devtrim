@@ -66,14 +66,14 @@ fn observation_slot<T>(
 /// Observations belong to one preview only; apply always probes again.
 #[derive(Default)]
 pub(crate) struct ScanObservations {
-    process_cwds: OnceLock<std::result::Result<Vec<PathBuf>, String>>,
+    process_cwds: OnceLock<std::result::Result<Vec<crate::safety::ProcessCwd>, String>>,
     commits: Mutex<BTreeMap<PathBuf, ActivityObservation>>,
     project_roots: Mutex<BTreeMap<PathBuf, ProjectRootObservation>>,
     tracked: Mutex<BTreeMap<PathBuf, TrackedObservation>>,
 }
 
 impl ScanObservations {
-    pub(crate) fn process_cwds(&self) -> Result<&[PathBuf]> {
+    pub(crate) fn process_cwds(&self) -> Result<&[crate::safety::ProcessCwd]> {
         self.process_cwds
             .get_or_init(|| {
                 crate::safety::build_process_cwds()
@@ -123,7 +123,7 @@ impl ScanObservations {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_process_cwds(process_cwds: Vec<PathBuf>) -> Self {
+    pub(crate) fn with_process_cwds(process_cwds: Vec<crate::safety::ProcessCwd>) -> Self {
         Self {
             process_cwds: OnceLock::from(Ok(process_cwds)),
             ..Self::default()
@@ -1524,7 +1524,7 @@ pub(crate) fn error_finding(label: String, message: String) -> Finding {
 /// busy build.
 pub(crate) fn repo_has_active_build(
     repo: &Path,
-    process_cwds: &[PathBuf],
+    process_cwds: &[crate::safety::ProcessCwd],
     home: &Path,
 ) -> Result<bool> {
     use std::os::unix::fs::MetadataExt as _;
@@ -1545,11 +1545,43 @@ pub(crate) fn repo_has_active_build(
             )
         })
     };
-    if process_cwds.iter().any(|cwd| cwd.starts_with(repo)) {
+    let identity = read_identity(repo)?;
+    let repo_dev = identity.0;
+    // For a working directory it could not name, Apple's lsof prints the mount
+    // it lies on followed by that mount's source in parentheses; any such
+    // entry on `repo`'s volume (or with an unreported device) could lie inside
+    // `repo`, so fail closed rather than treat `repo` as idle.
+    if process_cwds.iter().any(|cwd| {
+        cwd.dev.is_none_or(|dev| dev == repo_dev)
+            && cwd.path.as_os_str().as_encoded_bytes().ends_with(b")")
+    }) {
+        let canonical = repo
+            .canonicalize()
+            .with_context(|| format!("cannot resolve {}", repo.display()))?;
+        let fallback = format!(
+            " ({})",
+            crate::safety::volume_mount_source(&canonical)?.to_string_lossy()
+        );
+        if let Some(cwd) = process_cwds.iter().find(|cwd| {
+            cwd.dev.is_none_or(|dev| dev == repo_dev)
+                && cwd
+                    .path
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .ends_with(fallback.as_bytes())
+        }) {
+            anyhow::bail!(
+                "lsof could not name a build process working directory on this volume (`{}`), so whether it lies in {} is unknown",
+                cwd.path.display(),
+                repo.display()
+            );
+        }
+    }
+    if process_cwds.iter().any(|cwd| cwd.path.starts_with(repo)) {
         return Ok(true);
     }
-    let identity = read_identity(repo)?;
-    if process_cwds.iter().any(|cwd| {
+    if process_cwds.iter().any(|entry| {
+        let cwd = entry.path.as_path();
         cwd.ancestors()
             .any(|folder| identity_of(folder) == Some(identity))
     }) {
@@ -1562,8 +1594,8 @@ pub(crate) fn repo_has_active_build(
     // still counts.
     let builds_in = |superproject: &Path| -> Result<bool> {
         let identity = read_identity(superproject)?;
-        Ok(process_cwds.iter().any(|cwd| {
-            for folder in cwd.ancestors() {
+        Ok(process_cwds.iter().any(|entry| {
+            for folder in entry.path.ancestors() {
                 if folder == superproject || identity_of(folder) == Some(identity) {
                     return true;
                 }
@@ -1593,27 +1625,46 @@ pub(crate) fn repo_has_active_build(
 }
 
 /// Whether `superproject`'s index records `submodule`, a folder inside it, as
-/// a submodule: a gitlink (mode `160000`) at its path. A nested repository it
-/// does not record — a worktree kept in an ignored folder, a clone inside a
-/// checkout — is its own project, which a build in the outer one does not read.
+/// a submodule: a gitlink (mode `160000`) whose path on the volume resolves to
+/// `submodule`'s `(dev, ino)` identity. Matching by identity handles case- and
+/// Unicode-folded APFS spellings without letting a nested gitlink under
+/// `submodule` match `submodule` itself. A nested repository it does not record
+/// — a worktree kept in an ignored folder, a clone inside a checkout — is its
+/// own project, which a build in the outer one does not read.
 fn records_submodule(superproject: &Path, submodule: &Path) -> Result<bool> {
-    let relative = submodule.strip_prefix(superproject).with_context(|| {
-        format!(
-            "{} is not inside {}",
-            submodule.display(),
-            superproject.display()
-        )
-    })?;
+    use std::os::unix::fs::MetadataExt as _;
+
+    let wanted = std::fs::symlink_metadata(submodule)
+        .with_context(|| format!("cannot inspect submodule {}", submodule.display()))?;
+    let wanted_identity = (wanted.dev(), wanted.ino());
     let mut command = hardened_git_pinned(superproject, "git")?;
-    command
-        .args(["--literal-pathspecs", "ls-files", "--stage", "-z", "--"])
-        .arg(relative);
+    command.args(["ls-files", "--stage", "-z"]);
     let listed = hardened_output(command, || {
         format!("Git submodule check failed for {}", superproject.display())
     })?;
-    Ok(listed
-        .split(|byte| *byte == 0)
-        .any(|entry| entry.starts_with(b"160000 ")))
+    for entry in listed.split(|byte| *byte == 0) {
+        let Some(rest) = entry.strip_prefix(b"160000 ") else {
+            continue;
+        };
+        let Some(tab) = rest.iter().position(|byte| *byte == b'\t') else {
+            continue;
+        };
+        let entry_path = Path::new(std::ffi::OsStr::from_bytes(&rest[tab + 1..]));
+        let candidate = superproject.join(entry_path);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if (metadata.dev(), metadata.ino()) == wanted_identity => {
+                return Ok(true);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot inspect recorded submodule {}", candidate.display())
+                });
+            }
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -2636,13 +2687,13 @@ mod tests {
                 for dir in ["Pods", "target", "node_modules"] {
                     assert!(
                         index.holds_tracked_files(&target_repo.join(dir)).unwrap(),
-                        "core.worktree={hostile_worktree} bypassed TrackedIndex for {dir} in {}",
+                        "PV git/core-worktree-pin: core.worktree={hostile_worktree} bypassed TrackedIndex for {dir} in {}",
                         target_repo.display()
                     );
                 }
                 assert!(
                     records_submodule(target_repo, &target_repo.join("submod")).unwrap(),
-                    "core.worktree={hostile_worktree} bypassed records_submodule in {}",
+                    "PV git/core-worktree-pin: core.worktree={hostile_worktree} bypassed records_submodule in {}",
                     target_repo.display()
                 );
                 assert!(
@@ -2671,6 +2722,103 @@ mod tests {
         assert!(
             hardened_git_pinned(&symlink_repo, "git").is_err(),
             "symlinked .git marker must be refused"
+        );
+    }
+
+    #[test]
+    fn records_submodule_matches_apfs_casefolded_submodule_and_ignores_nested_gitlinks() {
+        let fixture = crate::ops::TestFixture::new("records-submodule-identity");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let superproject = base.join("super");
+        init_old_git_repo(&superproject).unwrap();
+
+        let submod = superproject.join("vendor/submod");
+        init_old_git_repo(&submod).unwrap();
+        let unrecorded = superproject.join("vendor/unrecorded");
+        init_old_git_repo(&unrecorded).unwrap();
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&superproject)
+            .args(["add", "vendor/submod"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        commit_old_git_fixture(&superproject, &[]).unwrap();
+
+        // Rename `vendor/submod` only in case: on case-insensitive APFS, Git's
+        // index still records `vendor/submod` while the disk spelling is
+        // `vendor/SubMod`. Identity matching must still recognize it.
+        std::fs::rename(&submod, superproject.join("vendor/renaming")).unwrap();
+        let renamed = superproject.join("vendor/SubMod");
+        std::fs::rename(superproject.join("vendor/renaming"), &renamed).unwrap();
+
+        assert!(
+            records_submodule(&superproject, &renamed).unwrap(),
+            "case-folded submodule spelling must match recorded gitlink by (dev, ino)"
+        );
+        // Positive control: a parent directory holding a nested gitlink and an
+        // unrecorded sibling repo must NOT match as recorded submodules.
+        assert!(
+            !records_submodule(&superproject, &superproject.join("vendor")).unwrap(),
+            "directory containing a nested gitlink must not match as a submodule itself"
+        );
+        assert!(
+            !records_submodule(&superproject, &unrecorded).unwrap(),
+            "unrecorded nested repository must not match as a submodule"
+        );
+    }
+
+    #[test]
+    fn repo_has_active_build_fails_closed_on_same_volume_lsof_mount_fallback() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let fixture = crate::ops::TestFixture::new("build-cwd-mount-fallback");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let repo = home.join("app");
+        init_old_git_repo(&repo).unwrap();
+        let repo_dev = std::fs::metadata(&repo).unwrap().dev();
+        let mount_source = crate::safety::volume_mount_source(&repo)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let fallback_path = PathBuf::from(format!("/System/Volumes/Data ({mount_source})"));
+
+        // Different-device mount fallback must not block this repository.
+        let foreign = vec![crate::safety::ProcessCwd {
+            dev: Some(repo_dev.wrapping_add(1)),
+            path: fallback_path.clone(),
+        }];
+        assert!(
+            !repo_has_active_build(&repo, &foreign, &home).unwrap(),
+            "mount fallback on another device must not block an idle repo"
+        );
+
+        // Positive control: a normal CWD inside the repo still reports active.
+        let active = vec![crate::safety::ProcessCwd {
+            dev: Some(repo_dev),
+            path: repo.clone(),
+        }];
+        assert!(
+            repo_has_active_build(&repo, &active, &home).unwrap(),
+            "positive control: normal CWD in repo must report active"
+        );
+
+        // Same-volume mount fallback must fail closed with an explicit error.
+        let same_volume = vec![crate::safety::ProcessCwd {
+            dev: Some(repo_dev),
+            path: fallback_path,
+        }];
+        let error = repo_has_active_build(&repo, &same_volume, &home)
+            .expect_err("same-volume mount fallback must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("lsof could not name a build process working directory on this volume"),
+            "unexpected error: {error:#}"
         );
     }
 }

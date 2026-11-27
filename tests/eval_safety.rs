@@ -1329,7 +1329,7 @@ fn eval_a_build_in_the_superproject_keeps_its_submodules() {
     // index lists a gitlink, for `vendor/inner`.
     sandbox.script(
         "git",
-        "case \"$*\" in\n  *'ls-files --stage'*vendor/inner) printf '160000 0123456789abcdef0123456789abcdef01234567 0\\tvendor/inner\\0' ;;\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
+        "case \"$*\" in\n  *'ls-files --stage'*) printf '160000 0123456789abcdef0123456789abcdef01234567 0\\tvendor/inner\\0' ;;\n  *ls-files*) ;;\n  *' -g '*) printf 'HEAD@{2020-01-01}\\n' ;;\n  *) printf '2020-01-01\\n' ;;\nesac",
     );
     let dev = sandbox.path().join("dev");
     let outer = dev.join("outer");
@@ -1364,7 +1364,14 @@ fn eval_a_build_in_the_superproject_keeps_its_submodules() {
         (dev.join("outer/.scratch/wt"), vec![inner.clone()]),
         (dev.clone(), vec![worktree.clone(), inner.clone()]),
     ] {
-        sandbox.script("lsof", &format!("printf 'p42\\nn{}\\n'", cwd.display()));
+        let cwd_dev = std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(&cwd).unwrap());
+        sandbox.script(
+            "lsof",
+            &format!(
+                "printf 'p42\\nfcwd\\nD0x{cwd_dev:x}\\nn{}\\n'",
+                cwd.display()
+            ),
+        );
         let preview = json(&run(
             &sandbox,
             &["clean", "node-modules", "--root", root, "--json"],
@@ -1425,7 +1432,7 @@ fn eval_a_superproject_git_failure_is_an_error_not_a_busy_build() {
     assert!(idle.status.success(), "{}", json(&idle));
 
     sandbox.script("pgrep", "printf '42\\n'");
-    sandbox.script("lsof", "printf 'p42\\nn/elsewhere\\n'");
+    sandbox.script("lsof", "printf 'p42\\nfcwd\\nD0x1\\nn/elsewhere\\n'");
     let busy_elsewhere = run(
         &sandbox,
         &["clean", "node-modules", "--root", root, "--json"],
@@ -1477,7 +1484,16 @@ fn eval_build_liveness_matches_the_repository_under_any_spelling() {
     assert!(upper.is_dir(), "case-sensitive volume: {}", upper.display());
     sandbox.script("pgrep", "printf '42\\n'");
     let preview = |root: &Path, cwd: &Path| {
-        sandbox.script("lsof", &format!("printf 'p42\\nn{}\\n'", cwd.display()));
+        let cwd_dev = std::fs::metadata(cwd)
+            .map(|meta| std::os::unix::fs::MetadataExt::dev(&meta))
+            .unwrap_or(1);
+        sandbox.script(
+            "lsof",
+            &format!(
+                "printf 'p42\\nfcwd\\nD0x{cwd_dev:x}\\nn{}\\n'",
+                cwd.display()
+            ),
+        );
         run(
             &sandbox,
             &[
@@ -1532,10 +1548,15 @@ fn eval_build_process_liveness_keeps_only_the_busy_repository() {
             write(&project.join("target/debug/file"), "build output");
         }
         let dev = dev.canonicalize().unwrap();
+        let busy_dev =
+            std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(dev.join("busy")).unwrap());
         sandbox.script("pgrep", "printf '42\\n'");
         sandbox.script(
             "lsof",
-            &format!("printf 'p42\\nn{}\\n'", dev.join("busy").display()),
+            &format!(
+                "printf 'p42\\nfcwd\\nD0x{busy_dev:x}\\nn{}\\n'",
+                dev.join("busy").display()
+            ),
         );
         let leaf = if category == "node-modules" {
             "node_modules"

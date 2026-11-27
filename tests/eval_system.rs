@@ -267,7 +267,9 @@ fn eval_unreadable_build_cwd_refuses_project_cleanup() {
         let (sandbox, project) = build_cwd_fixture("eval-unreadable-build-cwd");
         let root = project.to_str().unwrap();
         let args = project_args(category, root, false);
-        sandbox.script("lsof", "printf 'p42\\nn/elsewhere\\n'");
+        let project_dev =
+            std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(&project).unwrap());
+        sandbox.script("lsof", "printf 'p42\\nfcwd\\nD0x1\\nn/elsewhere\\n'");
         let eligible = run(&sandbox, &args);
         assert!(eligible.status.success(), "{}", json(&eligible));
         assert_eq!(
@@ -275,7 +277,13 @@ fn eval_unreadable_build_cwd_refuses_project_cleanup() {
             if category == "purge" { 2 } else { 1 },
             "inactive absolute cwd control must reach cleanup eligibility"
         );
-        sandbox.script("lsof", &format!("printf 'p42\\nn{}\\n'", project.display()));
+        sandbox.script(
+            "lsof",
+            &format!(
+                "printf 'p42\\nfcwd\\nD0x{project_dev:x}\\nn{}\\n'",
+                project.display()
+            ),
+        );
         let busy = run(&sandbox, &args);
         assert!(busy.status.success(), "{}", json(&busy));
         assert!(actionable_targets(&json(&busy)).is_empty());
@@ -285,7 +293,10 @@ fn eval_unreadable_build_cwd_refuses_project_cleanup() {
             "relative/project",
             "no more information",
         ] {
-            sandbox.script("lsof", &format!("printf 'p42\\nn{name}\\n'"));
+            sandbox.script(
+                "lsof",
+                &format!("printf 'p42\\nfcwd\\nD0x{project_dev:x}\\nn{name}\\n'"),
+            );
             let pristine = Tree::snapshot(sandbox.path());
             let result = run(&sandbox, &args);
             let document = json(&result);
@@ -307,13 +318,13 @@ fn eval_unreadable_build_cwd_refuses_project_cleanup() {
 fn eval_build_cwd_that_becomes_unreadable_after_preview_refuses_apply() {
     for category in ["node-modules", "artifacts", "purge"] {
         let (sandbox, project) = build_cwd_fixture("eval-build-cwd-drift");
-        sandbox.script("lsof", "printf 'p42\\nn/elsewhere\\n'");
+        sandbox.script("lsof", "printf 'p42\\nfcwd\\nD0x1\\nn/elsewhere\\n'");
         let root = project.to_str().unwrap();
         let args = project_args(category, root, true);
         let (result, _) = drift_session(&sandbox, &args, || {
             sandbox.script(
                 "lsof",
-                "printf 'p42\\nncwd|rtd info error: Operation not permitted\\n'",
+                "printf 'p42\\nfcwd\\nD0x1\\nncwd|rtd info error: Operation not permitted\\n'",
             );
         });
         assert!(
@@ -1685,7 +1696,10 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
                 .any(|call| call.contains(&"volume".to_string())),
         "eval/docker-apply: a volume or system prune ran"
     );
-    assert!(apply.status.success(), "{document}");
+    assert!(
+        apply.status.success(),
+        "PV docker/builder-prune-isolation: {document}"
+    );
     assert_eq!(document["summary"]["items_touched"], 2);
     assert_journaled_commands(&sandbox, "docker", &[image_prune, builder_prune]);
 }

@@ -18,7 +18,10 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(paths) = devtrim::fuzz_api::parse_lsof_cwds(output, exit_code) {
         assert!(paths.iter().all(|path| path.is_absolute()));
     }
-    let _ = devtrim::fuzz_api::parse_lsof_mappings(output, exit_code);
+    if let Ok(mappings) = devtrim::fuzz_api::parse_lsof_mappings(output, exit_code) {
+        assert!(!mappings.is_empty());
+        assert!(mappings.iter().all(|(_, path)| path.is_absolute()));
+    }
     if let Ok(files) = devtrim::fuzz_api::parse_lsof_open_files(output, exit_code) {
         assert!(!files.is_empty());
         assert!(files.iter().all(|(_, path)| path.is_absolute()));

@@ -10,13 +10,13 @@
 
 use anyhow::Result;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::artifacts::Artifacts;
 use super::node_modules::NodeModules;
 use super::project::ScanObservations;
-use super::{ApplyOutcome, Finding, Op, is_node_modules_name};
-use crate::safety::Ctx;
+use super::{Action, ApplyOutcome, Finding, Op, is_node_modules_name};
+use crate::safety::{Ctx, ProcessCwd};
 
 pub(crate) struct Purge;
 
@@ -50,16 +50,20 @@ impl Op for Purge {
 }
 
 impl Purge {
-    /// Each category probes build liveness afresh for its own batch, as its
-    /// own `apply` does; tests supply the process list instead of the host's.
+    /// Each category probes build liveness afresh for its own batch and before
+    /// each target's removal, as its own `apply` does; tests supply the probe
+    /// instead of the host's.
     fn apply_with_process_cwds(
         &self,
         findings: &[Finding],
         ctx: &Ctx,
-        process_cwds: impl Fn() -> Result<Vec<PathBuf>>,
+        process_cwds: impl Fn() -> Result<Vec<ProcessCwd>>,
     ) -> Result<ApplyOutcome> {
-        let (node_modules, artifacts): (Vec<Finding>, Vec<Finding>) =
-            findings.iter().cloned().partition(|finding| {
+        let (node_modules, artifacts): (Vec<Finding>, Vec<Finding>) = findings
+            .iter()
+            .filter(|finding| matches!(finding.action, Action::Trash | Action::Shred))
+            .cloned()
+            .partition(|finding| {
                 finding
                     .target()
                     .and_then(Path::file_name)
@@ -69,13 +73,13 @@ impl Purge {
         // The two categories authorize their batches independently, so one
         // refusing must not keep the other's unrelated targets.
         if !node_modules.is_empty() {
-            match NodeModules.apply_with_process_cwds(&node_modules, ctx, process_cwds()) {
+            match NodeModules.apply_with_process_probe(&node_modules, ctx, &process_cwds) {
                 Ok(part) => outcome.merge(part),
                 Err(error) => outcome.fail(error.context(NodeModules.name())),
             }
         }
         if !artifacts.is_empty() {
-            match Artifacts.apply_with_process_cwds(&artifacts, ctx, process_cwds()) {
+            match Artifacts.apply_with_process_probe(&artifacts, ctx, &process_cwds) {
                 Ok(part) => outcome.merge(part),
                 Err(error) => outcome.fail(error.context(Artifacts.name())),
             }
@@ -166,6 +170,61 @@ mod tests {
                 .any(|error| error.contains("artifact corroboration changed after preview")),
             "the refusal must come from the artifacts shape check: {:?}",
             outcome.errors
+        );
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn info_and_none_findings_do_not_trigger_spurious_artifacts_probe() {
+        let fixture = crate::ops::TestFixture::new("devtrim-purge-info-filter");
+        let root = fixture.path().to_path_buf();
+        let repo = root.join("dev/project");
+        crate::ops::project::init_old_git_repo(&repo).unwrap();
+        crate::ops::remove_test_path(repo.join(".git/logs"));
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+        let modules = repo.join("node_modules");
+        std::fs::create_dir_all(modules.join("pkg")).unwrap();
+        std::fs::write(modules.join("pkg/index.js"), "x").unwrap();
+        let root = root.canonicalize().unwrap();
+        let modules = root.join("dev/project/node_modules");
+        let ctx = Ctx {
+            roots: vec![root.join("dev")],
+            ..Ctx::for_test(root.clone())
+        };
+        let mut plan = vec![
+            finding(
+                modules.to_str().unwrap(),
+                1,
+                root.join("dev/project").to_str().unwrap(),
+            ),
+            crate::ops::project::unread_folders_finding(
+                "node_modules",
+                &[crate::ops::project::UnreadFolder::new(
+                    &root.join("dev/blocked"),
+                    &anyhow::anyhow!("permission denied"),
+                )],
+            ),
+            Finding::new("note", None, 0, "informational", 1, Action::None),
+        ];
+        crate::report::effective_actions(&mut plan, true);
+
+        let probes = std::cell::Cell::new(0usize);
+        let outcome = Purge
+            .apply_with_process_cwds(&plan, &ctx, || {
+                probes.set(probes.get() + 1);
+                Ok(Vec::new())
+            })
+            .unwrap();
+
+        assert_eq!(outcome.summary.items_touched, 1, "{:?}", outcome.errors);
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        assert!(!modules.exists());
+        // NodeModules probes once for preflight and once before the one target's
+        // removal; Artifacts must never run or probe for Info/None findings.
+        assert_eq!(
+            probes.get(),
+            2,
+            "Info/None findings must not trigger a spurious Artifacts probe"
         );
         crate::ops::remove_test_path(root);
     }

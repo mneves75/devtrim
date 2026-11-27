@@ -122,7 +122,7 @@ pub(crate) fn report(ctx: &Ctx) -> WorktreesReport {
 fn list_repository(
     repository: &Path,
     scan_roots: &[PathBuf],
-    process_cwds: Option<&[PathBuf]>,
+    process_cwds: Option<&[crate::safety::ProcessCwd]>,
     home: &Path,
     listed: &mut HashSet<(u64, u64)>,
     errors: &mut Vec<String>,

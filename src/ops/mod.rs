@@ -102,7 +102,7 @@ pub(crate) fn run_command_authority(
     let result = (|| -> Result<String> {
         let mut child = std::process::Command::new(program);
         child.args(&args);
-        match authority {
+        let _docker_config_guard = match authority {
             crate::report::CommandAuthority::DockerBuildxPrune { builder, nodes, .. } => {
                 let pinned_config = crate::ops::docker::write_pinned_buildx_config(
                     ctx,
@@ -112,10 +112,11 @@ pub(crate) fn run_command_authority(
                 )?;
                 child
                     .current_dir(&ctx.home)
-                    .env("DOCKER_CONFIG", &pinned_config)
-                    .env("BUILDX_CONFIG", pinned_config.join("buildx"))
+                    .env("DOCKER_CONFIG", pinned_config.path())
+                    .env("BUILDX_CONFIG", pinned_config.path().join("buildx"))
                     .env_remove("DOCKER_CONTEXT")
                     .env_remove("BUILDX_BUILDER");
+                Some(pinned_config)
             }
             crate::report::CommandAuthority::DockerBuilderPrune { .. } => {
                 let isolated_config = crate::ops::docker::write_isolated_builder_config(
@@ -124,22 +125,32 @@ pub(crate) fn run_command_authority(
                 )?;
                 child
                     .current_dir(&ctx.home)
-                    .env("DOCKER_CONFIG", &isolated_config)
-                    .env("BUILDX_CONFIG", isolated_config.join("buildx"))
+                    .env("DOCKER_CONFIG", isolated_config.path())
+                    .env("BUILDX_CONFIG", isolated_config.path().join("buildx"))
                     .env_remove("DOCKER_CONTEXT")
                     .env_remove("BUILDX_BUILDER");
+                Some(isolated_config)
             }
             crate::report::CommandAuthority::DockerImagePrune { .. } => {
                 child
                     .current_dir(&ctx.home)
                     .env_remove("DOCKER_CONTEXT")
                     .env_remove("BUILDX_BUILDER");
+                None
             }
-            _ => {}
-        }
+            _ => None,
+        };
         successful_output(child.output_within(MUTATION_TIMEOUT), &command).map(|_| note(&command))
     })();
     attempt.finish(ctx, result)
+}
+
+/// Removes a private per-attempt Docker config directory created under
+/// devtrim's state directory through the verified-target sink.
+pub(crate) fn cleanup_private_docker_config(path: &Path, home: &Path, expected: FileIdentity) {
+    if let Ok(verified) = crate::safety::validate_path_for_deletion(path, home, &[]) {
+        let _ = remove_path(verified, true, expected);
+    }
 }
 
 pub(crate) fn optional_command_stdout(
