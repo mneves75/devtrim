@@ -614,16 +614,52 @@ fn authored_entry_under_walkdir(path: &Path) -> Result<Option<Authored>> {
     Ok(None)
 }
 
+/// Folds a UTF-8 filename component the way case-insensitive macOS APFS does
+/// for every Unicode code point whose full case folding maps onto pure ASCII:
+/// `ß`/`ẞ` -> `ss`, `ſ` -> `s`, `K` -> `k`, and the seven Latin `ff`/`fi`/
+/// `fl`/`ffi`/`ffl`/`st` ligatures (`U+FB00`..=`U+FB06`), alongside ASCII
+/// lowercasing (Unicode `CaseFolding.txt`, full folding).
+pub(crate) fn fold_apfs_ascii(input: &str) -> String {
+    let mut folded = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\u{00df}' | '\u{1e9e}' => folded.push_str("ss"),
+            '\u{017f}' => folded.push('s'),
+            '\u{212a}' => folded.push('k'),
+            '\u{fb00}' => folded.push_str("ff"),
+            '\u{fb01}' => folded.push_str("fi"),
+            '\u{fb02}' => folded.push_str("fl"),
+            '\u{fb03}' => folded.push_str("ffi"),
+            '\u{fb04}' => folded.push_str("ffl"),
+            '\u{fb05}' | '\u{fb06}' => folded.push_str("st"),
+            other => folded.push(other.to_ascii_lowercase()),
+        }
+    }
+    folded
+}
+
 /// Whether `name` is Terraform state: `*.tfstate`, or the `*.tfstate.backup`
-/// Terraform keeps beside it, in any ASCII case. Terraform's local backend
+/// Terraform keeps beside it, matched as case-insensitive APFS folds names
+/// (including full Unicode case folding to ASCII). Terraform's local backend
 /// writes `terraform.tfstate` into its working directory, which under
 /// Terragrunt is inside `.terragrunt-cache` (Terraform "Backend Type: local";
 /// Terragrunt "Terragrunt cache"), and nothing regenerates it.
 fn is_terraform_state_name(name: &OsStr) -> bool {
-    let name = name.as_encoded_bytes();
-    [&b".tfstate"[..], b".tfstate.backup"].iter().any(|suffix| {
-        name.len() >= suffix.len() && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
-    })
+    const SUFFIXES: [&str; 2] = [".tfstate", ".tfstate.backup"];
+    match name.to_str() {
+        Some(name) => {
+            let folded = fold_apfs_ascii(name);
+            SUFFIXES.iter().any(|suffix| folded.ends_with(suffix))
+        }
+        None => {
+            let bytes = name.as_encoded_bytes();
+            SUFFIXES.iter().any(|suffix| {
+                let suffix = suffix.as_bytes();
+                bytes.len() >= suffix.len()
+                    && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+            })
+        }
+    }
 }
 
 /// Whether `name` ends in `-keypair.json` as the volume compares names: in any
@@ -895,12 +931,14 @@ pub(super) fn artifact_evidence_for_dir(
 ) -> Result<Option<ArtifactEvidence>> {
     let name = path.file_name().and_then(|name| name.to_str());
     // macOS filesystems are commonly case-insensitive and case-preserving, so
-    // `Build` or `DIST` must hit the ambiguous-name denylist exactly like
+    // `Build`, `DIST`, or APFS full-casefold equivalents (`diſt`, `diﬆ`,
+    // `node_moduleſ`) must hit the ambiguous-name denylist exactly like
     // `build`, before any positive evidence (including CACHEDIR.TAG) is read.
     if name.is_some_and(|name| {
+        let folded = fold_apfs_ascii(name);
         EXCLUDED_NAMES
             .iter()
-            .any(|excluded| name.eq_ignore_ascii_case(excluded))
+            .any(|excluded| folded.eq_ignore_ascii_case(excluded))
     }) {
         return Ok(None);
     }
@@ -1922,6 +1960,118 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn apfs_unicode_casefold_protects_terraform_state_and_excluded_names_at_scan_and_apply() {
+        assert_eq!(fold_apfs_ascii("\u{00df}\u{1e9e}"), "ssss");
+        assert_eq!(fold_apfs_ascii("\u{017f}\u{212a}"), "sk");
+        assert_eq!(
+            fold_apfs_ascii("\u{fb00}\u{fb01}\u{fb02}\u{fb03}\u{fb04}\u{fb05}\u{fb06}"),
+            "fffiflffifflstst"
+        );
+
+        let (_fixture, root, home) = deletable_root("apfs-unicode-casefold");
+
+        // 1. APFS-folded Terraform state and backup filenames inside corroborated
+        // artifact trees must be withheld at scan and refused at apply.
+        let tf_cases = [
+            ("infra-017f", "terraform.tf\u{017f}tate"),
+            ("infra-fb05", "terraform.tf\u{fb05}ate"),
+            ("infra-fb06", "terraform.tf\u{fb06}ate"),
+        ];
+        let mut tf_targets = Vec::new();
+        for (repo_name, state_name) in tf_cases {
+            let repo = home.join(repo_name);
+            init_old_git_repo(&repo).unwrap();
+            let unit = repo.join("live/app");
+            let cache = unit.join(".terragrunt-cache");
+            std::fs::create_dir_all(cache.join("a1/b2")).unwrap();
+            std::fs::write(unit.join("terragrunt.hcl"), "").unwrap();
+            let state = cache.join("a1/b2").join(state_name);
+            std::fs::write(&state, "{\"version\": 4}").unwrap();
+            tf_targets.push((cache, state));
+        }
+
+        let rust_repo = home.join("rust-212a");
+        init_old_git_repo(&rust_repo).unwrap();
+        std::fs::write(rust_repo.join("Cargo.toml"), "[package]").unwrap();
+        let rust_target = rust_repo.join("target");
+        std::fs::create_dir_all(rust_target.join("debug")).unwrap();
+        let backup_state = rust_target.join("debug/terraform.tfstate.bac\u{212a}up");
+        std::fs::write(&backup_state, "{}").unwrap();
+        tf_targets.push((rust_target, backup_state));
+
+        // 2. APFS-folded EXCLUDED_NAMES carrying a valid CACHEDIR.TAG must be
+        // excluded at both scan and apply.
+        let excl_cases = [
+            ("excl-dist-017f", "di\u{017f}t"),
+            ("excl-dist-fb05", "di\u{fb05}"),
+            ("excl-dist-fb06", "di\u{fb06}"),
+        ];
+        let mut excl_targets = Vec::new();
+        for (repo_name, dir_name) in excl_cases {
+            let repo = home.join(repo_name);
+            init_old_git_repo(&repo).unwrap();
+            let dir = repo.join(dir_name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).unwrap();
+            std::fs::write(dir.join("bundle.js"), "console.log(1);").unwrap();
+            excl_targets.push(dir);
+        }
+
+        let ctx = context(home.clone());
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+        assert!(
+            offered(&findings).is_empty(),
+            "APFS-folded Terraform state or excluded dir was offered at scan: {:?}",
+            offered(&findings)
+        );
+
+        for (target, state) in &tf_targets {
+            let forged = Finding::new(
+                "stale artifact",
+                Some(target.clone()),
+                1,
+                "test",
+                5,
+                Action::Shred,
+            );
+            let outcome = Artifacts
+                .apply_with_process_cwds(&[forged], &ctx, Ok(Vec::new()))
+                .unwrap();
+            assert!(
+                outcome.summary.items_touched == 0
+                    && state.exists()
+                    && outcome
+                        .errors
+                        .iter()
+                        .any(|error| error.contains("Terraform state")),
+                "apply must refuse APFS-folded Terraform state in {}: {outcome:?}",
+                target.display()
+            );
+        }
+
+        for dir in &excl_targets {
+            let forged = Finding::new(
+                "stale CACHEDIR.TAG cache",
+                Some(dir.clone()),
+                1,
+                "test",
+                5,
+                Action::Shred,
+            );
+            let outcome = Artifacts
+                .apply_with_process_cwds(&[forged], &ctx, Ok(Vec::new()))
+                .unwrap();
+            assert!(
+                outcome.summary.items_touched == 0 && dir.exists() && !outcome.errors.is_empty(),
+                "apply must refuse APFS-folded excluded directory {}: {outcome:?}",
+                dir.display()
+            );
+        }
+
         crate::ops::remove_test_path(root);
     }
 }

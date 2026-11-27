@@ -576,6 +576,39 @@ fn hardened_git(root: &Path, git: &str) -> Result<Command> {
     Ok(command)
 }
 
+/// Pins `--git-dir <canonical>/.git --work-tree <canonical>` onto a hardened
+/// Git command so repository-controlled `core.worktree` in `.git/config`
+/// cannot redirect the working-tree root (for example to `../..` or `/`) and
+/// induce a non-empty CWD prefix that hides tracked paths or recorded
+/// submodules. Accepts both regular `.git` directories and `.git` gitfiles
+/// (linked worktrees and submodules), refusing symlinks and other non-regular
+/// markers.
+fn pin_repo_worktree(command: &mut Command, root: &Path) -> Result<()> {
+    let canonical = std::fs::canonicalize(root)
+        .with_context(|| format!("cannot resolve Git root {}", root.display()))?;
+    let dot_git = canonical.join(".git");
+    let metadata = std::fs::symlink_metadata(&dot_git)
+        .with_context(|| format!("cannot inspect Git marker {}", dot_git.display()))?;
+    if !metadata.is_dir() && !metadata.is_file() {
+        anyhow::bail!("refusing non-regular Git marker {}", dot_git.display());
+    }
+    command
+        .arg("--git-dir")
+        .arg(&dot_git)
+        .arg("--work-tree")
+        .arg(&canonical);
+    Ok(())
+}
+
+/// [`hardened_git`] pinned to `<canonical>/.git` and `<canonical>` via
+/// [`pin_repo_worktree`]. Use for every repository query that does not supply
+/// its own isolated `--git-dir`.
+fn hardened_git_pinned(root: &Path, git: &str) -> Result<Command> {
+    let mut command = hardened_git(root, git)?;
+    pin_repo_worktree(&mut command, root)?;
+    Ok(command)
+}
+
 /// Whether the repository at `root` tracks any file under `target`, which lies
 /// inside it: one directory, checked against a fresh listing of the index.
 pub(crate) fn tracks_files_under(root: &Path, target: &Path) -> Result<bool> {
@@ -605,7 +638,7 @@ pub(crate) struct TrackedIndex {
 
 impl TrackedIndex {
     pub(crate) fn list(root: &Path) -> Result<Self> {
-        let mut command = hardened_git(root, "git")?;
+        let mut command = hardened_git_pinned(root, "git")?;
         command.args(["ls-files", "-z"]);
         let listed = hardened_output(command, || {
             format!("Git tracked-file check failed for {}", root.display())
@@ -676,7 +709,7 @@ impl TrackedIndex {
 
 /// One `git log -1` against a repository that may be hostile.
 fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
-    let mut command = hardened_git(root, git)?;
+    let mut command = hardened_git_pinned(root, git)?;
     command
         .env("TZ", "UTC0")
         // Signature display runs the repository's `gpg.program`.
@@ -715,7 +748,7 @@ fn hardened_output(mut command: Command, failure: impl Fn() -> String) -> Result
 /// through the hardened invocation. Every path it lists is the repository's
 /// own data, not a fact about the disk.
 pub(crate) fn worktree_listing(repo: &Path) -> Result<Vec<u8>> {
-    let mut command = hardened_git(repo, "git")?;
+    let mut command = hardened_git_pinned(repo, "git")?;
     command.args(["worktree", "list", "--porcelain", "-z"]);
     hardened_output(command, || {
         format!("cannot list the worktrees of {}", repo.display())
@@ -1128,7 +1161,7 @@ fn parse_porcelain_status(output: &[u8]) -> Result<Vec<StatusEntry<'_>>> {
 /// The absolute common directory (`.git` of the main worktree) of the
 /// repository holding `repo`.
 pub(crate) fn git_common_dir(repo: &Path) -> Result<PathBuf> {
-    let mut command = hardened_git(repo, "git")?;
+    let mut command = hardened_git_pinned(repo, "git")?;
     command.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     let mut listed = hardened_output(command, || {
         format!("cannot find the Git directory of {}", repo.display())
@@ -1149,7 +1182,7 @@ pub(crate) fn git_common_dir(repo: &Path) -> Result<PathBuf> {
 /// (`check-ignore` exits 0 for ignored, 1 for not ignored; anything else is a
 /// failure, never an answer).
 pub(crate) fn ignores_path(repo: &Path, relative: &str) -> Result<bool> {
-    let mut command = hardened_git(repo, "git")?;
+    let mut command = hardened_git_pinned(repo, "git")?;
     command.args(["check-ignore", "-q", "--", relative]);
     let output = command
         .output_within(QUERY_TIMEOUT)
@@ -1381,7 +1414,7 @@ pub(crate) fn gitfile_target(bytes: &[u8]) -> Option<&std::ffi::OsStr> {
 /// the original failure then stands.
 pub(crate) fn unborn_branch(repo: &Path) -> bool {
     let git_output = |arguments: &[&str]| {
-        let mut command = hardened_git(repo, "git").ok()?;
+        let mut command = hardened_git_pinned(repo, "git").ok()?;
         command.args(arguments);
         command.output_within(QUERY_TIMEOUT).ok()
     };
@@ -1571,7 +1604,7 @@ fn records_submodule(superproject: &Path, submodule: &Path) -> Result<bool> {
             superproject.display()
         )
     })?;
-    let mut command = hardened_git(superproject, "git")?;
+    let mut command = hardened_git_pinned(superproject, "git")?;
     command
         .args(["--literal-pathspecs", "ls-files", "--stage", "-z", "--"])
         .arg(relative);
@@ -2428,6 +2461,15 @@ mod tests {
             .unwrap();
 
         for broken in [&empty_marker, &dangling_marker] {
+            let mut probe = hardened_git(broken, "git").unwrap();
+            probe.args(["rev-parse", "--git-dir"]);
+            let output = probe.output_within(QUERY_TIMEOUT).unwrap();
+            assert!(
+                !output.status.success(),
+                "PV git/discovery-ceiling: hardened_git in {} escaped to ancestor repo {:?}",
+                broken.display(),
+                String::from_utf8_lossy(&output.stdout)
+            );
             let activity = repo_last_activity(broken);
             assert!(
                 activity.is_err(),
@@ -2500,5 +2542,135 @@ mod tests {
         );
         assert_eq!(alias_unread.len(), 1);
         drop(_locked);
+    }
+
+    #[test]
+    fn hostile_core_worktree_cannot_bypass_tracked_index_or_submodule_checks() {
+        let fixture = crate::ops::TestFixture::new("hostile-core-worktree");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let repo = base.join("repo");
+        init_old_git_repo(&repo).unwrap();
+
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+                .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git -C {} {:?} failed: {}",
+                cwd.display(),
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        std::fs::create_dir_all(repo.join("Pods")).unwrap();
+        std::fs::write(repo.join("Pods/Session.swift"), "let x = 1\n").unwrap();
+        std::fs::create_dir_all(repo.join("target")).unwrap();
+        std::fs::write(repo.join("target/tracked.txt"), "tracked\n").unwrap();
+        std::fs::create_dir_all(repo.join("node_modules/pkg")).unwrap();
+        std::fs::write(
+            repo.join("node_modules/pkg/index.js"),
+            "module.exports = 1;\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join(".gitignore"), ".scratch/\n").unwrap();
+
+        let submod = repo.join("submod");
+        init_old_git_repo(&submod).unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                "-f",
+                "Pods/Session.swift",
+                "target/tracked.txt",
+                "node_modules/pkg/index.js",
+                ".gitignore",
+                "submod",
+            ],
+        );
+        commit_old_git_fixture(&repo, &[]).unwrap();
+
+        let worktree = base.join("linked-wt");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt-branch",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            std::fs::symlink_metadata(worktree.join(".git"))
+                .unwrap()
+                .is_file(),
+            "linked worktree must use a .git gitfile"
+        );
+
+        let config_file = repo.join(".git/config");
+        for hostile_worktree in ["../..", "/"] {
+            let status = Command::new("git")
+                .args(["config", "--file"])
+                .arg(&config_file)
+                .args(["core.worktree", hostile_worktree])
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            for target_repo in [&repo, &worktree] {
+                let mut index = TrackedIndex::list(target_repo).unwrap();
+                for dir in ["Pods", "target", "node_modules"] {
+                    assert!(
+                        index.holds_tracked_files(&target_repo.join(dir)).unwrap(),
+                        "core.worktree={hostile_worktree} bypassed TrackedIndex for {dir} in {}",
+                        target_repo.display()
+                    );
+                }
+                assert!(
+                    records_submodule(target_repo, &target_repo.join("submod")).unwrap(),
+                    "core.worktree={hostile_worktree} bypassed records_submodule in {}",
+                    target_repo.display()
+                );
+                assert!(
+                    ignores_path(target_repo, ".scratch/").unwrap(),
+                    "core.worktree={hostile_worktree} bypassed ignores_path in {}",
+                    target_repo.display()
+                );
+                assert!(
+                    worktree_listing(target_repo).is_ok(),
+                    "core.worktree={hostile_worktree} broke worktree_listing in {}",
+                    target_repo.display()
+                );
+                assert_eq!(
+                    git_common_dir(target_repo).unwrap(),
+                    repo.join(".git"),
+                    "core.worktree={hostile_worktree} broke git_common_dir in {}",
+                    target_repo.display()
+                );
+            }
+        }
+
+        // A symlinked `.git` marker must be refused by `hardened_git_pinned`.
+        let symlink_repo = base.join("symlink-git");
+        std::fs::create_dir_all(&symlink_repo).unwrap();
+        std::os::unix::fs::symlink(repo.join(".git"), symlink_repo.join(".git")).unwrap();
+        assert!(
+            hardened_git_pinned(&symlink_repo, "git").is_err(),
+            "symlinked .git marker must be refused"
+        );
     }
 }
