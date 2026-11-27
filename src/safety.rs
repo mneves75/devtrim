@@ -1727,9 +1727,104 @@ pub(crate) fn allocated_bytes(metadata: &std::fs::Metadata, path: &Path) -> Resu
 /// scan asks once per device rather than once per finding.
 const PRIVATE_SIZE_VERDICT_TTL: Duration = Duration::from_secs(60);
 
-/// Per device: when its private-size verdict was reached, and the verdict.
-static PRIVATE_SIZE_VERDICTS: Mutex<std::collections::BTreeMap<u64, (std::time::Instant, bool)>> =
-    Mutex::new(std::collections::BTreeMap::new());
+/// Per device: probe/cached private-size verdict so concurrent scanners do
+/// not stampede `diskutil` on cold start.
+enum VerdictState {
+    Probing,
+    Ready(std::time::Instant, bool),
+}
+
+struct VerdictCache {
+    entries: Mutex<std::collections::BTreeMap<u64, VerdictState>>,
+    ready: std::sync::Condvar,
+}
+
+struct ProbeGuard<'a> {
+    cache: &'a VerdictCache,
+    dev: u64,
+    completed: bool,
+}
+
+impl VerdictCache {
+    const fn new() -> Self {
+        Self {
+            entries: Mutex::new(std::collections::BTreeMap::new()),
+            ready: std::sync::Condvar::new(),
+        }
+    }
+
+    fn resolve(&self, dev: u64, probe: impl FnOnce() -> Option<bool>) -> bool {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            match entries.get(&dev) {
+                Some(&VerdictState::Ready(reached, trusted))
+                    if reached.elapsed() < PRIVATE_SIZE_VERDICT_TTL =>
+                {
+                    return trusted;
+                }
+                Some(&VerdictState::Probing) => {
+                    entries = self
+                        .ready
+                        .wait(entries)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                _ => {
+                    entries.insert(dev, VerdictState::Probing);
+                    drop(entries);
+                    let guard = ProbeGuard {
+                        cache: self,
+                        dev,
+                        completed: false,
+                    };
+                    let Some(trusted) = probe() else {
+                        return false;
+                    };
+                    guard.finish(trusted);
+                    return trusted;
+                }
+            }
+        }
+    }
+}
+
+impl ProbeGuard<'_> {
+    fn finish(mut self, trusted: bool) {
+        let mut entries = self
+            .cache
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.insert(
+            self.dev,
+            VerdictState::Ready(std::time::Instant::now(), trusted),
+        );
+        self.completed = true;
+        drop(entries);
+        self.cache.ready.notify_all();
+    }
+}
+
+impl Drop for ProbeGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            let mut entries = self
+                .cache
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if matches!(entries.get(&self.dev), Some(VerdictState::Probing)) {
+                entries.remove(&self.dev);
+            }
+            drop(entries);
+            self.cache.ready.notify_all();
+        }
+    }
+}
+
+static PRIVATE_SIZE_VERDICTS: VerdictCache = VerdictCache::new();
 
 #[cfg(test)]
 thread_local! {
@@ -1769,23 +1864,10 @@ pub(crate) fn private_size_trusted(path: &Path, dev: u64) -> bool {
     if let Some(free) = PRIVATE_SIZE_OVERRIDE.get() {
         return free && apfs_size::volume(path, dev).is_some_and(|volume| volume.apfs);
     }
-    let verdicts = || {
-        PRIVATE_SIZE_VERDICTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    };
-    if let Some(&(reached, trusted)) = verdicts().get(&dev)
-        && reached.elapsed() < PRIVATE_SIZE_VERDICT_TTL
-    {
-        return trusted;
-    }
-    // The lock is not held while `diskutil` runs.
-    let Some(volume) = apfs_size::volume(path, dev) else {
-        return false;
-    };
-    let trusted = volume.apfs && volume_lists_no_snapshot(&volume.mount);
-    verdicts().insert(dev, (std::time::Instant::now(), trusted));
-    trusted
+    PRIVATE_SIZE_VERDICTS.resolve(dev, || {
+        let volume = apfs_size::volume(path, dev)?;
+        Some(volume.apfs && volume_lists_no_snapshot(&volume.mount))
+    })
 }
 
 /// Asks `diskutil apfs listSnapshots -plist <mount>`, which needs no root.
@@ -2045,10 +2127,15 @@ impl DiskUsage {
         Ok(allocated)
     }
 
-    /// The allocated bytes a batched [`apfs_size::BulkEntry`] regular file adds
+    /// The allocated bytes a batched [`apfs_size::BulkEntryRef`] regular file adds
     /// to the walk's total, matching [`Self::add`] for hard links and APFS
     /// private-size lower bounds without a second `lstat` or `getattrlist`.
-    fn add_bulk(&mut self, entry: &apfs_size::BulkEntry, path: &Path) -> u64 {
+    fn add_bulk(
+        &mut self,
+        entry: apfs_size::BulkEntryRef<'_>,
+        directory: &Path,
+        bulk_mode: apfs_size::BulkMode,
+    ) -> u64 {
         if entry.nlink > 1 && !self.linked.insert((entry.dev, entry.ino)) {
             return 0;
         }
@@ -2056,10 +2143,14 @@ impl DiskUsage {
         if let Some(estimate) = &mut self.estimate {
             let freed = if entry.nlink > 1 {
                 0
-            } else if estimate.is_trusted(path, entry.dev) {
+            } else if !estimate.is_trusted_in_dir(directory, entry.name, entry.dev) {
+                allocated
+            } else if bulk_mode == apfs_size::BulkMode::Full {
                 entry.private.unwrap_or(0)
             } else {
-                allocated
+                let child = directory.join(entry.name);
+                apfs_size::file_blocks(&child, entry.dev, entry.ino)
+                    .map_or(0, |blocks| blocks.private)
             };
             estimate.bytes = estimate.bytes.and_then(|total| total.checked_add(freed));
         }
@@ -2081,6 +2172,14 @@ impl Estimate {
             .trusted
             .entry(dev)
             .or_insert_with(|| private_size_trusted(path, dev))
+    }
+
+    fn is_trusted_in_dir(&mut self, directory: &Path, name: &OsStr, dev: u64) -> bool {
+        if let Some(trusted) = self.trusted.get(&dev) {
+            return *trusted;
+        }
+        let child = directory.join(name);
+        self.is_trusted(&child, dev)
     }
 
     /// A file's private bytes where the private size is true; `None` keeps
@@ -2167,12 +2266,12 @@ pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured
 /// Allocated bytes under `path` (`DiskUsage`), for a caller that reports no
 /// lower bound.
 pub(crate) fn dir_size(path: &Path) -> Result<u64> {
-    Ok(walk_stats(path, DiskUsage::default())?.0.allocated)
+    Ok(walk_stats(path, DiskUsage::default(), false)?.0.allocated)
 }
 
 /// `Size` of the tree at `path`, with the lower bound, for a finding.
 pub(crate) fn dir_measure(path: &Path) -> Result<Size> {
-    Ok(walk_stats(path, DiskUsage::estimating())?.0)
+    Ok(walk_stats(path, DiskUsage::estimating(), false)?.0)
 }
 
 /// `Size` (`DiskUsage`, estimating) and the newest regular-file modification
@@ -2195,10 +2294,16 @@ pub(crate) fn dir_measure(path: &Path) -> Result<Size> {
 /// A subtree with no regular files reports `UNIX_EPOCH`, which reads as
 /// maximally stale; a caller that judges age must handle it, as `xcode` does.
 pub(crate) fn dir_stats(path: &Path) -> Result<(Size, Option<std::time::SystemTime>)> {
-    walk_stats(path, DiskUsage::estimating())
+    walk_stats(path, DiskUsage::estimating(), true)
 }
 
-fn walk_stats(path: &Path, mut usage: DiskUsage) -> Result<(Size, Option<std::time::SystemTime>)> {
+fn walk_stats(
+    path: &Path,
+    mut usage: DiskUsage,
+    need_modtime: bool,
+) -> Result<(Size, Option<std::time::SystemTime>)> {
+    use std::os::unix::fs::MetadataExt;
+
     let root_metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -2209,7 +2314,11 @@ fn walk_stats(path: &Path, mut usage: DiskUsage) -> Result<(Size, Option<std::ti
         }
     };
     if root_metadata.file_type().is_file() {
-        let newest = root_metadata.modified().ok();
+        let newest = if need_modtime {
+            root_metadata.modified().ok()
+        } else {
+            None
+        };
         let bytes = usage.add(&root_metadata, path)?;
         return Ok((usage.size(bytes), newest));
     }
@@ -2221,7 +2330,7 @@ fn walk_stats(path: &Path, mut usage: DiskUsage) -> Result<(Size, Option<std::ti
     // 64 KiB batch. An unsupported filesystem falls back to `walkdir`; a real
     // I/O failure propagates fail-closed.
     let estimating = usage.estimate.is_some();
-    match walk_stats_bulk(path, &mut usage) {
+    match walk_stats_bulk(path, root_metadata.dev(), &mut usage, need_modtime) {
         Ok(result) => Ok(result),
         Err(BulkWalkError::Unsupported) => {
             let fallback_usage = if estimating {
@@ -2242,33 +2351,41 @@ enum BulkWalkError {
 
 fn walk_stats_bulk(
     root: &Path,
+    root_dev: u64,
     usage: &mut DiskUsage,
+    need_modtime: bool,
 ) -> std::result::Result<(Size, Option<std::time::SystemTime>), BulkWalkError> {
     let mut bytes = 0u64;
-    let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        let entries = match apfs_size::read_dir_bulk(&directory) {
-            Ok(entries) => entries,
-            Err(apfs_size::BulkError::Unsupported) => return Err(BulkWalkError::Unsupported),
-            Err(apfs_size::BulkError::Io(error)) => {
-                return Err(BulkWalkError::Failed(
-                    anyhow::Error::new(error)
-                        .context(format!("cannot measure {}", directory.display())),
-                ));
+    let mut newest = need_modtime.then_some(std::time::SystemTime::UNIX_EPOCH);
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let mut pending = vec![(root.to_path_buf(), root_dev)];
+    while let Some((directory, directory_dev)) = pending.pop() {
+        let bulk_mode = match usage.estimate.as_mut() {
+            None => apfs_size::BulkMode::SizeOnly,
+            Some(estimate) => {
+                if estimate.is_trusted(&directory, directory_dev) {
+                    apfs_size::BulkMode::Full
+                } else if need_modtime {
+                    apfs_size::BulkMode::StatsNoPrivate
+                } else {
+                    apfs_size::BulkMode::SizeOnly
+                }
             }
         };
-        for entry in entries {
-            let child = directory.join(&entry.name);
+        match apfs_size::visit_dir_bulk(&directory, bulk_mode, &mut buffer, |entry| {
             match entry.kind {
-                apfs_size::EntryKind::Directory => pending.push(child),
+                apfs_size::EntryKind::Directory => {
+                    pending.push((directory.join(entry.name), entry.dev));
+                }
                 apfs_size::EntryKind::File => {
-                    match entry.modified {
-                        Some(modified) => newest = newest.map(|current| current.max(modified)),
-                        None => newest = None,
+                    if need_modtime {
+                        match entry.modified {
+                            Some(modified) => newest = newest.map(|current| current.max(modified)),
+                            None => newest = None,
+                        }
                     }
                     bytes = bytes
-                        .checked_add(usage.add_bulk(&entry, &child))
+                        .checked_add(usage.add_bulk(entry, &directory, bulk_mode))
                         .ok_or_else(|| {
                             BulkWalkError::Failed(anyhow::anyhow!(
                                 "size overflow under {}",
@@ -2278,6 +2395,19 @@ fn walk_stats_bulk(
                 }
                 apfs_size::EntryKind::Other => {}
             }
+            Ok(())
+        }) {
+            Ok(()) => {}
+            Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Unsupported)) => {
+                return Err(BulkWalkError::Unsupported);
+            }
+            Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Io(error))) => {
+                return Err(BulkWalkError::Failed(
+                    anyhow::Error::new(error)
+                        .context(format!("cannot measure {}", directory.display())),
+                ));
+            }
+            Err(apfs_size::BulkVisitError::Visitor(error)) => return Err(error),
         }
     }
     Ok((usage.size(bytes), newest))
@@ -4427,6 +4557,8 @@ mod tests {
 
     #[test]
     fn bulk_walk_matches_walkdir_across_links_clones_and_unreadable_subdirs() {
+        use std::os::unix::fs::MetadataExt;
+
         let fixture = crate::ops::TestFixture::new("devtrim-bulk-parity");
         let root = fixture.path().to_path_buf();
         std::fs::create_dir_all(root.join("nested")).unwrap();
@@ -4435,8 +4567,10 @@ mod tests {
         std::fs::hard_link(&source, root.join("hardlink.bin")).unwrap();
         std::os::unix::fs::symlink(&source, root.join("symlink.bin")).unwrap();
 
+        let root_dev = std::fs::symlink_metadata(&root).unwrap().dev();
         let mut bulk_usage = DiskUsage::estimating();
-        let (bulk_size, bulk_newest) = match walk_stats_bulk(&root, &mut bulk_usage) {
+        let (bulk_size, bulk_newest) = match walk_stats_bulk(&root, root_dev, &mut bulk_usage, true)
+        {
             Ok(result) => result,
             Err(BulkWalkError::Unsupported) => {
                 panic!("macOS APFS test root unexpectedly returned BulkWalkError::Unsupported")
@@ -4446,15 +4580,153 @@ mod tests {
         let (ref_size, ref_newest) = walk_stats_walkdir(&root, DiskUsage::estimating()).unwrap();
         assert_eq!(bulk_size, ref_size);
         assert_eq!(bulk_newest, ref_newest);
+        assert_eq!(dir_size(&root).unwrap(), ref_size.allocated);
+        assert_eq!(dir_stats(&root).unwrap(), (ref_size, ref_newest));
 
         let sealed = crate::ops::Unreadable::new(&root.join("sealed"), 0o000);
         let mut denied_usage = DiskUsage::default();
-        let denied = walk_stats_bulk(&root, &mut denied_usage);
+        let denied = walk_stats_bulk(&root, root_dev, &mut denied_usage, false);
         drop(sealed);
         assert!(
             matches!(denied, Err(BulkWalkError::Failed(_))),
             "unreadable subdirectory must fail closed"
         );
+    }
+
+    #[test]
+    fn dir_stats_under_snapshot_uses_stats_no_private_and_preserves_newest_mtime() {
+        let fixture = crate::ops::TestFixture::new("devtrim-stats-snapshot");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let source = tree.join("source");
+        write_incompressible(&source);
+        clone_file(&source, &tree.join("clone"));
+        let expected_mtime = std::fs::symlink_metadata(tree.join("clone"))
+            .unwrap()
+            .modified()
+            .unwrap()
+            .max(
+                std::fs::symlink_metadata(&source)
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+            );
+
+        let _snapshot = AssumeSnapshotFree::new(false);
+        let (size, newest) = dir_stats(&tree).unwrap();
+        assert_eq!(size.allocated, du_bytes(&tree));
+        assert_eq!(size.frees_at_least, None);
+        assert_eq!(newest, Some(expected_mtime));
+    }
+
+    #[test]
+    fn add_bulk_cross_mount_fallback_queries_file_blocks_when_trusted() {
+        use std::os::unix::fs::MetadataExt;
+
+        let fixture = crate::ops::TestFixture::new("devtrim-cross-mount-fallback");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let source = fixture.path().join("store");
+        write_incompressible(&source);
+        let installed = tree.join("installed");
+        clone_file(&source, &installed);
+        let metadata = std::fs::symlink_metadata(&installed).unwrap();
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let mut usage = DiskUsage::estimating();
+        let entry = apfs_size::BulkEntryRef {
+            name: OsStr::new("installed"),
+            kind: apfs_size::EntryKind::File,
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            nlink: 1,
+            allocated: metadata.blocks() * 512,
+            private: None,
+            modified: None,
+        };
+        let allocated = usage.add_bulk(entry, &tree, apfs_size::BulkMode::SizeOnly);
+        let size = usage.size(allocated);
+        assert_eq!(size.allocated, metadata.blocks() * 512);
+        assert!(
+            size.frees_at_least
+                .is_some_and(|bytes| bytes < CLONED_FILE / 10)
+        );
+    }
+
+    #[test]
+    fn verdict_cache_coalesces_concurrent_probes_and_recovers_from_panics() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let cache = Arc::new(VerdictCache::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+
+        let probe_cache = Arc::clone(&cache);
+        let probe_calls = Arc::clone(&calls);
+        let probe_entered = Arc::clone(&entered);
+        let probe_release = Arc::clone(&release);
+        let first = std::thread::spawn(move || {
+            probe_cache.resolve(7, || {
+                probe_calls.fetch_add(1, Ordering::SeqCst);
+                probe_entered.wait();
+                probe_release.wait();
+                Some(true)
+            })
+        });
+
+        // Wait until `first` holds `Probing`, then release waiters alongside it.
+        entered.wait();
+        let waiters: Vec<_> = (0..4)
+            .map(|_| {
+                let waiter_cache = Arc::clone(&cache);
+                let waiter_calls = Arc::clone(&calls);
+                std::thread::spawn(move || {
+                    waiter_cache.resolve(7, || {
+                        waiter_calls.fetch_add(1, Ordering::SeqCst);
+                        Some(false)
+                    })
+                })
+            })
+            .collect();
+        // Give spawned waiter threads time to block on `Condvar` before releasing `first`.
+        std::thread::sleep(Duration::from_millis(20));
+        release.wait();
+
+        assert!(first.join().unwrap());
+        for waiter in waiters {
+            assert!(waiter.join().unwrap());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // `None` probe returns `false` without caching and allows a later probe.
+        assert!(!cache.resolve(8, || None));
+        assert!(cache.resolve(8, || Some(true)));
+
+        // A panicking probe must clear `Probing` and wake waiting threads.
+        let panic_cache = Arc::clone(&cache);
+        let panic_entered = Arc::new(Barrier::new(2));
+        let panic_release = Arc::new(Barrier::new(2));
+        let panic_entered_worker = Arc::clone(&panic_entered);
+        let panic_release_worker = Arc::clone(&panic_release);
+        let panicker = std::thread::spawn(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                panic_cache.resolve(9, || {
+                    panic_entered_worker.wait();
+                    panic_release_worker.wait();
+                    panic!("simulated probe panic")
+                })
+            }))
+        });
+        panic_entered.wait();
+        let recovered_cache = Arc::clone(&cache);
+        let recovered = std::thread::spawn(move || recovered_cache.resolve(9, || Some(true)));
+        std::thread::sleep(Duration::from_millis(20));
+        panic_release.wait();
+
+        assert!(panicker.join().unwrap().is_err());
+        assert!(recovered.join().unwrap());
     }
 
     #[test]
