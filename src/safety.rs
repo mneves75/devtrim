@@ -2288,7 +2288,7 @@ fn measure_lenient_bulk(path: &Path, root_dev: u64, skip: &BTreeSet<PathBuf>) ->
             |entry| {
                 match entry.kind {
                     apfs_size::EntryKind::Directory => {
-                        if entry.dev == root_dev {
+                        if !entry.mountpoint && entry.dev == root_dev {
                             let child = directory.join(entry.name);
                             if skip.is_empty() || !skip.contains(&child) {
                                 pending.push(child);
@@ -2683,38 +2683,67 @@ fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
     parse_lsof_cwds(&lsof.stdout, lsof.status.code())
 }
 
+/// A file a process has mapped for execution: the device `lsof` reports for
+/// the file itself, and the name it gives it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct MappedExecutable {
+    pub(crate) dev: u64,
+    pub(crate) path: PathBuf,
+}
+
+/// The source the volume holding `path` was mounted from — `/dev/disk3s5`
+/// for the data volume, `server:/export` for a network share — as `statfs`
+/// reports it.
+pub(crate) fn volume_mount_source(path: &Path) -> Result<OsString> {
+    let stats = rustix::fs::statfs(path)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot read the volume of {}", path.display()))?;
+    let source = stats
+        .f_mntfromname
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect::<Vec<_>>();
+    Ok(OsString::from_vec(source))
+}
+
 /// Every file a process has mapped for execution — its program and each library
 /// it loaded — across every process `lsof` can read.
 ///
 /// A long-lived agent keeps running the release it started from after an
 /// upgrade moves `current`, and spawns helpers from that same directory by path,
 /// so a release a process is still executing is not obsolete. `lsof -d txt` over
-/// the whole system exits 0 when it lists anything; any other status, or a name
-/// it escapes ambiguously, refuses. Processes of other users are invisible to
-/// it, which is the same limit the build-process probe has.
-pub(crate) fn executable_mappings() -> Result<Vec<PathBuf>> {
-    // lsof after 4.93.2 omits `f` unless requested; the parser needs it to
-    // reject a mapped file whose name is missing.
+/// the whole system exits 0 when it lists anything; any other status, a missing
+/// device, or a name it escapes ambiguously refuses. Processes of other users
+/// are invisible to it, which is the same limit the build-process probe has.
+pub(crate) fn executable_mappings() -> Result<Vec<MappedExecutable>> {
+    // lsof after 4.93.2 omits `f` unless requested; the parser needs `f` and
+    // `D` to reject a mapped file whose name or device is missing.
     let lsof = probe_output(
-        Command::new("lsof").args(["-w", "-d", "txt", "-F", "fn"]),
+        Command::new("lsof").args(["-w", "-d", "txt", "-F", "fDn"]),
         PROBE_TIMEOUT,
         "executable-mapping probe",
     )?;
     parse_lsof_mappings(&lsof.stdout, lsof.status.code())
 }
 
-pub(crate) fn parse_lsof_mappings(output: &[u8], exit_code: Option<i32>) -> Result<Vec<PathBuf>> {
+pub(crate) fn parse_lsof_mappings(
+    output: &[u8],
+    exit_code: Option<i32>,
+) -> Result<Vec<MappedExecutable>> {
     match exit_code {
         Some(0) => {}
         Some(code) => bail!("lsof executable-mapping probe exited with status {code}"),
         None => bail!("lsof executable-mapping probe terminated without an exit status"),
     }
-    // Every mapping is `p` (once per process), then `f`, then its `n`. A
-    // mapping whose name is missing or not an absolute path could be any file,
-    // including one inside the release being judged, so it fails the probe.
+    // Every mapping is `p` (once per process), then `f`, then `D` (device,
+    // hexadecimal), then its `n`. A mapping whose device or name is missing or
+    // not an absolute path could be any file, including one inside the release
+    // being judged, so it fails the probe.
     let mut in_process = false;
     let mut awaiting_name = false;
-    let mut paths = Vec::new();
+    let mut device: Option<&[u8]> = None;
+    let mut mappings = Vec::new();
     for line in output.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         match line.first() {
@@ -2724,12 +2753,20 @@ pub(crate) fn parse_lsof_mappings(output: &[u8], exit_code: Option<i32>) -> Resu
                     bail!("lsof reported an executable mapping without a name");
                 }
                 in_process = true;
+                device = None;
             }
             Some(b'f') => {
                 if !in_process || awaiting_name {
                     bail!("lsof reported an executable mapping without a name or process");
                 }
                 awaiting_name = true;
+                device = None;
+            }
+            Some(b'D') => {
+                if !awaiting_name || device.is_some() {
+                    bail!("lsof reported an executable-mapping device outside a mapping");
+                }
+                device = Some(&line[1..]);
             }
             Some(b'n') => {
                 if !awaiting_name {
@@ -2739,7 +2776,18 @@ pub(crate) fn parse_lsof_mappings(output: &[u8], exit_code: Option<i32>) -> Resu
                 if !name.starts_with(b"/") {
                     bail!("lsof reported a mapped path that is not absolute");
                 }
-                paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)));
+                let dev = device
+                    .take()
+                    .and_then(|raw| std::str::from_utf8(raw).ok())
+                    .and_then(|raw| raw.strip_prefix("0x"))
+                    .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("lsof gave no valid device for an executable mapping")
+                    })?;
+                mappings.push(MappedExecutable {
+                    dev,
+                    path: PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)),
+                });
                 awaiting_name = false;
             }
             Some(_) => bail!("lsof returned an unexpected executable-mapping field"),
@@ -2749,12 +2797,12 @@ pub(crate) fn parse_lsof_mappings(output: &[u8], exit_code: Option<i32>) -> Resu
         bail!("lsof reported an executable mapping without a name");
     }
     // devtrim itself maps its own binary, so an empty answer is a failed probe.
-    if paths.is_empty() {
+    if mappings.is_empty() {
         bail!("lsof reported no executable mappings, not even its own");
     }
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
+    mappings.sort();
+    mappings.dedup();
+    Ok(mappings)
 }
 
 /// Working directories `lsof -F n` reported, the processes it reported them
@@ -4636,25 +4684,43 @@ mod tests {
     #[test]
     fn executable_mappings_refuse_any_mapping_they_cannot_name() {
         let parsed = parse_lsof_mappings(
-            b"p1\nftxt\nn/a\nftxt\nn/b\np2\nftxt\nn/c\nftxt\nn/a\n",
+            b"p1\nftxt\nD0x10\nn/a\nftxt\nD0x20\nn/b\np2\nftxt\nD0x10\nn/c\nftxt\nD0x10\nn/a\n",
             Some(0),
         )
         .unwrap();
         assert_eq!(
             parsed,
-            ["/a", "/b", "/c"].map(PathBuf::from).to_vec(),
+            vec![
+                MappedExecutable {
+                    dev: 0x10,
+                    path: PathBuf::from("/a"),
+                },
+                MappedExecutable {
+                    dev: 0x10,
+                    path: PathBuf::from("/c"),
+                },
+                MappedExecutable {
+                    dev: 0x20,
+                    path: PathBuf::from("/b"),
+                },
+            ],
             "control: complete output parses"
         );
         for incomplete in [
             // A second process whose mapping lsof could not name.
-            &b"p1\nftxt\nn/usr/lib/dyld\np2\nftxt\n"[..],
-            b"p1\nftxt\nftxt\nn/a\n",
-            b"p1\nftxt\np2\nftxt\nn/a\n",
-            b"ftxt\nn/a\n",
-            b"p1\nn/a\n",
-            b"p1\nftxt\nnrelative\n",
-            b"p1\nftxt\nn\n",
-            b"p1\nx1\nftxt\nn/a\n",
+            &b"p1\nftxt\nD0x1\nn/usr/lib/dyld\np2\nftxt\n"[..],
+            b"p1\nftxt\nD0x1\nn/usr/lib/dyld\np2\nftxt\nD0x1\n",
+            b"p1\nftxt\nftxt\nD0x1\nn/a\n",
+            b"p1\nftxt\np2\nftxt\nD0x1\nn/a\n",
+            b"ftxt\nD0x1\nn/a\n",
+            b"p1\nD0x1\nn/a\n",
+            b"p1\nftxt\nn/a\n",
+            b"p1\nftxt\nDzz\nn/a\n",
+            b"p1\nftxt\nD16\nn/a\n",
+            b"p1\nftxt\nD0x1\nD0x2\nn/a\n",
+            b"p1\nftxt\nD0x1\nnrelative\n",
+            b"p1\nftxt\nD0x1\nn\n",
+            b"p1\nx1\nftxt\nD0x1\nn/a\n",
             b"",
         ] {
             assert!(
@@ -4663,8 +4729,8 @@ mod tests {
                 String::from_utf8_lossy(incomplete)
             );
         }
-        assert!(parse_lsof_mappings(b"p1\nftxt\nn/a\n", Some(1)).is_err());
-        assert!(parse_lsof_mappings(b"p1\nftxt\nn/a\n", None).is_err());
+        assert!(parse_lsof_mappings(b"p1\nftxt\nD0x1\nn/a\n", Some(1)).is_err());
+        assert!(parse_lsof_mappings(b"p1\nftxt\nD0x1\nn/a\n", None).is_err());
     }
 
     /// The files Xcode holds open are its absolute names with their device. A
@@ -4883,6 +4949,7 @@ mod tests {
             allocated: metadata.blocks() * 512,
             private: None,
             modified: None,
+            mountpoint: false,
         };
         let allocated = usage.add_bulk(entry, &tree, apfs_size::BulkMode::SizeOnly);
         let size = usage.size(allocated);

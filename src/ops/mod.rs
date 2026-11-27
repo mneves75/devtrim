@@ -33,7 +33,10 @@ pub(crate) use crate::safety::{dir_measure, dir_size};
 static QUARANTINE_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn is_node_modules_name(name: &OsStr) -> bool {
-    name.as_bytes().eq_ignore_ascii_case(b"node_modules")
+    match name.to_str() {
+        Some(text) => crate::ops::artifacts::fold_apfs_ascii(text) == "node_modules",
+        None => name.as_bytes().eq_ignore_ascii_case(b"node_modules"),
+    }
 }
 
 pub(crate) fn has_node_modules_ancestor(path: &Path) -> bool {
@@ -76,6 +79,16 @@ pub(crate) fn run_command_authority(
 ) -> Result<String> {
     let (program, args) = authority.parts();
     let command = format!("`{program} {}`", args.join(" "));
+    // Validate and read `DOCKER_CONFIG` / `config.json` before `journal::begin`
+    // acquires `journal.lock` and writes an `attempt` record, preserving both
+    // the `ApplyStopped` nothing-written invariant and fail-closed FIFO handling.
+    let docker_plugin_dirs = matches!(
+        authority,
+        crate::report::CommandAuthority::DockerBuildxPrune { .. }
+            | crate::report::CommandAuthority::DockerBuilderPrune { .. }
+    )
+    .then(|| crate::ops::docker::resolve_docker_cli_plugin_dirs(&ctx.home))
+    .transpose()?;
     let attempt = crate::journal::begin(
         ctx,
         crate::journal::JournalRecord::command_attempt(op, program, &args, size_bytes),
@@ -89,15 +102,40 @@ pub(crate) fn run_command_authority(
     let result = (|| -> Result<String> {
         let mut child = std::process::Command::new(program);
         child.args(&args);
-        if let crate::report::CommandAuthority::DockerBuildxPrune { builder, nodes, .. } = authority
-        {
-            let pinned_config =
-                crate::ops::docker::write_pinned_buildx_config(ctx, builder, nodes)?;
-            child
-                .env("DOCKER_CONFIG", &pinned_config)
-                .env("BUILDX_CONFIG", pinned_config.join("buildx"))
-                .env_remove("DOCKER_CONTEXT")
-                .env_remove("BUILDX_BUILDER");
+        match authority {
+            crate::report::CommandAuthority::DockerBuildxPrune { builder, nodes, .. } => {
+                let pinned_config = crate::ops::docker::write_pinned_buildx_config(
+                    ctx,
+                    builder,
+                    nodes,
+                    docker_plugin_dirs.as_deref().unwrap_or(&[]),
+                )?;
+                child
+                    .current_dir(&ctx.home)
+                    .env("DOCKER_CONFIG", &pinned_config)
+                    .env("BUILDX_CONFIG", pinned_config.join("buildx"))
+                    .env_remove("DOCKER_CONTEXT")
+                    .env_remove("BUILDX_BUILDER");
+            }
+            crate::report::CommandAuthority::DockerBuilderPrune { .. } => {
+                let isolated_config = crate::ops::docker::write_isolated_builder_config(
+                    ctx,
+                    docker_plugin_dirs.as_deref().unwrap_or(&[]),
+                )?;
+                child
+                    .current_dir(&ctx.home)
+                    .env("DOCKER_CONFIG", &isolated_config)
+                    .env("BUILDX_CONFIG", isolated_config.join("buildx"))
+                    .env_remove("DOCKER_CONTEXT")
+                    .env_remove("BUILDX_BUILDER");
+            }
+            crate::report::CommandAuthority::DockerImagePrune { .. } => {
+                child
+                    .current_dir(&ctx.home)
+                    .env_remove("DOCKER_CONTEXT")
+                    .env_remove("BUILDX_BUILDER");
+            }
+            _ => {}
         }
         successful_output(child.output_within(MUTATION_TIMEOUT), &command).map(|_| note(&command))
     })();

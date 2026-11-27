@@ -63,8 +63,13 @@ pub mod fuzz_api {
     pub fn parse_lsof_mappings(
         output: &[u8],
         exit_code: Option<i32>,
-    ) -> anyhow::Result<Vec<PathBuf>> {
-        crate::safety::parse_lsof_mappings(output, exit_code)
+    ) -> anyhow::Result<Vec<(u64, PathBuf)>> {
+        crate::safety::parse_lsof_mappings(output, exit_code).map(|mappings| {
+            mappings
+                .into_iter()
+                .map(|mapping| (mapping.dev, mapping.path))
+                .collect()
+        })
     }
 
     pub fn parse_lsof_open_files(

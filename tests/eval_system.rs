@@ -1036,11 +1036,14 @@ fn agents_fixture(sandbox: &Sandbox) -> Vec<PathBuf> {
     write(&personal.join("codex-resources/personal.txt"), "keep");
     write(&standalone.join("install.lock"), "");
     symlink(&current, standalone.join("current")).unwrap();
+    let running_canonical = running.canonicalize().unwrap();
+    let running_dev =
+        std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(&running_canonical).unwrap());
     sandbox.script(
         "lsof",
         &format!(
-            "printf 'p1\\nftxt\\nn/usr/lib/dyld\\np77\\nftxt\\nn{}\\n'",
-            running.canonicalize().unwrap().join("bin/codex").display()
+            "printf 'p1\\nftxt\\nD0x{running_dev:x}\\nn/usr/lib/dyld\\np77\\nftxt\\nD0x{running_dev:x}\\nn{}\\n'",
+            running_canonical.join("bin/codex").display()
         ),
     );
     targets.push(old);
@@ -1520,8 +1523,19 @@ fn docker_stub(sandbox: &Sandbox) {
     printf 'Local Volumes\t5GB\t4GB (80%%)\t0\n'
     printf 'Build Cache\t3GB\t1GB\t0\n' ;;
   '--host unix:///var/run/docker.sock buildx ls'*) ;;
-  '--host unix:///var/run/docker.sock image prune -a -f') printf 'Total reclaimed space: 1GB\n' ;;
-  '--host unix:///var/run/docker.sock builder prune -a -f') printf 'Total:\t3GB\n' ;;
+  '--host unix:///var/run/docker.sock image prune -a -f')
+    [ -z "${DOCKER_CONTEXT:-}" ] && [ -z "${BUILDX_BUILDER:-}" ] || exit 4
+    printf 'Total reclaimed space: 1GB\n' ;;
+  '--host unix:///var/run/docker.sock builder prune -a -f')
+    [ -n "${DOCKER_CONFIG:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ] && [ -z "${BUILDX_BUILDER:-}" ] || exit 4
+    [ "${BUILDX_CONFIG:-}" = "$DOCKER_CONFIG/buildx" ] || exit 8
+    case "$DOCKER_CONFIG" in
+      */buildx-pin/attempt-*) ;;
+      *) exit 9 ;;
+    esac
+    [ ! -e "$DOCKER_CONFIG/contexts" ] || exit 5
+    [ -d "$DOCKER_CONFIG/buildx" ] || exit 6
+    printf 'Total:\t3GB\n' ;;
   *) exit 1 ;;
 esac"#;
     stub(sandbox, "docker", body);
@@ -1636,6 +1650,7 @@ fn eval_clean_docker_prunes_images_and_build_cache_never_volumes() {
         .env_clear()
         .env("HOME", sandbox.path())
         .env("PATH", sandbox.bin())
+        .env("DOCKER_CONTEXT", "prod-ctx")
         .env("BUILDX_CONFIG", "/nonexistent/hostile-buildx")
         .env("BUILDX_BUILDER", "prod-builder")
         .output()
@@ -1746,6 +1761,7 @@ esac"#,
         .env_clear()
         .env("HOME", sandbox.path())
         .env("PATH", sandbox.bin())
+        .env("DOCKER_CONTEXT", "prod-ctx")
         .env("BUILDX_CONFIG", "/nonexistent/hostile-buildx")
         .env("BUILDX_BUILDER", "prod-builder")
         .output()
@@ -1754,6 +1770,69 @@ esac"#,
     assert!(apply.status.success(), "{document}");
     assert_eq!(document["summary"]["items_touched"], 1, "{document}");
     assert_journaled_commands(&sandbox, "docker", &[buildx_prune]);
+}
+
+#[test]
+fn eval_docker_fifo_config_fails_closed_without_hanging_or_journaling() {
+    let sandbox = Sandbox::in_target("eval-docker-fifo");
+    let fifo_dir = sandbox.path().join("fifo-docker");
+    std::fs::create_dir_all(&fifo_dir).unwrap();
+    let fifo_path = fifo_dir.join("config.json");
+    let mkfifo = std::process::Command::new("/usr/bin/mkfifo")
+        .arg(&fifo_path)
+        .status()
+        .unwrap();
+    assert!(mkfifo.success(), "mkfifo failed");
+
+    stub(
+        &sandbox,
+        "docker",
+        r#"case "$*" in
+  'context inspect') printf '%s\n' '[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]' ;;
+  '--host unix:///var/run/docker.sock version') printf 'Docker version 28.0.0\n' ;;
+  '--host unix:///var/run/docker.sock system df'*)
+    printf 'Images\t1GB\t0B (0%%)\t0\n'
+    printf 'Build Cache\t3GB\t1GB\t0\n' ;;
+  '--host unix:///var/run/docker.sock buildx ls'*) ;;
+  *) exit 1 ;;
+esac"#,
+    );
+
+    let started = std::time::Instant::now();
+    let apply = std::process::Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args(["clean", "docker", "--apply", "--yolo", "--json"])
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .env("DOCKER_CONFIG", &fifo_dir)
+        .output()
+        .unwrap();
+    let elapsed = started.elapsed();
+    let document = json(&apply);
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "FIFO config.json must fail closed immediately instead of hanging: took {elapsed:?}"
+    );
+    assert!(!apply.status.success(), "{document}");
+    let errors = error_text(&document);
+    assert!(
+        errors.contains("non-regular Docker config"),
+        "FIFO error must name non-regular Docker config: {errors}"
+    );
+    assert!(
+        !calls(&sandbox)
+            .iter()
+            .any(|call| call.contains(&"prune".to_string())),
+        "no prune may run after FIFO config refusal"
+    );
+    let journal_path = sandbox.path().join(".local/state/devtrim/journal.jsonl");
+    if journal_path.exists() {
+        let contents = std::fs::read_to_string(&journal_path).unwrap();
+        assert!(
+            contents.trim().is_empty(),
+            "FIFO refusal before journal::begin must not write an attempt record: {contents}"
+        );
+    }
 }
 
 /// A stopped daemon is an error that still tells the operator what the host
@@ -1843,6 +1922,7 @@ esac"#,
         .env_clear()
         .env("HOME", sandbox.path())
         .env("PATH", sandbox.bin())
+        .env("DOCKER_CONTEXT", "prod-ctx")
         .env("BUILDX_CONFIG", "/nonexistent/hostile-buildx")
         .env("BUILDX_BUILDER", "prod-builder")
         .output()
