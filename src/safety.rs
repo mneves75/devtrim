@@ -2274,6 +2274,16 @@ pub(crate) fn dir_measure(path: &Path) -> Result<Size> {
     Ok(walk_stats(path, DiskUsage::estimating(), false)?.0)
 }
 
+/// `Size` of the tree at `path`, aborting immediately if `inspect` returns
+/// `Some` for the root (`depth == 0`) or any descendant entry (`depth >= 1`).
+pub(crate) fn dir_measure_while<S>(
+    path: &Path,
+    inspect: impl FnMut(Option<&Path>, &OsStr, usize) -> Option<S>,
+) -> Result<(Option<S>, Size)> {
+    let (stopped, size, _) = walk_stats_while(path, DiskUsage::estimating(), false, inspect)?;
+    Ok((stopped, size))
+}
+
 /// `Size` (`DiskUsage`, estimating) and the newest regular-file modification
 /// time under `path`.
 ///
@@ -2299,20 +2309,41 @@ pub(crate) fn dir_stats(path: &Path) -> Result<(Size, Option<std::time::SystemTi
 
 fn walk_stats(
     path: &Path,
-    mut usage: DiskUsage,
+    usage: DiskUsage,
     need_modtime: bool,
 ) -> Result<(Size, Option<std::time::SystemTime>)> {
+    let (_, size, newest) = walk_stats_while(path, usage, need_modtime, |_, _, _| {
+        None::<std::convert::Infallible>
+    })?;
+    Ok((size, newest))
+}
+
+fn walk_stats_while<S>(
+    path: &Path,
+    mut usage: DiskUsage,
+    need_modtime: bool,
+    mut inspect: impl FnMut(Option<&Path>, &OsStr, usize) -> Option<S>,
+) -> Result<(Option<S>, Size, Option<std::time::SystemTime>)> {
     use std::os::unix::fs::MetadataExt;
 
     let root_metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((Size::default(), Some(std::time::SystemTime::UNIX_EPOCH)));
+            return Ok((
+                None,
+                Size::default(),
+                Some(std::time::SystemTime::UNIX_EPOCH),
+            ));
         }
         Err(error) => {
             return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
         }
     };
+    if let Some(name) = path.file_name()
+        && let Some(stopped) = inspect(path.parent(), name, 0)
+    {
+        return Ok((Some(stopped), Size::default(), None));
+    }
     if root_metadata.file_type().is_file() {
         let newest = if need_modtime {
             root_metadata.modified().ok()
@@ -2320,17 +2351,27 @@ fn walk_stats(
             None
         };
         let bytes = usage.add(&root_metadata, path)?;
-        return Ok((usage.size(bytes), newest));
+        return Ok((None, usage.size(bytes), newest));
     }
     if !root_metadata.file_type().is_dir() {
-        return Ok((Size::default(), Some(std::time::SystemTime::UNIX_EPOCH)));
+        return Ok((
+            None,
+            Size::default(),
+            Some(std::time::SystemTime::UNIX_EPOCH),
+        ));
     }
     // On macOS APFS, batching directory metadata with `getattrlistbulk(2)`
     // replaces per-file `lstat` + `getattrlist` calls with one syscall per
     // 64 KiB batch. An unsupported filesystem falls back to `walkdir`; a real
     // I/O failure propagates fail-closed.
     let estimating = usage.estimate.is_some();
-    match walk_stats_bulk(path, root_metadata.dev(), &mut usage, need_modtime) {
+    match walk_stats_bulk(
+        path,
+        root_metadata.dev(),
+        &mut usage,
+        need_modtime,
+        &mut inspect,
+    ) {
         Ok(result) => Ok(result),
         Err(BulkWalkError::Unsupported) => {
             let fallback_usage = if estimating {
@@ -2338,7 +2379,7 @@ fn walk_stats(
             } else {
                 DiskUsage::default()
             };
-            walk_stats_walkdir(path, fallback_usage)
+            walk_stats_walkdir(path, fallback_usage, inspect)
         }
         Err(BulkWalkError::Failed(error)) => Err(error),
     }
@@ -2349,17 +2390,23 @@ enum BulkWalkError {
     Failed(anyhow::Error),
 }
 
-fn walk_stats_bulk(
+enum BulkVisitStop<S> {
+    Stopped(S),
+    Failed(anyhow::Error),
+}
+
+fn walk_stats_bulk<S>(
     root: &Path,
     root_dev: u64,
     usage: &mut DiskUsage,
     need_modtime: bool,
-) -> std::result::Result<(Size, Option<std::time::SystemTime>), BulkWalkError> {
+    mut inspect: impl FnMut(Option<&Path>, &OsStr, usize) -> Option<S>,
+) -> std::result::Result<(Option<S>, Size, Option<std::time::SystemTime>), BulkWalkError> {
     let mut bytes = 0u64;
     let mut newest = need_modtime.then_some(std::time::SystemTime::UNIX_EPOCH);
     let mut buffer = apfs_size::BulkBuffer::new();
-    let mut pending = vec![(root.to_path_buf(), root_dev)];
-    while let Some((directory, directory_dev)) = pending.pop() {
+    let mut pending = vec![(root.to_path_buf(), root_dev, 1usize)];
+    while let Some((directory, directory_dev, depth)) = pending.pop() {
         let bulk_mode = match usage.estimate.as_mut() {
             None => apfs_size::BulkMode::SizeOnly,
             Some(estimate) => {
@@ -2373,9 +2420,12 @@ fn walk_stats_bulk(
             }
         };
         match apfs_size::visit_dir_bulk(&directory, bulk_mode, &mut buffer, |entry| {
+            if let Some(stopped) = inspect(Some(&directory), entry.name, depth) {
+                return Err(BulkVisitStop::Stopped(stopped));
+            }
             match entry.kind {
                 apfs_size::EntryKind::Directory => {
-                    pending.push((directory.join(entry.name), entry.dev));
+                    pending.push((directory.join(entry.name), entry.dev, depth + 1));
                 }
                 apfs_size::EntryKind::File => {
                     if need_modtime {
@@ -2387,7 +2437,7 @@ fn walk_stats_bulk(
                     bytes = bytes
                         .checked_add(usage.add_bulk(entry, &directory, bulk_mode))
                         .ok_or_else(|| {
-                            BulkWalkError::Failed(anyhow::anyhow!(
+                            BulkVisitStop::Failed(anyhow::anyhow!(
                                 "size overflow under {}",
                                 root.display()
                             ))
@@ -2407,16 +2457,22 @@ fn walk_stats_bulk(
                         .context(format!("cannot measure {}", directory.display())),
                 ));
             }
-            Err(apfs_size::BulkVisitError::Visitor(error)) => return Err(error),
+            Err(apfs_size::BulkVisitError::Visitor(BulkVisitStop::Stopped(stopped))) => {
+                return Ok((Some(stopped), Size::default(), None));
+            }
+            Err(apfs_size::BulkVisitError::Visitor(BulkVisitStop::Failed(error))) => {
+                return Err(BulkWalkError::Failed(error));
+            }
         }
     }
-    Ok((usage.size(bytes), newest))
+    Ok((None, usage.size(bytes), newest))
 }
 
-fn walk_stats_walkdir(
+fn walk_stats_walkdir<S>(
     path: &Path,
     mut usage: DiskUsage,
-) -> Result<(Size, Option<std::time::SystemTime>)> {
+    mut inspect: impl FnMut(Option<&Path>, &OsStr, usize) -> Option<S>,
+) -> Result<(Option<S>, Size, Option<std::time::SystemTime>)> {
     let mut bytes = 0u64;
     let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
     for entry in walkdir::WalkDir::new(path)
@@ -2424,6 +2480,11 @@ fn walk_stats_walkdir(
         .follow_root_links(false)
     {
         let entry = entry.with_context(|| format!("cannot measure {}", path.display()))?;
+        if entry.depth() > 0
+            && let Some(stopped) = inspect(entry.path().parent(), entry.file_name(), entry.depth())
+        {
+            return Ok((Some(stopped), Size::default(), None));
+        }
         if entry.file_type().is_file() {
             let metadata = entry
                 .metadata()
@@ -2442,7 +2503,7 @@ fn walk_stats_walkdir(
                 .ok_or_else(|| anyhow::anyhow!("size overflow under {}", path.display()))?;
         }
     }
-    Ok((usage.size(bytes), newest))
+    Ok((None, usage.size(bytes), newest))
 }
 
 /// Process names that protect the repository holding their working directory, as `pgrep -x` reads
@@ -4569,15 +4630,23 @@ mod tests {
 
         let root_dev = std::fs::symlink_metadata(&root).unwrap().dev();
         let mut bulk_usage = DiskUsage::estimating();
-        let (bulk_size, bulk_newest) = match walk_stats_bulk(&root, root_dev, &mut bulk_usage, true)
-        {
-            Ok(result) => result,
-            Err(BulkWalkError::Unsupported) => {
-                panic!("macOS APFS test root unexpectedly returned BulkWalkError::Unsupported")
-            }
-            Err(BulkWalkError::Failed(error)) => panic!("bulk walk failed: {error:#}"),
-        };
-        let (ref_size, ref_newest) = walk_stats_walkdir(&root, DiskUsage::estimating()).unwrap();
+        let (stopped, bulk_size, bulk_newest) =
+            match walk_stats_bulk(&root, root_dev, &mut bulk_usage, true, |_, _, _| {
+                None::<std::convert::Infallible>
+            }) {
+                Ok(result) => result,
+                Err(BulkWalkError::Unsupported) => {
+                    panic!("macOS APFS test root unexpectedly returned BulkWalkError::Unsupported")
+                }
+                Err(BulkWalkError::Failed(error)) => panic!("bulk walk failed: {error:#}"),
+            };
+        assert!(stopped.is_none());
+        let (walkdir_stopped, ref_size, ref_newest) =
+            walk_stats_walkdir(&root, DiskUsage::estimating(), |_, _, _| {
+                None::<std::convert::Infallible>
+            })
+            .unwrap();
+        assert!(walkdir_stopped.is_none());
         assert_eq!(bulk_size, ref_size);
         assert_eq!(bulk_newest, ref_newest);
         assert_eq!(dir_size(&root).unwrap(), ref_size.allocated);
@@ -4585,12 +4654,59 @@ mod tests {
 
         let sealed = crate::ops::Unreadable::new(&root.join("sealed"), 0o000);
         let mut denied_usage = DiskUsage::default();
-        let denied = walk_stats_bulk(&root, root_dev, &mut denied_usage, false);
+        let denied = walk_stats_bulk(&root, root_dev, &mut denied_usage, false, |_, _, _| {
+            None::<std::convert::Infallible>
+        });
         drop(sealed);
         assert!(
             matches!(denied, Err(BulkWalkError::Failed(_))),
             "unreadable subdirectory must fail closed"
         );
+    }
+
+    #[test]
+    fn dir_measure_while_short_circuits_at_root_or_nested_match() {
+        let fixture = crate::ops::TestFixture::new("devtrim-dir-measure-while");
+        let root = fixture.path().to_path_buf();
+        std::fs::create_dir_all(root.join("clean/nested")).unwrap();
+        std::fs::write(root.join("clean/nested/data.bin"), vec![1u8; 8192]).unwrap();
+        std::fs::create_dir_all(root.join("stop")).unwrap();
+        let _sealed = crate::ops::Unreadable::new(&root.join("stop/sealed"), 0o000);
+        std::fs::write(root.join("stop/trigger"), "halt").unwrap();
+        std::fs::create_dir_all(root.join("walkdir-stop/sub")).unwrap();
+        std::fs::write(root.join("walkdir-stop/sub/data.bin"), vec![2u8; 8192]).unwrap();
+
+        assert_eq!(
+            dir_measure_while(&root.join("missing"), |_, _, _| Some("hit")).unwrap(),
+            (None, Size::default())
+        );
+        assert_eq!(
+            dir_measure_while(&root.join("stop/trigger"), |_, name, depth| {
+                (depth == 0 && name == "trigger").then_some("root-file")
+            })
+            .unwrap(),
+            (Some("root-file"), Size::default())
+        );
+        assert_eq!(
+            dir_measure_while(&root.join("stop"), |_, name, depth| {
+                (depth == 1 && name == "trigger").then_some("nested-entry")
+            })
+            .unwrap(),
+            (Some("nested-entry"), Size::default())
+        );
+        let (walkdir_hit, walkdir_size, _) = walk_stats_walkdir(
+            &root.join("walkdir-stop"),
+            DiskUsage::estimating(),
+            |_, name, depth| (depth == 1 && name == "sub").then_some("walkdir-entry"),
+        )
+        .unwrap();
+        assert_eq!(walkdir_hit, Some("walkdir-entry"));
+        assert_eq!(walkdir_size, Size::default());
+
+        let (clean_hit, clean_size) =
+            dir_measure_while(&root.join("clean"), |_, _, _| None::<()>).unwrap();
+        assert_eq!(clean_hit, None);
+        assert_eq!(clean_size, dir_measure(&root.join("clean")).unwrap());
     }
 
     #[test]

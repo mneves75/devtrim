@@ -13,10 +13,12 @@ use super::project::{
     unjudged_finding, unread_folders_finding,
 };
 use super::{
-    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_measure,
-    has_node_modules_ancestor, is_node_modules_name, removal_note,
+    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, has_node_modules_ancestor,
+    is_node_modules_name, removal_note,
 };
-use crate::safety::{Ctx, build_process_cwds, escalate, is_git_metadata_name};
+use crate::safety::{
+    Ctx, Size, build_process_cwds, dir_measure_while, escalate, is_git_metadata_name,
+};
 
 /// The fixed first line of a cache directory tag (<https://bford.info/cachedir/>).
 pub(crate) const CACHEDIR_SIGNATURE: &[u8; 43] = b"Signature: 8a477f597d28d172789f06886806bc55";
@@ -148,7 +150,8 @@ impl Op for Artifacts {
                         tracked_here += 1;
                         continue;
                     }
-                    match authored_entry_under(&candidate.path)? {
+                    let (authored, size) = inspect_and_measure_artifact(&candidate.path)?;
+                    match authored {
                         Some(Authored::ProgramKeypair(_)) => {
                             keypairs_here += 1;
                             continue;
@@ -161,9 +164,8 @@ impl Op for Artifacts {
                             states_here += 1;
                             continue;
                         }
-                        _ => {}
+                        None => {}
                     }
-                    let size = dir_measure(&candidate.path)?;
                     judged.push(
                         Finding::sized(
                             candidate.evidence.label.clone(),
@@ -420,6 +422,57 @@ enum Authored {
     TerraformState(PathBuf),
 }
 
+struct AuthoredEntry<'a> {
+    parent: Option<&'a Path>,
+    name: &'a OsStr,
+}
+
+impl AuthoredEntry<'_> {
+    fn file_name(&self) -> &OsStr {
+        self.name
+    }
+
+    fn into_path(self) -> PathBuf {
+        match self.parent {
+            Some(parent) => parent.join(self.name),
+            None => PathBuf::from(self.name),
+        }
+    }
+}
+
+impl Authored {
+    fn match_entry(entry: AuthoredEntry<'_>, depth: usize) -> Option<Self> {
+        if is_program_keypair_name(entry.file_name()) {
+            return Some(Self::ProgramKeypair(entry.into_path()));
+        }
+        if is_terraform_state_name(entry.file_name()) {
+            return Some(Self::TerraformState(entry.into_path()));
+        }
+        if depth > 0 && is_git_metadata_name(entry.file_name()) {
+            return Some(Self::Repository(entry.into_path()));
+        }
+        None
+    }
+}
+
+enum BulkAuthored {
+    Found(Authored),
+    Clean,
+    Unsupported,
+}
+
+fn inspect_and_measure_artifact(path: &Path) -> Result<(Option<Authored>, Size)> {
+    dir_measure_while(path, |parent, name, depth| {
+        Authored::match_entry(AuthoredEntry { parent, name }, depth)
+    })
+    .with_context(|| {
+        format!(
+            "cannot search {} for a program keypair or a Git repository",
+            path.display()
+        )
+    })
+}
+
 /// The first entry under `path` that no rebuild restores, as Mole V1.56.0
 /// looks for it before a purge (`lib/clean/project.sh`: `find` for `.git` or
 /// `*-keypair.json`).
@@ -436,6 +489,78 @@ enum Authored {
 /// would refuse at apply anyway. A keypair's name matches as the volume folds
 /// it, a Git marker's in any ASCII case, and the walk follows no link.
 fn authored_entry_under(path: &Path) -> Result<Option<Authored>> {
+    let metadata = std::fs::symlink_metadata(path).with_context(|| {
+        format!(
+            "cannot search {} for a program keypair or a Git repository",
+            path.display()
+        )
+    })?;
+    if let Some(name) = path.file_name()
+        && let Some(authored) = Authored::match_entry(
+            AuthoredEntry {
+                parent: path.parent(),
+                name,
+            },
+            0,
+        )
+    {
+        return Ok(Some(authored));
+    }
+    if !metadata.file_type().is_dir() {
+        return Ok(None);
+    }
+    match authored_entry_under_bulk(path)? {
+        BulkAuthored::Found(authored) => Ok(Some(authored)),
+        BulkAuthored::Clean => Ok(None),
+        BulkAuthored::Unsupported => authored_entry_under_walkdir(path),
+    }
+}
+
+fn authored_entry_under_bulk(path: &Path) -> Result<BulkAuthored> {
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let mut pending = vec![(path.to_path_buf(), 1usize)];
+    let mut subdirs = Vec::new();
+    while let Some((directory, depth)) = pending.pop() {
+        subdirs.clear();
+        let mut found = None;
+        match apfs_size::visit_dir_names(&directory, &mut buffer, |entry| {
+            if found.is_some() {
+                return;
+            }
+            if let Some(authored) = Authored::match_entry(
+                AuthoredEntry {
+                    parent: Some(&directory),
+                    name: entry.name,
+                },
+                depth,
+            ) {
+                found = Some(authored);
+                return;
+            }
+            if entry.kind == apfs_size::EntryKind::Directory {
+                subdirs.push(entry.name.to_os_string());
+            }
+        }) {
+            Ok(()) => {}
+            Err(apfs_size::BulkError::Unsupported) => return Ok(BulkAuthored::Unsupported),
+            Err(apfs_size::BulkError::Io(error)) => {
+                return Err(anyhow::Error::new(error).context(format!(
+                    "cannot search {} for a program keypair or a Git repository",
+                    path.display()
+                )));
+            }
+        }
+        if let Some(authored) = found {
+            return Ok(BulkAuthored::Found(authored));
+        }
+        for child in subdirs.drain(..) {
+            pending.push((directory.join(child), depth + 1));
+        }
+    }
+    Ok(BulkAuthored::Clean)
+}
+
+fn authored_entry_under_walkdir(path: &Path) -> Result<Option<Authored>> {
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
         .follow_root_links(false)
@@ -446,14 +571,14 @@ fn authored_entry_under(path: &Path) -> Result<Option<Authored>> {
                 path.display()
             )
         })?;
-        if is_program_keypair_name(entry.file_name()) {
-            return Ok(Some(Authored::ProgramKeypair(entry.into_path())));
-        }
-        if is_terraform_state_name(entry.file_name()) {
-            return Ok(Some(Authored::TerraformState(entry.into_path())));
-        }
-        if entry.depth() > 0 && is_git_metadata_name(entry.file_name()) {
-            return Ok(Some(Authored::Repository(entry.into_path())));
+        if let Some(authored) = Authored::match_entry(
+            AuthoredEntry {
+                parent: entry.path().parent(),
+                name: entry.file_name(),
+            },
+            entry.depth(),
+        ) {
+            return Ok(Some(authored));
         }
     }
     Ok(None)
@@ -481,13 +606,14 @@ fn is_program_keypair_name(name: &OsStr) -> bool {
     match name.to_str() {
         Some(name) => name
             .chars()
+            .rev()
+            .take(SUFFIX.len())
             .map(|character| match character {
                 '\u{212a}' => 'k',
                 '\u{17f}' => 's',
                 other => other.to_ascii_lowercase(),
             })
-            .collect::<String>()
-            .ends_with(SUFFIX),
+            .eq(SUFFIX.chars().rev()),
         None => {
             let name = name.as_encoded_bytes();
             name.len() >= SUFFIX.len()
