@@ -574,6 +574,12 @@ fn config_owner_trusted(owner: u32, euid: u32) -> bool {
     owner == euid || owner == 0
 }
 
+/// A root-owned config is trusted only while no group or other account can
+/// write it; `/nix/store` files are read-only.
+fn config_writable_by_others(owner: u32, mode: u32, euid: u32) -> bool {
+    owner != euid && mode & 0o022 != 0
+}
+
 fn load_config(path: &Path) -> Result<FileCfg> {
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;
@@ -619,6 +625,12 @@ fn load_config(path: &Path) -> Result<FileCfg> {
         bail!(
             "refusing config owned by UID {} (expected {euid} or root): {}",
             stat.st_uid,
+            path.display()
+        );
+    }
+    if config_writable_by_others(stat.st_uid, u32::from(stat.st_mode), euid) {
+        bail!(
+            "refusing root-owned config that its group or others can write: {}",
             path.display()
         );
     }
@@ -4476,6 +4488,15 @@ mod tests {
         assert!(
             !config_owner_trusted(502, 501),
             "another user's config is refused"
+        );
+        assert!(
+            !config_writable_by_others(0, 0o100444, 501),
+            "a read-only root-owned config loads"
+        );
+        assert!(
+            config_writable_by_others(0, 0o100664, 501)
+                && config_writable_by_others(0, 0o100646, 501),
+            "a root-owned config its group or others can write is refused"
         );
     }
 

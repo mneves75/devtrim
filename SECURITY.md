@@ -439,10 +439,11 @@ Non-negotiable boundaries:
   (such as `sudo` preserving `$HOME`). `load_config` requires the config file
   (and any symlink to it) to be a regular file owned by `euid` or by root (root
   can already change anything this user runs; Nix home-manager links it into a
-  root-owned `/nix/store`), bounded to 1 MiB. Journal directory creation
+  root-owned `/nix/store`) and, when root owns it, writable by no group or
+  other account, bounded to 1 MiB. Journal directory creation
   verifies parent ownership before `fchmod(0o700)`, and `removable_now` checks
   `accessat(..., AtFlags::EACCESS)`. Planted `safety/exec-context` proves the
-  identity checks; the config owner rule and the journal parent rule have unit
+  `$HOME` owner check; the ID checks have unit tests; the config owner rule and the journal parent rule have unit
   tests and no planted case. With real and effective IDs required equal,
   `EACCESS` behaves as the default does, so `removable_now` has no test that
   could tell them apart.

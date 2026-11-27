@@ -1554,7 +1554,7 @@ mod tests {
             "positive control: an owned parent is accepted"
         );
         let owner_error = require_own_parent(euid.as_raw().wrapping_add(1), euid.as_raw())
-            .expect_err("PV journal/foreign-parent: a foreign-owned parent was accepted");
+            .expect_err("a foreign-owned journal parent was accepted");
         assert_eq!(owner_error.kind(), io::ErrorKind::PermissionDenied);
         crate::ops::remove_test_path(root);
     }

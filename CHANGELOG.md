@@ -38,9 +38,10 @@ All notable changes to devtrim. Format follows Keep a Changelog; versioning is s
 - **Execution-context principal guard:** `dirs_home` now refuses execution when
   `euid != ruid`, when `egid != rgid`, or when canonical `$HOME` is owned by a
   different UID than `euid` (such as `sudo` preserving `$HOME`; planted
-  `safety/exec-context`). `load_config` requires a regular file of at most
-  1 MiB owned by the user or by root (a Nix home-manager link into
-  `/nix/store` keeps working); journal parent creation verifies owner before
+  `safety/exec-context` covers the `$HOME` owner check, unit tests the ID
+  checks). `load_config` requires a regular file of at most 1 MiB owned by the
+  user, or by root and writable by no group or other account (a Nix
+  home-manager link into `/nix/store` keeps working); journal parent creation verifies owner before
   `fchmod(0o700)`; both rules have unit tests and no planted case.
   `removable_now` checks `AtFlags::EACCESS`, which with real and effective IDs
   now required equal behaves as the default does, so no test can tell them
