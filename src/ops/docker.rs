@@ -602,6 +602,9 @@ struct TrustPolicy {
     allow_missing: bool,
     allow_leaf_symlink: bool,
     allow_sticky_leaf: bool,
+    /// A symlink chain ending at a missing entry reads as absent (`Ok(None)`)
+    /// under the same writer checks as `allow_missing`.
+    allow_dangling: bool,
 }
 
 fn read_docker_config_json(
@@ -682,6 +685,19 @@ fn read_docker_config_json(
     Ok(Some(object))
 }
 
+/// macOS `wheel` (gid 0) and `admin` (gid 80). Members of either can already
+/// act as root (`/etc/sudoers` grants `%admin ALL=(ALL) ALL`), so their group
+/// write bit grants nothing new. Homebrew relies on this: it creates
+/// `/opt/homebrew/*` as `0775 <user>:admin`, and `/Applications` is
+/// `0775 root:admin`, where Docker Desktop and OrbStack plugins live.
+const ROOT_EQUIVALENT_GIDS: [u32; 2] = [0, 80];
+
+/// Whether an account other than the owner, root, or a root-equivalent group
+/// member can write an entry with this mode and group, ignoring the sticky bit.
+fn writable_by_untrusted(mode: u32, gid: u32) -> bool {
+    mode & 0o002 != 0 || (mode & 0o020 != 0 && !ROOT_EQUIVALENT_GIDS.contains(&gid))
+}
+
 fn resolve_trusted_path(
     start: &Path,
     current_uid: u32,
@@ -710,7 +726,7 @@ fn resolve_trusted_path(
     }
     let mut hops = 0usize;
     let mut current_from_symlink = false;
-    let mut last_parent_mode: Option<u32> = None;
+    let mut last_parent_writable: Option<bool> = None;
 
     loop {
         if current.as_os_str().as_encoded_bytes().contains(&b'\n') {
@@ -719,10 +735,13 @@ fn resolve_trusted_path(
         let metadata = match std::fs::symlink_metadata(&current) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if policy.allow_missing && !current_from_symlink {
-                    if let Some(parent_mode) = last_parent_mode
-                        && parent_mode & 0o022 != 0
-                    {
+                let absent_allowed = if current_from_symlink {
+                    policy.allow_dangling
+                } else {
+                    policy.allow_missing
+                };
+                if absent_allowed {
+                    if last_parent_writable == Some(true) {
                         anyhow::bail!(
                             "refusing nonexistent {label} under writable ancestor: {}",
                             start.display()
@@ -783,7 +802,7 @@ fn resolve_trusted_path(
             }
             if target.is_absolute() {
                 current = PathBuf::from("/");
-                last_parent_mode = None;
+                last_parent_writable = None;
             } else {
                 current.pop();
             }
@@ -807,7 +826,7 @@ fn resolve_trusted_path(
                 );
             }
             let mode = metadata.permissions().mode();
-            let others_write = mode & 0o022 != 0;
+            let others_write = writable_by_untrusted(mode, metadata.gid());
             if others_write && (!policy.allow_sticky_leaf || mode & 0o1000 == 0) {
                 anyhow::bail!(
                     "refusing group- or world-writable {label}: {}",
@@ -823,19 +842,20 @@ fn resolve_trusted_path(
                 );
             }
             let mode = metadata.permissions().mode();
-            if (mode & 0o022 != 0) && (mode & 0o1000 == 0) {
+            let writable = writable_by_untrusted(mode, metadata.gid());
+            if writable && (mode & 0o1000 == 0) {
                 anyhow::bail!(
                     "refusing group- or world-writable ancestor in {label} path: {}",
                     current.display()
                 );
             }
-            last_parent_mode = Some(mode);
+            last_parent_writable = Some(writable);
         }
 
         if let Some((next_segment, from_symlink)) = pending.pop_front() {
             if next_segment == ".." {
                 current.pop();
-                last_parent_mode = None;
+                last_parent_writable = None;
             } else {
                 current.push(next_segment);
             }
@@ -844,6 +864,11 @@ fn resolve_trusted_path(
     }
 }
 
+/// A plugin symlink left dangling (an uninstalled OrbStack or Docker Desktop
+/// leaves `~/.docker/cli-plugins/docker-buildx` pointing into a missing app)
+/// is one Docker cannot execute, so it is accepted as no plugin, provided no
+/// untrusted account could create its target: every existing folder on the
+/// way passed the same owner, ACL and writer checks.
 fn validate_docker_plugin_executable(entry_path: &Path, current_uid: u32) -> Result<()> {
     let _ = resolve_trusted_path(
         entry_path,
@@ -853,6 +878,7 @@ fn validate_docker_plugin_executable(entry_path: &Path, current_uid: u32) -> Res
             allow_missing: false,
             allow_leaf_symlink: true,
             allow_sticky_leaf: false,
+            allow_dangling: true,
         },
         "Docker CLI plugin executable",
     )?;
@@ -869,6 +895,7 @@ fn validate_docker_plugin_dir(candidate: &Path) -> Result<Option<PathBuf>> {
             allow_missing: true,
             allow_leaf_symlink: true,
             allow_sticky_leaf: false,
+            allow_dangling: false,
         },
         "Docker CLI plugin directory",
     )?
@@ -929,6 +956,7 @@ fn validate_docker_config_from(
             allow_missing: true,
             allow_leaf_symlink: false,
             allow_sticky_leaf: false,
+            allow_dangling: false,
         },
         "DOCKER_CONFIG",
     )?;
@@ -1026,6 +1054,7 @@ fn validated_docker_state_subdir(source_config: &Path, name: &str) -> Result<Opt
         allow_missing: true,
         allow_leaf_symlink: false,
         allow_sticky_leaf: false,
+        allow_dangling: false,
     };
     let Some(canonical) = resolve_trusted_path(
         &source_config.join(name),
@@ -1114,6 +1143,7 @@ fn isolated_docker_scan_dir_from(
             allow_missing: false,
             allow_leaf_symlink: true,
             allow_sticky_leaf: true,
+            allow_dangling: false,
         },
         "Docker scan temp parent",
     )?
@@ -1434,6 +1464,7 @@ fn allocate_private_docker_config(
             allow_missing: false,
             allow_leaf_symlink: false,
             allow_sticky_leaf: false,
+            allow_dangling: false,
         },
         "Docker private state directory",
     )?
@@ -1975,6 +2006,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn writable_by_untrusted_trusts_only_root_equivalent_groups() {
+        // Homebrew `/opt/homebrew/lib` and `/Applications`.
+        assert!(!writable_by_untrusted(0o40775, 80));
+        assert!(!writable_by_untrusted(0o40775, 0));
+        assert!(!writable_by_untrusted(0o40755, 20));
+        assert!(writable_by_untrusted(0o40775, 20));
+        // World write is never trusted, whatever the group.
+        assert!(writable_by_untrusted(0o40777, 80));
+        assert!(writable_by_untrusted(0o40757, 0));
+    }
+
     /// Positive control for the measurement basis itself: a purely logical
     /// measurement passes every other assertion here, so without this the fix
     /// could regress to `len()` silently.
@@ -2451,6 +2494,27 @@ mod tests {
             validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
             "plugin dir under writable ancestor must fail closed"
         );
+
+        // Homebrew's layout: a 0775 ancestor whose group is `admin` (gid 80)
+        // adds no writer beyond root-equivalent accounts, so it is trusted;
+        // the same mode under `staff` (gid 20) still fails closed.
+        std::fs::set_permissions(&writable_parent, std::fs::Permissions::from_mode(0o775)).unwrap();
+        std::os::unix::fs::chown(&writable_parent, None, Some(80)).unwrap();
+        let admin_dirs = validate_docker_config_from(Some(source_config.as_os_str()), home)
+            .expect("0775 admin-group ancestor is root-equivalent")
+            .plugin_dirs;
+        let expected_nested = nested_plugins.canonicalize().unwrap();
+        assert!(
+            admin_dirs
+                .iter()
+                .any(|entry| Path::new(entry) == expected_nested),
+            "admin-group ancestor must keep the plugin dir: {admin_dirs:?}"
+        );
+        std::os::unix::fs::chown(&writable_parent, None, Some(20)).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "0775 ancestor of a non-root-equivalent group must fail closed"
+        );
         std::fs::set_permissions(&writable_parent, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         // Symlinked plugin with APFS Unicode case-folded name (`doc\u{212a}er-buildx`)
@@ -2494,6 +2558,33 @@ mod tests {
         std::fs::set_permissions(&writable_hop_dir, std::fs::Permissions::from_mode(0o755))
             .unwrap();
         std::fs::remove_file(&linked_plugin).unwrap();
+
+        // A plugin left dangling by an uninstalled app (OrbStack's
+        // `docker-buildx` into a missing `/Applications/OrbStack.app`) cannot
+        // execute: under trusted folders it is no plugin, and the dir is kept.
+        std::os::unix::fs::symlink(
+            home.join("Gone.app/Contents/xbin/docker-buildx"),
+            &linked_plugin,
+        )
+        .unwrap();
+        let dangling_dirs = validate_docker_config_from(Some(source_config.as_os_str()), home)
+            .expect("dangling plugin under trusted folders is no plugin")
+            .plugin_dirs;
+        assert_eq!(dangling_dirs.first(), Some(&expected_safe));
+        std::fs::remove_file(&linked_plugin).unwrap();
+
+        // The same dangling plugin whose missing target sits in a sticky
+        // world-writable folder could be planted by another account: refused.
+        let sticky_dir = home.join("sticky-shared");
+        std::fs::create_dir_all(&sticky_dir).unwrap();
+        std::fs::set_permissions(&sticky_dir, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        std::os::unix::fs::symlink(sticky_dir.join("docker-buildx"), &linked_plugin).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling plugin into a world-writable folder must fail closed"
+        );
+        std::fs::remove_file(&linked_plugin).unwrap();
+        std::fs::set_permissions(&sticky_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         // Symlinked plugin directory passing through a writable intermediate directory hop fails closed.
         let dir_hop_link = writable_hop_dir.join("dir-hop");
