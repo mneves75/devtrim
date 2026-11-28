@@ -994,7 +994,7 @@ fn validate_docker_config_from(
         push_validated(source_config.join("cli-plugins"))?;
     }
     for system_dir in DOCKER_SYSTEM_PLUGIN_DIRS {
-        let _ = validate_docker_plugin_dir(Path::new(system_dir))?;
+        push_validated(PathBuf::from(system_dir))?;
     }
     Ok(ValidatedDockerConfig {
         source_config,
@@ -1176,6 +1176,11 @@ fn isolated_docker_scan_dir_from(
         .with_context(|| format!("cannot tighten permissions on `{dir_name}`"))?;
 
     let scan_dir = canonical_base.join(&dir_name);
+    super::project::refuse_path_acl_grants(
+        [scan_dir.as_path()],
+        &scan_dir,
+        "Docker scan directory",
+    )?;
     let config_flags =
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     match openat(&scan_file, "config.json", config_flags, Mode::from(0o600)) {
@@ -1451,6 +1456,12 @@ fn allocate_private_docker_config(
         );
     }
     let pin_base = open_private_dir_child(&state_file, "buildx-pin", current_uid)?;
+    let pin_base_path = canonical_state_dir.join("buildx-pin");
+    super::project::refuse_path_acl_grants(
+        [pin_base_path.as_path()],
+        &pin_base_path,
+        "private Docker config directory",
+    )?;
     // Allocate a fresh per-attempt subdirectory (`O_EXCL` via `mkdirat`) so
     // concurrent applies never share or overwrite each other's isolated config,
     // and write files with `O_CREAT | O_EXCL` (never `O_TRUNC`).
@@ -1511,16 +1522,10 @@ fn allocate_private_docker_config(
         "cliPluginsExtraDirs": plugin_dirs,
     });
     write_private_json_file(&pin_root, "config.json", &config_payload, current_uid)?;
-    let pin_base_path = canonical_state_dir.join("buildx-pin");
     let buildx_path = guard.path().join("buildx");
     let config_path = guard.path().join("config.json");
     super::project::refuse_path_acl_grants(
-        [
-            pin_base_path.as_path(),
-            guard.path(),
-            buildx_path.as_path(),
-            config_path.as_path(),
-        ],
+        [guard.path(), buildx_path.as_path(), config_path.as_path()],
         guard.path(),
         "private Docker config directory",
     )?;
@@ -2421,9 +2426,13 @@ mod tests {
             .unwrap()
             .plugin_dirs;
         let canonical_safe_plugins = safe_plugins.canonicalize().unwrap();
-        assert_eq!(
-            plugin_dirs,
-            vec![canonical_safe_plugins.to_string_lossy().into_owned()]
+        let expected_safe = canonical_safe_plugins.to_string_lossy().into_owned();
+        assert_eq!(plugin_dirs.first(), Some(&expected_safe));
+        assert!(
+            !plugin_dirs
+                .iter()
+                .any(|entry| entry.contains("devtrim-test-docker-plugins")),
+            "nonexistent plugin dir must be omitted: {plugin_dirs:?}"
         );
 
         // Writable ancestor above an otherwise 0755 plugin directory fails closed.
@@ -2635,6 +2644,30 @@ mod tests {
             !pinned_path.exists(),
             "pinned attempt dir {} should be cleaned up on drop",
             pinned_path.display()
+        );
+
+        // Pre-existing `buildx-pin` carrying an `allow` ACL must fail closed
+        // BEFORE creating any `attempt-*` subdirectory inside it.
+        let pin_base_path = state_dir.join("buildx-pin");
+        let add_acl = std::process::Command::new("/bin/chmod")
+            .args(["+a", "group:everyone allow add_subdirectory"])
+            .arg(&pin_base_path)
+            .status()
+            .unwrap();
+        assert!(add_acl.success(), "chmod +a on buildx-pin failed");
+        let refused = allocate_private_docker_config(&ctx, &plugin_dirs);
+        let _ = std::process::Command::new("/bin/chmod")
+            .arg("-N")
+            .arg(&pin_base_path)
+            .status();
+        assert!(
+            refused.is_err(),
+            "buildx-pin with allow ACL must be refused before creating an attempt dir"
+        );
+        assert_eq!(
+            std::fs::read_dir(&pin_base_path).unwrap().count(),
+            0,
+            "no attempt-* directory may be created inside an ACL-granting buildx-pin"
         );
         crate::ops::remove_test_path(home);
     }
