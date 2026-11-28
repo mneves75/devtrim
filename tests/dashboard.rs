@@ -9,8 +9,9 @@
 mod support;
 
 use serde_json::Value;
+use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use support::{Allowed, ModeGuard, Sandbox, Tree, git_activity, json, on_disk, run, write};
 
 /// Under `target`: a home in the temporary folder resolves inside the
@@ -894,4 +895,130 @@ fn skipped_default_root_warning_is_kept_in_the_offline_report() {
         data["recommendations"]["diagnostics"]
     );
     assert!(result.stderr.is_empty());
+}
+
+#[test]
+fn copied_project_preview_neutralizes_bash32_interactive_history_expansion() {
+    let sandbox = Sandbox::in_target("dashboard-bash32-histexpand");
+    sandbox.script(
+        "xcrun",
+        "if [ \"$1\" = --version ]; then printf 'xcrun version 70\\n'; else printf '{\"devices\":{}}\\n'; fi",
+    );
+    sandbox.script("git", &git_activity("2000-01-01", "2000-01-01"));
+    sandbox.script(
+        "devtrim",
+        "printf '%s\\0' \"$@\" > \"$HOME/copied-argv\"\nexec \"$DEVTRIM_BIN\" \"$@\"",
+    );
+
+    let root_self = sandbox
+        .path()
+        .join("x'0\n!0!# ';printf injected > \"$HOME/bash-ran\";#");
+    let root_bang = sandbox
+        .path()
+        .join("y'0\t!0!! ';printf injected > \"$HOME/bash-ran\";#");
+    let target = root_self.join("project/target");
+    std::fs::create_dir_all(&root_bang).unwrap();
+    write(
+        &root_self.join("project/.git/HEAD"),
+        "ref: refs/heads/main\n",
+    );
+    write(
+        &root_self.join("project/Cargo.toml"),
+        "[package]\nname = 'fixture'\n",
+    );
+    write(&target.join("build.bin"), "build output");
+
+    let report = sandbox.path().join("report.html");
+    let snapshot_output = Command::new(env!("CARGO_BIN_EXE_devtrim"))
+        .args([
+            "dashboard",
+            "--root",
+            root_self.to_str().unwrap(),
+            "--root",
+            root_bang.to_str().unwrap(),
+            "--output",
+            report.to_str().unwrap(),
+            "--no-open",
+            "--json",
+        ])
+        .current_dir(sandbox.path())
+        .env_clear()
+        .env("HOME", sandbox.path())
+        .env("PATH", sandbox.bin())
+        .output()
+        .unwrap();
+    assert!(
+        snapshot_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&snapshot_output.stdout)
+    );
+    let document = json(&snapshot_output);
+    let command = document["recommendations"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "artifacts")
+        .unwrap()["preview_command"]
+        .as_str()
+        .unwrap();
+    assert!(!command.chars().any(char::is_control));
+    assert!(command.contains("\\047") && command.contains("\\041"));
+
+    let later_cwd = sandbox.path().join("later-terminal");
+    std::fs::create_dir(&later_cwd).unwrap();
+
+    // Test both `!#` with empty history and `!!` after a single-quoted history line
+    // in interactive macOS `/bin/bash` (GNU Bash 3.2 with `histexpand` enabled).
+    for (case, script) in [
+        (
+            "empty-history-self-expand",
+            format!("{command} --json\nexit $?\n"),
+        ),
+        (
+            "prior-single-quote-bang-bang",
+            format!("echo 'prev'\n{command} --json\nexit $?\n"),
+        ),
+    ] {
+        let _ = std::fs::remove_file(sandbox.path().join("copied-argv"));
+        let mut child = Command::new("/bin/bash")
+            .args(["--norc", "--noprofile", "-i"])
+            .current_dir(&later_cwd)
+            .env_clear()
+            .env("HOME", sandbox.path())
+            .env("PATH", sandbox.bin())
+            .env("HISTFILE", "/dev/null")
+            .env("DEVTRIM_BIN", env!("CARGO_BIN_EXE_devtrim"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            !sandbox.path().join("bash-ran").exists(),
+            "{case}: interactive bash executed injected command from preview_command"
+        );
+        assert!(
+            output.status.success(),
+            "{case}: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let argv = std::fs::read(sandbox.path().join("copied-argv")).unwrap();
+        let arguments = argv.split(|byte| *byte == 0).collect::<Vec<_>>();
+        assert!(
+            arguments.contains(&root_self.as_os_str().as_encoded_bytes()),
+            "{case}: decoded argv did not preserve root_self byte-for-byte"
+        );
+        assert!(
+            arguments.contains(&root_bang.as_os_str().as_encoded_bytes()),
+            "{case}: decoded argv did not preserve root_bang byte-for-byte"
+        );
+    }
 }

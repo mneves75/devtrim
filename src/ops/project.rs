@@ -12,16 +12,68 @@ use crate::report::{Action, Finding};
 use crate::safety::is_git_metadata_name;
 
 type ActivityObservation = Arc<OnceLock<std::result::Result<String, String>>>;
+type ProjectRootObservation = Arc<OnceLock<std::result::Result<Arc<ProjectRootScan>, String>>>;
+type TrackedObservation = Arc<OnceLock<std::result::Result<Arc<Mutex<TrackedIndex>>, String>>>;
+
+#[derive(Default)]
+pub(crate) struct ProjectRootScan {
+    pub(crate) node_modules: Vec<PathBuf>,
+    pub(super) artifacts: Vec<super::artifacts::ArtifactCandidate>,
+    pub(crate) repositories: Vec<PathBuf>,
+    pub(crate) unread: Vec<UnreadFolder>,
+    pub(crate) repo_unread: Vec<UnreadFolder>,
+    pub(super) artifacts_stopped: bool,
+    pub(super) artifact_root_error: Option<String>,
+}
+
+impl ProjectRootScan {
+    pub(super) fn merge(&mut self, other: Self) {
+        self.node_modules.extend(other.node_modules);
+        self.artifacts.extend(other.artifacts);
+        self.repositories.extend(other.repositories);
+        self.unread.extend(other.unread);
+        self.repo_unread.extend(other.repo_unread);
+    }
+
+    pub(super) fn sort(&mut self) {
+        self.node_modules.sort();
+        self.artifacts
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        self.repositories.sort();
+        self.unread
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        self.unread.dedup_by(|left, right| left.path == right.path);
+        self.repo_unread
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        self.repo_unread
+            .dedup_by(|left, right| left.path == right.path);
+    }
+}
+
+fn observation_slot<T>(
+    observations: &Mutex<BTreeMap<PathBuf, Arc<OnceLock<T>>>>,
+    key: &Path,
+) -> Arc<OnceLock<T>> {
+    let mut map = observations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(
+        map.entry(key.to_path_buf())
+            .or_insert_with(|| Arc::new(OnceLock::new())),
+    )
+}
 
 /// Observations belong to one preview only; apply always probes again.
 #[derive(Default)]
 pub(crate) struct ScanObservations {
-    process_cwds: OnceLock<std::result::Result<Vec<PathBuf>, String>>,
+    process_cwds: OnceLock<std::result::Result<Vec<crate::safety::ProcessCwd>, String>>,
     commits: Mutex<BTreeMap<PathBuf, ActivityObservation>>,
+    project_roots: Mutex<BTreeMap<PathBuf, ProjectRootObservation>>,
+    tracked: Mutex<BTreeMap<PathBuf, TrackedObservation>>,
 }
 
 impl ScanObservations {
-    pub(crate) fn process_cwds(&self) -> Result<&[PathBuf]> {
+    pub(crate) fn process_cwds(&self) -> Result<&[crate::safety::ProcessCwd]> {
         self.process_cwds
             .get_or_init(|| {
                 crate::safety::build_process_cwds()
@@ -34,17 +86,7 @@ impl ScanObservations {
     }
 
     pub(crate) fn last_activity(&self, root: &Path) -> Result<String> {
-        let commit = {
-            let mut commits = self
-                .commits
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(
-                commits
-                    .entry(root.to_path_buf())
-                    .or_insert_with(|| Arc::new(OnceLock::new())),
-            )
-        };
+        let commit = observation_slot(&self.commits, root);
         match commit.get_or_init(|| repo_last_activity(root).map_err(|error| format!("{error:#}")))
         {
             Ok(last_activity) => Ok(last_activity.clone()),
@@ -52,11 +94,39 @@ impl ScanObservations {
         }
     }
 
+    pub(crate) fn project_root(&self, root: &Path) -> Result<Arc<ProjectRootScan>> {
+        let slot = observation_slot(&self.project_roots, root);
+        match slot.get_or_init(|| {
+            super::node_modules::scan_project_root(root)
+                .map(Arc::new)
+                .map_err(|error| format!("{error:#}"))
+        }) {
+            Ok(scanned) => Ok(Arc::clone(scanned)),
+            Err(error) => Err(anyhow::anyhow!("{error}")),
+        }
+    }
+
+    pub(crate) fn holds_tracked_files(&self, root: &Path, target: &Path) -> Result<bool> {
+        let slot = observation_slot(&self.tracked, root);
+        let index = match slot.get_or_init(|| {
+            TrackedIndex::list(root)
+                .map(|index| Arc::new(Mutex::new(index)))
+                .map_err(|error| format!("{error:#}"))
+        }) {
+            Ok(index) => Arc::clone(index),
+            Err(error) => return Err(anyhow::anyhow!("{error}")),
+        };
+        let mut index = index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        index.holds_tracked_files(target)
+    }
+
     #[cfg(test)]
-    pub(crate) fn with_process_cwds(process_cwds: Vec<PathBuf>) -> Self {
+    pub(crate) fn with_process_cwds(process_cwds: Vec<crate::safety::ProcessCwd>) -> Self {
         Self {
             process_cwds: OnceLock::from(Ok(process_cwds)),
-            commits: Mutex::new(BTreeMap::new()),
+            ..Self::default()
         }
     }
 }
@@ -105,6 +175,111 @@ pub(crate) fn has_git_marker(path: &Path) -> Result<bool> {
 /// linked worktree — not entered further. Folders the walk cannot read are
 /// recorded in `unread`; only the root itself failing fails it.
 pub(crate) fn repositories_under(
+    root: &Path,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<Vec<PathBuf>> {
+    match std::fs::symlink_metadata(root) {
+        // `walkdir` follows a symlink at the root itself while refusing links
+        // below it; delegate symlink roots there for exact parity.
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return repositories_under_walkdir(root, unread);
+        }
+        Ok(metadata) if !metadata.file_type().is_dir() => return Ok(Vec::new()),
+        Ok(_) => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot look for repositories under {}", root.display()));
+        }
+    }
+    if root
+        .file_name()
+        .is_some_and(|name| is_git_metadata_name(name) || super::is_node_modules_name(name))
+    {
+        return Ok(Vec::new());
+    }
+    repositories_under_bulk(root, unread)
+}
+
+/// Batched `getattrlistbulk(2)` repository discovery, falling back to `walkdir`
+/// on volumes that do not support it.
+fn repositories_under_bulk(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<PathBuf>> {
+    let unread_start = unread.len();
+    let mut found = Vec::new();
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let supported = collect_repositories_in_subtrees(
+        vec![(root.to_path_buf(), 0usize)],
+        &mut buffer,
+        &mut found,
+        unread,
+    )
+    .with_context(|| format!("cannot look for repositories under {}", root.display()))?;
+    if !supported {
+        unread.truncate(unread_start);
+        return repositories_under_walkdir(root, unread);
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Walks `pending` `(directory, depth)` roots for repositories and worktrees
+/// using `buffer`, returning `false` if any directory lacks bulk support.
+pub(super) fn collect_repositories_in_subtrees(
+    mut pending: Vec<(PathBuf, usize)>,
+    buffer: &mut apfs_size::BulkBuffer,
+    found: &mut Vec<PathBuf>,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<bool> {
+    let mut subdirs: Vec<std::ffi::OsString> = Vec::new();
+    while let Some((directory, depth)) = pending.pop() {
+        subdirs.clear();
+        let mut saw_git_marker = false;
+        let visit = apfs_size::visit_dir_names(&directory, buffer, |entry| {
+            if is_git_metadata_name(entry.name) {
+                saw_git_marker = true;
+                return;
+            }
+            if entry.kind == apfs_size::EntryKind::Directory
+                && !super::is_node_modules_name(entry.name)
+            {
+                subdirs.push(entry.name.to_os_string());
+            }
+        });
+        match visit {
+            Ok(()) => {}
+            Err(apfs_size::BulkError::Unsupported) => return Ok(false),
+            Err(apfs_size::BulkError::Io(error)) if depth > 0 => {
+                unread.push(UnreadFolder::new(&directory, &anyhow::Error::from(error)));
+                continue;
+            }
+            Err(apfs_size::BulkError::Io(error)) => {
+                return Err(error.into());
+            }
+        }
+        if saw_git_marker {
+            // Confirm exact `.git` visibility via `symlink_metadata` so
+            // case-sensitive volumes still ignore non-lowercase markers.
+            match std::fs::symlink_metadata(directory.join(".git")) {
+                Ok(_) => {
+                    found.push(directory);
+                    continue;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    unread.push(UnreadFolder::new(&directory, &error.into()));
+                    continue;
+                }
+            }
+        }
+        for child in subdirs.drain(..) {
+            pending.push((directory.join(child), depth + 1));
+        }
+    }
+    Ok(true)
+}
+
+/// Fallback repository discovery for symlink roots and volumes without bulk
+/// directory support.
+pub(super) fn repositories_under_walkdir(
     root: &Path,
     unread: &mut Vec<UnreadFolder>,
 ) -> Result<Vec<PathBuf>> {
@@ -160,6 +335,54 @@ pub(crate) fn normalized_roots(roots: &[PathBuf]) -> Vec<&Path> {
         }
     }
     normalized
+}
+
+fn take_next_item<'a, T>(
+    items: &'a [T],
+    next_index: &std::sync::atomic::AtomicUsize,
+) -> Option<(usize, &'a T)> {
+    let index = next_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    items.get(index).map(|item| (index, item))
+}
+
+/// Evaluates `items` across up to `min(8, available_parallelism)` scoped
+/// worker threads and returns results in exact slice order.
+pub(super) fn map_indexed_parallel<T, U>(
+    items: &[T],
+    evaluate: impl Fn(&T) -> U + Sync,
+) -> Result<Vec<U>>
+where
+    T: Sync,
+    U: Send,
+{
+    let max_workers = std::thread::available_parallelism()
+        .map_or(4, std::num::NonZeroUsize::get)
+        .min(8);
+    let workers = items.len().min(max_workers);
+    if workers <= 1 {
+        return Ok(items.iter().map(evaluate).collect());
+    }
+    let next_index = std::sync::atomic::AtomicUsize::new(0);
+    let run_worker = || -> Vec<(usize, U)> {
+        let mut results = Vec::new();
+        while let Some((index, item)) = take_next_item(items, &next_index) {
+            results.push((index, evaluate(item)));
+        }
+        results
+    };
+    let mut indexed = std::thread::scope(|scope| -> Result<Vec<(usize, U)>> {
+        let handles: Vec<_> = (1..workers).map(|_| scope.spawn(run_worker)).collect();
+        let mut combined = run_worker();
+        for handle in handles {
+            let worker_results = handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("parallel worker thread panicked"))?;
+            combined.extend(worker_results);
+        }
+        Ok(combined)
+    })?;
+    indexed.sort_by_key(|(index, _)| *index);
+    Ok(indexed.into_iter().map(|(_, value)| value).collect())
 }
 
 pub(crate) fn is_directory_if_present(path: &Path) -> Result<bool> {
@@ -255,15 +478,26 @@ fn repo_last_activity_with(root: &Path, git: &str) -> Result<String> {
     // Both dates are rendered in UTC, the clock `iso_days_ago` counts in.
     // `%cs` and `--date=format:` use each entry's recorded offset instead, so
     // west of Greenwich an evening's activity read as the previous day.
-    let commit = iso_date(
-        &hardened_git_log(root, git, &["--date=format-local:%Y-%m-%d", "--format=%cd"])?,
-        root,
-    )?;
-    let reflog = hardened_git_log(
-        root,
-        git,
-        &["-g", "--date=format-local:%Y-%m-%d", "--format=%gd"],
-    )?;
+    let (commit_raw, reflog_raw) = std::thread::scope(|scope| {
+        let reflog_handle = scope.spawn(|| {
+            hardened_git_log(
+                root,
+                git,
+                &["-g", "--date=format-local:%Y-%m-%d", "--format=%gd"],
+            )
+        });
+        let commit = hardened_git_log(root, git, &["--date=format-local:%Y-%m-%d", "--format=%cd"]);
+        let reflog = match reflog_handle.join() {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!(
+                "Git reflog thread panicked for {}",
+                root.display()
+            )),
+        };
+        (commit, reflog)
+    });
+    let commit = iso_date(&commit_raw?, root)?;
+    let reflog = reflog_raw?;
     if reflog.is_empty() {
         return Ok(commit);
     }
@@ -342,6 +576,39 @@ fn hardened_git(root: &Path, git: &str) -> Result<Command> {
     Ok(command)
 }
 
+/// Pins `--git-dir <canonical>/.git --work-tree <canonical>` onto a hardened
+/// Git command so repository-controlled `core.worktree` in `.git/config`
+/// cannot redirect the working-tree root (for example to `../..` or `/`) and
+/// induce a non-empty CWD prefix that hides tracked paths or recorded
+/// submodules. Accepts both regular `.git` directories and `.git` gitfiles
+/// (linked worktrees and submodules), refusing symlinks and other non-regular
+/// markers.
+fn pin_repo_worktree(command: &mut Command, root: &Path) -> Result<()> {
+    let canonical = std::fs::canonicalize(root)
+        .with_context(|| format!("cannot resolve Git root {}", root.display()))?;
+    let dot_git = canonical.join(".git");
+    let metadata = std::fs::symlink_metadata(&dot_git)
+        .with_context(|| format!("cannot inspect Git marker {}", dot_git.display()))?;
+    if !metadata.is_dir() && !metadata.is_file() {
+        anyhow::bail!("refusing non-regular Git marker {}", dot_git.display());
+    }
+    command
+        .arg("--git-dir")
+        .arg(&dot_git)
+        .arg("--work-tree")
+        .arg(&canonical);
+    Ok(())
+}
+
+/// [`hardened_git`] pinned to `<canonical>/.git` and `<canonical>` via
+/// [`pin_repo_worktree`]. Use for every repository query that does not supply
+/// its own isolated `--git-dir`.
+fn hardened_git_pinned(root: &Path, git: &str) -> Result<Command> {
+    let mut command = hardened_git(root, git)?;
+    pin_repo_worktree(&mut command, root)?;
+    Ok(command)
+}
+
 /// Whether the repository at `root` tracks any file under `target`, which lies
 /// inside it: one directory, checked against a fresh listing of the index.
 pub(crate) fn tracks_files_under(root: &Path, target: &Path) -> Result<bool> {
@@ -371,7 +638,7 @@ pub(crate) struct TrackedIndex {
 
 impl TrackedIndex {
     pub(crate) fn list(root: &Path) -> Result<Self> {
-        let mut command = hardened_git(root, "git")?;
+        let mut command = hardened_git_pinned(root, "git")?;
         command.args(["ls-files", "-z"]);
         let listed = hardened_output(command, || {
             format!("Git tracked-file check failed for {}", root.display())
@@ -442,7 +709,7 @@ impl TrackedIndex {
 
 /// One `git log -1` against a repository that may be hostile.
 fn hardened_git_log(root: &Path, git: &str, format: &[&str]) -> Result<String> {
-    let mut command = hardened_git(root, git)?;
+    let mut command = hardened_git_pinned(root, git)?;
     command
         .env("TZ", "UTC0")
         // Signature display runs the repository's `gpg.program`.
@@ -481,7 +748,7 @@ fn hardened_output(mut command: Command, failure: impl Fn() -> String) -> Result
 /// through the hardened invocation. Every path it lists is the repository's
 /// own data, not a fact about the disk.
 pub(crate) fn worktree_listing(repo: &Path) -> Result<Vec<u8>> {
-    let mut command = hardened_git(repo, "git")?;
+    let mut command = hardened_git_pinned(repo, "git")?;
     command.args(["worktree", "list", "--porcelain", "-z"]);
     hardened_output(command, || {
         format!("cannot list the worktrees of {}", repo.display())
@@ -802,19 +1069,29 @@ fn isolated_git_dir(base: &Path, sha256: bool) -> Result<PathBuf> {
 /// narrows access and is accepted. Callers pass only paths free of newlines,
 /// so every line `ls` prints is either a file's own line or an ACL entry.
 fn refuse_acl_grants<'a>(paths: impl IntoIterator<Item = &'a Path>, probe: &Path) -> Result<()> {
+    refuse_path_acl_grants(paths, probe, "Git probe directory")
+}
+
+/// Refuses when an ACL on any of `paths` grants access (`allow` entry).
+/// Callers must pass only paths free of newlines.
+pub(super) fn refuse_path_acl_grants<'a>(
+    paths: impl IntoIterator<Item = &'a Path>,
+    subject: &Path,
+    label: &str,
+) -> Result<()> {
     let listed = Command::new("/bin/ls")
         .arg("-lde")
         .arg("--")
         .args(paths)
         .output_within(QUERY_TIMEOUT)
-        .with_context(|| format!("cannot read the ACLs of {}", probe.display()))?;
+        .with_context(|| format!("cannot read the ACLs of {}", subject.display()))?;
     if !listed.status.success() {
-        anyhow::bail!("cannot read the ACLs of {}", probe.display());
+        anyhow::bail!("cannot read the ACLs of {}", subject.display());
     }
     if listed.stdout.split(|byte| *byte == b'\n').any(acl_allows) {
         anyhow::bail!(
-            "refusing Git probe directory {}: an ACL lets another account change it",
-            probe.display()
+            "refusing {label} {}: an ACL lets another account change it",
+            subject.display()
         );
     }
     Ok(())
@@ -839,11 +1116,19 @@ fn acl_allows(line: &[u8]) -> bool {
 /// (`MNT_IGNORE_OWNERSHIP`, `0x00200000` in macOS `<sys/mount.h>`, which
 /// Finder's "Ignore ownership on this volume" and `hdiutil attach -owners off`
 /// set): there every file reads as owned by the current user.
-fn ignores_ownership(path: &Path) -> Result<bool> {
+pub(super) fn ignores_ownership(path: &Path) -> Result<bool> {
     const MNT_IGNORE_OWNERSHIP: u32 = 0x0020_0000;
     let stats = rustix::fs::statfs(path)
         .map_err(std::io::Error::from)
         .with_context(|| format!("cannot read the volume of {}", path.display()))?;
+    Ok(stats.f_flags & MNT_IGNORE_OWNERSHIP != 0)
+}
+
+pub(super) fn fd_ignores_ownership<Fd: rustix::fd::AsFd>(fd: Fd, label: &str) -> Result<bool> {
+    const MNT_IGNORE_OWNERSHIP: u32 = 0x0020_0000;
+    let stats = rustix::fs::fstatfs(fd)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot read the volume of {label}"))?;
     Ok(stats.f_flags & MNT_IGNORE_OWNERSHIP != 0)
 }
 
@@ -894,7 +1179,7 @@ fn parse_porcelain_status(output: &[u8]) -> Result<Vec<StatusEntry<'_>>> {
 /// The absolute common directory (`.git` of the main worktree) of the
 /// repository holding `repo`.
 pub(crate) fn git_common_dir(repo: &Path) -> Result<PathBuf> {
-    let mut command = hardened_git(repo, "git")?;
+    let mut command = hardened_git_pinned(repo, "git")?;
     command.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     let mut listed = hardened_output(command, || {
         format!("cannot find the Git directory of {}", repo.display())
@@ -915,7 +1200,7 @@ pub(crate) fn git_common_dir(repo: &Path) -> Result<PathBuf> {
 /// (`check-ignore` exits 0 for ignored, 1 for not ignored; anything else is a
 /// failure, never an answer).
 pub(crate) fn ignores_path(repo: &Path, relative: &str) -> Result<bool> {
-    let mut command = hardened_git(repo, "git")?;
+    let mut command = hardened_git_pinned(repo, "git")?;
     command.args(["check-ignore", "-q", "--", relative]);
     let output = command
         .output_within(QUERY_TIMEOUT)
@@ -1147,7 +1432,7 @@ pub(crate) fn gitfile_target(bytes: &[u8]) -> Option<&std::ffi::OsStr> {
 /// the original failure then stands.
 pub(crate) fn unborn_branch(repo: &Path) -> bool {
     let git_output = |arguments: &[&str]| {
-        let mut command = hardened_git(repo, "git").ok()?;
+        let mut command = hardened_git_pinned(repo, "git").ok()?;
         command.args(arguments);
         command.output_within(QUERY_TIMEOUT).ok()
     };
@@ -1181,6 +1466,7 @@ fn holds_no_commit(listing: &[u8]) -> bool {
 /// A folder a project walk could not read, and why. Like a scan root that
 /// cannot be read, it bounds where the scan looked, never what may go: nothing
 /// in it is offered, and the scan says so.
+#[derive(Clone)]
 pub(crate) struct UnreadFolder {
     pub(crate) path: PathBuf,
     pub(crate) reason: String,
@@ -1256,7 +1542,7 @@ pub(crate) fn error_finding(label: String, message: String) -> Finding {
 /// busy build.
 pub(crate) fn repo_has_active_build(
     repo: &Path,
-    process_cwds: &[PathBuf],
+    process_cwds: &[crate::safety::ProcessCwd],
     home: &Path,
 ) -> Result<bool> {
     use std::os::unix::fs::MetadataExt as _;
@@ -1277,11 +1563,43 @@ pub(crate) fn repo_has_active_build(
             )
         })
     };
-    if process_cwds.iter().any(|cwd| cwd.starts_with(repo)) {
+    let identity = read_identity(repo)?;
+    let repo_dev = identity.0;
+    // For a working directory it could not name, Apple's lsof prints the mount
+    // it lies on followed by that mount's source in parentheses; any such
+    // entry on `repo`'s volume (or with an unreported device) could lie inside
+    // `repo`, so fail closed rather than treat `repo` as idle.
+    if process_cwds.iter().any(|cwd| {
+        cwd.dev.is_none_or(|dev| dev == repo_dev)
+            && cwd.path.as_os_str().as_encoded_bytes().ends_with(b")")
+    }) {
+        let canonical = repo
+            .canonicalize()
+            .with_context(|| format!("cannot resolve {}", repo.display()))?;
+        let fallback = format!(
+            " ({})",
+            crate::safety::volume_mount_source(&canonical)?.to_string_lossy()
+        );
+        if let Some(cwd) = process_cwds.iter().find(|cwd| {
+            cwd.dev.is_none_or(|dev| dev == repo_dev)
+                && cwd
+                    .path
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .ends_with(fallback.as_bytes())
+        }) {
+            anyhow::bail!(
+                "lsof could not name a build process working directory on this volume (`{}`), so whether it lies in {} is unknown",
+                cwd.path.display(),
+                repo.display()
+            );
+        }
+    }
+    if process_cwds.iter().any(|cwd| cwd.path.starts_with(repo)) {
         return Ok(true);
     }
-    let identity = read_identity(repo)?;
-    if process_cwds.iter().any(|cwd| {
+    if process_cwds.iter().any(|entry| {
+        let cwd = entry.path.as_path();
         cwd.ancestors()
             .any(|folder| identity_of(folder) == Some(identity))
     }) {
@@ -1294,8 +1612,8 @@ pub(crate) fn repo_has_active_build(
     // still counts.
     let builds_in = |superproject: &Path| -> Result<bool> {
         let identity = read_identity(superproject)?;
-        Ok(process_cwds.iter().any(|cwd| {
-            for folder in cwd.ancestors() {
+        Ok(process_cwds.iter().any(|entry| {
+            for folder in entry.path.ancestors() {
                 if folder == superproject || identity_of(folder) == Some(identity) {
                     return true;
                 }
@@ -1325,27 +1643,46 @@ pub(crate) fn repo_has_active_build(
 }
 
 /// Whether `superproject`'s index records `submodule`, a folder inside it, as
-/// a submodule: a gitlink (mode `160000`) at its path. A nested repository it
-/// does not record — a worktree kept in an ignored folder, a clone inside a
-/// checkout — is its own project, which a build in the outer one does not read.
+/// a submodule: a gitlink (mode `160000`) whose path on the volume resolves to
+/// `submodule`'s `(dev, ino)` identity. Matching by identity handles case- and
+/// Unicode-folded APFS spellings without letting a nested gitlink under
+/// `submodule` match `submodule` itself. A nested repository it does not record
+/// — a worktree kept in an ignored folder, a clone inside a checkout — is its
+/// own project, which a build in the outer one does not read.
 fn records_submodule(superproject: &Path, submodule: &Path) -> Result<bool> {
-    let relative = submodule.strip_prefix(superproject).with_context(|| {
-        format!(
-            "{} is not inside {}",
-            submodule.display(),
-            superproject.display()
-        )
-    })?;
-    let mut command = hardened_git(superproject, "git")?;
-    command
-        .args(["--literal-pathspecs", "ls-files", "--stage", "-z", "--"])
-        .arg(relative);
+    use std::os::unix::fs::MetadataExt as _;
+
+    let wanted = std::fs::symlink_metadata(submodule)
+        .with_context(|| format!("cannot inspect submodule {}", submodule.display()))?;
+    let wanted_identity = (wanted.dev(), wanted.ino());
+    let mut command = hardened_git_pinned(superproject, "git")?;
+    command.args(["ls-files", "--stage", "-z"]);
     let listed = hardened_output(command, || {
         format!("Git submodule check failed for {}", superproject.display())
     })?;
-    Ok(listed
-        .split(|byte| *byte == 0)
-        .any(|entry| entry.starts_with(b"160000 ")))
+    for entry in listed.split(|byte| *byte == 0) {
+        let Some(rest) = entry.strip_prefix(b"160000 ") else {
+            continue;
+        };
+        let Some(tab) = rest.iter().position(|byte| *byte == b'\t') else {
+            continue;
+        };
+        let entry_path = Path::new(std::ffi::OsStr::from_bytes(&rest[tab + 1..]));
+        let candidate = superproject.join(entry_path);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if (metadata.dev(), metadata.ino()) == wanted_identity => {
+                return Ok(true);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot inspect recorded submodule {}", candidate.display())
+                });
+            }
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -2193,6 +2530,15 @@ mod tests {
             .unwrap();
 
         for broken in [&empty_marker, &dangling_marker] {
+            let mut probe = hardened_git(broken, "git").unwrap();
+            probe.args(["rev-parse", "--git-dir"]);
+            let output = probe.output_within(QUERY_TIMEOUT).unwrap();
+            assert!(
+                !output.status.success(),
+                "PV git/discovery-ceiling: hardened_git in {} escaped to ancestor repo {:?}",
+                broken.display(),
+                String::from_utf8_lossy(&output.stdout)
+            );
             let activity = repo_last_activity(broken);
             assert!(
                 activity.is_err(),
@@ -2217,6 +2563,238 @@ mod tests {
         assert_eq!(
             child_date, "2000-01-01",
             "valid child repo must still report its own date"
+        );
+    }
+
+    #[test]
+    fn hostile_core_worktree_cannot_bypass_tracked_index_or_submodule_checks() {
+        let fixture = crate::ops::TestFixture::new("hostile-core-worktree");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let repo = base.join("repo");
+        init_old_git_repo(&repo).unwrap();
+
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+                .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git -C {} {:?} failed: {}",
+                cwd.display(),
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        std::fs::create_dir_all(repo.join("Pods")).unwrap();
+        std::fs::write(repo.join("Pods/Session.swift"), "let x = 1\n").unwrap();
+        std::fs::create_dir_all(repo.join("target")).unwrap();
+        std::fs::write(repo.join("target/tracked.txt"), "tracked\n").unwrap();
+        std::fs::create_dir_all(repo.join("node_modules/pkg")).unwrap();
+        std::fs::write(
+            repo.join("node_modules/pkg/index.js"),
+            "module.exports = 1;\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join(".gitignore"), ".scratch/\n").unwrap();
+
+        let submod = repo.join("submod");
+        init_old_git_repo(&submod).unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                "-f",
+                "Pods/Session.swift",
+                "target/tracked.txt",
+                "node_modules/pkg/index.js",
+                ".gitignore",
+                "submod",
+            ],
+        );
+        commit_old_git_fixture(&repo, &[]).unwrap();
+
+        let worktree = base.join("linked-wt");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt-branch",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            std::fs::symlink_metadata(worktree.join(".git"))
+                .unwrap()
+                .is_file(),
+            "linked worktree must use a .git gitfile"
+        );
+
+        let config_file = repo.join(".git/config");
+        for hostile_worktree in ["../..", "/"] {
+            let status = Command::new("git")
+                .args(["config", "--file"])
+                .arg(&config_file)
+                .args(["core.worktree", hostile_worktree])
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            for target_repo in [&repo, &worktree] {
+                let mut index = TrackedIndex::list(target_repo).unwrap();
+                for dir in ["Pods", "target", "node_modules"] {
+                    assert!(
+                        index.holds_tracked_files(&target_repo.join(dir)).unwrap(),
+                        "PV git/core-worktree-pin: core.worktree={hostile_worktree} bypassed TrackedIndex for {dir} in {}",
+                        target_repo.display()
+                    );
+                }
+                assert!(
+                    records_submodule(target_repo, &target_repo.join("submod")).unwrap(),
+                    "PV git/core-worktree-pin: core.worktree={hostile_worktree} bypassed records_submodule in {}",
+                    target_repo.display()
+                );
+                assert!(
+                    ignores_path(target_repo, ".scratch/").unwrap(),
+                    "core.worktree={hostile_worktree} bypassed ignores_path in {}",
+                    target_repo.display()
+                );
+                assert!(
+                    worktree_listing(target_repo).is_ok(),
+                    "core.worktree={hostile_worktree} broke worktree_listing in {}",
+                    target_repo.display()
+                );
+                assert_eq!(
+                    git_common_dir(target_repo).unwrap(),
+                    repo.join(".git"),
+                    "core.worktree={hostile_worktree} broke git_common_dir in {}",
+                    target_repo.display()
+                );
+            }
+        }
+
+        // A symlinked `.git` marker must be refused by `hardened_git_pinned`.
+        let symlink_repo = base.join("symlink-git");
+        std::fs::create_dir_all(&symlink_repo).unwrap();
+        std::os::unix::fs::symlink(repo.join(".git"), symlink_repo.join(".git")).unwrap();
+        assert!(
+            hardened_git_pinned(&symlink_repo, "git").is_err(),
+            "symlinked .git marker must be refused"
+        );
+    }
+
+    #[test]
+    fn repo_has_active_build_matches_apfs_casefolded_submodule_and_ignores_unrecorded_sibling() {
+        let fixture = crate::ops::TestFixture::new("records-submodule-identity");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let superproject = base.join("super");
+        init_old_git_repo(&superproject).unwrap();
+
+        let submod = superproject.join("vendor/submod");
+        init_old_git_repo(&submod).unwrap();
+        let unrecorded = superproject.join("vendor/unrecorded");
+        init_old_git_repo(&unrecorded).unwrap();
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&superproject)
+            .args(["add", "vendor/submod"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        commit_old_git_fixture(&superproject, &[]).unwrap();
+
+        // Rename `vendor/submod` only in case: on case-insensitive APFS, Git's
+        // index still records `vendor/submod` while the disk spelling is
+        // `vendor/SubMod`. Identity matching must still keep the submodule live
+        // when the superproject has an active build.
+        std::fs::rename(&submod, superproject.join("vendor/renaming")).unwrap();
+        let renamed = superproject.join("vendor/SubMod");
+        std::fs::rename(superproject.join("vendor/renaming"), &renamed).unwrap();
+
+        let active_super = [crate::safety::ProcessCwd {
+            dev: None,
+            path: superproject.clone(),
+        }];
+        assert!(
+            repo_has_active_build(&renamed, &active_super, &base).unwrap(),
+            "case-folded submodule spelling must stay active via superproject (dev, ino) match"
+        );
+        // Positive controls: a parent directory holding a nested gitlink and an
+        // unrecorded sibling repo must NOT be treated as active submodules.
+        assert!(
+            !repo_has_active_build(&superproject.join("vendor"), &active_super, &base).unwrap(),
+            "directory containing a nested gitlink must not match as a submodule itself"
+        );
+        assert!(
+            !repo_has_active_build(&unrecorded, &active_super, &base).unwrap(),
+            "unrecorded nested repository must not match as a submodule"
+        );
+    }
+
+    #[test]
+    fn repo_has_active_build_fails_closed_on_same_volume_lsof_mount_fallback() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let fixture = crate::ops::TestFixture::new("build-cwd-mount-fallback");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let repo = home.join("app");
+        init_old_git_repo(&repo).unwrap();
+        let repo_dev = std::fs::metadata(&repo).unwrap().dev();
+        let mount_source = crate::safety::volume_mount_source(&repo)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let fallback_path = PathBuf::from(format!("/System/Volumes/Data ({mount_source})"));
+
+        // Different-device mount fallback must not block this repository.
+        let foreign = vec![crate::safety::ProcessCwd {
+            dev: Some(repo_dev.wrapping_add(1)),
+            path: fallback_path.clone(),
+        }];
+        assert!(
+            !repo_has_active_build(&repo, &foreign, &home).unwrap(),
+            "mount fallback on another device must not block an idle repo"
+        );
+
+        // Positive control: a normal CWD inside the repo still reports active.
+        let active = vec![crate::safety::ProcessCwd {
+            dev: Some(repo_dev),
+            path: repo.clone(),
+        }];
+        assert!(
+            repo_has_active_build(&repo, &active, &home).unwrap(),
+            "positive control: normal CWD in repo must report active"
+        );
+
+        // Same-volume mount fallback must fail closed with an explicit error.
+        let same_volume = vec![crate::safety::ProcessCwd {
+            dev: Some(repo_dev),
+            path: fallback_path,
+        }];
+        let error = repo_has_active_build(&repo, &same_volume, &home)
+            .expect_err("same-volume mount fallback must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("lsof could not name a build process working directory on this volume"),
+            "unexpected error: {error:#}"
         );
     }
 }

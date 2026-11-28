@@ -120,6 +120,7 @@ class Case:
         tests: tuple[str, ...],
         marker: str,
         target: str = "lib",
+        package: str = "devtrim",
     ) -> None:
         self.name = name
         self.relative_path = relative_path
@@ -130,6 +131,7 @@ class Case:
         # "lib" selects a unit test; any other value names an integration test
         # file in tests/, whose binary runs the freshly rebuilt devtrim.
         self.target = target
+        self.package = package
 
 
 CASES = (
@@ -2520,6 +2522,107 @@ CASES = (
         tests=("safety::tests::verify_execution_identity_rejects_euid_or_home_owner_mismatch",),
         marker="PV safety/exec-context",
     ),
+    # Dropping --git-dir/--work-tree pinning lets a repository-controlled
+    # core.worktree redirect TrackedIndex and records_submodule away from root.
+    Case(
+        name="git/core-worktree-pin",
+        relative_path="src/ops/project.rs",
+        before='    command\n        .arg("--git-dir")\n        .arg(&dot_git)\n        .arg("--work-tree")\n        .arg(&canonical);\n',
+        after='    let _ = (command, &dot_git, &canonical);\n',
+        tests=("ops::project::tests::hostile_core_worktree_cannot_bypass_tracked_index_or_submodule_checks",),
+        marker="PV git/core-worktree-pin",
+    ),
+    # Replacing APFS full Unicode folding with ASCII lowercasing lets folded
+    # Terraform state names (`tfſtate`, `tfﬅate`, `bacKup`) slip past scan/apply.
+    Case(
+        name="artifacts/apfs-tfstate-fold",
+        relative_path="src/ops/artifacts.rs",
+        before="        Some(name) => {\n            let folded = fold_apfs_ascii(name);\n            SUFFIXES.iter().any(|suffix| folded.ends_with(suffix))\n        }\n",
+        after="        Some(name) => {\n            let folded = name.to_ascii_lowercase();\n            SUFFIXES.iter().any(|suffix| folded.ends_with(suffix))\n        }\n",
+        tests=("ops::artifacts::tests::apfs_unicode_casefold_protects_terraform_state_and_excluded_names_at_scan_and_apply",),
+        marker="PV artifacts/apfs-tfstate-fold",
+    ),
+    # Skipping the Git-repository ownership check lets GOMODCACHE inside a
+    # repository be offered and deleted as a cache.
+    Case(
+        name="caches/go-owning-repo",
+        relative_path="src/ops/caches.rs",
+        before="    if super::project::has_git_marker(&path)? || super::project::owning_repo(&path, home)?.is_some()\n",
+        after="    if false && (super::project::has_git_marker(&path)? || super::project::owning_repo(&path, home)?.is_some())\n",
+        tests=("ops::caches::tests::go_module_cache_inside_git_repository_is_rejected",),
+        marker="scan must reject GOMODCACHE inside Git repository",
+    ),
+    # Skipping Gradle overlap detection lets another cache authority (Go) offer
+    # an active Gradle cache while Gradle runs.
+    Case(
+        name="caches/go-gradle-overlap",
+        relative_path="src/ops/caches.rs",
+        before="        let overlaps = match overlaps_gradle(target, gradle) {\n",
+        after="        let overlaps = match Ok::<bool, anyhow::Error>(false) {\n",
+        tests=("ops::caches::tests::overlapping_go_and_gradle_cache_enforces_gradle_liveness_and_repo_guards",),
+        marker="overlapping Go finding must be dropped while Gradle runs",
+    ),
+    # Skipping default-swiftly absence verification treats a broken ~/.swiftly
+    # or config.json symlink as if swiftly were unconfigured.
+    Case(
+        name="toolchains/swiftly-dangling-symlink",
+        relative_path="src/ops/toolchains.rs",
+        before="            verify_default_swiftly_absent(swiftly_home, config)?;\n",
+        after="            let _ = (swiftly_home, config);\n",
+        tests=("ops::toolchains::tests::swiftly_dangling_config_symlink_fails_closed",),
+        marker="dangling config.json symlink must fail closed",
+    ),
+    # Dropping isolated DOCKER_CONFIG/BUILDX_CONFIG for DockerBuilderPrune lets
+    # `docker builder prune` read ambient user contexts/builders.
+    Case(
+        name="docker/builder-prune-isolation",
+        relative_path="src/ops/mod.rs",
+        before=(
+            '                    .env("DOCKER_CONFIG", isolated_config.path())\n'
+            '                    .env("BUILDX_CONFIG", isolated_config.path().join("buildx"))\n'
+        ),
+        after="",
+        tests=("eval_clean_docker_prunes_images_and_build_cache_never_volumes",),
+        marker="PV docker/builder-prune-isolation",
+        target="eval_system",
+    ),
+    # Skipping the same-volume lsof mount-fallback guard lets a Codex release
+    # be offered while an unresolvable executable mapping exists on its volume.
+    Case(
+        name="agents/lsof-mount-fallback",
+        relative_path="src/ops/agents.rs",
+        before="    if !same_volume.is_empty() {\n        let fallback = format!(\n",
+        after="    if false && !same_volume.is_empty() {\n        let fallback = format!(\n",
+        tests=("ops::agents::tests::a_mount_fallback_mapping_refuses_on_same_volume_and_ignores_other_volumes",),
+        marker="mount fallback on target volume offered the release",
+    ),
+    # Dropping octal escapes for `'` and `!` inside `$'...'` re-exposes copied
+    # dashboard preview commands to GNU Bash 3.2 interactive history expansion.
+    Case(
+        name="dashboard/bash32-histexpand",
+        relative_path="src/dashboard.rs",
+        before=r'''            '\'' => quoted.push_str("\\047"),
+            '!' => quoted.push_str("\\041"),
+''',
+        after=r'''            '\'' => quoted.push_str("\\'"),
+            '!' => quoted.push('!'),
+''',
+        tests=("copied_project_preview_neutralizes_bash32_interactive_history_expansion",),
+        marker=r'command.contains("\\047") && command.contains("\\041")',
+        target="dashboard",
+    ),
+    # Ignoring ATTR_DIR_MOUNTSTATUS lets bulk walkers descend across mounted
+    # volumes whose parent `getattrlistbulk` entries inherit the parent dev_t.
+    Case(
+        name="apfs/bulk-mountpoint",
+        relative_path="crates/apfs-size/src/lib.rs",
+        before="            status & (DIR_MNTSTATUS_MNTPOINT | DIR_MNTSTATUS_TRIGGER) != 0\n",
+        after="            let _ = status;\n            false\n",
+        tests=("tests::bulk_parser_decodes_mountstatus_and_enforces_hardening",),
+        marker="left: false\n right: true",
+        target="lib",
+        package="apfs-size",
+    ),
 )
 
 
@@ -2639,7 +2742,11 @@ def stop_on_signal(signum: int, frame) -> None:
 
 
 def build_test_binary(
-    workspace: Path, target_dir: Path, deadline: float, target: str
+    workspace: Path,
+    target_dir: Path,
+    deadline: float,
+    target: str,
+    package: str = "devtrim",
 ) -> tuple[Path | None, subprocess.CompletedProcess]:
     """Compile one test target and return the executable cargo produced.
 
@@ -2655,7 +2762,7 @@ def build_test_binary(
         [
             "rustup", "run", TOOLCHAIN, "cargo", "test",
             # The workspace's other member has a lib test of its own.
-            "--locked", "--offline", "--package", "devtrim", *selection, "--all-features",
+            "--locked", "--offline", "--package", package, *selection, "--all-features",
             "--no-run", "--message-format=json",
         ],
         workspace,
@@ -2703,7 +2810,13 @@ def selection_error(output: str) -> str | None:
 class Worker:
     """One isolated source copy and cargo target directory."""
 
-    def __init__(self, index: int, workspace: Path, target_dir: Path, last_target: str) -> None:
+    def __init__(
+        self,
+        index: int,
+        workspace: Path,
+        target_dir: Path,
+        last_target: tuple[str, str],
+    ) -> None:
         self.index = index
         self.workspace = workspace
         self.target_dir = target_dir
@@ -2734,7 +2847,9 @@ def prove_case(
     path.write_text(original.replace(case.before, case.after, 1))
     started = time.monotonic()
     try:
-        mutant, build = build_test_binary(worker.workspace, worker.target_dir, deadline, case.target)
+        mutant, build = build_test_binary(
+            worker.workspace, worker.target_dir, deadline, case.target, case.package
+        )
     except subprocess.TimeoutExpired:
         return Outcome(f"ERROR {case.name}: total deadline exceeded while building the mutant")
     finally:
@@ -2742,7 +2857,7 @@ def prove_case(
         path.write_text(original)
     outcome = Outcome()
     outcome.build_seconds = time.monotonic() - started
-    worker.last_target = case.target
+    worker.last_target = (case.package, case.target)
     if worker.index > 0 and worker.rebuilt_dependencies is None:
         worker.rebuilt_dependencies = 0
         for line in build.stdout.splitlines():
@@ -2781,7 +2896,7 @@ def prove_case(
                 f"this is not proof the boundary is covered\n{combined}"
             )
             return outcome
-        location = re.search(r"((?:src|tests)/[^\s:]+:\d+)", combined)
+        location = re.search(r"((?:src|tests|crates)/[^\s:]+:\d+)", combined)
         outcome.observations.append(
             f"CAUGHT {case.name}: {test.rsplit('::', 1)[-1]}"
             f" at {location.group(1) if location else 'unknown'}"
@@ -2804,14 +2919,14 @@ class MutationStage:
         self.deadline = deadline
         self.test_slots = test_slots
         self.lock = threading.Lock()
-        self.remaining: dict[str, deque[int]] = {}
+        self.remaining: dict[tuple[str, str], deque[int]] = {}
         for index, case in enumerate(cases):
-            self.remaining.setdefault(case.target, deque()).append(index)
+            self.remaining.setdefault((case.package, case.target), deque()).append(index)
         self.outcomes: list[Outcome | None] = [None] * len(cases)
         self.printed = 0
         self.fatal: list[str] = []
 
-    def take(self, last_target: str) -> int | None:
+    def take(self, last_target: tuple[str, str]) -> int | None:
         with self.lock:
             # The same target reuses the worker's last build of everything but
             # the mutated crate; otherwise drain the longest queue first.
@@ -3000,18 +3115,22 @@ def run_cases(scratch: Path, prefix: str, jobs: int, test_jobs: int, summary: di
                 f"found {occurrences} — the guarded code moved or changed shape"
             )
 
-    targets = sorted({case.target for case in cases})
+    targets = sorted({(case.package, case.target) for case in cases})
     baselines = {}
-    for target in targets:
-        baselines[target], build = build_test_binary(workspace, target_dir, deadline, target)
-        if baselines[target] is None:
+    for package, target in targets:
+        baselines[(package, target)], build = build_test_binary(
+            workspace, target_dir, deadline, target, package
+        )
+        if baselines[(package, target)] is None:
             print(build_error_tail(build), file=sys.stderr)
-            fail(f"ERROR: the unmutated copy did not compile ({target}); gate cannot run")
+            fail(f"ERROR: the unmutated copy did not compile ({package}:{target}); gate cannot run")
 
     # Every named test must pass before it can prove anything by failing. Two
     # cases naming the same test share one baseline run.
-    pending = list(dict.fromkeys((case.target, test) for case in cases for test in case.tests))
-    baseline_results: dict[tuple[str, str], subprocess.CompletedProcess | None] = {}
+    pending = list(
+        dict.fromkeys((case.package, case.target, test) for case in cases for test in case.tests)
+    )
+    baseline_results: dict[tuple[str, str, str], subprocess.CompletedProcess | None] = {}
     pending_lock = threading.Lock()
 
     def run_baseline_tests() -> None:
@@ -3019,19 +3138,20 @@ def run_cases(scratch: Path, prefix: str, jobs: int, test_jobs: int, summary: di
             with pending_lock:
                 if not pending:
                     return
-                target, test = pending.pop(0)
+                package, target, test = pending.pop(0)
             try:
-                result = run_one_test(baselines[target], test, target_dir)
+                result = run_one_test(baselines[(package, target)], test, target_dir)
             except subprocess.TimeoutExpired:
                 result = None
-            baseline_results[(target, test)] = result
+            baseline_results[(package, target, test)] = result
 
     SUPERVISOR.run_threads(min(test_jobs, len(pending)), run_baseline_tests)
     for case in cases:
         for test in case.tests:
-            if (case.target, test) not in baseline_results:
+            key = (case.package, case.target, test)
+            if key not in baseline_results:
                 fail(f"ERROR {case.name}: baseline test did not run ({test})")
-            result = baseline_results[(case.target, test)]
+            result = baseline_results[key]
             if result is None:
                 fail(f"ERROR {case.name}: baseline test timed out ({test})")
             selection = selection_error(result.stdout)

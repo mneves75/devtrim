@@ -52,7 +52,7 @@ impl Op for Leftovers {
     fn scan(
         &self,
         ctx: &Ctx,
-        _observations: &super::project::ScanObservations,
+        observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         let mut unread = Vec::new();
@@ -70,30 +70,44 @@ impl Op for Leftovers {
             if !is_directory_if_present(root)? {
                 continue;
             }
-            for repository in project::repositories_under(root, &mut unread)? {
+            let scanned;
+            let fallback;
+            let repositories: &[PathBuf] = if super::has_node_modules_ancestor(root)
+                || root
+                    .components()
+                    .any(|component| crate::safety::is_git_metadata_name(component.as_os_str()))
+            {
+                fallback = project::repositories_under(root, &mut unread)?;
+                &fallback
+            } else {
+                scanned = observations.project_root(root)?;
+                unread.extend(scanned.repo_unread.iter().cloned());
+                &scanned.repositories
+            };
+            for repository in repositories {
                 // Git fails every query in a worktree whose repository is
                 // gone; there is nothing of its own to judge, as in `worktrees`.
-                if project::orphaned_worktree(&repository).unwrap_or(false) {
+                if project::orphaned_worktree(repository).unwrap_or(false) {
                     continue;
                 }
                 // Refuse to run Git (`.scratch` check-ignore) or inspect
                 // `tmp_objdir` on a `.git` file pointing outside the repository
                 // or normalized scan roots, or through a symlinked ancestor.
-                if has_out_of_scope_gitfile(&repository, &scoped_roots) {
+                if has_out_of_scope_gitfile(repository, &scoped_roots) {
                     continue;
                 }
-                if let Err(error) = scratch_findings(&repository, &mut findings) {
-                    findings.push(project::unjudged_finding(".scratch", &repository, &error));
+                if let Err(error) = scratch_findings(repository, &mut findings) {
+                    findings.push(project::unjudged_finding(".scratch", repository, &error));
                 }
                 if let Err(error) = tmp_objdir_findings(
-                    &repository,
+                    repository,
                     &scoped_roots,
                     &mut seen_objects_dirs,
                     &mut findings,
                 ) {
                     findings.push(project::unjudged_finding(
                         "Git tmp_objdir",
-                        &repository,
+                        repository,
                         &error,
                     ));
                 }
@@ -140,16 +154,20 @@ impl Op for Leftovers {
                 for child in ["evidence", "perf"] {
                     let path = entry.path().join(child);
                     // A `.supergoal` that cannot be searched is named as the
-                    // folder the walk could not read, once.
-                    match is_directory_if_present(&path) {
-                        Ok(true) => push_measured(
+                    // folder the walk could not read, once. Use `symlink_metadata`
+                    // so symlinked `evidence`/`perf` entries are never followed.
+                    match std::fs::symlink_metadata(&path) {
+                        Ok(metadata) if metadata.file_type().is_dir() => push_measured(
                             &mut findings,
                             format!("supergoal {child} artifacts"),
                             &path,
                             "review manually; completion cannot be inferred from a path",
                         ),
-                        Ok(false) => {}
+                        Ok(_) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                         Err(error) => {
+                            let error = anyhow::Error::from(error)
+                                .context(format!("cannot inspect {}", path.display()));
                             unread_once(&mut unread, entry.path(), &error);
                             break;
                         }
@@ -265,6 +283,14 @@ fn in_scope_without_symlinks(
             .any(|(_, root_real)| canonical.starts_with(root_real))
 }
 
+/// Rejects paths ending in `/` or `/.` so `symlink_metadata` and
+/// `open(..., O_NOFOLLOW)` inspect the leaf entry itself instead of forcing
+/// POSIX trailing-slash symlink traversal.
+fn has_trailing_slash_or_dot(path: &Path) -> bool {
+    let bytes = path.as_os_str().as_bytes();
+    bytes.ends_with(b"/") || bytes.ends_with(b"/.")
+}
+
 /// Returns `true` when `repository/.git` is anything other than a real `.git`
 /// directory or a valid bounded gitfile whose `gitdir` (and `commondir`, when
 /// present — for BOTH directory-form and file-form `.git` markers, since Git's
@@ -293,7 +319,8 @@ fn has_out_of_scope_gitfile(repository: &Path, scoped_roots: &[(PathBuf, PathBuf
         return true;
     };
     let canonical_repo = std::fs::canonicalize(repository).ok();
-    if !std::fs::symlink_metadata(&gitdir).is_ok_and(|entry| entry.is_dir())
+    if has_trailing_slash_or_dot(&gitdir)
+        || !std::fs::symlink_metadata(&gitdir).is_ok_and(|entry| entry.is_dir())
         || !in_scope_without_symlinks(&gitdir, repository, canonical_repo.as_deref(), scoped_roots)
     {
         return true;
@@ -318,7 +345,8 @@ fn has_out_of_scope_gitfile(repository: &Path, scoped_roots: &[(PathBuf, PathBuf
             return true;
         }
         let resolved_common = gitdir.join(OsStr::from_bytes(common_target));
-        if !std::fs::symlink_metadata(&resolved_common).is_ok_and(|entry| entry.is_dir())
+        if has_trailing_slash_or_dot(&resolved_common)
+            || !std::fs::symlink_metadata(&resolved_common).is_ok_and(|entry| entry.is_dir())
             || !in_scope_without_symlinks(
                 &resolved_common,
                 repository,
@@ -363,7 +391,13 @@ fn tmp_objdir_findings(
         // Open `gitdir` without following a leaf symlink and validate its
         // containment BEFORE opening `commondir` relative to that open handle
         // via `openat`, eliminating ancestor-substitution TOCTOU.
-        if !in_scope_without_symlinks(&gitdir, repository, canonical_repo.as_deref(), scoped_roots)
+        if has_trailing_slash_or_dot(&gitdir)
+            || !in_scope_without_symlinks(
+                &gitdir,
+                repository,
+                canonical_repo.as_deref(),
+                scoped_roots,
+            )
         {
             return Ok(());
         }
@@ -649,5 +683,75 @@ mod tests {
         assert_eq!(findings[0].label, "Ollama local models");
         assert_eq!(findings[0].action, Action::Info);
         assert!(findings[0].size_bytes > 0);
+    }
+
+    #[test]
+    fn supergoal_skips_symlinks_and_gitdir_rejects_trailing_slash_or_dot() {
+        let fixture = crate::ops::TestFixture::new("devtrim-leftovers-hardening");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let root = home.join("dev");
+
+        // Symlinked `.supergoal/evidence` and `.supergoal/perf` must never be followed.
+        let outside = home.join("outside-secret");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("data.bin"), "secret").unwrap();
+        let supergoal = root.join("proj/.supergoal");
+        std::fs::create_dir_all(&supergoal).unwrap();
+        std::os::unix::fs::symlink(&outside, supergoal.join("evidence")).unwrap();
+        std::os::unix::fs::symlink(&outside, supergoal.join("perf")).unwrap();
+
+        // `.git` gitfile ending with `/` or `/.` must be rejected by
+        // `has_out_of_scope_gitfile` even when pointing inside `scoped_roots`.
+        let real_gitdir = root.join("real-gitdir");
+        std::fs::create_dir_all(real_gitdir.join("objects/tmp_objdir-a")).unwrap();
+        std::fs::write(real_gitdir.join("objects/tmp_objdir-a/pack"), "bytes").unwrap();
+        let scoped_roots = vec![(root.clone(), root.clone())];
+        for (name, suffix) in [("slash-repo", "/"), ("dot-repo", "/.")] {
+            let repo = root.join(name);
+            std::fs::create_dir_all(&repo).unwrap();
+            std::fs::write(
+                repo.join(".git"),
+                format!("gitdir: {}{suffix}\n", real_gitdir.display()),
+            )
+            .unwrap();
+            assert!(
+                has_out_of_scope_gitfile(&repo, &scoped_roots),
+                "gitdir ending in `{suffix}` must be rejected"
+            );
+        }
+
+        // Positive controls: a real `.supergoal/evidence` directory and a valid
+        // gitfile without trailing `/` or `/.` must still be reported by scan.
+        let valid_evidence = root.join("clean-proj/.supergoal/evidence");
+        std::fs::create_dir_all(&valid_evidence).unwrap();
+        std::fs::write(valid_evidence.join("run.log"), "ok").unwrap();
+        let valid_repo = root.join("valid-repo");
+        std::fs::create_dir_all(&valid_repo).unwrap();
+        std::fs::write(
+            valid_repo.join(".git"),
+            format!("gitdir: {}\n", real_gitdir.display()),
+        )
+        .unwrap();
+        assert!(
+            !has_out_of_scope_gitfile(&valid_repo, &scoped_roots),
+            "positive control: valid in-scope gitfile without trailing slash/dot must be accepted"
+        );
+
+        let ctx = Ctx {
+            roots: vec![root],
+            roots_origin: crate::safety::RootsOrigin::Flag,
+            ..Ctx::for_test(home)
+        };
+        let findings = Leftovers.scan(&ctx, &Default::default()).unwrap();
+        let mut reported: Vec<_> = findings.iter().filter_map(Finding::target).collect();
+        reported.sort();
+        let valid_debris = real_gitdir.join("objects/tmp_objdir-a");
+        let mut expected = vec![valid_evidence.as_path(), valid_debris.as_path()];
+        expected.sort();
+        assert_eq!(
+            reported, expected,
+            "only real .supergoal children and valid in-scope gitdirs may be reported: {findings:?}"
+        );
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "devtrim"
-version = "0.17.2"
+version = "0.18.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Marcus Neves"]
@@ -32,6 +32,7 @@ apfs-size = { path = "crates/apfs-size" }
 
 [profile.release]
 lto = true
+codegen-units = 1
 strip = true
 
 [workspace]

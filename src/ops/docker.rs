@@ -96,21 +96,33 @@ struct BuildxUsage {
     reclaimable_bytes: u64,
 }
 
-fn docker(host: &str, args: &[&str]) -> Result<String> {
+fn docker(home: &Path, docker_config: &Path, host: &str, args: &[&str]) -> Result<String> {
     let command = format!("`docker --host {host} {}`", args.join(" "));
-    command_stdout(
-        Command::new("docker")
-            .arg("--host")
-            .arg(host)
-            .args(args)
-            .output_within(QUERY_TIMEOUT),
-        &command,
-    )
+    let mut process = Command::new("docker");
+    process
+        .current_dir(home)
+        .env("DOCKER_CONFIG", docker_config)
+        .arg("--host")
+        .arg(host)
+        .args(args);
+    if matches!(args.first().copied(), Some("version" | "system")) {
+        process
+            .env_remove("DOCKER_CONTEXT")
+            .env_remove("BUILDX_BUILDER")
+            .env_remove("BUILDX_CONFIG");
+    } else if matches!(args.first().copied(), Some("buildx")) {
+        process
+            .env("BUILDX_CONFIG", docker_config.join("buildx"))
+            .env_remove("BUILDX_BUILDER");
+    }
+    command_stdout(process.output_within(QUERY_TIMEOUT), &command)
 }
 
-fn docker_host() -> Result<Option<String>> {
+fn docker_host(home: &Path, docker_config: &Path) -> Result<Option<String>> {
     let Some(output) = optional_command_stdout(
         Command::new("docker")
+            .current_dir(home)
+            .env("DOCKER_CONFIG", docker_config)
             .args(["context", "inspect"])
             .output_within(QUERY_TIMEOUT),
         "`docker context inspect`",
@@ -158,9 +170,11 @@ fn is_valid_builder_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
 }
 
-fn local_docker_contexts() -> Result<BTreeMap<String, String>> {
+fn local_docker_contexts(home: &Path, docker_config: &Path) -> Result<BTreeMap<String, String>> {
     let output = command_stdout(
         Command::new("docker")
+            .current_dir(home)
+            .env("DOCKER_CONFIG", docker_config)
             .args(["context", "ls", "--format", "{{json .}}"])
             .output_within(QUERY_TIMEOUT),
         "`docker context ls --format '{{json .}}'`",
@@ -193,8 +207,12 @@ fn is_buildx_unavailable(stderr: &str) -> bool {
         || lowered.contains("unknown shorthand flag")
 }
 
-fn buildx_ls(host: &str) -> Result<Option<String>> {
+fn buildx_ls(home: &Path, docker_config: &Path, host: &str) -> Result<Option<String>> {
     let output = Command::new("docker")
+        .current_dir(home)
+        .env("DOCKER_CONFIG", docker_config)
+        .env("BUILDX_CONFIG", docker_config.join("buildx"))
+        .env_remove("BUILDX_BUILDER")
         .arg("--host")
         .arg(host)
         .args(["buildx", "ls", "--format", "{{json .}}"])
@@ -436,13 +454,13 @@ fn parse_buildx_du(output: &str, builder: &str) -> Result<BuildxUsage> {
     })
 }
 
-fn scan_buildx_findings(host: &str) -> Result<Vec<Finding>> {
-    let Some(output) = buildx_ls(host)? else {
+fn scan_buildx_findings(home: &Path, docker_config: &Path, host: &str) -> Result<Vec<Finding>> {
+    let Some(output) = buildx_ls(home, docker_config, host)? else {
         return Ok(Vec::new());
     };
     let parsed = parse_buildx_ls(&output)?;
     let local_contexts = if needs_context_lookup(&parsed) {
-        local_docker_contexts()?
+        local_docker_contexts(home, docker_config)?
     } else {
         BTreeMap::new()
     };
@@ -452,7 +470,12 @@ fn scan_buildx_findings(host: &str) -> Result<Vec<Finding>> {
     let builders = deduplicate_local_buildx_builders(&parsed, &local_contexts);
     let mut findings = Vec::new();
     for builder in builders {
-        let du_output = docker(host, &["buildx", "du", "--builder", &builder.name])?;
+        let du_output = docker(
+            home,
+            docker_config,
+            host,
+            &["buildx", "du", "--builder", &builder.name],
+        )?;
         let usage = parse_buildx_du(&du_output, &builder.name)?;
         if usage.total_bytes == 0 && usage.reclaimable_bytes == 0 {
             continue;
@@ -505,6 +528,8 @@ fn scan_buildx_findings(host: &str) -> Result<Vec<Finding>> {
 }
 
 fn verify_local_buildx_builder(
+    home: &Path,
+    docker_config: &Path,
     host: &str,
     builder: &str,
     expected_nodes: &[BuildxNodeIdentity],
@@ -514,7 +539,7 @@ fn verify_local_buildx_builder(
             "refusing buildx prune: builder `{builder}` carries no previewed node identity"
         );
     }
-    let Some(output) = buildx_ls(host)? else {
+    let Some(output) = buildx_ls(home, docker_config, host)? else {
         anyhow::bail!("refusing buildx prune: `docker buildx` is unavailable");
     };
     let parsed = parse_buildx_ls(&output)?;
@@ -526,7 +551,7 @@ fn verify_local_buildx_builder(
     };
     let single = [candidate];
     let local_contexts = if needs_context_lookup(&single) {
-        local_docker_contexts()?
+        local_docker_contexts(home, docker_config)?
     } else {
         BTreeMap::new()
     };
@@ -548,6 +573,1063 @@ fn verify_local_buildx_builder(
     Ok(())
 }
 
+const MAX_DOCKER_CONFIG_BYTES: u64 = 1024 * 1024;
+
+/// Built-in Unix CLI plugin search directories checked by Docker CLI
+/// (`cli-plugins/manager/manager_unix.go:13-18`).
+const DOCKER_SYSTEM_PLUGIN_DIRS: &[&str] = &[
+    "/usr/local/lib/docker/cli-plugins",
+    "/usr/local/libexec/docker/cli-plugins",
+    "/usr/lib/docker/cli-plugins",
+    "/usr/libexec/docker/cli-plugins",
+];
+
+fn is_safe_absolute_dir(path: &Path) -> bool {
+    let encoded = path.as_os_str().as_encoded_bytes();
+    path.is_absolute()
+        && !encoded.contains(&b'\n')
+        && path
+            .components()
+            .all(|component| !matches!(component, Component::CurDir | Component::ParentDir))
+        && !encoded
+            .split(|byte| *byte == b'/')
+            .any(|segment| segment == b"." || segment == b"..")
+}
+
+#[derive(Clone, Copy)]
+struct TrustPolicy {
+    expect_dir: bool,
+    allow_missing: bool,
+    allow_leaf_symlink: bool,
+    allow_sticky_leaf: bool,
+    /// A symlink chain ending at a missing entry reads as absent (`Ok(None)`)
+    /// under the same writer checks as `allow_missing`.
+    allow_dangling: bool,
+}
+
+fn read_docker_config_json(
+    source_config: &Path,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
+    use rustix::fs::{FileType, Mode, OFlags, fstat, open};
+    use std::io::Read as _;
+
+    let config_path = source_config.join("config.json");
+    let descriptor = match open(
+        &config_path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(errno) => {
+            return Err(std::io::Error::from(errno))
+                .with_context(|| format!("cannot open Docker config {}", config_path.display()));
+        }
+    };
+    let stat = fstat(&descriptor)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot inspect Docker config {}", config_path.display()))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        anyhow::bail!(
+            "refusing non-regular Docker config {}",
+            config_path.display()
+        );
+    }
+    if super::project::fd_ignores_ownership(&descriptor, "Docker config")? {
+        anyhow::bail!(
+            "refusing Docker config {}: its volume ignores ownership",
+            config_path.display()
+        );
+    }
+    let current_uid = rustix::process::geteuid().as_raw();
+    if stat.st_uid != current_uid && stat.st_uid != 0 {
+        anyhow::bail!(
+            "refusing Docker config owned by UID {} (expected {current_uid} or root): {}",
+            stat.st_uid,
+            config_path.display()
+        );
+    }
+    if u32::from(stat.st_mode) & 0o022 != 0 {
+        anyhow::bail!(
+            "refusing group- or world-writable Docker config {}",
+            config_path.display()
+        );
+    }
+    super::project::refuse_path_acl_grants([config_path.as_path()], &config_path, "Docker config")?;
+    let mut file = std::fs::File::from(descriptor);
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(MAX_DOCKER_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("cannot read Docker config {}", config_path.display()))?;
+    if bytes.len() as u64 > MAX_DOCKER_CONFIG_BYTES {
+        anyhow::bail!(
+            "Docker config exceeds {MAX_DOCKER_CONFIG_BYTES} bytes: {}",
+            config_path.display()
+        );
+    }
+    let contents = String::from_utf8(bytes).with_context(|| {
+        format!(
+            "Docker config is not valid UTF-8: {}",
+            config_path.display()
+        )
+    })?;
+    let parsed: serde_json::Value = serde_json::from_str(&contents)
+        .with_context(|| format!("invalid Docker config JSON: {}", config_path.display()))?;
+    let object = parsed.as_object().cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Docker config is not a JSON object: {}",
+            config_path.display()
+        )
+    })?;
+    Ok(Some(object))
+}
+
+/// macOS `wheel` (gid 0) and `admin` (gid 80). Members of either can already
+/// act as root (`/etc/sudoers` grants `%admin ALL=(ALL) ALL`), so their group
+/// write bit grants nothing new. Homebrew relies on this: it creates
+/// `/opt/homebrew/*` as `0775 <user>:admin`, and `/Applications` is
+/// `0775 root:admin`, where Docker Desktop and OrbStack plugins live.
+const ROOT_EQUIVALENT_GIDS: [u32; 2] = [0, 80];
+
+/// Whether an account other than the owner, root, or a root-equivalent group
+/// member can write an entry with this mode and group, ignoring the sticky bit.
+fn writable_by_untrusted(mode: u32, gid: u32) -> bool {
+    mode & 0o002 != 0 || (mode & 0o020 != 0 && !ROOT_EQUIVALENT_GIDS.contains(&gid))
+}
+
+fn resolve_trusted_path(
+    start: &Path,
+    current_uid: u32,
+    policy: TrustPolicy,
+    label: &str,
+) -> Result<Option<PathBuf>> {
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    const MAX_SYMLINK_HOPS: usize = 40;
+
+    if !is_safe_absolute_dir(start) {
+        anyhow::bail!(
+            "refusing unsafe {label} (must be an absolute path without `.`, `..`, or newlines): {}",
+            start.display()
+        );
+    }
+
+    let mut current = PathBuf::from("/");
+    let mut pending: VecDeque<(OsString, bool)> = VecDeque::new();
+    for component in start.components() {
+        if let Component::Normal(segment) = component {
+            pending.push_back((segment.to_os_string(), false));
+        }
+    }
+    let mut hops = 0usize;
+    let mut current_from_symlink = false;
+    let mut last_parent_writable: Option<bool> = None;
+
+    loop {
+        if current.as_os_str().as_encoded_bytes().contains(&b'\n') {
+            anyhow::bail!("refusing {label} with newline: {}", current.display());
+        }
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let absent_allowed = if current_from_symlink {
+                    policy.allow_dangling
+                } else {
+                    policy.allow_missing
+                };
+                if absent_allowed {
+                    // Any local user can mount a volume at a missing
+                    // `/Volumes/<name>` (a disk image, a USB disk), so a link
+                    // to one names a file nobody here vouches for. Compared by
+                    // identity: `/volumes` and the Data-volume firmlink
+                    // `/System/Volumes/Data/Volumes` name the same folder.
+                    if current_from_symlink
+                        && current.parent().is_some_and(|parent| {
+                            match (std::fs::metadata(parent), std::fs::metadata("/Volumes")) {
+                                (Ok(parent), Ok(volumes)) => {
+                                    (parent.dev(), parent.ino()) == (volumes.dev(), volumes.ino())
+                                }
+                                // Unknown identity fails closed.
+                                _ => true,
+                            }
+                        })
+                    {
+                        anyhow::bail!(
+                            "refusing {label} linked to an unmounted volume: {}",
+                            start.display()
+                        );
+                    }
+                    if last_parent_writable == Some(true) {
+                        anyhow::bail!(
+                            "refusing nonexistent {label} under writable ancestor: {}",
+                            start.display()
+                        );
+                    }
+                    return Ok(None);
+                }
+                anyhow::bail!("refusing broken symlink for {label}: {}", start.display());
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("cannot inspect {label} path {}", current.display()));
+            }
+        };
+        if !metadata.file_type().is_symlink() && super::project::ignores_ownership(&current)? {
+            anyhow::bail!(
+                "refusing {label} path {}: its volume ignores ownership",
+                current.display()
+            );
+        }
+        if metadata.uid() != current_uid && metadata.uid() != 0 {
+            anyhow::bail!(
+                "refusing {label} path not owned by current user or root: {}",
+                current.display()
+            );
+        }
+        super::project::refuse_path_acl_grants([current.as_path()], &current, label)?;
+
+        if metadata.file_type().is_symlink() {
+            if !policy.allow_leaf_symlink && pending.is_empty() {
+                anyhow::bail!("refusing symlinked {label}: {}", start.display());
+            }
+            hops += 1;
+            if hops > MAX_SYMLINK_HOPS {
+                anyhow::bail!(
+                    "refusing {label} symlink chain exceeding {MAX_SYMLINK_HOPS} hops: {}",
+                    start.display()
+                );
+            }
+            let target = std::fs::read_link(&current)
+                .with_context(|| format!("cannot read {label} symlink {}", current.display()))?;
+            let mut next_components = Vec::new();
+            for component in target.components() {
+                match component {
+                    Component::RootDir | Component::CurDir => {}
+                    Component::ParentDir => next_components.push(OsString::from("..")),
+                    Component::Normal(segment) => next_components.push(segment.to_os_string()),
+                    Component::Prefix(_) => {
+                        anyhow::bail!(
+                            "refusing unexpected prefix in {label} symlink {}",
+                            current.display()
+                        );
+                    }
+                }
+            }
+            for segment in next_components.into_iter().rev() {
+                pending.push_front((segment, true));
+            }
+            if target.is_absolute() {
+                current = PathBuf::from("/");
+                last_parent_writable = None;
+            } else {
+                current.pop();
+            }
+            current_from_symlink = true;
+            continue;
+        } else if pending.is_empty() {
+            let right_kind = if policy.expect_dir {
+                metadata.is_dir()
+            } else {
+                metadata.is_file()
+            };
+            if !right_kind {
+                anyhow::bail!(
+                    "refusing {} {label} path: {}",
+                    if policy.expect_dir {
+                        "non-directory"
+                    } else {
+                        "non-regular"
+                    },
+                    start.display()
+                );
+            }
+            let mode = metadata.permissions().mode();
+            let others_write = writable_by_untrusted(mode, metadata.gid());
+            if others_write && (!policy.allow_sticky_leaf || mode & 0o1000 == 0) {
+                anyhow::bail!(
+                    "refusing group- or world-writable {label}: {}",
+                    current.display()
+                );
+            }
+            return Ok(Some(current));
+        } else {
+            if !metadata.is_dir() {
+                anyhow::bail!(
+                    "refusing non-directory ancestor in {label} path: {}",
+                    current.display()
+                );
+            }
+            let mode = metadata.permissions().mode();
+            let writable = writable_by_untrusted(mode, metadata.gid());
+            if writable && (mode & 0o1000 == 0) {
+                anyhow::bail!(
+                    "refusing group- or world-writable ancestor in {label} path: {}",
+                    current.display()
+                );
+            }
+            last_parent_writable = Some(writable);
+        }
+
+        if let Some((next_segment, from_symlink)) = pending.pop_front() {
+            if next_segment == ".." {
+                current.pop();
+                last_parent_writable = None;
+            } else {
+                current.push(next_segment);
+            }
+            current_from_symlink = from_symlink;
+        }
+    }
+}
+
+/// A plugin symlink left dangling (an uninstalled OrbStack or Docker Desktop
+/// leaves `~/.docker/cli-plugins/docker-buildx` pointing into a missing app)
+/// is one Docker cannot execute, so it is accepted as no plugin, provided no
+/// untrusted account could create its target: every existing folder on the
+/// way passed the same owner, ACL and writer checks.
+fn validate_docker_plugin_executable(entry_path: &Path, current_uid: u32) -> Result<()> {
+    let _ = resolve_trusted_path(
+        entry_path,
+        current_uid,
+        TrustPolicy {
+            expect_dir: false,
+            allow_missing: false,
+            allow_leaf_symlink: true,
+            allow_sticky_leaf: false,
+            allow_dangling: true,
+        },
+        "Docker CLI plugin executable",
+    )?;
+    Ok(())
+}
+
+fn validate_docker_plugin_dir(candidate: &Path) -> Result<Option<PathBuf>> {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let Some(canonical) = resolve_trusted_path(
+        candidate,
+        current_uid,
+        TrustPolicy {
+            expect_dir: true,
+            allow_missing: true,
+            allow_leaf_symlink: true,
+            allow_sticky_leaf: false,
+            allow_dangling: false,
+        },
+        "Docker CLI plugin directory",
+    )?
+    else {
+        return Ok(None);
+    };
+    for entry in std::fs::read_dir(&canonical).with_context(|| {
+        format!(
+            "cannot list Docker CLI plugin directory {}",
+            canonical.display()
+        )
+    })? {
+        let entry = entry.with_context(|| {
+            format!(
+                "cannot read entry in Docker CLI plugin directory {}",
+                canonical.display()
+            )
+        })?;
+        let entry_path = entry.path();
+        let entry_meta = std::fs::symlink_metadata(&entry_path).with_context(|| {
+            format!(
+                "cannot inspect entry in Docker CLI plugin directory {}",
+                entry_path.display()
+            )
+        })?;
+        // Validate every non-directory entry (files and symlinks) regardless of
+        // filename spelling so APFS Unicode case-folding / normalization aliases
+        // (e.g. `doc\u{212a}er-buildx`) can never slip past a name filter.
+        if entry_meta.file_type().is_dir() {
+            continue;
+        }
+        validate_docker_plugin_executable(&entry_path, current_uid)?;
+    }
+    Ok(Some(canonical))
+}
+
+#[derive(Debug)]
+struct ValidatedDockerConfig {
+    source_config: Option<PathBuf>,
+    plugin_dirs: Vec<String>,
+    current_context: Option<String>,
+}
+
+fn validate_docker_config_from(
+    raw_docker_config: Option<&std::ffi::OsStr>,
+    home: &Path,
+) -> Result<ValidatedDockerConfig> {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let candidate = match raw_docker_config.filter(|value| !value.is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => home.join(".docker"),
+    };
+    let source_config = resolve_trusted_path(
+        &candidate,
+        current_uid,
+        TrustPolicy {
+            expect_dir: true,
+            allow_missing: true,
+            allow_leaf_symlink: false,
+            allow_sticky_leaf: false,
+            allow_dangling: false,
+        },
+        "DOCKER_CONFIG",
+    )?;
+    let mut plugin_dirs = Vec::new();
+    let mut current_context = None;
+    let mut push_validated = |candidate: PathBuf| -> Result<()> {
+        let Some(canonical_dir) = validate_docker_plugin_dir(&candidate)? else {
+            return Ok(());
+        };
+        let text = canonical_dir.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "refusing non-UTF-8 Docker CLI plugin directory: {}",
+                canonical_dir.display()
+            )
+        })?;
+        if !plugin_dirs.iter().any(|existing| existing == text) {
+            plugin_dirs.push(text.to_owned());
+        }
+        Ok(())
+    };
+    // Preserve Docker CLI's exact plugin lookup order
+    // (`cli-plugins/manager/manager.go` + `manager_unix.go`): configured
+    // safe absolute `cliPluginsExtraDirs` first, then `$DOCKER_CONFIG/cli-plugins`,
+    // failing closed on any relative, unowned, or group/world-writable entry so
+    // neither scan probes nor isolated prunes load untrusted plugins.
+    if let Some(source_config) = source_config.as_deref() {
+        if let Some(map) = read_docker_config_json(source_config)? {
+            if let Some(value) = map
+                .get("currentContext")
+                .or_else(|| {
+                    map.iter()
+                        .find(|(key, _)| key.eq_ignore_ascii_case("currentContext"))
+                        .map(|(_, value)| value)
+                })
+                .and_then(|value| value.as_str())
+                && !value.is_empty()
+            {
+                current_context = Some(value.to_owned());
+            }
+            if let Some(extra) = map
+                .get("cliPluginsExtraDirs")
+                .or_else(|| {
+                    map.iter()
+                        .find(|(key, _)| key.eq_ignore_ascii_case("cliPluginsExtraDirs"))
+                        .map(|(_, value)| value)
+                })
+                .and_then(|value| value.as_array())
+            {
+                for entry in extra {
+                    let Some(text) = entry.as_str() else {
+                        anyhow::bail!(
+                            "refusing non-string entry in Docker config cliPluginsExtraDirs: {}",
+                            source_config.join("config.json").display()
+                        );
+                    };
+                    if text.is_empty() {
+                        continue;
+                    }
+                    push_validated(PathBuf::from(text))?;
+                }
+            }
+        }
+        push_validated(source_config.join("cli-plugins"))?;
+    }
+    for system_dir in DOCKER_SYSTEM_PLUGIN_DIRS {
+        push_validated(PathBuf::from(system_dir))?;
+    }
+    Ok(ValidatedDockerConfig {
+        source_config,
+        plugin_dirs,
+        current_context,
+    })
+}
+
+/// Read-only validation and extraction of safe absolute Docker CLI plugin
+/// directories from `DOCKER_CONFIG` and its `config.json`. Called before
+/// `journal::begin` so an invalid or hostile config fails closed without
+/// acquiring `journal.lock` or writing a journal `attempt` record.
+pub(crate) fn resolve_docker_cli_plugin_dirs(home: &Path) -> Result<Vec<String>> {
+    let raw_docker_config = std::env::var_os("DOCKER_CONFIG");
+    resolve_docker_cli_plugin_dirs_from(raw_docker_config.as_deref(), home)
+}
+
+fn resolve_docker_cli_plugin_dirs_from(
+    raw_docker_config: Option<&std::ffi::OsStr>,
+    home: &Path,
+) -> Result<Vec<String>> {
+    Ok(validate_docker_config_from(raw_docker_config, home)?.plugin_dirs)
+}
+
+fn validated_docker_state_subdir(source_config: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let policy = TrustPolicy {
+        expect_dir: true,
+        allow_missing: true,
+        allow_leaf_symlink: false,
+        allow_sticky_leaf: false,
+        allow_dangling: false,
+    };
+    let Some(canonical) = resolve_trusted_path(
+        &source_config.join(name),
+        current_uid,
+        policy,
+        "Docker state path",
+    )?
+    else {
+        return Ok(None);
+    };
+    let nested_name = match name {
+        "buildx" => Some("instances"),
+        "contexts" => Some("meta"),
+        _ => None,
+    };
+    if let Some(child_name) = nested_name {
+        let _ = resolve_trusted_path(
+            &canonical.join(child_name),
+            current_uid,
+            policy,
+            "Docker state subdir",
+        )?;
+    }
+    Ok(Some(canonical))
+}
+
+/// Materializes a deterministic private `0700` `DOCKER_CONFIG` snapshot under
+/// `std::env::temp_dir()` containing ONLY the sanitized `config.json`
+/// (canonical validated `cliPluginsExtraDirs` and optional `currentContext`,
+/// stripping `aliases` and untrusted entries) plus verified symlinks to
+/// validated read-only `contexts/` and `buildx/` discovery state directories
+/// needed by `docker context inspect` and `docker buildx ls`/`du`. Prune
+/// mutations (`DockerImagePrune`, `DockerBuilderPrune`, `DockerBuildxPrune`)
+/// use per-attempt private configs that never link ambient `contexts` or
+/// `buildx` state.
+fn isolated_docker_scan_dir(home: &Path) -> Result<PathBuf> {
+    let raw_docker_config = std::env::var_os("DOCKER_CONFIG");
+    isolated_docker_scan_dir_from(raw_docker_config.as_deref(), home, &std::env::temp_dir())
+}
+
+fn isolated_docker_scan_dir_from(
+    raw_docker_config: Option<&std::ffi::OsStr>,
+    home: &Path,
+    base: &Path,
+) -> Result<PathBuf> {
+    use rustix::fs::{Mode, OFlags, fchmod, mkdirat, open, openat};
+    use sha2::{Digest as _, Sha256};
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let validated = validate_docker_config_from(raw_docker_config, home)?;
+    let (contexts_target, buildx_target) = match validated.source_config.as_deref() {
+        Some(source_config) => (
+            validated_docker_state_subdir(source_config, "contexts")?,
+            validated_docker_state_subdir(source_config, "buildx")?,
+        ),
+        None => (None, None),
+    };
+
+    let mut config_map = serde_json::Map::new();
+    config_map.insert(
+        "cliPluginsExtraDirs".to_string(),
+        serde_json::Value::Array(
+            validated
+                .plugin_dirs
+                .iter()
+                .map(|entry| serde_json::Value::String(entry.clone()))
+                .collect(),
+        ),
+    );
+    if let Some(current_context) = validated.current_context {
+        config_map.insert(
+            "currentContext".to_string(),
+            serde_json::Value::String(current_context),
+        );
+    }
+    let config_bytes = serde_json::to_vec(&serde_json::Value::Object(config_map))
+        .context("cannot serialize validated Docker scan config")?;
+
+    let current_uid = rustix::process::geteuid().as_raw();
+    let canonical_base = resolve_trusted_path(
+        base,
+        current_uid,
+        TrustPolicy {
+            expect_dir: true,
+            allow_missing: false,
+            allow_leaf_symlink: true,
+            allow_sticky_leaf: true,
+            allow_dangling: false,
+        },
+        "Docker scan temp parent",
+    )?
+    .ok_or_else(|| anyhow::anyhow!("missing Docker scan temp parent {}", base.display()))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"devtrim-docker-scan-v1\0");
+    hasher.update(&config_bytes);
+    hasher.update(b"\0");
+    if let Some(target) = &contexts_target {
+        hasher.update(target.as_os_str().as_encoded_bytes());
+    }
+    hasher.update(b"\0");
+    if let Some(target) = &buildx_target {
+        hasher.update(target.as_os_str().as_encoded_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut suffix = String::with_capacity(16);
+    for byte in &digest[..8] {
+        use std::fmt::Write as _;
+        let _ = write!(&mut suffix, "{byte:02x}");
+    }
+    let dir_name = format!("devtrim-docker-scan-{current_uid}-{suffix}");
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let base_descriptor = open(&canonical_base, dir_flags, Mode::empty())
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot open temp directory {}", canonical_base.display()))?;
+    let base_file = std::fs::File::from(base_descriptor);
+    if super::project::fd_ignores_ownership(&base_file, "Docker scan temp parent")? {
+        anyhow::bail!(
+            "refusing Docker scan temp parent {}: its volume ignores ownership",
+            canonical_base.display()
+        );
+    }
+    match mkdirat(&base_file, &dir_name, Mode::from(0o700)) {
+        Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+        Err(errno) => {
+            return Err(std::io::Error::from(errno))
+                .with_context(|| format!("cannot create Docker scan directory `{dir_name}`"));
+        }
+    }
+    let scan_descriptor = openat(&base_file, &dir_name, dir_flags, Mode::empty())
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot open Docker scan directory `{dir_name}`"))?;
+    let scan_file = std::fs::File::from(scan_descriptor);
+    if super::project::fd_ignores_ownership(&scan_file, &dir_name)? {
+        anyhow::bail!("refusing Docker scan directory `{dir_name}`: its volume ignores ownership");
+    }
+    let scan_metadata = scan_file
+        .metadata()
+        .with_context(|| format!("cannot inspect Docker scan directory `{dir_name}`"))?;
+    if !scan_metadata.is_dir()
+        || scan_metadata.uid() != current_uid
+        || scan_metadata.permissions().mode() & 0o077 != 0
+    {
+        anyhow::bail!("refusing untrusted Docker scan directory `{dir_name}`");
+    }
+    fchmod(&scan_file, Mode::from(0o700))
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot tighten permissions on `{dir_name}`"))?;
+
+    let scan_dir = canonical_base.join(&dir_name);
+    super::project::refuse_path_acl_grants(
+        [scan_dir.as_path()],
+        &scan_dir,
+        "Docker scan directory",
+    )?;
+    let config_flags =
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    match openat(&scan_file, "config.json", config_flags, Mode::from(0o600)) {
+        Ok(descriptor) => {
+            let mut file = std::fs::File::from(descriptor);
+            if super::project::fd_ignores_ownership(&file, "isolated Docker scan config.json")? {
+                anyhow::bail!(
+                    "refusing isolated Docker scan config.json: its volume ignores ownership"
+                );
+            }
+            let metadata = file
+                .metadata()
+                .context("cannot inspect isolated Docker scan config.json")?;
+            if !metadata.is_file() || metadata.uid() != current_uid {
+                anyhow::bail!("isolated Docker scan config.json is not owned by the current user");
+            }
+            fchmod(&file, Mode::from(0o600))
+                .map_err(std::io::Error::from)
+                .context("cannot tighten isolated Docker scan config.json permissions")?;
+            file.write_all(&config_bytes)
+                .context("cannot write isolated Docker scan config.json")?;
+            file.sync_all()
+                .context("cannot sync isolated Docker scan config.json")?;
+        }
+        Err(rustix::io::Errno::EXIST) => {
+            let existing = openat(
+                &scan_file,
+                "config.json",
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(std::io::Error::from)
+            .context("cannot open existing isolated Docker scan config.json")?;
+            let file = std::fs::File::from(existing);
+            if super::project::fd_ignores_ownership(
+                &file,
+                "existing isolated Docker scan config.json",
+            )? {
+                anyhow::bail!(
+                    "refusing existing isolated Docker scan config.json: its volume ignores ownership"
+                );
+            }
+            let metadata = file
+                .metadata()
+                .context("cannot inspect existing isolated Docker scan config.json")?;
+            if !metadata.is_file()
+                || metadata.uid() != current_uid
+                || metadata.permissions().mode() & 0o077 != 0
+            {
+                anyhow::bail!("refusing untrusted isolated Docker scan config.json");
+            }
+            let mut actual = Vec::new();
+            std::io::Read::take(file, MAX_DOCKER_CONFIG_BYTES + 1)
+                .read_to_end(&mut actual)
+                .context("cannot read existing isolated Docker scan config.json")?;
+            if actual != config_bytes {
+                anyhow::bail!("refusing modified isolated Docker scan config.json");
+            }
+        }
+        Err(errno) => {
+            return Err(std::io::Error::from(errno))
+                .context("cannot create isolated Docker scan config.json");
+        }
+    }
+
+    let mut expected_entries = vec!["config.json"];
+    for (link_name, maybe_target) in [
+        ("contexts", contexts_target.as_deref()),
+        ("buildx", buildx_target.as_deref()),
+    ] {
+        let Some(target) = maybe_target else {
+            // With no source state to link, Docker creates its own state
+            // here on the first scan (`docker buildx ls` writes `buildx/`).
+            // Only the current user can create entries in this 0700
+            // directory, so a real directory it owns, writable by nobody else
+            // by mode or ACL, is Docker's state from an earlier scan; a link,
+            // a file or a looser directory still refuses below.
+            let entry = scan_dir.join(link_name);
+            match std::fs::symlink_metadata(&entry) {
+                Ok(metadata)
+                    if metadata.file_type().is_dir()
+                        && metadata.uid() == current_uid
+                        && metadata.permissions().mode() & 0o022 == 0 =>
+                {
+                    super::project::refuse_path_acl_grants(
+                        [entry.as_path()],
+                        &entry,
+                        "isolated Docker scan entry",
+                    )?;
+                    expected_entries.push(link_name);
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("cannot inspect isolated Docker scan entry `{link_name}`")
+                    });
+                }
+            }
+            continue;
+        };
+        expected_entries.push(link_name);
+        let link_path = scan_dir.join(link_name);
+        match std::os::unix::fs::symlink(target, &link_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let link_metadata = std::fs::symlink_metadata(&link_path).with_context(|| {
+                    format!("cannot inspect isolated Docker scan link `{link_name}`")
+                })?;
+                if !link_metadata.file_type().is_symlink() || link_metadata.uid() != current_uid {
+                    anyhow::bail!("refusing untrusted isolated Docker scan link `{link_name}`");
+                }
+                let existing_target = std::fs::read_link(&link_path).with_context(|| {
+                    format!("cannot read isolated Docker scan link `{link_name}`")
+                })?;
+                if existing_target != target {
+                    anyhow::bail!("refusing retargeted isolated Docker scan link `{link_name}`");
+                }
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot link isolated Docker scan `{link_name}` directory")
+                });
+            }
+        }
+    }
+
+    for entry in std::fs::read_dir(&scan_dir).with_context(|| {
+        format!(
+            "cannot list isolated Docker scan directory {}",
+            scan_dir.display()
+        )
+    })? {
+        let entry = entry.with_context(|| {
+            format!(
+                "cannot read isolated Docker scan directory {}",
+                scan_dir.display()
+            )
+        })?;
+        let name = entry.file_name();
+        let Some(name_text) = name.to_str() else {
+            anyhow::bail!("refusing unexpected entry in isolated Docker scan directory");
+        };
+        if !expected_entries.contains(&name_text) {
+            anyhow::bail!(
+                "refusing unexpected entry `{name_text}` in isolated Docker scan directory"
+            );
+        }
+    }
+    let scan_config_path = scan_dir.join("config.json");
+    super::project::refuse_path_acl_grants(
+        [scan_dir.as_path(), scan_config_path.as_path()],
+        &scan_dir,
+        "isolated Docker scan directory",
+    )?;
+    Ok(scan_dir)
+}
+
+/// RAII guard for a per-attempt private `DOCKER_CONFIG` directory under
+/// `buildx-pin/attempt-<pid>-<seq>`. Keeps the tree alive across `docker`
+/// execution and removes it on drop through `src/ops/mod.rs`'s verified sink.
+pub(crate) struct PrivateDockerConfigGuard {
+    path: PathBuf,
+    home: PathBuf,
+    identity: crate::safety::FileIdentity,
+}
+
+impl PrivateDockerConfigGuard {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for PrivateDockerConfigGuard {
+    fn drop(&mut self) {
+        super::cleanup_private_docker_config(&self.path, &self.home, self.identity);
+    }
+}
+
+struct PrivateDockerConfigAttempt {
+    guard: PrivateDockerConfigGuard,
+    buildx_dir: std::fs::File,
+    current_uid: u32,
+}
+
+fn open_private_dir_child(
+    parent: &std::fs::File,
+    name: &str,
+    current_uid: u32,
+) -> Result<std::fs::File> {
+    use rustix::fs::{Mode, OFlags, fchmod, mkdirat, openat};
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    match mkdirat(parent, name, Mode::from(0o700)) {
+        Ok(()) => {}
+        Err(rustix::io::Errno::EXIST) => {}
+        Err(errno) => {
+            return Err(std::io::Error::from(errno))
+                .with_context(|| format!("cannot create private buildx directory `{name}`"));
+        }
+    }
+    let descriptor = openat(parent, name, dir_flags, Mode::empty())
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot open private buildx directory `{name}`"))?;
+    let directory = std::fs::File::from(descriptor);
+    if super::project::fd_ignores_ownership(&directory, name)? {
+        anyhow::bail!("refusing private buildx directory `{name}`: its volume ignores ownership");
+    }
+    let metadata = directory
+        .metadata()
+        .with_context(|| format!("cannot inspect private buildx directory `{name}`"))?;
+    if !metadata.is_dir()
+        || metadata.uid() != current_uid
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        anyhow::bail!("refusing untrusted private buildx directory `{name}`");
+    }
+    fchmod(&directory, Mode::from(0o700))
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot tighten permissions on `{name}`"))?;
+    Ok(directory)
+}
+
+fn write_private_json_file(
+    parent: &std::fs::File,
+    name: &str,
+    payload: &serde_json::Value,
+    current_uid: u32,
+) -> Result<()> {
+    use rustix::fs::{Mode, OFlags, fchmod, openat};
+    use std::io::Write as _;
+    use std::os::unix::fs::MetadataExt as _;
+
+    let file_flags =
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let descriptor = openat(parent, name, file_flags, Mode::from(0o600))
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot write private buildx file `{name}`"))?;
+    let mut file = std::fs::File::from(descriptor);
+    if super::project::fd_ignores_ownership(&file, name)? {
+        anyhow::bail!("refusing private buildx file `{name}`: its volume ignores ownership");
+    }
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("cannot inspect private buildx file `{name}`"))?;
+    if !metadata.is_file() || metadata.uid() != current_uid {
+        anyhow::bail!("private buildx file `{name}` is not owned by the current user");
+    }
+    fchmod(&file, Mode::from(0o600))
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot tighten permissions on `{name}`"))?;
+    let encoded =
+        serde_json::to_vec(payload).with_context(|| format!("cannot serialize `{name}`"))?;
+    file.write_all(&encoded)
+        .with_context(|| format!("cannot write `{name}`"))?;
+    file.sync_all()
+        .with_context(|| format!("cannot sync `{name}`"))?;
+    Ok(())
+}
+
+fn allocate_private_docker_config(
+    ctx: &Ctx,
+    plugin_dirs: &[String],
+) -> Result<PrivateDockerConfigAttempt> {
+    use rustix::fs::{Mode, OFlags, fchmod, mkdirat, open, openat};
+    use std::os::unix::fs::MetadataExt as _;
+
+    let state_dir = ctx
+        .journal_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("journal path has no parent directory"))?;
+    let current_uid = rustix::process::geteuid().as_raw();
+    let canonical_state_dir = resolve_trusted_path(
+        state_dir,
+        current_uid,
+        TrustPolicy {
+            expect_dir: true,
+            allow_missing: false,
+            allow_leaf_symlink: false,
+            allow_sticky_leaf: false,
+            allow_dangling: false,
+        },
+        "Docker private state directory",
+    )?
+    .ok_or_else(|| anyhow::anyhow!("missing state directory {}", state_dir.display()))?;
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let state_file = std::fs::File::from(
+        open(&canonical_state_dir, dir_flags, Mode::empty())
+            .map_err(std::io::Error::from)
+            .with_context(|| {
+                format!(
+                    "cannot open state directory {}",
+                    canonical_state_dir.display()
+                )
+            })?,
+    );
+    if super::project::fd_ignores_ownership(&state_file, "Docker private state directory")? {
+        anyhow::bail!(
+            "refusing Docker private state directory {}: its volume ignores ownership",
+            canonical_state_dir.display()
+        );
+    }
+    let pin_base = open_private_dir_child(&state_file, "buildx-pin", current_uid)?;
+    let pin_base_path = canonical_state_dir.join("buildx-pin");
+    super::project::refuse_path_acl_grants(
+        [pin_base_path.as_path()],
+        &pin_base_path,
+        "private Docker config directory",
+    )?;
+    // Allocate a fresh per-attempt subdirectory (`O_EXCL` via `mkdirat`) so
+    // concurrent applies never share or overwrite each other's isolated config,
+    // and write files with `O_CREAT | O_EXCL` (never `O_TRUNC`).
+    static PIN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let pid = std::process::id();
+    let (attempt_name, pin_root, attempt_identity) = {
+        let mut chosen = None;
+        for _ in 0..64 {
+            let sequence = PIN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let candidate = format!("attempt-{pid}-{sequence}");
+            match mkdirat(&pin_base, &candidate, Mode::from(0o700)) {
+                Ok(()) => {
+                    let descriptor = openat(&pin_base, &candidate, dir_flags, Mode::empty())
+                        .map_err(std::io::Error::from)
+                        .with_context(|| {
+                            format!("cannot open private buildx directory `{candidate}`")
+                        })?;
+                    let directory = std::fs::File::from(descriptor);
+                    if super::project::fd_ignores_ownership(&directory, &candidate)? {
+                        anyhow::bail!(
+                            "refusing private buildx directory `{candidate}`: its volume ignores ownership"
+                        );
+                    }
+                    let metadata = directory.metadata().with_context(|| {
+                        format!("cannot inspect private buildx directory `{candidate}`")
+                    })?;
+                    if !metadata.is_dir() || metadata.uid() != current_uid {
+                        anyhow::bail!(
+                            "private buildx directory `{candidate}` is not owned by the current user"
+                        );
+                    }
+                    fchmod(&directory, Mode::from(0o700))
+                        .map_err(std::io::Error::from)
+                        .with_context(|| format!("cannot tighten permissions on `{candidate}`"))?;
+                    let identity = crate::safety::FileIdentity::from_std_metadata(&metadata);
+                    chosen = Some((candidate, directory, identity));
+                    break;
+                }
+                Err(rustix::io::Errno::EXIST) => continue,
+                Err(errno) => {
+                    return Err(std::io::Error::from(errno)).with_context(|| {
+                        format!("cannot create private buildx directory `{candidate}`")
+                    });
+                }
+            }
+        }
+        chosen.ok_or_else(|| {
+            anyhow::anyhow!("cannot allocate unique private buildx directory under state dir")
+        })?
+    };
+    let guard = PrivateDockerConfigGuard {
+        path: canonical_state_dir.join("buildx-pin").join(attempt_name),
+        home: ctx.home.clone(),
+        identity: attempt_identity,
+    };
+    let buildx_dir = open_private_dir_child(&pin_root, "buildx", current_uid)?;
+    let config_payload = serde_json::json!({
+        "cliPluginsExtraDirs": plugin_dirs,
+    });
+    write_private_json_file(&pin_root, "config.json", &config_payload, current_uid)?;
+    let buildx_path = guard.path().join("buildx");
+    let config_path = guard.path().join("config.json");
+    super::project::refuse_path_acl_grants(
+        [guard.path(), buildx_path.as_path(), config_path.as_path()],
+        guard.path(),
+        "private Docker config directory",
+    )?;
+    Ok(PrivateDockerConfigAttempt {
+        guard,
+        buildx_dir,
+        current_uid,
+    })
+}
+
+/// Writes an isolated `0700` `DOCKER_CONFIG` tree inside devtrim's private
+/// state directory containing ONLY `config.json` (safe absolute CLI plugin
+/// discovery paths, no credentials, no `aliases`) and an empty `0700` `buildx/`
+/// directory, with no `contexts/` directory. Running `docker builder prune`
+/// with this `DOCKER_CONFIG` and `BUILDX_CONFIG=<isolated>/buildx` prevents
+/// Buildx aliases or current-builder state from overriding `--host`.
+pub(crate) fn write_isolated_builder_config(
+    ctx: &Ctx,
+    plugin_dirs: &[String],
+) -> Result<PrivateDockerConfigGuard> {
+    let attempt = allocate_private_docker_config(ctx, plugin_dirs)?;
+    Ok(attempt.guard)
+}
+
 /// Writes an isolated `0700` `DOCKER_CONFIG` tree inside devtrim's private
 /// state directory containing ONLY `config.json` (CLI plugin discovery paths,
 /// no credentials) and `buildx/instances/<builder>` pinned to the verified
@@ -559,11 +1641,8 @@ pub(crate) fn write_pinned_buildx_config(
     ctx: &Ctx,
     builder: &str,
     nodes: &[BuildxNodeIdentity],
-) -> Result<PathBuf> {
-    use rustix::fs::{Mode, OFlags, fchmod, mkdirat, open, openat};
-    use std::io::Write as _;
-    use std::os::unix::fs::MetadataExt as _;
-
+    plugin_dirs: &[String],
+) -> Result<PrivateDockerConfigGuard> {
     if !is_valid_builder_name(builder) {
         anyhow::bail!("refusing invalid Docker buildx builder name `{builder}`");
     }
@@ -583,94 +1662,9 @@ pub(crate) fn write_pinned_buildx_config(
         }
     }
 
-    let state_dir = ctx
-        .journal_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("journal path has no parent directory"))?;
-    let current_uid = rustix::process::getuid().as_raw();
-    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let open_private_child = |parent: &std::fs::File, name: &str| -> Result<std::fs::File> {
-        match mkdirat(parent, name, Mode::from(0o700)) {
-            Ok(()) => {}
-            Err(rustix::io::Errno::EXIST) => {}
-            Err(errno) => {
-                return Err(std::io::Error::from(errno))
-                    .with_context(|| format!("cannot create private buildx directory `{name}`"));
-            }
-        }
-        let descriptor = openat(parent, name, dir_flags, Mode::empty())
-            .map_err(std::io::Error::from)
-            .with_context(|| format!("cannot open private buildx directory `{name}`"))?;
-        let directory = std::fs::File::from(descriptor);
-        let metadata = directory
-            .metadata()
-            .with_context(|| format!("cannot inspect private buildx directory `{name}`"))?;
-        if !metadata.is_dir() || metadata.uid() != current_uid {
-            anyhow::bail!("private buildx directory `{name}` is not owned by the current user");
-        }
-        fchmod(&directory, Mode::from(0o700))
-            .map_err(std::io::Error::from)
-            .with_context(|| format!("cannot tighten permissions on `{name}`"))?;
-        Ok(directory)
-    };
-
-    let state_file = std::fs::File::from(
-        open(state_dir, dir_flags, Mode::empty())
-            .map_err(std::io::Error::from)
-            .with_context(|| format!("cannot open state directory {}", state_dir.display()))?,
-    );
-    let pin_base = open_private_child(&state_file, "buildx-pin")?;
-    // Allocate a fresh per-attempt subdirectory (`O_EXCL` via `mkdirat`) so
-    // concurrent applies never share or overwrite each other's pinned builder
-    // endpoints, and write files with `O_CREAT | O_EXCL` (never `O_TRUNC`).
-    static PIN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let pid = std::process::id();
-    let (attempt_name, pin_root) = {
-        let mut chosen = None;
-        for _ in 0..64 {
-            let sequence = PIN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let candidate = format!("attempt-{pid}-{sequence}");
-            match mkdirat(&pin_base, &candidate, Mode::from(0o700)) {
-                Ok(()) => {
-                    let descriptor = openat(&pin_base, &candidate, dir_flags, Mode::empty())
-                        .map_err(std::io::Error::from)
-                        .with_context(|| {
-                            format!("cannot open private buildx directory `{candidate}`")
-                        })?;
-                    let directory = std::fs::File::from(descriptor);
-                    let metadata = directory.metadata().with_context(|| {
-                        format!("cannot inspect private buildx directory `{candidate}`")
-                    })?;
-                    if !metadata.is_dir() || metadata.uid() != current_uid {
-                        anyhow::bail!(
-                            "private buildx directory `{candidate}` is not owned by the current user"
-                        );
-                    }
-                    fchmod(&directory, Mode::from(0o700))
-                        .map_err(std::io::Error::from)
-                        .with_context(|| format!("cannot tighten permissions on `{candidate}`"))?;
-                    chosen = Some((candidate, directory));
-                    break;
-                }
-                Err(rustix::io::Errno::EXIST) => continue,
-                Err(errno) => {
-                    return Err(std::io::Error::from(errno)).with_context(|| {
-                        format!("cannot create private buildx directory `{candidate}`")
-                    });
-                }
-            }
-        }
-        chosen.ok_or_else(|| {
-            anyhow::anyhow!("cannot allocate unique private buildx directory under state dir")
-        })?
-    };
-    let buildx_dir = open_private_child(&pin_root, "buildx")?;
-    let instances_dir = open_private_child(&buildx_dir, "instances")?;
-
-    let plugin_dirs = docker_cli_plugin_dirs(&ctx.home);
-    let config_payload = serde_json::json!({
-        "cliPluginsExtraDirs": plugin_dirs,
-    });
+    let attempt = allocate_private_docker_config(ctx, plugin_dirs)?;
+    let instances_dir =
+        open_private_dir_child(&attempt.buildx_dir, "instances", attempt.current_uid)?;
     let instance_nodes: Vec<serde_json::Value> = nodes
         .iter()
         .map(|node| {
@@ -686,78 +1680,13 @@ pub(crate) fn write_pinned_buildx_config(
         "Nodes": instance_nodes,
         "Dynamic": false,
     });
-
-    let write_private_json =
-        |parent: &std::fs::File, name: &str, payload: &serde_json::Value| -> Result<()> {
-            let file_flags =
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-            let descriptor = openat(parent, name, file_flags, Mode::from(0o600))
-                .map_err(std::io::Error::from)
-                .with_context(|| format!("cannot write private buildx file `{name}`"))?;
-            let mut file = std::fs::File::from(descriptor);
-            let metadata = file
-                .metadata()
-                .with_context(|| format!("cannot inspect private buildx file `{name}`"))?;
-            if !metadata.is_file() || metadata.uid() != current_uid {
-                anyhow::bail!("private buildx file `{name}` is not owned by the current user");
-            }
-            fchmod(&file, Mode::from(0o600))
-                .map_err(std::io::Error::from)
-                .with_context(|| format!("cannot tighten permissions on `{name}`"))?;
-            let encoded = serde_json::to_vec(payload)
-                .with_context(|| format!("cannot serialize `{name}`"))?;
-            file.write_all(&encoded)
-                .with_context(|| format!("cannot write `{name}`"))?;
-            file.sync_all()
-                .with_context(|| format!("cannot sync `{name}`"))?;
-            Ok(())
-        };
-
-    write_private_json(&pin_root, "config.json", &config_payload)?;
-    write_private_json(&instances_dir, builder, &instance_payload)?;
-    Ok(state_dir.join("buildx-pin").join(attempt_name))
-}
-
-fn docker_cli_plugin_dirs(home: &Path) -> Vec<String> {
-    let mut dirs = Vec::new();
-    let mut push_unique = |candidate: PathBuf| {
-        if let Some(text) = candidate.to_str()
-            && !dirs.iter().any(|existing| existing == text)
-        {
-            dirs.push(text.to_owned());
-        }
-    };
-    let source_config = std::env::var_os("DOCKER_CONFIG")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".docker"));
-    // Preserve Docker CLI's exact plugin lookup order
-    // (`cli-plugins/manager/manager.go` + `manager_unix.go`): configured
-    // `cliPluginsExtraDirs` first, then `$DOCKER_CONFIG/cli-plugins`, and let
-    // the Docker CLI append its own compiled-in system plugin directories
-    // unchanged so prune runs the exact same plugin binary that `buildx ls` used.
-    if let Ok(raw) = std::fs::read_to_string(source_config.join("config.json"))
-        && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw)
-        && let Some(map) = parsed.as_object()
-        && let Some(extra) = map
-            .get("cliPluginsExtraDirs")
-            .or_else(|| {
-                map.iter()
-                    .find(|(key, _)| key.eq_ignore_ascii_case("cliPluginsExtraDirs"))
-                    .map(|(_, value)| value)
-            })
-            .and_then(|value| value.as_array())
-    {
-        for entry in extra {
-            if let Some(text) = entry.as_str()
-                && !text.is_empty()
-            {
-                push_unique(PathBuf::from(text));
-            }
-        }
-    }
-    push_unique(source_config.join("cli-plugins"));
-    dirs
+    write_private_json_file(
+        &instances_dir,
+        builder,
+        &instance_payload,
+        attempt.current_uid,
+    )?;
+    Ok(attempt.guard)
 }
 
 /// Blocks actually allocated on the host, not the logical length.
@@ -873,6 +1802,24 @@ fn parse_system_df(output: &str, host: &str) -> Result<Vec<Finding>> {
     Ok(findings)
 }
 
+fn docker_on_path() -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path_var).any(|directory| {
+        let candidate = if directory.as_os_str().is_empty() {
+            PathBuf::from("docker")
+        } else {
+            directory.join("docker")
+        };
+        std::fs::metadata(candidate)
+            .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    })
+}
+
 impl Op for Docker {
     fn name(&self) -> &'static str {
         "docker"
@@ -883,11 +1830,16 @@ impl Op for Docker {
         ctx: &Ctx,
         _observations: &super::project::ScanObservations,
     ) -> Result<Vec<Finding>> {
+        let _ = resolve_docker_cli_plugin_dirs(&ctx.home)?;
         // The host image is disclosed even when the daemon is unreachable. A
         // stopped VM is precisely when its disk image is invisible to `docker`
         // and still occupying the host, so making this disclosure depend on a
         // live daemon would hide the cost in the one state that matters most.
         let mut findings = vm_disk_findings(&ctx.home)?;
+        if !docker_on_path() {
+            return Ok(findings);
+        }
+        let scan_docker_config = isolated_docker_scan_dir(&ctx.home)?;
         // Only an absent `docker` binary becomes an empty success, via
         // `docker_host`'s `ErrorKind::NotFound` handling. Every other failure —
         // a refused endpoint, an unreachable daemon, a malformed response —
@@ -899,28 +1851,31 @@ impl Op for Docker {
         // image findings above are lost with it. The error names the daemon,
         // which is itself the actionable next step, and carries each image's
         // name and size instead.
-        let Some(host) = docker_host()? else {
+        let Some(host) = docker_host(&ctx.home, &scan_docker_config)? else {
             return Ok(findings);
         };
-        let version = docker(&host, &["version"]).map_err(|error| {
-            let disclosed = findings
-                .iter()
-                .map(|finding| {
-                    format!(
-                        "; {} is {} on this host",
-                        finding.label,
-                        crate::report::gb(finding.size_bytes)
-                    )
-                })
-                .collect::<String>();
-            error.context(format!(
+        let version =
+            docker(&ctx.home, &scan_docker_config, &host, &["version"]).map_err(|error| {
+                let disclosed = findings
+                    .iter()
+                    .map(|finding| {
+                        format!(
+                            "; {} is {} on this host",
+                            finding.label,
+                            crate::report::gb(finding.size_bytes)
+                        )
+                    })
+                    .collect::<String>();
+                error.context(format!(
                 "Docker daemon unreachable, so no image or build-cache plan was produced{disclosed}"
             ))
-        })?;
+            })?;
         if version.trim().is_empty() {
             anyhow::bail!("`docker version` returned empty output");
         }
         let output = docker(
+            &ctx.home,
+            &scan_docker_config,
             &host,
             &[
                 "system",
@@ -930,7 +1885,7 @@ impl Op for Docker {
             ],
         )?;
         findings.extend(parse_system_df(&output, &host)?);
-        findings.extend(scan_buildx_findings(&host)?);
+        findings.extend(scan_buildx_findings(&ctx.home, &scan_docker_config, &host)?);
         Ok(findings)
     }
 
@@ -974,7 +1929,21 @@ impl Op for Docker {
                     if !is_valid_builder_name(builder) {
                         anyhow::bail!("refusing invalid Docker buildx builder name `{builder}`");
                     }
-                    verify_local_buildx_builder(host, builder, nodes)?;
+                    if nodes.is_empty() {
+                        anyhow::bail!(
+                            "refusing buildx prune: builder `{builder}` carries no previewed node identity"
+                        );
+                    }
+                    let scan_docker_config = isolated_docker_scan_dir(&ctx.home)?;
+                    verify_local_buildx_builder(
+                        &ctx.home,
+                        &scan_docker_config,
+                        host,
+                        builder,
+                        nodes,
+                    )?;
+                } else {
+                    resolve_docker_cli_plugin_dirs(&ctx.home)?;
                 }
                 super::run_command_authority(
                     self.name(),
@@ -1084,6 +2053,18 @@ mod tests {
             diagnostic_output: crate::safety::DiagnosticOutput::Stderr,
             ..Ctx::for_test(PathBuf::from("/tmp"))
         }
+    }
+
+    #[test]
+    fn writable_by_untrusted_trusts_only_root_equivalent_groups() {
+        // Homebrew `/opt/homebrew/lib` and `/Applications`.
+        assert!(!writable_by_untrusted(0o40775, 80));
+        assert!(!writable_by_untrusted(0o40775, 0));
+        assert!(!writable_by_untrusted(0o40755, 20));
+        assert!(writable_by_untrusted(0o40775, 20));
+        // World write is never trusted, whatever the group.
+        assert!(writable_by_untrusted(0o40777, 80));
+        assert!(writable_by_untrusted(0o40757, 0));
     }
 
     /// Positive control for the measurement basis itself: a purely logical
@@ -1356,5 +2337,737 @@ mod tests {
             "{:?}",
             outcome.errors
         );
+    }
+
+    #[test]
+    fn docker_config_validation_refuses_relative_traversal_and_symlinked_dirs() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-docker-config-validate")
+            .tempdir()
+            .unwrap();
+        let home = root.path();
+        let real_dir = home.join("real-docker");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let linked_dir = home.join("linked-docker");
+        std::os::unix::fs::symlink(&real_dir, &linked_dir).unwrap();
+        let regular_file = home.join("not-a-dir");
+        std::fs::write(&regular_file, "{}").unwrap();
+
+        for invalid in [
+            std::ffi::OsStr::new(".docker"),
+            std::ffi::OsStr::new("./.docker"),
+            std::ffi::OsStr::new("/tmp/../.docker"),
+            std::ffi::OsStr::new("/tmp/./.docker"),
+            linked_dir.as_os_str(),
+            regular_file.as_os_str(),
+        ] {
+            assert!(
+                validate_docker_config_from(Some(invalid), home).is_err(),
+                "accepted invalid DOCKER_CONFIG {}",
+                Path::new(invalid).display()
+            );
+        }
+
+        assert_eq!(
+            validate_docker_config_from(Some(real_dir.as_os_str()), home)
+                .unwrap()
+                .source_config,
+            Some(real_dir.canonicalize().unwrap())
+        );
+        // DOCKER_CONFIG reached through a writable intermediate symlink hop must fail closed.
+        use std::os::unix::fs::PermissionsExt as _;
+        let writable_hop = home.join("writable-config-hop");
+        std::fs::create_dir_all(&writable_hop).unwrap();
+        let real_parent = home.join("real-parent");
+        std::fs::create_dir_all(real_parent.join("cfg")).unwrap();
+        let hop_link = writable_hop.join("hop-parent");
+        std::os::unix::fs::symlink(&real_parent, &hop_link).unwrap();
+        let outer_parent_link = home.join("outer-parent");
+        std::os::unix::fs::symlink(&hop_link, &outer_parent_link).unwrap();
+        std::fs::set_permissions(&writable_hop, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let hopped_config = outer_parent_link.join("cfg");
+        assert!(
+            validate_docker_config_from(Some(hopped_config.as_os_str()), home).is_err(),
+            "DOCKER_CONFIG through writable intermediate symlink hop must fail closed"
+        );
+        std::fs::set_permissions(&writable_hop, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Missing default `~/.docker` stays allowed, while a symlinked or
+        // non-directory `~/.docker` must be refused.
+        assert_eq!(
+            validate_docker_config_from(None, home)
+                .unwrap()
+                .source_config,
+            None
+        );
+        std::os::unix::fs::symlink(&real_dir, home.join(".docker")).unwrap();
+        assert!(
+            validate_docker_config_from(None, home).is_err(),
+            "symlinked default ~/.docker must be refused"
+        );
+        std::fs::remove_file(home.join(".docker")).unwrap();
+        std::fs::write(home.join(".docker"), "{}").unwrap();
+        assert!(
+            validate_docker_config_from(None, home).is_err(),
+            "regular-file default ~/.docker must be refused"
+        );
+        std::fs::remove_file(home.join(".docker")).unwrap();
+        std::fs::create_dir_all(home.join(".docker")).unwrap();
+        assert_eq!(
+            validate_docker_config_from(None, home)
+                .unwrap()
+                .source_config,
+            Some(home.join(".docker").canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn docker_config_json_fails_closed_on_symlink_fifo_and_malformed_json() {
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-docker-config-json")
+            .tempdir()
+            .unwrap();
+        let home = root.path();
+
+        // Symlinked config.json fails closed (`O_NOFOLLOW`).
+        let symlink_config = home.join("symlink-config");
+        std::fs::create_dir_all(&symlink_config).unwrap();
+        let target_file = home.join("external.json");
+        std::fs::write(&target_file, "{}").unwrap();
+        std::os::unix::fs::symlink(&target_file, symlink_config.join("config.json")).unwrap();
+        assert!(validate_docker_config_from(Some(symlink_config.as_os_str()), home).is_err());
+
+        // FIFO config.json fails closed without blocking (`O_NONBLOCK` + regular-file check).
+        let fifo_config = home.join("fifo-config");
+        std::fs::create_dir_all(&fifo_config).unwrap();
+        let fifo_path = fifo_config.join("config.json");
+        let status = Command::new("/usr/bin/mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo failed");
+        let error = validate_docker_config_from(Some(fifo_config.as_os_str()), home)
+            .expect_err("FIFO config.json must fail closed");
+        assert!(
+            format!("{error:#}").contains("non-regular Docker config"),
+            "{error:#}"
+        );
+
+        // Malformed JSON and non-object JSON fail closed.
+        let bad_json_config = home.join("bad-json-config");
+        std::fs::create_dir_all(&bad_json_config).unwrap();
+        std::fs::write(bad_json_config.join("config.json"), "{not-json").unwrap();
+        assert!(validate_docker_config_from(Some(bad_json_config.as_os_str()), home).is_err());
+        std::fs::write(bad_json_config.join("config.json"), "[]").unwrap();
+        assert!(validate_docker_config_from(Some(bad_json_config.as_os_str()), home).is_err());
+    }
+
+    #[test]
+    fn docker_cli_plugin_dirs_refuses_unsafe_entries_and_keeps_safe_ones() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::Builder::new()
+            .prefix("devtrim-docker-plugin-dirs")
+            .tempdir()
+            .unwrap();
+        let home = root.path();
+        let safe_plugins = home.join("safe-plugins");
+        std::fs::create_dir_all(&safe_plugins).unwrap();
+        std::fs::set_permissions(&safe_plugins, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let writable_plugins = home.join("writable-plugins");
+        std::fs::create_dir_all(&writable_plugins).unwrap();
+        std::fs::set_permissions(&writable_plugins, std::fs::Permissions::from_mode(0o777))
+            .unwrap();
+
+        let source_config = home.join("docker-config");
+        std::fs::create_dir_all(&source_config).unwrap();
+
+        // Relative, traversal, and world-writable plugin directories fail closed.
+        for bad_entry in [
+            "./plugins".to_string(),
+            "relative/dir".to_string(),
+            "/usr/local/../opt/plugins".to_string(),
+            writable_plugins.to_string_lossy().into_owned(),
+        ] {
+            std::fs::write(
+                source_config.join("config.json"),
+                serde_json::json!({ "clipluginsextradirs": [bad_entry] }).to_string(),
+            )
+            .unwrap();
+            assert!(
+                validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+                "must refuse unsafe cliPluginsExtraDirs entry: {bad_entry}"
+            );
+        }
+
+        // Safe absolute 0755 owned plugin directories resolve to canonical paths;
+        // nonexistent absolute paths with safe ancestors pass and are omitted.
+        std::fs::write(
+            source_config.join("config.json"),
+            serde_json::json!({
+                "clipluginsextradirs": [
+                    safe_plugins.to_string_lossy(),
+                    "/nonexistent/devtrim-test-docker-plugins"
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let plugin_dirs = validate_docker_config_from(Some(source_config.as_os_str()), home)
+            .unwrap()
+            .plugin_dirs;
+        let canonical_safe_plugins = safe_plugins.canonicalize().unwrap();
+        let expected_safe = canonical_safe_plugins.to_string_lossy().into_owned();
+        assert_eq!(plugin_dirs.first(), Some(&expected_safe));
+        assert!(
+            !plugin_dirs
+                .iter()
+                .any(|entry| entry.contains("devtrim-test-docker-plugins")),
+            "nonexistent plugin dir must be omitted: {plugin_dirs:?}"
+        );
+
+        // Writable ancestor above an otherwise 0755 plugin directory fails closed.
+        let writable_parent = home.join("writable-parent");
+        let nested_plugins = writable_parent.join("plugins");
+        std::fs::create_dir_all(&nested_plugins).unwrap();
+        std::fs::set_permissions(&writable_parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+        std::fs::set_permissions(&nested_plugins, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            source_config.join("config.json"),
+            serde_json::json!({ "cliPluginsExtraDirs": [nested_plugins.to_string_lossy()] })
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "plugin dir under writable ancestor must fail closed"
+        );
+
+        // Homebrew's layout: a 0775 ancestor whose group is `admin` (gid 80)
+        // adds no writer beyond root-equivalent accounts, so it is trusted;
+        // the same mode under `staff` (gid 20) still fails closed.
+        std::fs::set_permissions(&writable_parent, std::fs::Permissions::from_mode(0o775)).unwrap();
+        std::os::unix::fs::chown(&writable_parent, None, Some(80)).unwrap();
+        let admin_dirs = validate_docker_config_from(Some(source_config.as_os_str()), home)
+            .expect("0775 admin-group ancestor is root-equivalent")
+            .plugin_dirs;
+        let expected_nested = nested_plugins.canonicalize().unwrap();
+        assert!(
+            admin_dirs
+                .iter()
+                .any(|entry| Path::new(entry) == expected_nested),
+            "admin-group ancestor must keep the plugin dir: {admin_dirs:?}"
+        );
+        std::os::unix::fs::chown(&writable_parent, None, Some(20)).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "0775 ancestor of a non-root-equivalent group must fail closed"
+        );
+        std::fs::set_permissions(&writable_parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Symlinked plugin with APFS Unicode case-folded name (`doc\u{212a}er-buildx`)
+        // pointing to a group/world-writable executable fails closed.
+        let writable_plugin_target = home.join("writable-plugin-bin");
+        std::fs::write(&writable_plugin_target, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(
+            &writable_plugin_target,
+            std::fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
+        let linked_plugin = safe_plugins.join("doc\u{212a}er-buildx");
+        std::os::unix::fs::symlink(&writable_plugin_target, &linked_plugin).unwrap();
+        std::fs::write(
+            source_config.join("config.json"),
+            serde_json::json!({ "cliPluginsExtraDirs": [safe_plugins.to_string_lossy()] })
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "symlinked docker-* plugin pointing to writable executable must fail closed"
+        );
+        std::fs::remove_file(&linked_plugin).unwrap();
+
+        // Symlinked docker-* plugin passing through a writable intermediate hop fails closed.
+        let safe_plugin_bin = home.join("safe-plugin-bin");
+        std::fs::write(&safe_plugin_bin, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&safe_plugin_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let writable_hop_dir = home.join("writable-hop");
+        std::fs::create_dir_all(&writable_hop_dir).unwrap();
+        let hop_link = writable_hop_dir.join("hop-buildx");
+        std::os::unix::fs::symlink(&safe_plugin_bin, &hop_link).unwrap();
+        std::fs::set_permissions(&writable_hop_dir, std::fs::Permissions::from_mode(0o777))
+            .unwrap();
+        std::os::unix::fs::symlink(&hop_link, &linked_plugin).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "docker-* plugin with writable intermediate symlink hop must fail closed"
+        );
+        std::fs::set_permissions(&writable_hop_dir, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        std::fs::remove_file(&linked_plugin).unwrap();
+
+        // A plugin left dangling by an uninstalled app (OrbStack's
+        // `docker-buildx` into a missing `/Applications/OrbStack.app`) cannot
+        // execute: under trusted folders it is no plugin, and the dir is kept.
+        std::os::unix::fs::symlink(
+            home.join("Gone.app/Contents/xbin/docker-buildx"),
+            &linked_plugin,
+        )
+        .unwrap();
+        let dangling_dirs = validate_docker_config_from(Some(source_config.as_os_str()), home)
+            .expect("dangling plugin under trusted folders is no plugin")
+            .plugin_dirs;
+        assert_eq!(dangling_dirs.first(), Some(&expected_safe));
+        std::fs::remove_file(&linked_plugin).unwrap();
+
+        // The same dangling plugin whose missing target sits in a sticky
+        // world-writable folder could be planted by another account: refused.
+        let sticky_dir = home.join("sticky-shared");
+        std::fs::create_dir_all(&sticky_dir).unwrap();
+        std::fs::set_permissions(&sticky_dir, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        std::os::unix::fs::symlink(sticky_dir.join("docker-buildx"), &linked_plugin).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling plugin into a world-writable folder must fail closed"
+        );
+        std::fs::remove_file(&linked_plugin).unwrap();
+        // Reaching it through a trusted child and `..` must not reset the
+        // writer check: the sticky folder is judged again after the pop.
+        let trusted_child = sticky_dir.join("sub");
+        std::fs::create_dir(&trusted_child).unwrap();
+        std::fs::set_permissions(&trusted_child, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(trusted_child.join("../docker-buildx"), &linked_plugin).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling plugin reached through `..` into a world-writable folder must fail closed"
+        );
+        std::fs::remove_file(&linked_plugin).unwrap();
+        std::fs::set_permissions(&sticky_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // `/Volumes` is root-owned 0755, yet any local user can mount a disk
+        // at a missing `/Volumes/<name>`: a dangling link there is refused.
+        let unmounted =
+            Path::new("/Volumes").join(format!("devtrim-test-unmounted-{}", std::process::id()));
+        assert!(!unmounted.exists(), "test volume name must be unused");
+        let name = unmounted.file_name().unwrap();
+        // Every spelling that reaches the same folder: case and the firmlink.
+        for volumes in ["/Volumes", "/volumes", "/System/Volumes/Data/Volumes"] {
+            if !Path::new(volumes).is_dir() {
+                continue;
+            }
+            let target = Path::new(volumes).join(name).join("docker-buildx");
+            std::os::unix::fs::symlink(&target, &linked_plugin).unwrap();
+            assert!(
+                validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+                "dangling plugin into an unmounted {volumes} entry must fail closed"
+            );
+            std::fs::remove_file(&linked_plugin).unwrap();
+        }
+
+        // Symlinked plugin directory passing through a writable intermediate directory hop fails closed.
+        let dir_hop_link = writable_hop_dir.join("dir-hop");
+        std::os::unix::fs::symlink(&safe_plugins, &dir_hop_link).unwrap();
+        let outer_dir_link = home.join("outer-plugin-dir-link");
+        std::os::unix::fs::symlink(&dir_hop_link, &outer_dir_link).unwrap();
+        std::fs::set_permissions(&writable_hop_dir, std::fs::Permissions::from_mode(0o777))
+            .unwrap();
+        std::fs::write(
+            source_config.join("config.json"),
+            serde_json::json!({ "cliPluginsExtraDirs": [outer_dir_link.to_string_lossy()] })
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "plugin directory with writable intermediate symlink hop must fail closed"
+        );
+        std::fs::set_permissions(&writable_hop_dir, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+
+        // Dangling plugin-directory symlinks (both 1-component relative and absolute,
+        // and under `$DOCKER_CONFIG/cli-plugins`) must fail closed rather than looking absent.
+        let dangling_rel_dir = home.join("dangling-rel-plugin-dir");
+        std::os::unix::fs::symlink("missing-plugin-target", &dangling_rel_dir).unwrap();
+        std::fs::write(
+            source_config.join("config.json"),
+            serde_json::json!({ "cliPluginsExtraDirs": [dangling_rel_dir.to_string_lossy()] })
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling relative plugin directory symlink must fail closed"
+        );
+        let dangling_abs_dir = home.join("dangling-abs-plugin-dir");
+        std::os::unix::fs::symlink(home.join("no-such-plugin-dir/nested"), &dangling_abs_dir)
+            .unwrap();
+        std::fs::write(
+            source_config.join("config.json"),
+            serde_json::json!({ "cliPluginsExtraDirs": [dangling_abs_dir.to_string_lossy()] })
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling absolute plugin directory symlink must fail closed"
+        );
+        std::fs::write(source_config.join("config.json"), "{}").unwrap();
+        let dangling_cli_plugins = source_config.join("cli-plugins");
+        std::os::unix::fs::symlink("missing-cli-plugins", &dangling_cli_plugins).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling $DOCKER_CONFIG/cli-plugins symlink must fail closed"
+        );
+        std::fs::remove_file(&dangling_cli_plugins).unwrap();
+
+        // Group/world-writable config.json (even owned by current user) fails closed.
+        std::fs::write(source_config.join("config.json"), "{}").unwrap();
+        std::fs::set_permissions(
+            source_config.join("config.json"),
+            std::fs::Permissions::from_mode(0o664),
+        )
+        .unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "group-writable config.json must fail closed"
+        );
+        std::fs::set_permissions(
+            source_config.join("config.json"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        // Group/world-writable DOCKER_CONFIG directory fails closed.
+        std::fs::set_permissions(&source_config, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "group-writable DOCKER_CONFIG dir must fail closed"
+        );
+        std::fs::set_permissions(&source_config, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        // Isolated scan snapshot strips aliases/extra keys and preserves currentContext + safe plugins.
+        std::fs::write(
+            source_config.join("config.json"),
+            serde_json::json!({
+                "currentContext": "orbstack",
+                "aliases": { "builder": "buildx" },
+                "cliPluginsExtraDirs": [safe_plugins.to_string_lossy()]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let scan_base = home.join("scan-tmp");
+        std::fs::create_dir_all(&scan_base).unwrap();
+        std::fs::set_permissions(&scan_base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let scan_dir =
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), home, &scan_base)
+                .unwrap();
+        let scan_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(scan_dir.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(scan_json["currentContext"], "orbstack");
+        assert!(scan_json.get("aliases").is_none());
+        assert_eq!(
+            scan_json["cliPluginsExtraDirs"],
+            serde_json::json!([canonical_safe_plugins.to_string_lossy()])
+        );
+
+        // With no source `buildx/`, `docker buildx ls` creates one in the scan
+        // dir on the first scan; the next scan must reuse it, not refuse.
+        assert!(!source_config.join("buildx").exists());
+        let created = scan_dir.join("buildx");
+        std::fs::create_dir(&created).unwrap();
+        std::fs::set_permissions(&created, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), home, &scan_base)
+                .expect("Docker's own buildx state from an earlier scan is reused"),
+            scan_dir
+        );
+        // A looser directory, a link or a file in its place still refuses.
+        std::fs::set_permissions(&created, std::fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), home, &scan_base)
+                .is_err(),
+            "group-writable buildx entry must fail closed"
+        );
+        std::fs::set_permissions(&created, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let add_acl = std::process::Command::new("/bin/chmod")
+            .args(["+a", "group:everyone allow add_file"])
+            .arg(&created)
+            .status()
+            .unwrap();
+        assert!(add_acl.success(), "chmod +a on buildx entry failed");
+        assert!(
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), home, &scan_base)
+                .is_err(),
+            "buildx entry with an allow ACL must fail closed"
+        );
+        std::fs::remove_dir(&created).unwrap();
+        std::os::unix::fs::symlink(&scan_base, &created).unwrap();
+        assert!(
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), home, &scan_base)
+                .is_err(),
+            "symlinked buildx entry must fail closed"
+        );
+        std::fs::remove_file(&created).unwrap();
+    }
+
+    #[test]
+    fn private_docker_config_guard_removes_attempt_dir_on_drop() {
+        let fixture = crate::ops::TestFixture::new("devtrim-docker-pin-cleanup");
+        std::fs::create_dir_all(fixture.path()).unwrap();
+        let home = fixture.path().canonicalize().unwrap();
+        let state_dir = home.join(".local/state/devtrim");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let mut ctx = test_ctx();
+        ctx.home = home.clone();
+        ctx.journal_path = state_dir.join("journal.jsonl");
+
+        let plugin_dirs = vec!["/opt/homebrew/lib/docker/cli-plugins".to_string()];
+        let isolated_path = {
+            let attempt = allocate_private_docker_config(&ctx, &plugin_dirs).unwrap();
+            let path = attempt.guard.path().to_path_buf();
+            assert!(path.join("config.json").is_file());
+            assert!(path.join("buildx").is_dir());
+            path
+        };
+        assert!(
+            !isolated_path.exists(),
+            "isolated attempt dir {} should be cleaned up on drop",
+            isolated_path.display()
+        );
+
+        let nodes = vec![BuildxNodeIdentity {
+            name: "kiri0".into(),
+            endpoint: "unix:///tmp/kiri.sock".into(),
+            ids: vec!["node-1".into()],
+        }];
+        let pinned_path = {
+            let guard = write_pinned_buildx_config(&ctx, "kiri", &nodes, &plugin_dirs).unwrap();
+            let path = guard.path().to_path_buf();
+            assert!(path.join("buildx/instances/kiri").is_file());
+            path
+        };
+        assert!(
+            !pinned_path.exists(),
+            "pinned attempt dir {} should be cleaned up on drop",
+            pinned_path.display()
+        );
+
+        // Pre-existing `buildx-pin` carrying an `allow` ACL must fail closed
+        // BEFORE creating any `attempt-*` subdirectory inside it.
+        let pin_base_path = state_dir.join("buildx-pin");
+        let add_acl = std::process::Command::new("/bin/chmod")
+            .args(["+a", "group:everyone allow add_subdirectory"])
+            .arg(&pin_base_path)
+            .status()
+            .unwrap();
+        assert!(add_acl.success(), "chmod +a on buildx-pin failed");
+        let refused = allocate_private_docker_config(&ctx, &plugin_dirs);
+        let _ = std::process::Command::new("/bin/chmod")
+            .arg("-N")
+            .arg(&pin_base_path)
+            .status();
+        assert!(
+            refused.is_err(),
+            "buildx-pin with allow ACL must be refused before creating an attempt dir"
+        );
+        assert_eq!(
+            std::fs::read_dir(&pin_base_path).unwrap().count(),
+            0,
+            "no attempt-* directory may be created inside an ACL-granting buildx-pin"
+        );
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn docker_plugin_dir_refuses_volume_that_ignores_ownership() {
+        use crate::process::BoundedCommand as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        const HDIUTIL_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+        let fixture = crate::ops::TestFixture::new("devtrim-docker-owners");
+        let base = fixture.path();
+        std::fs::create_dir_all(base).unwrap();
+        let image = base.join("docker-owners.dmg");
+        let created = std::process::Command::new("/usr/bin/hdiutil")
+            .args([
+                "create",
+                "-quiet",
+                "-size",
+                "16m",
+                "-fs",
+                "HFS+",
+                "-volname",
+                "docker-owners",
+            ])
+            .arg(&image)
+            .output_within(HDIUTIL_LIMIT)
+            .unwrap();
+        assert!(created.status.success(), "hdiutil create failed");
+
+        struct Detach(PathBuf);
+        impl Drop for Detach {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("/usr/bin/hdiutil")
+                    .args(["detach", "-quiet", "-force"])
+                    .arg(&self.0)
+                    .output_within(HDIUTIL_LIMIT);
+            }
+        }
+
+        let source_config = base.join("docker-config");
+        std::fs::create_dir_all(&source_config).unwrap();
+        std::fs::set_permissions(&source_config, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let validate_on = |owners: &str| {
+            let mount = base.join(format!("owners-{owners}"));
+            std::fs::create_dir_all(&mount).unwrap();
+            let attached = std::process::Command::new("/usr/bin/hdiutil")
+                .args([
+                    "attach",
+                    "-quiet",
+                    "-nobrowse",
+                    "-noautoopen",
+                    "-owners",
+                    owners,
+                ])
+                .arg("-mountpoint")
+                .arg(&mount)
+                .arg(&image)
+                .output_within(HDIUTIL_LIMIT)
+                .unwrap();
+            assert!(
+                attached.status.success(),
+                "hdiutil attach -owners {owners} failed"
+            );
+            let _detach = Detach(mount.clone());
+            let plugin_dir = mount.join("cli-plugins");
+            std::fs::create_dir_all(&plugin_dir).unwrap();
+            std::fs::set_permissions(&plugin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let plugin_bin = plugin_dir.join("docker-buildx");
+            std::fs::write(&plugin_bin, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&plugin_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(
+                source_config.join("config.json"),
+                serde_json::json!({ "cliPluginsExtraDirs": [plugin_dir.to_string_lossy()] })
+                    .to_string(),
+            )
+            .unwrap();
+            let plugin_res = validate_docker_config_from(Some(source_config.as_os_str()), base);
+            let docker_dir = mount.join("docker-cfg");
+            std::fs::create_dir_all(&docker_dir).unwrap();
+            std::fs::set_permissions(&docker_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let cfg_res = validate_docker_config_from(Some(docker_dir.as_os_str()), base);
+            (plugin_res, cfg_res)
+        };
+
+        let (plugin_on, cfg_on) = validate_on("on");
+        assert!(
+            plugin_on.is_ok(),
+            "plugin dir on volume enforcing ownership must pass: {plugin_on:?}"
+        );
+        assert!(
+            cfg_on.is_ok(),
+            "DOCKER_CONFIG on volume enforcing ownership must pass: {cfg_on:?}"
+        );
+
+        let (plugin_off, cfg_off) = validate_on("off");
+        assert!(
+            plugin_off
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("ignores ownership")),
+            "plugin dir on MNT_IGNORE_OWNERSHIP volume must fail closed: {plugin_off:?}"
+        );
+        assert!(
+            cfg_off
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("ignores ownership")),
+            "DOCKER_CONFIG on MNT_IGNORE_OWNERSHIP volume must fail closed: {cfg_off:?}"
+        );
+
+        // Child mounts with `MNT_IGNORE_OWNERSHIP` directly at the scan snapshot
+        // directory or reused `buildx-pin` directory must also fail closed even
+        // when their parent directories live on an ownership-enforcing volume.
+        std::fs::write(source_config.join("config.json"), "{}").unwrap();
+        let scan_parent = base.join("scan-parent");
+        std::fs::create_dir_all(&scan_parent).unwrap();
+        std::fs::set_permissions(&scan_parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let initial_scan =
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), base, &scan_parent)
+                .unwrap();
+        let scan_dir_name = initial_scan.file_name().unwrap().to_os_string();
+        std::fs::remove_dir_all(&initial_scan).unwrap();
+
+        let scan_mount = scan_parent.join(&scan_dir_name);
+        std::fs::create_dir_all(&scan_mount).unwrap();
+        let attached_scan_off = std::process::Command::new("/usr/bin/hdiutil")
+            .args([
+                "attach",
+                "-quiet",
+                "-nobrowse",
+                "-noautoopen",
+                "-owners",
+                "off",
+            ])
+            .arg("-mountpoint")
+            .arg(&scan_mount)
+            .arg(&image)
+            .output_within(HDIUTIL_LIMIT)
+            .unwrap();
+        assert!(
+            attached_scan_off.status.success(),
+            "hdiutil attach -owners off on scan child mount failed"
+        );
+        {
+            let _detach = Detach(scan_mount.clone());
+            let scan_off =
+                isolated_docker_scan_dir_from(Some(source_config.as_os_str()), base, &scan_parent);
+            assert!(
+                scan_off
+                    .as_ref()
+                    .is_err_and(|error| error.to_string().contains("ignores ownership")),
+                "scan snapshot child mount with MNT_IGNORE_OWNERSHIP must fail closed: {scan_off:?}"
+            );
+        }
+
+        let state_dir = base.join("state-dir");
+        let pin_mount = state_dir.join("buildx-pin");
+        std::fs::create_dir_all(&pin_mount).unwrap();
+        std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut ctx = test_ctx();
+        ctx.home = base.canonicalize().unwrap();
+        ctx.journal_path = state_dir.join("journal.jsonl");
+        let attached_pin_off = std::process::Command::new("/usr/bin/hdiutil")
+            .args([
+                "attach",
+                "-quiet",
+                "-nobrowse",
+                "-noautoopen",
+                "-owners",
+                "off",
+            ])
+            .arg("-mountpoint")
+            .arg(&pin_mount)
+            .arg(&image)
+            .output_within(HDIUTIL_LIMIT)
+            .unwrap();
+        assert!(
+            attached_pin_off.status.success(),
+            "hdiutil attach -owners off on buildx-pin child mount failed"
+        );
+        {
+            let _detach = Detach(pin_mount.clone());
+            let pin_off = allocate_private_docker_config(&ctx, &[]);
+            assert!(
+                pin_off
+                    .as_ref()
+                    .is_err_and(|error| error.to_string().contains("ignores ownership")),
+                "reused buildx-pin child mount with MNT_IGNORE_OWNERSHIP must fail closed: {:?}",
+                pin_off.err()
+            );
+        }
     }
 }

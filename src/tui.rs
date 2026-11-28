@@ -1483,6 +1483,10 @@ impl App {
 /// enough to cost nothing while idle.
 const TICK: Duration = Duration::from_millis(100);
 
+/// Shorter input poll while a background task is in flight, so its completion
+/// reaches the screen without waiting out a full idle tick.
+const ACTIVE_TICK: Duration = Duration::from_millis(16);
+
 pub fn run(ctx: &Ctx) -> Result<ExitCode> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("the TUI requires an interactive stdin and stdout terminal");
@@ -1539,27 +1543,44 @@ fn run_loop(
     };
     app.refresh_disk();
     // `diskutil` can take a while; the menu draws without waiting for it.
-    let (answer, snapshots) = std::sync::mpsc::channel();
+    let (answer, snapshot_receiver) = std::sync::mpsc::channel();
     let home = ctx.home.clone();
     thread::spawn(move || {
         let counted = safety::local_snapshot_count(&home)
             .map_err(|error| report::terminal_safe(&format!("{error:#}")));
         answer.send(counted).ok();
     });
+    let mut snapshots = Some(snapshot_receiver);
     let mut redraw = true;
     loop {
         if let Some(signal) = interrupts.received() {
             restore_and_exit(signal);
         }
-        if let Ok(counted) = snapshots.try_recv() {
-            app.snapshots = counted.map_or_else(Snapshots::Unavailable, Snapshots::Counted);
-            redraw = true;
+        if let Some(receiver) = &snapshots {
+            match receiver.try_recv() {
+                Ok(counted) => {
+                    app.snapshots = counted.map_or_else(Snapshots::Unavailable, Snapshots::Counted);
+                    snapshots = None;
+                    redraw = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    app.snapshots = Snapshots::Unavailable("snapshot check stopped".into());
+                    snapshots = None;
+                    redraw = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
         }
         if redraw {
             terminal.draw(|frame| render(frame, &app))?;
         }
         // Waking only to look for a signal changes nothing on screen.
-        redraw = event::poll(TICK).context("cannot poll terminal input")?;
+        let poll_interval = if app.working.is_some() || snapshots.is_some() {
+            ACTIVE_TICK
+        } else {
+            TICK
+        };
+        redraw = event::poll(poll_interval).context("cannot poll terminal input")?;
         if !redraw {
             continue;
         }
@@ -1654,7 +1675,7 @@ fn in_background<T: Send>(
                 terminal.draw(|frame| render(frame, app))?;
                 shown = Some(now);
             }
-            if !event::poll(TICK).context("cannot poll terminal input")? {
+            if !event::poll(ACTIVE_TICK).context("cannot poll terminal input")? {
                 continue;
             }
             match event::read().context("cannot read terminal input")? {

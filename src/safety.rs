@@ -1727,9 +1727,104 @@ pub(crate) fn allocated_bytes(metadata: &std::fs::Metadata, path: &Path) -> Resu
 /// scan asks once per device rather than once per finding.
 const PRIVATE_SIZE_VERDICT_TTL: Duration = Duration::from_secs(60);
 
-/// Per device: when its private-size verdict was reached, and the verdict.
-static PRIVATE_SIZE_VERDICTS: Mutex<std::collections::BTreeMap<u64, (std::time::Instant, bool)>> =
-    Mutex::new(std::collections::BTreeMap::new());
+/// Per device: probe/cached private-size verdict so concurrent scanners do
+/// not stampede `diskutil` on cold start.
+enum VerdictState {
+    Probing,
+    Ready(std::time::Instant, bool),
+}
+
+struct VerdictCache {
+    entries: Mutex<std::collections::BTreeMap<u64, VerdictState>>,
+    ready: std::sync::Condvar,
+}
+
+struct ProbeGuard<'a> {
+    cache: &'a VerdictCache,
+    dev: u64,
+    completed: bool,
+}
+
+impl VerdictCache {
+    const fn new() -> Self {
+        Self {
+            entries: Mutex::new(std::collections::BTreeMap::new()),
+            ready: std::sync::Condvar::new(),
+        }
+    }
+
+    fn resolve(&self, dev: u64, probe: impl FnOnce() -> Option<bool>) -> bool {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            match entries.get(&dev) {
+                Some(&VerdictState::Ready(reached, trusted))
+                    if reached.elapsed() < PRIVATE_SIZE_VERDICT_TTL =>
+                {
+                    return trusted;
+                }
+                Some(&VerdictState::Probing) => {
+                    entries = self
+                        .ready
+                        .wait(entries)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                _ => {
+                    entries.insert(dev, VerdictState::Probing);
+                    drop(entries);
+                    let guard = ProbeGuard {
+                        cache: self,
+                        dev,
+                        completed: false,
+                    };
+                    let Some(trusted) = probe() else {
+                        return false;
+                    };
+                    guard.finish(trusted);
+                    return trusted;
+                }
+            }
+        }
+    }
+}
+
+impl ProbeGuard<'_> {
+    fn finish(mut self, trusted: bool) {
+        let mut entries = self
+            .cache
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.insert(
+            self.dev,
+            VerdictState::Ready(std::time::Instant::now(), trusted),
+        );
+        self.completed = true;
+        drop(entries);
+        self.cache.ready.notify_all();
+    }
+}
+
+impl Drop for ProbeGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            let mut entries = self
+                .cache
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if matches!(entries.get(&self.dev), Some(VerdictState::Probing)) {
+                entries.remove(&self.dev);
+            }
+            drop(entries);
+            self.cache.ready.notify_all();
+        }
+    }
+}
+
+static PRIVATE_SIZE_VERDICTS: VerdictCache = VerdictCache::new();
 
 #[cfg(test)]
 thread_local! {
@@ -1769,23 +1864,10 @@ pub(crate) fn private_size_trusted(path: &Path, dev: u64) -> bool {
     if let Some(free) = PRIVATE_SIZE_OVERRIDE.get() {
         return free && apfs_size::volume(path, dev).is_some_and(|volume| volume.apfs);
     }
-    let verdicts = || {
-        PRIVATE_SIZE_VERDICTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    };
-    if let Some(&(reached, trusted)) = verdicts().get(&dev)
-        && reached.elapsed() < PRIVATE_SIZE_VERDICT_TTL
-    {
-        return trusted;
-    }
-    // The lock is not held while `diskutil` runs.
-    let Some(volume) = apfs_size::volume(path, dev) else {
-        return false;
-    };
-    let trusted = volume.apfs && volume_lists_no_snapshot(&volume.mount);
-    verdicts().insert(dev, (std::time::Instant::now(), trusted));
-    trusted
+    PRIVATE_SIZE_VERDICTS.resolve(dev, || {
+        let volume = apfs_size::volume(path, dev)?;
+        Some(volume.apfs && volume_lists_no_snapshot(&volume.mount))
+    })
 }
 
 /// Asks `diskutil apfs listSnapshots -plist <mount>`, which needs no root.
@@ -2045,10 +2127,15 @@ impl DiskUsage {
         Ok(allocated)
     }
 
-    /// The allocated bytes a batched [`apfs_size::BulkEntry`] regular file adds
+    /// The allocated bytes a batched [`apfs_size::BulkEntryRef`] regular file adds
     /// to the walk's total, matching [`Self::add`] for hard links and APFS
     /// private-size lower bounds without a second `lstat` or `getattrlist`.
-    fn add_bulk(&mut self, entry: &apfs_size::BulkEntry, path: &Path) -> u64 {
+    fn add_bulk(
+        &mut self,
+        entry: apfs_size::BulkEntryRef<'_>,
+        directory: &Path,
+        bulk_mode: apfs_size::BulkMode,
+    ) -> u64 {
         if entry.nlink > 1 && !self.linked.insert((entry.dev, entry.ino)) {
             return 0;
         }
@@ -2056,14 +2143,24 @@ impl DiskUsage {
         if let Some(estimate) = &mut self.estimate {
             let freed = if entry.nlink > 1 {
                 0
-            } else if estimate.is_trusted(path, entry.dev) {
+            } else if !estimate.is_trusted_in_dir(directory, entry.name, entry.dev) {
+                allocated
+            } else if bulk_mode == apfs_size::BulkMode::Full {
                 entry.private.unwrap_or(0)
             } else {
-                allocated
+                let child = directory.join(entry.name);
+                apfs_size::file_blocks(&child, entry.dev, entry.ino)
+                    .map_or(0, |blocks| blocks.private)
             };
             estimate.bytes = estimate.bytes.and_then(|total| total.checked_add(freed));
         }
         allocated
+    }
+
+    /// Records `(dev, ino)` for a file with multiple links; returns `true` the
+    /// first time that identity is seen so callers allocate it once.
+    pub(crate) fn record_hard_link(&mut self, dev: u64, ino: u64) -> bool {
+        self.linked.insert((dev, ino))
     }
 
     /// The walk's `Size`, given the allocated bytes `add` returned in total.
@@ -2081,6 +2178,14 @@ impl Estimate {
             .trusted
             .entry(dev)
             .or_insert_with(|| private_size_trusted(path, dev))
+    }
+
+    fn is_trusted_in_dir(&mut self, directory: &Path, name: &OsStr, dev: u64) -> bool {
+        if let Some(trusted) = self.trusted.get(&dev) {
+            return *trusted;
+        }
+        let child = directory.join(name);
+        self.is_trusted(&child, dev)
     }
 
     /// A file's private bytes where the private size is true; `None` keeps
@@ -2132,6 +2237,96 @@ impl Measured {
 }
 
 pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            return Measured {
+                bytes: 0,
+                unread: 1,
+            };
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return measure_lenient_walkdir(path, skip);
+    }
+    if metadata.file_type().is_file() {
+        return match allocated_bytes(&metadata, path) {
+            Ok(bytes) => Measured { bytes, unread: 0 },
+            Err(_) => Measured {
+                bytes: 0,
+                unread: 1,
+            },
+        };
+    }
+    if !metadata.file_type().is_dir() {
+        return Measured {
+            bytes: 0,
+            unread: 0,
+        };
+    }
+    match measure_lenient_bulk(path, metadata.dev(), skip) {
+        Some(measured) => measured,
+        None => measure_lenient_walkdir(path, skip),
+    }
+}
+
+fn measure_lenient_bulk(path: &Path, root_dev: u64, skip: &BTreeSet<PathBuf>) -> Option<Measured> {
+    let mut measured = Measured {
+        bytes: 0,
+        unread: 0,
+    };
+    let mut hard_links = std::collections::HashSet::new();
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let visit = apfs_size::visit_dir_bulk(
+            &directory,
+            apfs_size::BulkMode::SizeOnly,
+            &mut buffer,
+            |entry| {
+                match entry.kind {
+                    apfs_size::EntryKind::Directory => {
+                        if !entry.mountpoint && entry.dev == root_dev {
+                            let child = directory.join(entry.name);
+                            if skip.is_empty() || !skip.contains(&child) {
+                                pending.push(child);
+                            }
+                        }
+                    }
+                    apfs_size::EntryKind::File => {
+                        if entry.dev != root_dev {
+                            return Ok(());
+                        }
+                        let bytes = if entry.nlink > 1 && !hard_links.insert((entry.dev, entry.ino))
+                        {
+                            0
+                        } else {
+                            entry.allocated
+                        };
+                        measured.bytes = measured.bytes.saturating_add(bytes);
+                    }
+                    apfs_size::EntryKind::Other => {}
+                }
+                Ok::<(), std::convert::Infallible>(())
+            },
+        );
+        match visit {
+            Ok(()) => {}
+            Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Unsupported)) => {
+                return None;
+            }
+            Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Io(_))) => {
+                measured.unread = measured.unread.saturating_add(1);
+            }
+            Err(apfs_size::BulkVisitError::Visitor(never)) => match never {},
+        }
+    }
+    Some(measured)
+}
+
+fn measure_lenient_walkdir(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured {
     let mut measured = Measured {
         bytes: 0,
         unread: 0,
@@ -2167,12 +2362,22 @@ pub(crate) fn measure_lenient(path: &Path, skip: &BTreeSet<PathBuf>) -> Measured
 /// Allocated bytes under `path` (`DiskUsage`), for a caller that reports no
 /// lower bound.
 pub(crate) fn dir_size(path: &Path) -> Result<u64> {
-    Ok(walk_stats(path, DiskUsage::default())?.0.allocated)
+    Ok(walk_stats(path, DiskUsage::default(), false)?.0.allocated)
 }
 
 /// `Size` of the tree at `path`, with the lower bound, for a finding.
 pub(crate) fn dir_measure(path: &Path) -> Result<Size> {
-    Ok(walk_stats(path, DiskUsage::estimating())?.0)
+    Ok(walk_stats(path, DiskUsage::estimating(), false)?.0)
+}
+
+/// `Size` of the tree at `path`, aborting immediately if `inspect` returns
+/// `Some` for the root (`depth == 0`) or any descendant entry (`depth >= 1`).
+pub(crate) fn dir_measure_while<S>(
+    path: &Path,
+    inspect: impl FnMut(Option<&Path>, &OsStr, usize) -> Option<S>,
+) -> Result<(Option<S>, Size)> {
+    let (stopped, size, _) = walk_stats_while(path, DiskUsage::estimating(), false, inspect)?;
+    Ok((stopped, size))
 }
 
 /// `Size` (`DiskUsage`, estimating) and the newest regular-file modification
@@ -2195,33 +2400,74 @@ pub(crate) fn dir_measure(path: &Path) -> Result<Size> {
 /// A subtree with no regular files reports `UNIX_EPOCH`, which reads as
 /// maximally stale; a caller that judges age must handle it, as `xcode` does.
 pub(crate) fn dir_stats(path: &Path) -> Result<(Size, Option<std::time::SystemTime>)> {
-    walk_stats(path, DiskUsage::estimating())
+    walk_stats(path, DiskUsage::estimating(), true)
 }
 
-fn walk_stats(path: &Path, mut usage: DiskUsage) -> Result<(Size, Option<std::time::SystemTime>)> {
+fn walk_stats(
+    path: &Path,
+    usage: DiskUsage,
+    need_modtime: bool,
+) -> Result<(Size, Option<std::time::SystemTime>)> {
+    let (_, size, newest) = walk_stats_while(path, usage, need_modtime, |_, _, _| {
+        None::<std::convert::Infallible>
+    })?;
+    Ok((size, newest))
+}
+
+fn walk_stats_while<S>(
+    path: &Path,
+    mut usage: DiskUsage,
+    need_modtime: bool,
+    mut inspect: impl FnMut(Option<&Path>, &OsStr, usize) -> Option<S>,
+) -> Result<(Option<S>, Size, Option<std::time::SystemTime>)> {
+    use std::os::unix::fs::MetadataExt;
+
     let root_metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((Size::default(), Some(std::time::SystemTime::UNIX_EPOCH)));
+            return Ok((
+                None,
+                Size::default(),
+                Some(std::time::SystemTime::UNIX_EPOCH),
+            ));
         }
         Err(error) => {
             return Err(error).with_context(|| format!("cannot inspect {}", path.display()));
         }
     };
+    if let Some(name) = path.file_name()
+        && let Some(stopped) = inspect(path.parent(), name, 0)
+    {
+        return Ok((Some(stopped), Size::default(), None));
+    }
     if root_metadata.file_type().is_file() {
-        let newest = root_metadata.modified().ok();
+        let newest = if need_modtime {
+            root_metadata.modified().ok()
+        } else {
+            None
+        };
         let bytes = usage.add(&root_metadata, path)?;
-        return Ok((usage.size(bytes), newest));
+        return Ok((None, usage.size(bytes), newest));
     }
     if !root_metadata.file_type().is_dir() {
-        return Ok((Size::default(), Some(std::time::SystemTime::UNIX_EPOCH)));
+        return Ok((
+            None,
+            Size::default(),
+            Some(std::time::SystemTime::UNIX_EPOCH),
+        ));
     }
     // On macOS APFS, batching directory metadata with `getattrlistbulk(2)`
     // replaces per-file `lstat` + `getattrlist` calls with one syscall per
     // 64 KiB batch. An unsupported filesystem falls back to `walkdir`; a real
     // I/O failure propagates fail-closed.
     let estimating = usage.estimate.is_some();
-    match walk_stats_bulk(path, &mut usage) {
+    match walk_stats_bulk(
+        path,
+        root_metadata.dev(),
+        &mut usage,
+        need_modtime,
+        &mut inspect,
+    ) {
         Ok(result) => Ok(result),
         Err(BulkWalkError::Unsupported) => {
             let fallback_usage = if estimating {
@@ -2229,7 +2475,7 @@ fn walk_stats(path: &Path, mut usage: DiskUsage) -> Result<(Size, Option<std::ti
             } else {
                 DiskUsage::default()
             };
-            walk_stats_walkdir(path, fallback_usage)
+            walk_stats_walkdir(path, fallback_usage, inspect)
         }
         Err(BulkWalkError::Failed(error)) => Err(error),
     }
@@ -2240,37 +2486,54 @@ enum BulkWalkError {
     Failed(anyhow::Error),
 }
 
-fn walk_stats_bulk(
+enum BulkVisitStop<S> {
+    Stopped(S),
+    Failed(anyhow::Error),
+}
+
+fn walk_stats_bulk<S>(
     root: &Path,
+    root_dev: u64,
     usage: &mut DiskUsage,
-) -> std::result::Result<(Size, Option<std::time::SystemTime>), BulkWalkError> {
+    need_modtime: bool,
+    mut inspect: impl FnMut(Option<&Path>, &OsStr, usize) -> Option<S>,
+) -> std::result::Result<(Option<S>, Size, Option<std::time::SystemTime>), BulkWalkError> {
     let mut bytes = 0u64;
-    let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        let entries = match apfs_size::read_dir_bulk(&directory) {
-            Ok(entries) => entries,
-            Err(apfs_size::BulkError::Unsupported) => return Err(BulkWalkError::Unsupported),
-            Err(apfs_size::BulkError::Io(error)) => {
-                return Err(BulkWalkError::Failed(
-                    anyhow::Error::new(error)
-                        .context(format!("cannot measure {}", directory.display())),
-                ));
+    let mut newest = need_modtime.then_some(std::time::SystemTime::UNIX_EPOCH);
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let mut pending = vec![(root.to_path_buf(), root_dev, 1usize)];
+    while let Some((directory, directory_dev, depth)) = pending.pop() {
+        let bulk_mode = match usage.estimate.as_mut() {
+            None => apfs_size::BulkMode::SizeOnly,
+            Some(estimate) => {
+                if estimate.is_trusted(&directory, directory_dev) {
+                    apfs_size::BulkMode::Full
+                } else if need_modtime {
+                    apfs_size::BulkMode::StatsNoPrivate
+                } else {
+                    apfs_size::BulkMode::SizeOnly
+                }
             }
         };
-        for entry in entries {
-            let child = directory.join(&entry.name);
+        match apfs_size::visit_dir_bulk(&directory, bulk_mode, &mut buffer, |entry| {
+            if let Some(stopped) = inspect(Some(&directory), entry.name, depth) {
+                return Err(BulkVisitStop::Stopped(stopped));
+            }
             match entry.kind {
-                apfs_size::EntryKind::Directory => pending.push(child),
+                apfs_size::EntryKind::Directory => {
+                    pending.push((directory.join(entry.name), entry.dev, depth + 1));
+                }
                 apfs_size::EntryKind::File => {
-                    match entry.modified {
-                        Some(modified) => newest = newest.map(|current| current.max(modified)),
-                        None => newest = None,
+                    if need_modtime {
+                        match entry.modified {
+                            Some(modified) => newest = newest.map(|current| current.max(modified)),
+                            None => newest = None,
+                        }
                     }
                     bytes = bytes
-                        .checked_add(usage.add_bulk(&entry, &child))
+                        .checked_add(usage.add_bulk(entry, &directory, bulk_mode))
                         .ok_or_else(|| {
-                            BulkWalkError::Failed(anyhow::anyhow!(
+                            BulkVisitStop::Failed(anyhow::anyhow!(
                                 "size overflow under {}",
                                 root.display()
                             ))
@@ -2278,15 +2541,34 @@ fn walk_stats_bulk(
                 }
                 apfs_size::EntryKind::Other => {}
             }
+            Ok(())
+        }) {
+            Ok(()) => {}
+            Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Unsupported)) => {
+                return Err(BulkWalkError::Unsupported);
+            }
+            Err(apfs_size::BulkVisitError::Bulk(apfs_size::BulkError::Io(error))) => {
+                return Err(BulkWalkError::Failed(
+                    anyhow::Error::new(error)
+                        .context(format!("cannot measure {}", directory.display())),
+                ));
+            }
+            Err(apfs_size::BulkVisitError::Visitor(BulkVisitStop::Stopped(stopped))) => {
+                return Ok((Some(stopped), Size::default(), None));
+            }
+            Err(apfs_size::BulkVisitError::Visitor(BulkVisitStop::Failed(error))) => {
+                return Err(BulkWalkError::Failed(error));
+            }
         }
     }
-    Ok((usage.size(bytes), newest))
+    Ok((None, usage.size(bytes), newest))
 }
 
-fn walk_stats_walkdir(
+fn walk_stats_walkdir<S>(
     path: &Path,
     mut usage: DiskUsage,
-) -> Result<(Size, Option<std::time::SystemTime>)> {
+    mut inspect: impl FnMut(Option<&Path>, &OsStr, usize) -> Option<S>,
+) -> Result<(Option<S>, Size, Option<std::time::SystemTime>)> {
     let mut bytes = 0u64;
     let mut newest = Some(std::time::SystemTime::UNIX_EPOCH);
     for entry in walkdir::WalkDir::new(path)
@@ -2294,6 +2576,11 @@ fn walk_stats_walkdir(
         .follow_root_links(false)
     {
         let entry = entry.with_context(|| format!("cannot measure {}", path.display()))?;
+        if entry.depth() > 0
+            && let Some(stopped) = inspect(entry.path().parent(), entry.file_name(), entry.depth())
+        {
+            return Ok((Some(stopped), Size::default(), None));
+        }
         if entry.file_type().is_file() {
             let metadata = entry
                 .metadata()
@@ -2312,7 +2599,7 @@ fn walk_stats_walkdir(
                 .ok_or_else(|| anyhow::anyhow!("size overflow under {}", path.display()))?;
         }
     }
-    Ok((usage.size(bytes), newest))
+    Ok((None, usage.size(bytes), newest))
 }
 
 /// Process names that protect the repository holding their working directory, as `pgrep -x` reads
@@ -2368,7 +2655,22 @@ fn build_process_pids() -> Result<BTreeSet<u32>> {
     .collect())
 }
 
-pub(crate) fn build_process_cwds() -> Result<Vec<PathBuf>> {
+/// A build process's working directory: the device `lsof` reports for the
+/// directory itself (when present) and the decoded absolute path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ProcessCwd {
+    pub(crate) dev: Option<u64>,
+    pub(crate) path: PathBuf,
+}
+
+impl ProcessCwd {
+    #[cfg(test)]
+    pub(crate) fn from_path(path: PathBuf) -> Self {
+        Self { dev: None, path }
+    }
+}
+
+pub(crate) fn build_process_cwds() -> Result<Vec<ProcessCwd>> {
     let pids = build_process_pids()?;
     if pids.is_empty() {
         return Ok(Vec::new());
@@ -2389,11 +2691,35 @@ fn lsof_pid_list<'a>(pids: impl IntoIterator<Item = &'a u32>) -> String {
 fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
     let pid_list = lsof_pid_list(pids);
     let lsof = probe_output(
-        Command::new("lsof").args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "n"]),
+        Command::new("lsof").args(["-a", "-p", &pid_list, "-d", "cwd", "-F", "fDn"]),
         PROBE_TIMEOUT,
         "build-process cwd probe",
     )?;
     parse_lsof_cwds(&lsof.stdout, lsof.status.code())
+}
+
+/// A file a process has mapped for execution: the device `lsof` reports for
+/// the file itself, and the name it gives it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct MappedExecutable {
+    pub(crate) dev: u64,
+    pub(crate) path: PathBuf,
+}
+
+/// The source the volume holding `path` was mounted from — `/dev/disk3s5`
+/// for the data volume, `server:/export` for a network share — as `statfs`
+/// reports it.
+pub(crate) fn volume_mount_source(path: &Path) -> Result<OsString> {
+    let stats = rustix::fs::statfs(path)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot read the volume of {}", path.display()))?;
+    let source = stats
+        .f_mntfromname
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect::<Vec<_>>();
+    Ok(OsString::from_vec(source))
 }
 
 /// Every file a process has mapped for execution — its program and each library
@@ -2402,32 +2728,37 @@ fn lsof_cwds_of(pids: &BTreeSet<u32>) -> Result<LsofCwds> {
 /// A long-lived agent keeps running the release it started from after an
 /// upgrade moves `current`, and spawns helpers from that same directory by path,
 /// so a release a process is still executing is not obsolete. `lsof -d txt` over
-/// the whole system exits 0 when it lists anything; any other status, or a name
-/// it escapes ambiguously, refuses. Processes of other users are invisible to
-/// it, which is the same limit the build-process probe has.
-pub(crate) fn executable_mappings() -> Result<Vec<PathBuf>> {
-    // lsof after 4.93.2 omits `f` unless requested; the parser needs it to
-    // reject a mapped file whose name is missing.
+/// the whole system exits 0 when it lists anything; any other status, a missing
+/// device, or a name it escapes ambiguously refuses. Processes of other users
+/// are invisible to it, which is the same limit the build-process probe has.
+pub(crate) fn executable_mappings() -> Result<Vec<MappedExecutable>> {
+    // lsof after 4.93.2 omits `f` unless requested; the parser needs `f` and
+    // `D` to reject a mapped file whose name or device is missing.
     let lsof = probe_output(
-        Command::new("lsof").args(["-w", "-d", "txt", "-F", "fn"]),
+        Command::new("lsof").args(["-w", "-d", "txt", "-F", "fDn"]),
         PROBE_TIMEOUT,
         "executable-mapping probe",
     )?;
     parse_lsof_mappings(&lsof.stdout, lsof.status.code())
 }
 
-pub(crate) fn parse_lsof_mappings(output: &[u8], exit_code: Option<i32>) -> Result<Vec<PathBuf>> {
+pub(crate) fn parse_lsof_mappings(
+    output: &[u8],
+    exit_code: Option<i32>,
+) -> Result<Vec<MappedExecutable>> {
     match exit_code {
         Some(0) => {}
         Some(code) => bail!("lsof executable-mapping probe exited with status {code}"),
         None => bail!("lsof executable-mapping probe terminated without an exit status"),
     }
-    // Every mapping is `p` (once per process), then `f`, then its `n`. A
-    // mapping whose name is missing or not an absolute path could be any file,
-    // including one inside the release being judged, so it fails the probe.
+    // Every mapping is `p` (once per process), then `f`, then `D` (device,
+    // hexadecimal), then its `n`. A mapping whose device or name is missing or
+    // not an absolute path could be any file, including one inside the release
+    // being judged, so it fails the probe.
     let mut in_process = false;
     let mut awaiting_name = false;
-    let mut paths = Vec::new();
+    let mut device: Option<&[u8]> = None;
+    let mut mappings = Vec::new();
     for line in output.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         match line.first() {
@@ -2437,12 +2768,20 @@ pub(crate) fn parse_lsof_mappings(output: &[u8], exit_code: Option<i32>) -> Resu
                     bail!("lsof reported an executable mapping without a name");
                 }
                 in_process = true;
+                device = None;
             }
             Some(b'f') => {
                 if !in_process || awaiting_name {
                     bail!("lsof reported an executable mapping without a name or process");
                 }
                 awaiting_name = true;
+                device = None;
+            }
+            Some(b'D') => {
+                if !awaiting_name || device.is_some() {
+                    bail!("lsof reported an executable-mapping device outside a mapping");
+                }
+                device = Some(&line[1..]);
             }
             Some(b'n') => {
                 if !awaiting_name {
@@ -2452,7 +2791,18 @@ pub(crate) fn parse_lsof_mappings(output: &[u8], exit_code: Option<i32>) -> Resu
                 if !name.starts_with(b"/") {
                     bail!("lsof reported a mapped path that is not absolute");
                 }
-                paths.push(PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)));
+                let dev = device
+                    .take()
+                    .and_then(|raw| std::str::from_utf8(raw).ok())
+                    .and_then(|raw| raw.strip_prefix("0x"))
+                    .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("lsof gave no valid device for an executable mapping")
+                    })?;
+                mappings.push(MappedExecutable {
+                    dev,
+                    path: PathBuf::from(OsString::from_vec(decode_lsof_name(name)?)),
+                });
                 awaiting_name = false;
             }
             Some(_) => bail!("lsof returned an unexpected executable-mapping field"),
@@ -2462,19 +2812,19 @@ pub(crate) fn parse_lsof_mappings(output: &[u8], exit_code: Option<i32>) -> Resu
         bail!("lsof reported an executable mapping without a name");
     }
     // devtrim itself maps its own binary, so an empty answer is a failed probe.
-    if paths.is_empty() {
+    if mappings.is_empty() {
         bail!("lsof reported no executable mappings, not even its own");
     }
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
+    mappings.sort();
+    mappings.dedup();
+    Ok(mappings)
 }
 
-/// Working directories `lsof -F n` reported, the processes it reported them
+/// Working directories `lsof -F fDn` reported, the processes it reported them
 /// for, and whether it reported every process it was asked about (exit 0).
 #[derive(Debug)]
 pub(crate) struct LsofCwds {
-    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) paths: Vec<ProcessCwd>,
     pub(crate) reported: BTreeSet<u32>,
     pub(crate) complete: bool,
 }
@@ -2503,7 +2853,7 @@ fn resolve_build_process_cwds(
     lsof: LsofCwds,
     mut running_now: impl FnMut() -> Result<BTreeSet<u32>>,
     mut cwds_of: impl FnMut(&BTreeSet<u32>) -> Result<LsofCwds>,
-) -> Result<Vec<PathBuf>> {
+) -> Result<Vec<ProcessCwd>> {
     let mut asked = requested.clone();
     let mut answer = lsof;
     let mut reported = BTreeSet::new();
@@ -2783,42 +3133,84 @@ pub(crate) fn parse_lsof_cwds(output: &[u8], exit_code: Option<i32>) -> Result<L
     let mut reported = BTreeSet::new();
     // The process whose fields follow, and whether it has named a cwd yet.
     let mut current: Option<(u32, bool)> = None;
+    let mut awaiting_name = false;
+    let mut device: Option<&[u8]> = None;
     for line in output.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if let Some(pid) = line.strip_prefix(b"p") {
-            if let Some((previous, false)) = current {
-                bail!("lsof reported process {previous} without a cwd");
+        match line.first() {
+            None => continue,
+            Some(b'p') => {
+                if awaiting_name {
+                    bail!("lsof reported a cwd entry without a name");
+                }
+                if let Some((previous, false)) = current {
+                    bail!("lsof reported process {previous} without a cwd");
+                }
+                let pid = &line[1..];
+                let pid = std::str::from_utf8(pid)
+                    .ok()
+                    .and_then(|pid| pid.parse::<u32>().ok())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "lsof returned invalid pid `{}`",
+                            String::from_utf8_lossy(pid)
+                        )
+                    })?;
+                if !reported.insert(pid) {
+                    bail!("lsof reported process {pid} twice");
+                }
+                current = Some((pid, false));
+                awaiting_name = false;
+                device = None;
             }
-            let pid = std::str::from_utf8(pid)
-                .ok()
-                .and_then(|pid| pid.parse::<u32>().ok())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "lsof returned invalid pid `{}`",
-                        String::from_utf8_lossy(pid)
-                    )
-                })?;
-            if !reported.insert(pid) {
-                bail!("lsof reported process {pid} twice");
+            Some(b'f') => {
+                if current.is_none() || awaiting_name {
+                    bail!("lsof reported a cwd descriptor without a process or name");
+                }
+                awaiting_name = true;
+                device = None;
             }
-            current = Some((pid, false));
-            continue;
+            Some(b'D') => {
+                if current.is_none() || device.is_some() {
+                    bail!("lsof reported a cwd device outside a cwd entry");
+                }
+                device = Some(&line[1..]);
+            }
+            Some(b'n') => {
+                let Some((pid, _)) = current else {
+                    bail!("lsof returned a cwd before naming its process");
+                };
+                let path = &line[1..];
+                if path.is_empty() {
+                    bail!("lsof returned an empty cwd path");
+                }
+                let dev = match device.take() {
+                    Some(raw) => Some(
+                        std::str::from_utf8(raw)
+                            .ok()
+                            .and_then(|raw| raw.strip_prefix("0x"))
+                            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "lsof gave no valid device for build process {pid} cwd"
+                                )
+                            })?,
+                    ),
+                    None => None,
+                };
+                let path = PathBuf::from(OsString::from_vec(decode_lsof_name(path)?));
+                if !path.is_absolute() {
+                    bail!("lsof could not name an absolute cwd for build process {pid}");
+                }
+                paths.push(ProcessCwd { dev, path });
+                current = Some((pid, true));
+                awaiting_name = false;
+            }
+            Some(_) => bail!("lsof returned an unexpected cwd field"),
         }
-        let Some(path) = line.strip_prefix(b"n") else {
-            continue;
-        };
-        let Some((pid, _)) = current else {
-            bail!("lsof returned a cwd before naming its process");
-        };
-        if path.is_empty() {
-            bail!("lsof returned an empty cwd path");
-        }
-        let path = PathBuf::from(OsString::from_vec(decode_lsof_name(path)?));
-        if !path.is_absolute() {
-            bail!("lsof could not name an absolute cwd for build process {pid}");
-        }
-        paths.push(path);
-        current = Some((pid, true));
+    }
+    if awaiting_name {
+        bail!("lsof reported a cwd entry without a name");
     }
     if let Some((pid, false)) = current {
         bail!("lsof reported process {pid} without a cwd");
@@ -2969,6 +3361,34 @@ mod tests {
         let size = file_size(&std::fs::symlink_metadata(&file).unwrap(), &file).unwrap();
         assert!(about(1).contains(&size.allocated));
         assert_eq!(size.frees_at_least, Some(0), "{size:?}");
+    }
+
+    #[test]
+    fn measure_lenient_respects_skip_counts_unread_and_deduplicates_hard_links() {
+        let fixture = crate::ops::TestFixture::new("devtrim-measure-lenient");
+        let root = fixture.path().join("tree");
+        let skipped = root.join("nested-worktree");
+        std::fs::create_dir_all(root.join("keep")).unwrap();
+        std::fs::create_dir_all(&skipped).unwrap();
+        let kept_file = root.join("keep/data.bin");
+        std::fs::write(&kept_file, vec![b'k'; 64 * 1024]).unwrap();
+        std::fs::hard_link(&kept_file, root.join("keep/alias.bin")).unwrap();
+        std::fs::write(skipped.join("ignored.bin"), vec![b's'; 256 * 1024]).unwrap();
+        let _sealed = crate::ops::Unreadable::new(&root.join("locked"), 0o000);
+
+        let mut skip = BTreeSet::new();
+        skip.insert(skipped);
+        let measured = measure_lenient(&root, &skip);
+        let expected_bytes =
+            allocated_bytes(&std::fs::symlink_metadata(&kept_file).unwrap(), &kept_file).unwrap();
+        assert_eq!(measured.bytes, expected_bytes);
+        assert_eq!(measured.unread, 1);
+
+        let link = fixture.path().join("tree-link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let mut skip_via_link = BTreeSet::new();
+        skip_via_link.insert(link.join("nested-worktree"));
+        assert_eq!(measure_lenient(&link, &skip_via_link).bytes, expected_bytes);
     }
 
     /// A tree holding a file and its clone allocates two copies, a further
@@ -3971,13 +4391,26 @@ mod tests {
         assert!(parse_pgrep_pids(b"not-a-pid\n", Some(0)).is_err());
         assert!(parse_pgrep_pids(b"", Some(2)).is_err());
 
-        let cwds = parse_lsof_cwds(b"p12\nfcwd\nn/tmp/a\np34\nfcwd\nn/tmp/b\n", Some(0)).unwrap();
+        let cwds = parse_lsof_cwds(
+            b"p12\nfcwd\nD0x1000004\nn/tmp/a\np34\nfcwd\nD0x1000005\nn/tmp/b\n",
+            Some(0),
+        )
+        .unwrap();
         assert_eq!(
             cwds.paths,
-            vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
+            vec![
+                ProcessCwd {
+                    dev: Some(0x1000004),
+                    path: PathBuf::from("/tmp/a"),
+                },
+                ProcessCwd {
+                    dev: Some(0x1000005),
+                    path: PathBuf::from("/tmp/b"),
+                },
+            ]
         );
         assert_eq!(cwds.reported.into_iter().collect::<Vec<_>>(), vec![12, 34]);
-        assert!(cwds_complete_was(b"p12\nfcwd\nn/tmp/a\n", 0));
+        assert!(cwds_complete_was(b"p12\nfcwd\nD0x1\nn/tmp/a\n", 0));
         let gone = parse_lsof_cwds(b"", Some(1)).unwrap();
         assert!(gone.paths.is_empty() && gone.reported.is_empty() && !gone.complete);
         assert!(parse_lsof_cwds(b"", Some(0)).is_err());
@@ -3990,6 +4423,11 @@ mod tests {
             b"p12\nn/tmp/a\np12\nn/tmp/b\n",
             b"px\nn/tmp/a\n",
             b"p\nn/tmp/a\n",
+            b"p12\nfcwd\nDnothex\nn/tmp/a\n",
+            b"p12\nfcwd\nD0x1\nD0x2\nn/tmp/a\n",
+            b"D0x1\np12\nn/tmp/a\n",
+            b"p12\nfcwd\nfcwd\nn/tmp/a\n",
+            b"p12\nfcwd\nn/tmp/a\nfcwd\n",
         ] {
             assert!(
                 parse_lsof_cwds(malformed, Some(0)).is_err(),
@@ -4013,7 +4451,10 @@ mod tests {
         let cwds =
             resolve_build_process_cwds(&pid_set(&[12, 34]), lsof(), || Ok(pid_set(&[12])), unused)
                 .unwrap();
-        assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+        assert_eq!(
+            cwds,
+            vec![ProcessCwd::from_path(PathBuf::from("/work/live"))]
+        );
 
         // An exit 0 that leaves a running PID out proves nothing about it.
         let silent = || parse_lsof_cwds(b"p12\nfcwd\nn/work/live\n", Some(0)).unwrap();
@@ -4068,7 +4509,10 @@ mod tests {
         let cwds =
             resolve_build_process_cwds(&pid_set(&[12]), complete, || Ok(BTreeSet::new()), unused)
                 .unwrap();
-        assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+        assert_eq!(
+            cwds,
+            vec![ProcessCwd::from_path(PathBuf::from("/work/live"))]
+        );
     }
 
     #[test]
@@ -4091,8 +4535,8 @@ mod tests {
         assert_eq!(
             cwds,
             vec![
-                PathBuf::from("/work/live"),
-                PathBuf::from("/work/next-step")
+                ProcessCwd::from_path(PathBuf::from("/work/live")),
+                ProcessCwd::from_path(PathBuf::from("/work/next-step")),
             ]
         );
 
@@ -4113,7 +4557,10 @@ mod tests {
             |_| parse_lsof_cwds(b"", Some(1)),
         )
         .unwrap();
-        assert_eq!(cwds, vec![PathBuf::from("/work/live")]);
+        assert_eq!(
+            cwds,
+            vec![ProcessCwd::from_path(PathBuf::from("/work/live"))]
+        );
 
         // The successor is still running but its directory could not be read.
         let error = resolve_build_process_cwds(
@@ -4173,12 +4620,20 @@ mod tests {
         let parsed = lsof_cwds_of(&requested).unwrap();
         assert!(!parsed.complete, "control: lsof must exit 1 here");
         let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let cwd_dev = std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(&cwd).unwrap());
         let no_successor = |_: &BTreeSet<u32>| -> Result<LsofCwds> { bail!("unexpected lookup") };
 
         let cwds =
             resolve_build_process_cwds(&requested, parsed, || Ok(pid_set(&[this])), no_successor)
                 .unwrap();
-        assert!(cwds.contains(&cwd), "{cwds:?} lacks {}", cwd.display());
+        assert!(
+            cwds.contains(&ProcessCwd {
+                dev: Some(cwd_dev),
+                path: cwd.clone(),
+            }),
+            "{cwds:?} lacks {} on dev 0x{cwd_dev:x}",
+            cwd.display()
+        );
 
         // Control: had the exited PID still been running, the same output refuses.
         let parsed = lsof_cwds_of(&requested).unwrap();
@@ -4321,25 +4776,43 @@ mod tests {
     #[test]
     fn executable_mappings_refuse_any_mapping_they_cannot_name() {
         let parsed = parse_lsof_mappings(
-            b"p1\nftxt\nn/a\nftxt\nn/b\np2\nftxt\nn/c\nftxt\nn/a\n",
+            b"p1\nftxt\nD0x10\nn/a\nftxt\nD0x20\nn/b\np2\nftxt\nD0x10\nn/c\nftxt\nD0x10\nn/a\n",
             Some(0),
         )
         .unwrap();
         assert_eq!(
             parsed,
-            ["/a", "/b", "/c"].map(PathBuf::from).to_vec(),
+            vec![
+                MappedExecutable {
+                    dev: 0x10,
+                    path: PathBuf::from("/a"),
+                },
+                MappedExecutable {
+                    dev: 0x10,
+                    path: PathBuf::from("/c"),
+                },
+                MappedExecutable {
+                    dev: 0x20,
+                    path: PathBuf::from("/b"),
+                },
+            ],
             "control: complete output parses"
         );
         for incomplete in [
             // A second process whose mapping lsof could not name.
-            &b"p1\nftxt\nn/usr/lib/dyld\np2\nftxt\n"[..],
-            b"p1\nftxt\nftxt\nn/a\n",
-            b"p1\nftxt\np2\nftxt\nn/a\n",
-            b"ftxt\nn/a\n",
-            b"p1\nn/a\n",
-            b"p1\nftxt\nnrelative\n",
-            b"p1\nftxt\nn\n",
-            b"p1\nx1\nftxt\nn/a\n",
+            &b"p1\nftxt\nD0x1\nn/usr/lib/dyld\np2\nftxt\n"[..],
+            b"p1\nftxt\nD0x1\nn/usr/lib/dyld\np2\nftxt\nD0x1\n",
+            b"p1\nftxt\nftxt\nD0x1\nn/a\n",
+            b"p1\nftxt\np2\nftxt\nD0x1\nn/a\n",
+            b"ftxt\nD0x1\nn/a\n",
+            b"p1\nD0x1\nn/a\n",
+            b"p1\nftxt\nn/a\n",
+            b"p1\nftxt\nDzz\nn/a\n",
+            b"p1\nftxt\nD16\nn/a\n",
+            b"p1\nftxt\nD0x1\nD0x2\nn/a\n",
+            b"p1\nftxt\nD0x1\nnrelative\n",
+            b"p1\nftxt\nD0x1\nn\n",
+            b"p1\nx1\nftxt\nD0x1\nn/a\n",
             b"",
         ] {
             assert!(
@@ -4348,8 +4821,8 @@ mod tests {
                 String::from_utf8_lossy(incomplete)
             );
         }
-        assert!(parse_lsof_mappings(b"p1\nftxt\nn/a\n", Some(1)).is_err());
-        assert!(parse_lsof_mappings(b"p1\nftxt\nn/a\n", None).is_err());
+        assert!(parse_lsof_mappings(b"p1\nftxt\nD0x1\nn/a\n", Some(1)).is_err());
+        assert!(parse_lsof_mappings(b"p1\nftxt\nD0x1\nn/a\n", None).is_err());
     }
 
     /// The files Xcode holds open are its absolute names with their device. A
@@ -4417,16 +4890,18 @@ mod tests {
         assert_eq!(
             cwds.paths,
             vec![
-                PathBuf::from("/work/a\nb"),
-                PathBuf::from("/work/c\\x41d"),
-                PathBuf::from("/work/uni\u{202e}q"),
-                PathBuf::from("/work/v1^2"),
+                ProcessCwd::from_path(PathBuf::from("/work/a\nb")),
+                ProcessCwd::from_path(PathBuf::from("/work/c\\x41d")),
+                ProcessCwd::from_path(PathBuf::from("/work/uni\u{202e}q")),
+                ProcessCwd::from_path(PathBuf::from("/work/v1^2")),
             ]
         );
     }
 
     #[test]
     fn bulk_walk_matches_walkdir_across_links_clones_and_unreadable_subdirs() {
+        use std::os::unix::fs::MetadataExt;
+
         let fixture = crate::ops::TestFixture::new("devtrim-bulk-parity");
         let root = fixture.path().to_path_buf();
         std::fs::create_dir_all(root.join("nested")).unwrap();
@@ -4435,25 +4910,102 @@ mod tests {
         std::fs::hard_link(&source, root.join("hardlink.bin")).unwrap();
         std::os::unix::fs::symlink(&source, root.join("symlink.bin")).unwrap();
 
+        let root_dev = std::fs::symlink_metadata(&root).unwrap().dev();
         let mut bulk_usage = DiskUsage::estimating();
-        let (bulk_size, bulk_newest) = match walk_stats_bulk(&root, &mut bulk_usage) {
-            Ok(result) => result,
-            Err(BulkWalkError::Unsupported) => {
-                panic!("macOS APFS test root unexpectedly returned BulkWalkError::Unsupported")
-            }
-            Err(BulkWalkError::Failed(error)) => panic!("bulk walk failed: {error:#}"),
-        };
-        let (ref_size, ref_newest) = walk_stats_walkdir(&root, DiskUsage::estimating()).unwrap();
+        let (stopped, bulk_size, bulk_newest) =
+            match walk_stats_bulk(&root, root_dev, &mut bulk_usage, true, |_, _, _| {
+                None::<std::convert::Infallible>
+            }) {
+                Ok(result) => result,
+                Err(BulkWalkError::Unsupported) => {
+                    panic!("macOS APFS test root unexpectedly returned BulkWalkError::Unsupported")
+                }
+                Err(BulkWalkError::Failed(error)) => panic!("bulk walk failed: {error:#}"),
+            };
+        assert!(stopped.is_none());
+        let (walkdir_stopped, ref_size, ref_newest) =
+            walk_stats_walkdir(&root, DiskUsage::estimating(), |_, _, _| {
+                None::<std::convert::Infallible>
+            })
+            .unwrap();
+        assert!(walkdir_stopped.is_none());
         assert_eq!(bulk_size, ref_size);
         assert_eq!(bulk_newest, ref_newest);
+        assert_eq!(dir_size(&root).unwrap(), ref_size.allocated);
+        assert_eq!(dir_stats(&root).unwrap(), (ref_size, ref_newest));
 
         let sealed = crate::ops::Unreadable::new(&root.join("sealed"), 0o000);
         let mut denied_usage = DiskUsage::default();
-        let denied = walk_stats_bulk(&root, &mut denied_usage);
+        let denied = walk_stats_bulk(&root, root_dev, &mut denied_usage, false, |_, _, _| {
+            None::<std::convert::Infallible>
+        });
         drop(sealed);
         assert!(
             matches!(denied, Err(BulkWalkError::Failed(_))),
             "unreadable subdirectory must fail closed"
+        );
+    }
+
+    #[test]
+    fn dir_stats_under_snapshot_uses_stats_no_private_and_preserves_newest_mtime() {
+        let fixture = crate::ops::TestFixture::new("devtrim-stats-snapshot");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let source = tree.join("source");
+        write_incompressible(&source);
+        clone_file(&source, &tree.join("clone"));
+        let expected_mtime = std::fs::symlink_metadata(tree.join("clone"))
+            .unwrap()
+            .modified()
+            .unwrap()
+            .max(
+                std::fs::symlink_metadata(&source)
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+            );
+
+        let _snapshot = AssumeSnapshotFree::new(false);
+        let (stopped, size, newest) =
+            walk_stats_while(&tree, DiskUsage::estimating(), true, |_, _, _| None::<()>).unwrap();
+        assert_eq!(stopped, None);
+        assert_eq!(size.allocated, du_bytes(&tree));
+        assert_eq!(size.frees_at_least, None);
+        assert_eq!(newest, Some(expected_mtime));
+    }
+
+    #[test]
+    fn add_bulk_cross_mount_fallback_queries_file_blocks_when_trusted() {
+        use std::os::unix::fs::MetadataExt;
+
+        let fixture = crate::ops::TestFixture::new("devtrim-cross-mount-fallback");
+        let tree = fixture.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let source = fixture.path().join("store");
+        write_incompressible(&source);
+        let installed = tree.join("installed");
+        clone_file(&source, &installed);
+        let metadata = std::fs::symlink_metadata(&installed).unwrap();
+
+        let _trust = AssumeSnapshotFree::new(true);
+        let mut usage = DiskUsage::estimating();
+        let entry = apfs_size::BulkEntryRef {
+            name: OsStr::new("installed"),
+            kind: apfs_size::EntryKind::File,
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            nlink: 1,
+            allocated: metadata.blocks() * 512,
+            private: None,
+            modified: None,
+            mountpoint: false,
+        };
+        let allocated = usage.add_bulk(entry, &tree, apfs_size::BulkMode::SizeOnly);
+        let size = usage.size(allocated);
+        assert_eq!(size.allocated, metadata.blocks() * 512);
+        assert!(
+            size.frees_at_least
+                .is_some_and(|bytes| bytes < CLONED_FILE / 10)
         );
     }
 

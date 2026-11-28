@@ -324,6 +324,24 @@ Non-negotiable boundaries:
   collisions; the residual window is the same local same-UID container-name
   lookup (`buildx_buildkit_<node>`) that Docker Buildx's CLI driver performs on
   the verified local Unix socket.
+- Every `docker` path devtrim trusts (`DOCKER_CONFIG`, its `contexts` and
+  `buildx` state, every CLI plugin directory and plugin, and the scan
+  snapshot's parent) is walked component by component, following links, and
+  each folder and leaf must be owned by the current user or root, carry no
+  ACL `allow` entry granting write, sit on a volume that honours ownership,
+  and be writable by no other account. World write refuses unless the sticky
+  bit is set where a sticky leaf is allowed; group write is trusted only for
+  `wheel` (gid 0) and `admin` (gid 80), whose members can already act as
+  root, which is how Homebrew lays out `/opt/homebrew` and macOS lays out
+  `/Applications`. A plugin link whose target is missing (an uninstalled
+  OrbStack or Docker Desktop) is no plugin only when every existing folder on
+  its way passes the same checks and the missing entry is not directly in
+  `/Volumes` (judged by device and inode, so `/volumes` and the Data-volume
+  firmlink count too), where any local user can mount a disk. The scan snapshot is a
+  reused `0700` directory holding only its `config.json`, the verified state
+  links, and, where there is no source state to link, the `contexts` or
+  `buildx` directory Docker creates there itself, accepted only as a real,
+  user-owned directory writable by nobody else by mode or ACL.
 - A permanent removal refuses, before removing anything, a tree holding a
   folder without write and search permission, since it would otherwise stop
   part-way. The one exception is a direct Trash child in `trash-empty`, whose

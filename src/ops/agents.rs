@@ -352,12 +352,92 @@ impl CodexReleases {
     }
 }
 
-/// Whether any of `mappings` lies inside the directory `path`.
-fn executes(mappings: &[PathBuf], path: &Path) -> Result<bool> {
+/// Whether any of `mappings` lies inside the directory `path`, failing closed
+/// when `lsof` emits an unresolved mount fallback on `path`'s volume and
+/// matching alternate firmlink, symlink, or case spellings by `(dev, ino)`
+/// identity.
+fn executes(mappings: &[crate::safety::MappedExecutable], path: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
     let canonical = path
         .canonicalize()
         .with_context(|| format!("cannot resolve {}", path.display()))?;
-    Ok(mappings.iter().any(|mapped| mapped.starts_with(&canonical)))
+    let wanted =
+        fs::metadata(&canonical).with_context(|| format!("cannot inspect {}", path.display()))?;
+    let wanted_identity = (wanted.dev(), wanted.ino());
+    let same_volume = mappings
+        .iter()
+        .filter(|mapped| mapped.dev == wanted.dev())
+        .collect::<Vec<_>>();
+    if !same_volume.is_empty() {
+        let fallback = format!(
+            " ({})",
+            crate::safety::volume_mount_source(&canonical)?.to_string_lossy()
+        );
+        if let Some(mapped) = same_volume.iter().find(|mapped| {
+            mapped
+                .path
+                .as_os_str()
+                .as_encoded_bytes()
+                .ends_with(fallback.as_bytes())
+        }) {
+            anyhow::bail!(
+                "lsof could not name an executing file on this volume (`{}`), so whether it lies in {} is unknown",
+                mapped.path.display(),
+                path.display()
+            );
+        }
+    }
+    if same_volume
+        .iter()
+        .any(|mapped| mapped.path.starts_with(path) || mapped.path.starts_with(&canonical))
+    {
+        return Ok(true);
+    }
+    executed_by_identity(wanted_identity, &same_volume)
+}
+
+/// Whether a mapped executable lies in `wanted` under another spelling: the
+/// kernel can name it through a link, a case variant on APFS, or through the
+/// `/System/Volumes/Data` firmlink that `realpath` keeps as given. Each mapped
+/// path's release directory candidate — the path up to the component after each
+/// `releases` in it — is looked up and compared with `wanted` by device and
+/// inode. One that no longer exists names no folder; any other failure refuses.
+fn executed_by_identity(
+    wanted: (u64, u64),
+    mappings: &[&crate::safety::MappedExecutable],
+) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    for mapped in mappings {
+        let components = mapped.path.components().collect::<Vec<_>>();
+        for (index, component) in components.iter().enumerate() {
+            let is_releases = match component.as_os_str().to_str() {
+                Some(text) => crate::ops::artifacts::fold_apfs_ascii(text) == "releases",
+                None => component.as_os_str().eq_ignore_ascii_case("releases"),
+            };
+            if !is_releases || index + 1 >= components.len() {
+                continue;
+            }
+            let child = components[..=index + 1].iter().collect::<PathBuf>();
+            match fs::metadata(&child) {
+                Ok(metadata) if (metadata.dev(), metadata.ino()) == wanted => {
+                    return Ok(true);
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "cannot inspect the folder of an executing file {}",
+                            child.display()
+                        )
+                    });
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn codex_package_version(path: &Path) -> Result<Option<[u64; 3]>> {
@@ -744,7 +824,7 @@ impl Agents {
         &self,
         ctx: &Ctx,
         _observations: &super::project::ScanObservations,
-        mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
+        mappings: &dyn Fn() -> Result<Vec<crate::safety::MappedExecutable>>,
     ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         // A configuration that cannot be judged withholds only the homes it
@@ -831,7 +911,7 @@ impl Agents {
         &self,
         ctx: &Ctx,
         codex: &Path,
-        mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
+        mappings: &dyn Fn() -> Result<Vec<crate::safety::MappedExecutable>>,
     ) -> Vec<Finding> {
         let suffix = codex_home_suffix(codex, &ctx.home);
         let release_findings = (|| -> Result<Vec<Finding>> {
@@ -892,7 +972,7 @@ impl Agents {
         &self,
         findings: &[Finding],
         ctx: &Ctx,
-        mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
+        mappings: &dyn Fn() -> Result<Vec<crate::safety::MappedExecutable>>,
     ) -> Result<ApplyOutcome> {
         let mut outcome = ApplyOutcome::new(self.name());
         // Read again, never taken from the preview. A configuration that
@@ -970,7 +1050,7 @@ fn authorize(
     ctx: &Ctx,
     extra: &[PathBuf],
     releases: Option<&CodexReleases>,
-    mappings: &dyn Fn() -> Result<Vec<PathBuf>>,
+    mappings: &dyn Fn() -> Result<Vec<crate::safety::MappedExecutable>>,
 ) -> Result<()> {
     if is_regenerable_target(target, &ctx.home, extra) {
         return Ok(());
@@ -1489,10 +1569,17 @@ mod tests {
     }
 
     /// Idles when re-invoked from inside a fixture release; see `execute_from`.
+    /// It runs until the test kills it, or exits once its parent is gone: a
+    /// fixed lifetime ended it mid-test on a busy host, where each system-wide
+    /// `lsof` takes tens of seconds, and apply then rightly removed a release
+    /// nothing executed any more.
     #[test]
     #[ignore = "re-invoked as a child process by execute_from"]
     fn codex_release_resident_child() {
-        std::thread::sleep(Duration::from_secs(60));
+        let parent = std::os::unix::process::parent_id();
+        while std::os::unix::process::parent_id() == parent {
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
 
     /// Runs a real program from inside `release`, as an agent started before an
@@ -1515,9 +1602,11 @@ mod tests {
         // itself asserts what a refusal does.
         let canonical = release.canonicalize().unwrap();
         for _ in 0..100 {
-            if crate::safety::executable_mappings()
-                .is_ok_and(|mappings| mappings.iter().any(|mapped| mapped.starts_with(&canonical)))
-            {
+            if crate::safety::executable_mappings().is_ok_and(|mappings| {
+                mappings
+                    .iter()
+                    .any(|mapped| mapped.path.starts_with(&canonical))
+            }) {
                 return child;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -1530,7 +1619,7 @@ mod tests {
 
     /// No process executes anything: the probe for fixtures that do not test
     /// liveness, so the host's own processes cannot decide their outcome.
-    fn idle() -> Result<Vec<PathBuf>> {
+    fn idle() -> Result<Vec<crate::safety::MappedExecutable>> {
         Ok(Vec::new())
     }
 
@@ -1574,13 +1663,32 @@ mod tests {
 
     /// A probe that reports the release's `codex-path/rg` mapped while
     /// `running` is set, as `lsof` reports a program started from it.
-    fn mapping_while(running: &Cell<bool>, release: &Path) -> impl Fn() -> Result<Vec<PathBuf>> {
-        let program = release.canonicalize().unwrap().join("codex-path/rg");
+    fn mapping_while(
+        running: &Cell<bool>,
+        release: &Path,
+    ) -> impl Fn() -> Result<Vec<crate::safety::MappedExecutable>> {
+        use std::os::unix::fs::MetadataExt;
+
+        let canonical = release.canonicalize().unwrap();
+        let dev = std::fs::metadata(&canonical).unwrap().dev();
+        let program = canonical.join("codex-path/rg");
         move || {
             Ok(if running.get() {
-                vec![PathBuf::from("/usr/lib/dyld"), program.clone()]
+                vec![
+                    crate::safety::MappedExecutable {
+                        dev,
+                        path: PathBuf::from("/usr/lib/dyld"),
+                    },
+                    crate::safety::MappedExecutable {
+                        dev,
+                        path: program.clone(),
+                    },
+                ]
             } else {
-                vec![PathBuf::from("/usr/lib/dyld")]
+                vec![crate::safety::MappedExecutable {
+                    dev,
+                    path: PathBuf::from("/usr/lib/dyld"),
+                }]
             })
         }
     }
@@ -1684,7 +1792,10 @@ mod tests {
         let calls = Cell::new(0usize);
         let probe = || {
             calls.set(calls.get() + 1);
-            Ok(vec![PathBuf::from("/usr/lib/dyld")])
+            Ok(vec![crate::safety::MappedExecutable {
+                dev: 0,
+                path: PathBuf::from("/usr/lib/dyld"),
+            }])
         };
         let mut plan = Agents
             .scan_with_mappings(&ctx, &ScanObservations::default(), &probe)
@@ -1741,6 +1852,164 @@ mod tests {
         crate::ops::remove_test_path(home);
     }
 
+    #[test]
+    fn a_mount_fallback_mapping_refuses_on_same_volume_and_ignores_other_volumes() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (_fixture, home, old) = codex_home("mount-fallback");
+        let ctx = test_ctx(home.clone());
+        let canonical = old.canonicalize().unwrap();
+        let wanted_dev = std::fs::metadata(&canonical).unwrap().dev();
+        let mount_source = crate::safety::volume_mount_source(&canonical)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let fallback_path = PathBuf::from(format!("/System/Volumes/Data ({mount_source})"));
+
+        // Mount fallback on a different device must not refuse cleanup.
+        let foreign_probe = || {
+            Ok(vec![crate::safety::MappedExecutable {
+                dev: wanted_dev.wrapping_add(1),
+                path: fallback_path.clone(),
+            }])
+        };
+        let mut plan = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &foreign_probe)
+            .unwrap();
+        plan.retain(|finding| finding.target() == Some(old.as_path()));
+        assert_eq!(
+            plan.len(),
+            1,
+            "mount fallback on another device must not withhold the release"
+        );
+        plan[0].action = Action::Shred;
+
+        // Mount fallback on the release's own device must refuse both scan and apply.
+        let same_volume_probe = || {
+            Ok(vec![crate::safety::MappedExecutable {
+                dev: wanted_dev,
+                path: fallback_path.clone(),
+            }])
+        };
+        let findings = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &same_volume_probe)
+            .unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.target() == Some(old.as_path())),
+            "mount fallback on target volume offered the release"
+        );
+        assert!(
+            findings.iter().any(|finding| finding
+                .scan_error()
+                .is_some_and(|error| error.contains("could not name an executing file"))),
+            "mount fallback on target volume must surface as a scan error: {findings:?}"
+        );
+        let outcome = Agents
+            .apply_with_mappings(&plan, &ctx, &same_volume_probe)
+            .unwrap();
+        assert_eq!(outcome.summary.items_touched, 0);
+        assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
+        assert!(
+            outcome.errors[0].contains("could not name an executing file"),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(
+            old.exists(),
+            "mount fallback on target volume must survive apply"
+        );
+        crate::ops::remove_test_path(home);
+    }
+
+    #[test]
+    fn a_non_canonical_mapping_spelling_is_matched_by_identity_at_scan_and_apply() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (_fixture, home, old) = codex_home("identity-spelling");
+        let ctx = test_ctx(home.clone());
+        let canonical = old.canonicalize().unwrap();
+        let wanted_dev = std::fs::metadata(&canonical).unwrap().dev();
+        let wanted_ino = std::fs::metadata(&canonical).unwrap().ino();
+
+        // Build alternate spellings that resolve to the exact same `(dev, ino)`:
+        // 1. Symlink alias to `home`.
+        let alias_fixture = crate::ops::TestFixture::new("devtrim-codex-alias");
+        std::fs::create_dir_all(alias_fixture.path()).unwrap();
+        let alias_home = alias_fixture.path().join("home-link");
+        symlink(&home, &alias_home).unwrap();
+        let release_name = old.file_name().unwrap();
+        let symlink_program = alias_home
+            .join(CODEX_RELEASES.relative)
+            .join(release_name)
+            .join("codex-path/rg");
+
+        let mut spellings = vec![("symlink", symlink_program)];
+
+        // 2. Case-variant spelling (`.CODEX` / `RELEASES`) when the volume is case-insensitive.
+        let case_release = home
+            .join(".CODEX/packages/standalone/RELEASES")
+            .join(release_name);
+        if std::fs::metadata(&case_release)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == (wanted_dev, wanted_ino))
+        {
+            spellings.push(("case-variant", case_release.join("codex-path/rg")));
+        }
+
+        // 3. `/System/Volumes/Data` firmlink spelling when present on macOS.
+        if let Ok(stripped) = canonical.strip_prefix("/") {
+            let firmlink_release = PathBuf::from("/System/Volumes/Data").join(stripped);
+            if std::fs::metadata(&firmlink_release)
+                .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == (wanted_dev, wanted_ino))
+            {
+                spellings.push(("firmlink", firmlink_release.join("codex-path/rg")));
+            }
+        }
+
+        // Preview while idle so we have an actionable plan to attempt apply against.
+        let mut plan = Agents
+            .scan_with_mappings(&ctx, &ScanObservations::default(), &idle)
+            .unwrap();
+        plan.retain(|finding| finding.target() == Some(old.as_path()));
+        assert_eq!(plan.len(), 1, "control: idle release is offered");
+        plan[0].action = Action::Shred;
+
+        for (label, mapped_program) in spellings {
+            let probe = || {
+                Ok(vec![crate::safety::MappedExecutable {
+                    dev: wanted_dev,
+                    path: mapped_program.clone(),
+                }])
+            };
+            let findings = Agents
+                .scan_with_mappings(&ctx, &ScanObservations::default(), &probe)
+                .unwrap();
+            assert!(
+                !findings
+                    .iter()
+                    .any(|finding| finding.target() == Some(old.as_path())),
+                "{label} spelling offered an executing release"
+            );
+            let outcome = Agents.apply_with_mappings(&plan, &ctx, &probe).unwrap();
+            assert_eq!(
+                outcome.summary.items_touched, 0,
+                "{label} spelling removed an executing release"
+            );
+            assert!(
+                outcome.errors.len() == 1
+                    && outcome.errors[0].contains("still executing in a running process"),
+                "{label}: {:?}",
+                outcome.errors
+            );
+            assert!(
+                old.exists(),
+                "{label} spelling must leave the release intact"
+            );
+        }
+        crate::ops::remove_test_path(home);
+    }
+
     /// What the production paths attach to a failed executable-mapping probe:
     /// the only failure [`a_release_a_real_process_executes_is_refused_through_lsof`]
     /// attributes to the host and retries.
@@ -1794,6 +2063,7 @@ mod tests {
         let mut running = execute_from(&old);
         let (busy, busy_errors) = scan(&ctx);
         let outcome = Agents.apply(&plan, &ctx);
+        let still_running = running.try_wait().unwrap().is_none();
         running.kill().unwrap();
         running.wait().unwrap();
         let outcome = outcome.unwrap();
@@ -1803,6 +2073,10 @@ mod tests {
             return Err(host);
         }
 
+        assert!(
+            still_running,
+            "control: the program executing from the release exited before apply finished"
+        );
         assert!(
             !busy
                 .iter()

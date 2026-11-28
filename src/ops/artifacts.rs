@@ -7,16 +7,18 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::project::{
-    ScanObservations, TrackedIndex, UnreadFolder, activity_window, has_git_marker,
-    is_directory_if_present, iso_days_ago, listed_repositories, nearest_repo, normalized_roots,
-    orphaned_worktree, owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under,
-    unborn_branch, unjudged_finding, unread_folders_finding,
+    ScanObservations, UnreadFolder, activity_window, has_git_marker, is_directory_if_present,
+    iso_days_ago, listed_repositories, nearest_repo, normalized_roots, orphaned_worktree,
+    owning_repo, repo_has_active_build, repo_last_activity, tracks_files_under, unborn_branch,
+    unjudged_finding, unread_folders_finding,
 };
 use super::{
-    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, dir_measure,
-    has_node_modules_ancestor, is_node_modules_name, removal_note,
+    Action, ApplyOutcome, Finding, Op, apply_filesystem_finding, has_node_modules_ancestor,
+    is_node_modules_name, removal_note,
 };
-use crate::safety::{Ctx, build_process_cwds, escalate, is_git_metadata_name};
+use crate::safety::{
+    Ctx, ProcessCwd, Size, build_process_cwds, dir_measure_while, escalate, is_git_metadata_name,
+};
 
 /// The fixed first line of a cache directory tag (<https://bford.info/cachedir/>).
 pub(crate) const CACHEDIR_SIGNATURE: &[u8; 43] = b"Signature: 8a477f597d28d172789f06886806bc55";
@@ -34,19 +36,32 @@ const EXCLUDED_NAMES: &[&str] = &[
 
 pub(crate) struct Artifacts;
 
-#[derive(Debug)]
-struct ArtifactCandidate {
-    path: PathBuf,
-    evidence: ArtifactEvidence,
+enum ArtifactRepoOutcome {
+    Orphaned(usize),
+    Busy(usize),
+    Unborn,
+    Active(usize),
+    Judged {
+        tracked: usize,
+        keypairs: usize,
+        repositories: usize,
+        states: usize,
+    },
 }
 
 #[derive(Debug)]
-struct ArtifactEvidence {
-    label: String,
-    corroboration: String,
+pub(super) struct ArtifactCandidate {
+    pub(super) path: PathBuf,
+    pub(super) evidence: ArtifactEvidence,
+}
+
+#[derive(Debug)]
+pub(super) struct ArtifactEvidence {
+    pub(super) label: String,
+    pub(super) corroboration: String,
     /// How the output comes back, named only where its corroboration says
     /// which tool made it; display only.
-    comes_back_with: Option<&'static str>,
+    pub(super) comes_back_with: Option<&'static str>,
 }
 
 impl Op for Artifacts {
@@ -61,7 +76,7 @@ impl Op for Artifacts {
     fn scan(&self, ctx: &Ctx, observations: &ScanObservations) -> Result<Vec<Finding>> {
         observations.process_cwds()?;
         let cutoff = iso_days_ago(ctx.active_days);
-        let mut groups: BTreeMap<PathBuf, Vec<ArtifactCandidate>> = BTreeMap::new();
+        let mut root_scans = Vec::new();
         let mut findings = Vec::new();
         let mut unread = Vec::new();
         let mut home_held = 0usize;
@@ -69,7 +84,21 @@ impl Op for Artifacts {
             if !is_directory_if_present(root)? {
                 continue;
             }
-            for candidate in find_artifacts(root, &mut unread)? {
+            let Some(root) = eligible_project_root(root) else {
+                continue;
+            };
+            let scanned = observations.project_root(root)?;
+            if let Some(error) = &scanned.artifact_root_error {
+                return Err(anyhow::anyhow!("{error}"));
+            }
+            if !scanned.artifacts_stopped {
+                unread.extend(scanned.unread.iter().cloned());
+            }
+            root_scans.push(scanned);
+        }
+        let mut groups: BTreeMap<PathBuf, Vec<&ArtifactCandidate>> = BTreeMap::new();
+        for scanned in &root_scans {
+            for candidate in &scanned.artifacts {
                 match owning_repo(&candidate.path, &ctx.home) {
                     Ok(Some(owner)) => groups.entry(owner).or_default().push(candidate),
                     Ok(None) => {
@@ -97,7 +126,9 @@ impl Op for Artifacts {
         let mut orphaned = 0usize;
         let mut orphans = Vec::new();
         let mut unborn = Vec::new();
-        for (owner, candidates) in groups {
+        let process_cwds = observations.process_cwds()?;
+        let grouped: Vec<(PathBuf, Vec<&ArtifactCandidate>)> = groups.into_iter().collect();
+        let evaluated = super::project::map_indexed_parallel(&grouped, |(owner, candidates)| {
             // A repository whose checks fail offers nothing — not even a
             // finding judged before the failure — and reports the error; every
             // other repository is judged as usual.
@@ -106,36 +137,40 @@ impl Op for Artifacts {
             // repository that then fails is reported as an error, not a skip.
             let (mut tracked_here, mut keypairs_here, mut repositories_here, mut states_here) =
                 (0usize, 0, 0, 0);
-            let result = (|| -> Result<()> {
-                if orphaned_worktree(&owner)? {
-                    orphaned = orphaned.saturating_add(candidates.len());
-                    orphans.push(owner.clone());
-                    return Ok(());
+            let result = (|| -> Result<ArtifactRepoOutcome> {
+                if orphaned_worktree(owner)? {
+                    return Ok(ArtifactRepoOutcome::Orphaned(candidates.len()));
                 }
-                if repo_has_active_build(&owner, observations.process_cwds()?, &ctx.home)? {
-                    build_active = build_active.saturating_add(candidates.len());
-                    busy.push(owner.clone());
-                    return Ok(());
+                if repo_has_active_build(owner, process_cwds, &ctx.home)? {
+                    return Ok(ArtifactRepoOutcome::Busy(candidates.len()));
                 }
-                let last_activity = match observations.last_activity(&owner) {
+                let last_activity = match observations.last_activity(owner) {
                     Ok(last_activity) => last_activity,
-                    Err(_) if unborn_branch(&owner) => {
-                        unborn.push(owner.clone());
-                        return Ok(());
-                    }
+                    Err(_) if unborn_branch(owner) => return Ok(ArtifactRepoOutcome::Unborn),
                     Err(error) => return Err(error),
                 };
                 if last_activity.as_str() > cutoff.as_str() {
-                    active = active.saturating_add(candidates.len());
-                    return Ok(());
+                    return Ok(ArtifactRepoOutcome::Active(candidates.len()));
                 }
-                let mut index = TrackedIndex::list(&owner)?;
-                for candidate in &candidates {
-                    if index.holds_tracked_files(&candidate.path)? {
+                for candidate in candidates {
+                    match std::fs::symlink_metadata(&candidate.path) {
+                        Ok(_) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!("cannot inspect {}", candidate.path.display())
+                            });
+                        }
+                    }
+                    if observations.holds_tracked_files(owner, &candidate.path)? {
                         tracked_here += 1;
                         continue;
                     }
-                    match authored_entry_under(&candidate.path)? {
+                    let Some((authored, size)) = inspect_and_measure_artifact(&candidate.path)?
+                    else {
+                        continue;
+                    };
+                    match authored {
                         Some(Authored::ProgramKeypair(_)) => {
                             keypairs_here += 1;
                             continue;
@@ -148,9 +183,8 @@ impl Op for Artifacts {
                             states_here += 1;
                             continue;
                         }
-                        _ => {}
+                        None => {}
                     }
-                    let size = dir_measure(&candidate.path)?;
                     judged.push(
                         Finding::sized(
                             candidate.evidence.label.clone(),
@@ -164,13 +198,36 @@ impl Op for Artifacts {
                             escalate(5, size.allocated),
                             Action::Trash,
                         )
-                        .with_project(&owner),
+                        .with_project(owner),
                     );
                 }
-                Ok(())
+                Ok(ArtifactRepoOutcome::Judged {
+                    tracked: tracked_here,
+                    keypairs: keypairs_here,
+                    repositories: repositories_here,
+                    states: states_here,
+                })
             })();
+            (owner.clone(), judged, result)
+        })?;
+        for (owner, mut judged, result) in evaluated {
             match result {
-                Ok(()) => {
+                Ok(ArtifactRepoOutcome::Orphaned(count)) => {
+                    orphaned = orphaned.saturating_add(count);
+                    orphans.push(owner);
+                }
+                Ok(ArtifactRepoOutcome::Busy(count)) => {
+                    build_active = build_active.saturating_add(count);
+                    busy.push(owner);
+                }
+                Ok(ArtifactRepoOutcome::Unborn) => unborn.push(owner),
+                Ok(ArtifactRepoOutcome::Active(count)) => active = active.saturating_add(count),
+                Ok(ArtifactRepoOutcome::Judged {
+                    tracked: tracked_here,
+                    keypairs: keypairs_here,
+                    repositories: repositories_here,
+                    states: states_here,
+                }) => {
                     findings.append(&mut judged);
                     tracked = tracked.saturating_add(tracked_here);
                     keypairs = keypairs.saturating_add(keypairs_here);
@@ -257,7 +314,7 @@ impl Op for Artifacts {
     }
 
     fn apply(&self, findings: &[Finding], ctx: &Ctx) -> Result<ApplyOutcome> {
-        self.apply_with_process_cwds(findings, ctx, build_process_cwds())
+        self.apply_with_process_probe(findings, ctx, build_process_cwds)
     }
 }
 
@@ -266,19 +323,44 @@ impl Artifacts {
     fn scan_with_process_cwds(&self, ctx: &Ctx, process_cwds: &[PathBuf]) -> Result<Vec<Finding>> {
         self.scan(
             ctx,
-            &ScanObservations::with_process_cwds(process_cwds.to_vec()),
+            &ScanObservations::with_process_cwds(
+                process_cwds
+                    .iter()
+                    .cloned()
+                    .map(ProcessCwd::from_path)
+                    .collect(),
+            ),
         )
     }
 
-    pub(super) fn apply_with_process_cwds(
+    #[cfg(test)]
+    fn apply_with_process_cwds(
         &self,
         findings: &[Finding],
         ctx: &Ctx,
         process_cwds: Result<Vec<PathBuf>>,
     ) -> Result<ApplyOutcome> {
+        let shared = process_cwds
+            .map(|cwds| {
+                cwds.into_iter()
+                    .map(ProcessCwd::from_path)
+                    .collect::<Vec<_>>()
+            })
+            .map_err(|error| format!("{error:#}"));
+        self.apply_with_process_probe(findings, ctx, || {
+            shared.clone().map_err(|error| anyhow::anyhow!("{error}"))
+        })
+    }
+
+    pub(super) fn apply_with_process_probe(
+        &self,
+        findings: &[Finding],
+        ctx: &Ctx,
+        process_cwds: impl Fn() -> Result<Vec<ProcessCwd>>,
+    ) -> Result<ApplyOutcome> {
         let cutoff = iso_days_ago(ctx.active_days);
         let mut outcome = ApplyOutcome::new(self.name());
-        let process_cwds = match process_cwds {
+        let preflight_cwds = match process_cwds() {
             Ok(process_cwds) => process_cwds,
             Err(error) => {
                 outcome.fail(error.context("cannot verify build-process liveness"));
@@ -286,8 +368,9 @@ impl Artifacts {
             }
         };
         // Everything a finding must still satisfy, judged in the preflight
-        // for the whole plan and again just before its own removal.
-        let recheck = |path: &Path| -> Result<()> {
+        // for the whole plan and again just before its own removal with a
+        // fresh build-process probe.
+        let check_with = |path: &Path, active_cwds: &[ProcessCwd]| -> Result<()> {
             if has_git_marker(path)? {
                 anyhow::bail!(
                     "target gained its own Git marker after preview; refusing {}",
@@ -308,7 +391,7 @@ impl Artifacts {
                     path.display()
                 );
             }
-            if repo_has_active_build(&owner, &process_cwds, &ctx.home)? {
+            if repo_has_active_build(&owner, active_cwds, &ctx.home)? {
                 anyhow::bail!(
                     "build process active in {}; refusing {}",
                     owner.display(),
@@ -374,7 +457,7 @@ impl Artifacts {
                     return Ok(outcome);
                 }
             }
-            let result = recheck(path);
+            let result = check_with(path, &preflight_cwds);
             if let Err(error) = result {
                 outcome.fail(error);
                 return Ok(outcome);
@@ -386,7 +469,12 @@ impl Artifacts {
         // only itself. Each failure is recorded, so the run reports nonzero.
         // The preflight judged every finding before any was removed, but
         // removing the earlier ones takes time: each is judged again just
-        // before its own removal, and a change in between refuses only it.
+        // before its own removal with a fresh build-process probe, and a
+        // change in between refuses only it.
+        let recheck = |path: &Path| -> Result<()> {
+            let fresh_cwds = process_cwds().context("cannot verify build-process liveness")?;
+            check_with(path, &fresh_cwds)
+        };
         for (finding, path) in ready {
             match recheck(path).and_then(|()| apply_filesystem_finding(self.name(), finding, ctx)) {
                 Ok(()) => outcome.record(finding, removal_note(finding, path.display())),
@@ -407,6 +495,79 @@ enum Authored {
     TerraformState(PathBuf),
 }
 
+struct AuthoredEntry<'a> {
+    parent: Option<&'a Path>,
+    name: &'a OsStr,
+}
+
+impl AuthoredEntry<'_> {
+    fn file_name(&self) -> &OsStr {
+        self.name
+    }
+
+    fn into_path(self) -> PathBuf {
+        match self.parent {
+            Some(parent) => parent.join(self.name),
+            None => PathBuf::from(self.name),
+        }
+    }
+}
+
+impl Authored {
+    fn match_entry(entry: AuthoredEntry<'_>, depth: usize) -> Option<Self> {
+        if is_program_keypair_name(entry.file_name()) {
+            return Some(Self::ProgramKeypair(entry.into_path()));
+        }
+        if is_terraform_state_name(entry.file_name()) {
+            return Some(Self::TerraformState(entry.into_path()));
+        }
+        if depth > 0 && is_git_metadata_name(entry.file_name()) {
+            return Some(Self::Repository(entry.into_path()));
+        }
+        None
+    }
+}
+
+enum BulkAuthored {
+    Found(Authored),
+    Clean,
+    Unsupported,
+}
+
+fn inspect_and_measure_artifact(path: &Path) -> Result<Option<(Option<Authored>, Size)>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "cannot search {} for a program keypair or a Git repository",
+                    path.display()
+                )
+            });
+        }
+    }
+    let result = dir_measure_while(path, |parent, name, depth| {
+        Authored::match_entry(AuthoredEntry { parent, name }, depth)
+    })
+    .with_context(|| {
+        format!(
+            "cannot search {} for a program keypair or a Git repository",
+            path.display()
+        )
+    })?;
+    if result.0.is_none()
+        && result.1.allocated == 0
+        && matches!(
+            std::fs::symlink_metadata(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    {
+        return Ok(None);
+    }
+    Ok(Some(result))
+}
+
 /// The first entry under `path` that no rebuild restores, as Mole V1.56.0
 /// looks for it before a purge (`lib/clean/project.sh`: `find` for `.git` or
 /// `*-keypair.json`).
@@ -423,6 +584,78 @@ enum Authored {
 /// would refuse at apply anyway. A keypair's name matches as the volume folds
 /// it, a Git marker's in any ASCII case, and the walk follows no link.
 fn authored_entry_under(path: &Path) -> Result<Option<Authored>> {
+    let metadata = std::fs::symlink_metadata(path).with_context(|| {
+        format!(
+            "cannot search {} for a program keypair or a Git repository",
+            path.display()
+        )
+    })?;
+    if let Some(name) = path.file_name()
+        && let Some(authored) = Authored::match_entry(
+            AuthoredEntry {
+                parent: path.parent(),
+                name,
+            },
+            0,
+        )
+    {
+        return Ok(Some(authored));
+    }
+    if !metadata.file_type().is_dir() {
+        return Ok(None);
+    }
+    match authored_entry_under_bulk(path)? {
+        BulkAuthored::Found(authored) => Ok(Some(authored)),
+        BulkAuthored::Clean => Ok(None),
+        BulkAuthored::Unsupported => authored_entry_under_walkdir(path),
+    }
+}
+
+fn authored_entry_under_bulk(path: &Path) -> Result<BulkAuthored> {
+    let mut buffer = apfs_size::BulkBuffer::new();
+    let mut pending = vec![(path.to_path_buf(), 1usize)];
+    let mut subdirs = Vec::new();
+    while let Some((directory, depth)) = pending.pop() {
+        subdirs.clear();
+        let mut found = None;
+        match apfs_size::visit_dir_names(&directory, &mut buffer, |entry| {
+            if found.is_some() {
+                return;
+            }
+            if let Some(authored) = Authored::match_entry(
+                AuthoredEntry {
+                    parent: Some(&directory),
+                    name: entry.name,
+                },
+                depth,
+            ) {
+                found = Some(authored);
+                return;
+            }
+            if entry.kind == apfs_size::EntryKind::Directory {
+                subdirs.push(entry.name.to_os_string());
+            }
+        }) {
+            Ok(()) => {}
+            Err(apfs_size::BulkError::Unsupported) => return Ok(BulkAuthored::Unsupported),
+            Err(apfs_size::BulkError::Io(error)) => {
+                return Err(anyhow::Error::new(error).context(format!(
+                    "cannot search {} for a program keypair or a Git repository",
+                    path.display()
+                )));
+            }
+        }
+        if let Some(authored) = found {
+            return Ok(BulkAuthored::Found(authored));
+        }
+        for child in subdirs.drain(..) {
+            pending.push((directory.join(child), depth + 1));
+        }
+    }
+    Ok(BulkAuthored::Clean)
+}
+
+fn authored_entry_under_walkdir(path: &Path) -> Result<Option<Authored>> {
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
         .follow_root_links(false)
@@ -433,29 +666,65 @@ fn authored_entry_under(path: &Path) -> Result<Option<Authored>> {
                 path.display()
             )
         })?;
-        if is_program_keypair_name(entry.file_name()) {
-            return Ok(Some(Authored::ProgramKeypair(entry.into_path())));
-        }
-        if is_terraform_state_name(entry.file_name()) {
-            return Ok(Some(Authored::TerraformState(entry.into_path())));
-        }
-        if entry.depth() > 0 && is_git_metadata_name(entry.file_name()) {
-            return Ok(Some(Authored::Repository(entry.into_path())));
+        if let Some(authored) = Authored::match_entry(
+            AuthoredEntry {
+                parent: entry.path().parent(),
+                name: entry.file_name(),
+            },
+            entry.depth(),
+        ) {
+            return Ok(Some(authored));
         }
     }
     Ok(None)
 }
 
+/// Folds a UTF-8 filename component the way case-insensitive macOS APFS does
+/// for every Unicode code point whose full case folding maps onto pure ASCII:
+/// `ß`/`ẞ` -> `ss`, `ſ` -> `s`, `K` -> `k`, and the seven Latin `ff`/`fi`/
+/// `fl`/`ffi`/`ffl`/`st` ligatures (`U+FB00`..=`U+FB06`), alongside ASCII
+/// lowercasing (Unicode `CaseFolding.txt`, full folding).
+pub(crate) fn fold_apfs_ascii(input: &str) -> String {
+    let mut folded = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\u{00df}' | '\u{1e9e}' => folded.push_str("ss"),
+            '\u{017f}' => folded.push('s'),
+            '\u{212a}' => folded.push('k'),
+            '\u{fb00}' => folded.push_str("ff"),
+            '\u{fb01}' => folded.push_str("fi"),
+            '\u{fb02}' => folded.push_str("fl"),
+            '\u{fb03}' => folded.push_str("ffi"),
+            '\u{fb04}' => folded.push_str("ffl"),
+            '\u{fb05}' | '\u{fb06}' => folded.push_str("st"),
+            other => folded.push(other.to_ascii_lowercase()),
+        }
+    }
+    folded
+}
+
 /// Whether `name` is Terraform state: `*.tfstate`, or the `*.tfstate.backup`
-/// Terraform keeps beside it, in any ASCII case. Terraform's local backend
+/// Terraform keeps beside it, matched as case-insensitive APFS folds names
+/// (including full Unicode case folding to ASCII). Terraform's local backend
 /// writes `terraform.tfstate` into its working directory, which under
 /// Terragrunt is inside `.terragrunt-cache` (Terraform "Backend Type: local";
 /// Terragrunt "Terragrunt cache"), and nothing regenerates it.
 fn is_terraform_state_name(name: &OsStr) -> bool {
-    let name = name.as_encoded_bytes();
-    [&b".tfstate"[..], b".tfstate.backup"].iter().any(|suffix| {
-        name.len() >= suffix.len() && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
-    })
+    const SUFFIXES: [&str; 2] = [".tfstate", ".tfstate.backup"];
+    match name.to_str() {
+        Some(name) => {
+            let folded = fold_apfs_ascii(name);
+            SUFFIXES.iter().any(|suffix| folded.ends_with(suffix))
+        }
+        None => {
+            let bytes = name.as_encoded_bytes();
+            SUFFIXES.iter().any(|suffix| {
+                let suffix = suffix.as_bytes();
+                bytes.len() >= suffix.len()
+                    && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+            })
+        }
+    }
 }
 
 /// Whether `name` ends in `-keypair.json` as the volume compares names: in any
@@ -468,13 +737,14 @@ fn is_program_keypair_name(name: &OsStr) -> bool {
     match name.to_str() {
         Some(name) => name
             .chars()
+            .rev()
+            .take(SUFFIX.len())
             .map(|character| match character {
                 '\u{212a}' => 'k',
                 '\u{17f}' => 's',
                 other => other.to_ascii_lowercase(),
             })
-            .collect::<String>()
-            .ends_with(SUFFIX),
+            .eq(SUFFIX.chars().rev()),
         None => {
             let name = name.as_encoded_bytes();
             name.len() >= SUFFIX.len()
@@ -483,17 +753,161 @@ fn is_program_keypair_name(name: &OsStr) -> bool {
     }
 }
 
-/// Corroborated build output under `root`. A folder the walk cannot read is
-/// recorded in `unread` and skipped with everything below it, as a scan root
-/// that cannot be read is; only the root itself failing fails the walk.
-fn find_artifacts(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<ArtifactCandidate>> {
+/// Bitmask of known sibling corroboration filenames observed in a directory.
+/// Checking this mask before `sibling_evidence` avoids per-directory `lstat`
+/// calls when the parent holds none of a candidate's owner files, while
+/// `observe_file` matches ASCII case-insensitively so case-insensitive APFS
+/// never misses a match.
+#[derive(Clone, Copy, Default)]
+pub(super) struct SiblingHints(u32);
+
+impl SiblingHints {
+    const CARGO_TOML: Self = Self(1 << 0);
+    const TOX_INI: Self = Self(1 << 1);
+    const SETUP_CFG: Self = Self(1 << 2);
+    const PYPROJECT_TOML: Self = Self(1 << 3);
+    const NOXFILE_PY: Self = Self(1 << 4);
+    const PACKAGE_JSON: Self = Self(1 << 5);
+    const PODFILE: Self = Self(1 << 6);
+    const SETTINGS_GRADLE: Self = Self(1 << 7);
+    const SETTINGS_GRADLE_KTS: Self = Self(1 << 8);
+    const BUILD_GRADLE: Self = Self(1 << 9);
+    const BUILD_GRADLE_KTS: Self = Self(1 << 10);
+    const PACKAGE_SWIFT: Self = Self(1 << 11);
+    const PUBSPEC_YAML: Self = Self(1 << 12);
+    const BUILD_ZIG: Self = Self(1 << 13);
+    const TERRAGRUNT_HCL: Self = Self(1 << 14);
+    const NUXT_CONFIG: Self = Self(1 << 15);
+    pub(super) const ALL: Self = Self(u32::MAX);
+
+    const fn with(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    const fn intersects(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+
+    /// Records a regular file's name if it matches any known sibling
+    /// corroboration manifest.
+    pub(super) fn observe_file(&mut self, name: &OsStr) {
+        const KNOWN: [(&[u8], u32); 21] = [
+            (b"Cargo.toml", SiblingHints::CARGO_TOML.0),
+            (b"tox.ini", SiblingHints::TOX_INI.0),
+            (b"setup.cfg", SiblingHints::SETUP_CFG.0),
+            (b"pyproject.toml", SiblingHints::PYPROJECT_TOML.0),
+            (b"noxfile.py", SiblingHints::NOXFILE_PY.0),
+            (b"package.json", SiblingHints::PACKAGE_JSON.0),
+            (b"Podfile", SiblingHints::PODFILE.0),
+            (b"settings.gradle", SiblingHints::SETTINGS_GRADLE.0),
+            (b"settings.gradle.kts", SiblingHints::SETTINGS_GRADLE_KTS.0),
+            (b"build.gradle", SiblingHints::BUILD_GRADLE.0),
+            (b"build.gradle.kts", SiblingHints::BUILD_GRADLE_KTS.0),
+            (b"Package.swift", SiblingHints::PACKAGE_SWIFT.0),
+            (b"pubspec.yaml", SiblingHints::PUBSPEC_YAML.0),
+            (b"build.zig", SiblingHints::BUILD_ZIG.0),
+            (b"terragrunt.hcl", SiblingHints::TERRAGRUNT_HCL.0),
+            (b"nuxt.config.ts", SiblingHints::NUXT_CONFIG.0),
+            (b"nuxt.config.js", SiblingHints::NUXT_CONFIG.0),
+            (b"nuxt.config.mjs", SiblingHints::NUXT_CONFIG.0),
+            (b"nuxt.config.mts", SiblingHints::NUXT_CONFIG.0),
+            (b"nuxt.config.cjs", SiblingHints::NUXT_CONFIG.0),
+            (b"nuxt.config.cts", SiblingHints::NUXT_CONFIG.0),
+        ];
+        let bytes = name.as_encoded_bytes();
+        if !(7..=19).contains(&bytes.len()) {
+            return;
+        }
+        for (filename, bit) in KNOWN {
+            if bytes.eq_ignore_ascii_case(filename) {
+                self.0 |= bit;
+                return;
+            }
+        }
+    }
+}
+
+/// Directory-entry hints collected in one `visit_dir_names` pass for
+/// [`artifact_evidence_for_dir`] and child `parent_siblings`.
+#[derive(Clone, Copy, Default)]
+pub(super) struct DirHints {
+    pub(super) siblings: SiblingHints,
+    pub(super) has_pyvenv_cfg: bool,
+    pub(super) has_cachedir_tag: bool,
+}
+
+impl DirHints {
+    /// Observes one regular file entry from the current directory.
+    pub(super) fn observe_file(&mut self, name: &OsStr) {
+        self.siblings.observe_file(name);
+        let bytes = name.as_encoded_bytes();
+        if bytes.eq_ignore_ascii_case(b"pyvenv.cfg") {
+            self.has_pyvenv_cfg = true;
+        } else if bytes.eq_ignore_ascii_case(b"CACHEDIR.TAG") {
+            self.has_cachedir_tag = true;
+        }
+    }
+}
+
+fn required_sibling_hint(name: &str) -> Option<SiblingHints> {
+    Some(match name {
+        "target" => SiblingHints::CARGO_TOML,
+        ".tox" => SiblingHints::TOX_INI
+            .with(SiblingHints::SETUP_CFG)
+            .with(SiblingHints::PYPROJECT_TOML),
+        ".nox" => SiblingHints::NOXFILE_PY,
+        ".next" | ".nuxt" | ".turbo" | ".parcel-cache" | ".svelte-kit" | ".astro" | ".expo"
+        | ".angular" => SiblingHints::PACKAGE_JSON,
+        "Pods" => SiblingHints::PODFILE,
+        ".gradle" => SiblingHints::SETTINGS_GRADLE
+            .with(SiblingHints::SETTINGS_GRADLE_KTS)
+            .with(SiblingHints::BUILD_GRADLE)
+            .with(SiblingHints::BUILD_GRADLE_KTS),
+        ".build" => SiblingHints::PACKAGE_SWIFT,
+        ".dart_tool" => SiblingHints::PUBSPEC_YAML,
+        ".zig-cache" | "zig-out" => SiblingHints::BUILD_ZIG,
+        ".cxx" => SiblingHints::BUILD_GRADLE.with(SiblingHints::BUILD_GRADLE_KTS),
+        ".terragrunt-cache" => SiblingHints::TERRAGRUNT_HCL,
+        ".output" => SiblingHints::NUXT_CONFIG,
+        _ => return None,
+    })
+}
+
+fn eligible_project_root(root: &Path) -> Option<&Path> {
     if has_node_modules_ancestor(root)
         || root
             .components()
             .any(|component| is_git_metadata_name(component.as_os_str()))
     {
-        return Ok(Vec::new());
+        return None;
     }
+    Some(root)
+}
+
+/// Corroborated build output under `root`. A folder the walk cannot read is
+/// recorded in `unread` and skipped with everything below it, as a scan root
+/// that cannot be read is; only the root itself failing fails the walk.
+#[cfg(test)]
+fn find_artifacts(root: &Path, unread: &mut Vec<UnreadFolder>) -> Result<Vec<ArtifactCandidate>> {
+    let Some(root) = eligible_project_root(root) else {
+        return Ok(Vec::new());
+    };
+    let scanned = super::node_modules::scan_project_root(root)?;
+    if let Some(error) = scanned.artifact_root_error {
+        return Err(anyhow::anyhow!("{error}"));
+    }
+    if !scanned.artifacts_stopped {
+        unread.extend(scanned.unread);
+    }
+    Ok(scanned.artifacts)
+}
+
+/// Fallback artifact discovery for symlink roots and volumes without bulk
+/// directory support.
+pub(super) fn find_artifacts_walkdir(
+    root: &Path,
+    unread: &mut Vec<UnreadFolder>,
+) -> Result<Vec<ArtifactCandidate>> {
     let mut found = Vec::new();
     let mut entries = walkdir::WalkDir::new(root).follow_links(false).into_iter();
     while let Some(result) = entries.next() {
@@ -568,31 +982,41 @@ pub(super) fn build_output_between(owner: &Path, path: &Path) -> Result<Option<P
     Ok(None)
 }
 
-fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("cannot inspect artifact target {}", path.display()));
-        }
-    };
-    if !metadata.file_type().is_dir() {
-        return Ok(None);
-    }
+/// Classifies a directory already confirmed not to be a symlink, skipping
+/// `sibling_evidence`, `contained_evidence`, and `cachedir_tag_matches`
+/// syscalls when directory-entry hints show the required markers are absent.
+/// Callers at `depth == 0` did not read the parent, so siblings are checked
+/// directly on disk.
+pub(super) fn artifact_evidence_for_dir(
+    path: &Path,
+    depth: usize,
+    parent_siblings: SiblingHints,
+    has_pyvenv_cfg: bool,
+    has_cachedir_tag: bool,
+) -> Result<Option<ArtifactEvidence>> {
     let name = path.file_name().and_then(|name| name.to_str());
     // macOS filesystems are commonly case-insensitive and case-preserving, so
-    // `Build` or `DIST` must hit the ambiguous-name denylist exactly like
+    // `Build`, `DIST`, or APFS full-casefold equivalents (`diſt`, `diﬆ`,
+    // `node_moduleſ`) must hit the ambiguous-name denylist exactly like
     // `build`, before any positive evidence (including CACHEDIR.TAG) is read.
     if name.is_some_and(|name| {
+        let folded = fold_apfs_ascii(name);
         EXCLUDED_NAMES
             .iter()
-            .any(|excluded| name.eq_ignore_ascii_case(excluded))
+            .any(|excluded| folded.eq_ignore_ascii_case(excluded))
     }) {
         return Ok(None);
     }
 
     let named: Result<Option<String>> = match name {
+        Some(".venv" | "venv") if !has_pyvenv_cfg => Ok(None),
+        Some(dir_name)
+            if depth > 0
+                && required_sibling_hint(dir_name)
+                    .is_some_and(|required| !parent_siblings.intersects(required)) =>
+        {
+            Ok(None)
+        }
         Some("target") => sibling_evidence(path, &["Cargo.toml"]),
         Some(".venv" | "venv") => contained_evidence(path, "pyvenv.cfg"),
         Some(name @ ("__pycache__" | ".pytest_cache" | ".mypy_cache" | ".ruff_cache")) => {
@@ -653,7 +1077,7 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
             comes_back_with: comes_back_with(name),
         }));
     }
-    if cachedir_tag_matches(path)? {
+    if has_cachedir_tag && cachedir_tag_matches(path)? {
         return Ok(Some(ArtifactEvidence {
             label: "stale CACHEDIR.TAG cache".into(),
             corroboration: "CACHEDIR.TAG signature".into(),
@@ -661,6 +1085,21 @@ fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
         }));
     }
     Ok(None)
+}
+
+fn artifact_evidence(path: &Path) -> Result<Option<ArtifactEvidence>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot inspect artifact target {}", path.display()));
+        }
+    };
+    if !metadata.file_type().is_dir() {
+        return Ok(None);
+    }
+    artifact_evidence_for_dir(path, 0, SiblingHints::ALL, true, true)
 }
 
 /// What rebuilds a corroborated output, by the name whose owner file was
@@ -1536,5 +1975,176 @@ mod tests {
         ] {
             assert!(!is_program_keypair_name(OsStr::new(name)), "{name}");
         }
+    }
+
+    #[test]
+    fn apfs_unicode_casefold_protects_terraform_state_and_excluded_names_at_scan_and_apply() {
+        let (_fixture, root, home) = deletable_root("apfs-unicode-casefold");
+
+        // 1. APFS-folded Terraform state and backup filenames inside corroborated
+        // artifact trees must be withheld at scan and refused at apply.
+        let tf_cases = [
+            ("infra-017f", "terraform.tf\u{017f}tate"),
+            ("infra-fb05", "terraform.tf\u{fb05}ate"),
+            ("infra-fb06", "terraform.tf\u{fb06}ate"),
+        ];
+        let mut tf_targets = Vec::new();
+        for (repo_name, state_name) in tf_cases {
+            let repo = home.join(repo_name);
+            init_old_git_repo(&repo).unwrap();
+            let unit = repo.join("live/app");
+            let cache = unit.join(".terragrunt-cache");
+            std::fs::create_dir_all(cache.join("a1/b2")).unwrap();
+            std::fs::write(unit.join("terragrunt.hcl"), "").unwrap();
+            let state = cache.join("a1/b2").join(state_name);
+            std::fs::write(&state, "{\"version\": 4}").unwrap();
+            tf_targets.push((cache, state));
+        }
+
+        let rust_repo = home.join("rust-212a");
+        init_old_git_repo(&rust_repo).unwrap();
+        std::fs::write(rust_repo.join("Cargo.toml"), "[package]").unwrap();
+        let rust_target = rust_repo.join("target");
+        std::fs::create_dir_all(rust_target.join("debug")).unwrap();
+        let backup_state = rust_target.join("debug/terraform.tfstate.bac\u{212a}up");
+        std::fs::write(&backup_state, "{}").unwrap();
+        tf_targets.push((rust_target, backup_state));
+
+        // 2. APFS-folded EXCLUDED_NAMES carrying a valid CACHEDIR.TAG must be
+        // excluded at both scan and apply.
+        let excl_cases = [
+            ("excl-dist-017f", "di\u{017f}t"),
+            ("excl-dist-fb05", "di\u{fb05}"),
+            ("excl-dist-fb06", "di\u{fb06}"),
+        ];
+        let mut excl_targets = Vec::new();
+        for (repo_name, dir_name) in excl_cases {
+            let repo = home.join(repo_name);
+            init_old_git_repo(&repo).unwrap();
+            let dir = repo.join(dir_name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).unwrap();
+            std::fs::write(dir.join("bundle.js"), "console.log(1);").unwrap();
+            excl_targets.push(dir);
+        }
+
+        // 3. Positive controls: a clean corroborated Rust target and a
+        // non-excluded CACHEDIR.TAG directory in stale repos must be offered.
+        let clean_repo = home.join("clean-control");
+        let clean_target = stale_target(&clean_repo);
+        let cache_repo = home.join("cache-control");
+        init_old_git_repo(&cache_repo).unwrap();
+        let clean_cache = cache_repo.join("custom-cache");
+        std::fs::create_dir_all(&clean_cache).unwrap();
+        std::fs::write(clean_cache.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).unwrap();
+        std::fs::write(clean_cache.join("entry.bin"), "cached").unwrap();
+
+        let ctx = context(home.clone());
+        let findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+        let mut actual = offered(&findings);
+        actual.sort();
+        let mut expected = vec![clean_cache.as_path(), clean_target.as_path()];
+        expected.sort();
+        assert_eq!(
+            actual, expected,
+            "PV artifacts/apfs-tfstate-fold: only eligible positive controls may be offered, never APFS-folded Terraform state or excluded dirs"
+        );
+
+        for (target, state) in &tf_targets {
+            let forged = Finding::new(
+                "stale artifact",
+                Some(target.clone()),
+                1,
+                "test",
+                5,
+                Action::Shred,
+            );
+            let outcome = Artifacts
+                .apply_with_process_cwds(&[forged], &ctx, Ok(Vec::new()))
+                .unwrap();
+            assert!(
+                outcome.summary.items_touched == 0
+                    && state.exists()
+                    && outcome
+                        .errors
+                        .iter()
+                        .any(|error| error.contains("Terraform state")),
+                "PV artifacts/apfs-tfstate-fold: apply must refuse APFS-folded Terraform state in {}: {outcome:?}",
+                target.display()
+            );
+        }
+
+        for dir in &excl_targets {
+            let forged = Finding::new(
+                "stale CACHEDIR.TAG cache",
+                Some(dir.clone()),
+                1,
+                "test",
+                5,
+                Action::Shred,
+            );
+            let outcome = Artifacts
+                .apply_with_process_cwds(&[forged], &ctx, Ok(Vec::new()))
+                .unwrap();
+            assert!(
+                outcome.summary.items_touched == 0
+                    && dir.exists()
+                    && outcome
+                        .errors
+                        .iter()
+                        .any(|error| error.contains("artifact corroboration changed after preview")),
+                "apply must refuse APFS-folded excluded directory {} via corroboration check: {outcome:?}",
+                dir.display()
+            );
+        }
+
+        crate::ops::remove_test_path(root);
+    }
+
+    #[test]
+    fn a_build_starting_after_first_artifact_removal_refuses_the_second() {
+        let (_fixture, root, home) = deletable_root("reprobe-between-items");
+        let first_repo = home.join("first");
+        let second_repo = home.join("second");
+        let first_target = stale_target(&first_repo);
+        let second_target = stale_target(&second_repo);
+        let ctx = context(home.clone());
+        let mut findings = Artifacts.scan_with_process_cwds(&ctx, &[]).unwrap();
+        crate::report::effective_actions(&mut findings, true);
+        assert_eq!(offered(&findings).len(), 2);
+
+        // Preflight and item 1's pre-removal probe see no active build; after
+        // item 1 is removed, a build starts in `second_repo` before item 2.
+        let calls = std::cell::Cell::new(0usize);
+        let outcome = Artifacts
+            .apply_with_process_probe(&findings, &ctx, || {
+                let call = calls.get();
+                calls.set(call + 1);
+                if call >= 2 {
+                    Ok(vec![ProcessCwd::from_path(second_repo.clone())])
+                } else {
+                    Ok(Vec::new())
+                }
+            })
+            .unwrap();
+
+        assert!(
+            !first_target.exists(),
+            "first target must be removed before the second repo becomes busy"
+        );
+        assert!(
+            second_target.exists(),
+            "second target must survive when a build starts after item 1"
+        );
+        assert_eq!(outcome.summary.items_touched, 1);
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("build process active")),
+            "expected active-build refusal for item 2: {:?}",
+            outcome.errors
+        );
+        crate::ops::remove_test_path(root);
     }
 }
