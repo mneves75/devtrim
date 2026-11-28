@@ -596,175 +596,12 @@ fn is_safe_absolute_dir(path: &Path) -> bool {
             .any(|segment| segment == b"." || segment == b"..")
 }
 
-fn validate_trusted_ancestors(candidate: &Path, candidate_exists: bool, label: &str) -> Result<()> {
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
-    let current_uid = rustix::process::geteuid().as_raw();
-    let mut deepest_existing = None;
-    for ancestor in candidate.ancestors().skip(1) {
-        match std::fs::symlink_metadata(ancestor) {
-            Ok(metadata) => {
-                if deepest_existing.is_none() {
-                    deepest_existing = Some(ancestor);
-                }
-                if !metadata.file_type().is_symlink()
-                    && super::project::ignores_ownership(ancestor)?
-                {
-                    anyhow::bail!(
-                        "refusing {label} with ancestor {}: its volume ignores ownership",
-                        ancestor.display()
-                    );
-                }
-                if metadata.uid() != current_uid && metadata.uid() != 0 {
-                    anyhow::bail!(
-                        "refusing {label} with ancestor {} not owned by current user or root",
-                        ancestor.display()
-                    );
-                }
-                if metadata.file_type().is_symlink() {
-                    continue;
-                }
-                if !metadata.file_type().is_dir() {
-                    anyhow::bail!(
-                        "refusing {label} with non-directory ancestor {}",
-                        ancestor.display()
-                    );
-                }
-                let mode = metadata.permissions().mode();
-                let others_write = mode & 0o022 != 0;
-                if others_write && (mode & 0o1000 == 0) {
-                    anyhow::bail!(
-                        "refusing {label} with group- or world-writable ancestor {}",
-                        ancestor.display()
-                    );
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("cannot inspect ancestor {} of {label}", ancestor.display())
-                });
-            }
-        }
-    }
-    let Some(existing_parent) = deepest_existing else {
-        anyhow::bail!("refusing {label} with no existing ancestor directory");
-    };
-    let canonical_parent = existing_parent.canonicalize().with_context(|| {
-        format!(
-            "cannot resolve ancestor {} of {label}",
-            existing_parent.display()
-        )
-    })?;
-    for (depth, ancestor) in canonical_parent.ancestors().enumerate() {
-        if super::project::ignores_ownership(ancestor)? {
-            anyhow::bail!(
-                "refusing {label} with canonical ancestor {}: its volume ignores ownership",
-                ancestor.display()
-            );
-        }
-        let metadata = std::fs::symlink_metadata(ancestor).with_context(|| {
-            format!(
-                "cannot inspect canonical ancestor {} of {label}",
-                ancestor.display()
-            )
-        })?;
-        if !metadata.file_type().is_dir() {
-            anyhow::bail!(
-                "refusing {label} with non-directory canonical ancestor {}",
-                ancestor.display()
-            );
-        }
-        if metadata.uid() != current_uid && metadata.uid() != 0 {
-            anyhow::bail!(
-                "refusing {label} with canonical ancestor {} not owned by current user or root",
-                ancestor.display()
-            );
-        }
-        let mode = metadata.permissions().mode();
-        let others_write = mode & 0o022 != 0;
-        let sticky_allowed = candidate_exists || depth > 0;
-        if others_write && (!sticky_allowed || mode & 0o1000 == 0) {
-            anyhow::bail!(
-                "refusing {label} with writable ancestor {}",
-                ancestor.display()
-            );
-        }
-    }
-    if canonical_parent
-        .as_os_str()
-        .as_encoded_bytes()
-        .contains(&b'\n')
-    {
-        anyhow::bail!(
-            "refusing {label} with newline in resolved ancestor {}",
-            canonical_parent.display()
-        );
-    }
-    super::project::refuse_path_acl_grants(canonical_parent.ancestors(), &canonical_parent, label)?;
-    Ok(())
-}
-
-fn validate_docker_config_dir_from(
-    raw_docker_config: Option<&std::ffi::OsStr>,
-    home: &Path,
-) -> Result<PathBuf> {
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
-    let candidate = match raw_docker_config.filter(|value| !value.is_empty()) {
-        Some(value) => PathBuf::from(value),
-        None => home.join(".docker"),
-    };
-    if !is_safe_absolute_dir(&candidate) {
-        anyhow::bail!(
-            "refusing relative or non-normalized DOCKER_CONFIG: {}",
-            candidate.display()
-        );
-    }
-    match std::fs::symlink_metadata(&candidate) {
-        Ok(metadata) => {
-            if !metadata.file_type().is_dir() {
-                anyhow::bail!(
-                    "refusing symlinked or non-directory DOCKER_CONFIG: {}",
-                    candidate.display()
-                );
-            }
-            validate_trusted_ancestors(&candidate, true, "DOCKER_CONFIG")?;
-            if super::project::ignores_ownership(&candidate)? {
-                anyhow::bail!(
-                    "refusing DOCKER_CONFIG {}: its volume ignores ownership",
-                    candidate.display()
-                );
-            }
-            let current_uid = rustix::process::geteuid().as_raw();
-            if metadata.uid() != current_uid && metadata.uid() != 0 {
-                anyhow::bail!(
-                    "refusing DOCKER_CONFIG owned by UID {} (expected {current_uid} or root): {}",
-                    metadata.uid(),
-                    candidate.display()
-                );
-            }
-            if metadata.permissions().mode() & 0o022 != 0 {
-                anyhow::bail!(
-                    "refusing group- or world-writable DOCKER_CONFIG: {}",
-                    candidate.display()
-                );
-            }
-            super::project::refuse_path_acl_grants(
-                [candidate.as_path()],
-                &candidate,
-                "DOCKER_CONFIG",
-            )?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            validate_trusted_ancestors(&candidate, false, "DOCKER_CONFIG")?;
-        }
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("cannot inspect DOCKER_CONFIG {}", candidate.display()));
-        }
-    }
-    Ok(candidate)
+#[derive(Clone, Copy)]
+struct TrustPolicy {
+    expect_dir: bool,
+    allow_missing: bool,
+    allow_leaf_symlink: bool,
+    allow_sticky_leaf: bool,
 }
 
 fn read_docker_config_json(
@@ -848,8 +685,7 @@ fn read_docker_config_json(
 fn resolve_trusted_path(
     start: &Path,
     current_uid: u32,
-    expect_dir: bool,
-    allow_missing: bool,
+    policy: TrustPolicy,
     label: &str,
 ) -> Result<Option<PathBuf>> {
     use std::collections::VecDeque;
@@ -883,7 +719,7 @@ fn resolve_trusted_path(
         let metadata = match std::fs::symlink_metadata(&current) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if allow_missing && !current_from_symlink {
+                if policy.allow_missing && !current_from_symlink {
                     if let Some(parent_mode) = last_parent_mode
                         && parent_mode & 0o022 != 0
                     {
@@ -916,6 +752,9 @@ fn resolve_trusted_path(
         super::project::refuse_path_acl_grants([current.as_path()], &current, label)?;
 
         if metadata.file_type().is_symlink() {
+            if !policy.allow_leaf_symlink && pending.is_empty() {
+                anyhow::bail!("refusing symlinked {label}: {}", start.display());
+            }
             hops += 1;
             if hops > MAX_SYMLINK_HOPS {
                 anyhow::bail!(
@@ -951,7 +790,7 @@ fn resolve_trusted_path(
             current_from_symlink = true;
             continue;
         } else if pending.is_empty() {
-            let right_kind = if expect_dir {
+            let right_kind = if policy.expect_dir {
                 metadata.is_dir()
             } else {
                 metadata.is_file()
@@ -959,7 +798,7 @@ fn resolve_trusted_path(
             if !right_kind {
                 anyhow::bail!(
                     "refusing {} {label} path: {}",
-                    if expect_dir {
+                    if policy.expect_dir {
                         "non-directory"
                     } else {
                         "non-regular"
@@ -967,7 +806,9 @@ fn resolve_trusted_path(
                     start.display()
                 );
             }
-            if metadata.permissions().mode() & 0o022 != 0 {
+            let mode = metadata.permissions().mode();
+            let others_write = mode & 0o022 != 0;
+            if others_write && (!policy.allow_sticky_leaf || mode & 0o1000 == 0) {
                 anyhow::bail!(
                     "refusing group- or world-writable {label}: {}",
                     current.display()
@@ -1007,8 +848,12 @@ fn validate_docker_plugin_executable(entry_path: &Path, current_uid: u32) -> Res
     let _ = resolve_trusted_path(
         entry_path,
         current_uid,
-        false,
-        false,
+        TrustPolicy {
+            expect_dir: false,
+            allow_missing: false,
+            allow_leaf_symlink: true,
+            allow_sticky_leaf: false,
+        },
         "Docker CLI plugin executable",
     )?;
     Ok(())
@@ -1019,8 +864,12 @@ fn validate_docker_plugin_dir(candidate: &Path) -> Result<Option<PathBuf>> {
     let Some(canonical) = resolve_trusted_path(
         candidate,
         current_uid,
-        true,
-        true,
+        TrustPolicy {
+            expect_dir: true,
+            allow_missing: true,
+            allow_leaf_symlink: true,
+            allow_sticky_leaf: false,
+        },
         "Docker CLI plugin directory",
     )?
     else {
@@ -1058,7 +907,7 @@ fn validate_docker_plugin_dir(candidate: &Path) -> Result<Option<PathBuf>> {
 
 #[derive(Debug)]
 struct ValidatedDockerConfig {
-    source_config: PathBuf,
+    source_config: Option<PathBuf>,
     plugin_dirs: Vec<String>,
     current_context: Option<String>,
 }
@@ -1067,7 +916,22 @@ fn validate_docker_config_from(
     raw_docker_config: Option<&std::ffi::OsStr>,
     home: &Path,
 ) -> Result<ValidatedDockerConfig> {
-    let source_config = validate_docker_config_dir_from(raw_docker_config, home)?;
+    let current_uid = rustix::process::geteuid().as_raw();
+    let candidate = match raw_docker_config.filter(|value| !value.is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => home.join(".docker"),
+    };
+    let source_config = resolve_trusted_path(
+        &candidate,
+        current_uid,
+        TrustPolicy {
+            expect_dir: true,
+            allow_missing: true,
+            allow_leaf_symlink: false,
+            allow_sticky_leaf: false,
+        },
+        "DOCKER_CONFIG",
+    )?;
     let mut plugin_dirs = Vec::new();
     let mut current_context = None;
     let mut push_validated = |candidate: PathBuf| -> Result<()> {
@@ -1090,43 +954,45 @@ fn validate_docker_config_from(
     // safe absolute `cliPluginsExtraDirs` first, then `$DOCKER_CONFIG/cli-plugins`,
     // failing closed on any relative, unowned, or group/world-writable entry so
     // neither scan probes nor isolated prunes load untrusted plugins.
-    if let Some(map) = read_docker_config_json(&source_config)? {
-        if let Some(value) = map
-            .get("currentContext")
-            .or_else(|| {
-                map.iter()
-                    .find(|(key, _)| key.eq_ignore_ascii_case("currentContext"))
-                    .map(|(_, value)| value)
-            })
-            .and_then(|value| value.as_str())
-            && !value.is_empty()
-        {
-            current_context = Some(value.to_owned());
-        }
-        if let Some(extra) = map
-            .get("cliPluginsExtraDirs")
-            .or_else(|| {
-                map.iter()
-                    .find(|(key, _)| key.eq_ignore_ascii_case("cliPluginsExtraDirs"))
-                    .map(|(_, value)| value)
-            })
-            .and_then(|value| value.as_array())
-        {
-            for entry in extra {
-                let Some(text) = entry.as_str() else {
-                    anyhow::bail!(
-                        "refusing non-string entry in Docker config cliPluginsExtraDirs: {}",
-                        source_config.join("config.json").display()
-                    );
-                };
-                if text.is_empty() {
-                    continue;
+    if let Some(source_config) = source_config.as_deref() {
+        if let Some(map) = read_docker_config_json(source_config)? {
+            if let Some(value) = map
+                .get("currentContext")
+                .or_else(|| {
+                    map.iter()
+                        .find(|(key, _)| key.eq_ignore_ascii_case("currentContext"))
+                        .map(|(_, value)| value)
+                })
+                .and_then(|value| value.as_str())
+                && !value.is_empty()
+            {
+                current_context = Some(value.to_owned());
+            }
+            if let Some(extra) = map
+                .get("cliPluginsExtraDirs")
+                .or_else(|| {
+                    map.iter()
+                        .find(|(key, _)| key.eq_ignore_ascii_case("cliPluginsExtraDirs"))
+                        .map(|(_, value)| value)
+                })
+                .and_then(|value| value.as_array())
+            {
+                for entry in extra {
+                    let Some(text) = entry.as_str() else {
+                        anyhow::bail!(
+                            "refusing non-string entry in Docker config cliPluginsExtraDirs: {}",
+                            source_config.join("config.json").display()
+                        );
+                    };
+                    if text.is_empty() {
+                        continue;
+                    }
+                    push_validated(PathBuf::from(text))?;
                 }
-                push_validated(PathBuf::from(text))?;
             }
         }
+        push_validated(source_config.join("cli-plugins"))?;
     }
-    push_validated(source_config.join("cli-plugins"))?;
     for system_dir in DOCKER_SYSTEM_PLUGIN_DIRS {
         let _ = validate_docker_plugin_dir(Path::new(system_dir))?;
     }
@@ -1154,105 +1020,36 @@ fn resolve_docker_cli_plugin_dirs_from(
 }
 
 fn validated_docker_state_subdir(source_config: &Path, name: &str) -> Result<Option<PathBuf>> {
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
-    let path = source_config.join(name);
-    match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => {
-            if !metadata.file_type().is_dir() {
-                anyhow::bail!(
-                    "refusing symlinked or non-directory Docker state path: {}",
-                    path.display()
-                );
-            }
-            let current_uid = rustix::process::geteuid().as_raw();
-            if metadata.uid() != current_uid && metadata.uid() != 0 {
-                anyhow::bail!(
-                    "refusing Docker state path owned by UID {} (expected {current_uid} or root): {}",
-                    metadata.uid(),
-                    path.display()
-                );
-            }
-            if metadata.permissions().mode() & 0o022 != 0 {
-                anyhow::bail!(
-                    "refusing group- or world-writable Docker state path: {}",
-                    path.display()
-                );
-            }
-            let canonical = path
-                .canonicalize()
-                .with_context(|| format!("cannot resolve Docker state path {}", path.display()))?;
-            if canonical.as_os_str().as_encoded_bytes().contains(&b'\n') {
-                anyhow::bail!(
-                    "refusing Docker state path with newline in resolved path: {}",
-                    canonical.display()
-                );
-            }
-            validate_trusted_ancestors(&canonical, true, "Docker state path")?;
-            if super::project::ignores_ownership(&canonical)? {
-                anyhow::bail!(
-                    "refusing Docker state path {}: its volume ignores ownership",
-                    canonical.display()
-                );
-            }
-            super::project::refuse_path_acl_grants(
-                [canonical.as_path()],
-                &canonical,
-                "Docker state path",
-            )?;
-            let nested_name = match name {
-                "buildx" => Some("instances"),
-                "contexts" => Some("meta"),
-                _ => None,
-            };
-            if let Some(child_name) = nested_name {
-                let child = canonical.join(child_name);
-                match std::fs::symlink_metadata(&child) {
-                    Ok(child_meta) => {
-                        if !child_meta.file_type().is_dir() {
-                            anyhow::bail!(
-                                "refusing symlinked or non-directory Docker state subdir: {}",
-                                child.display()
-                            );
-                        }
-                        if super::project::ignores_ownership(&child)? {
-                            anyhow::bail!(
-                                "refusing Docker state subdir {}: its volume ignores ownership",
-                                child.display()
-                            );
-                        }
-                        if child_meta.uid() != current_uid && child_meta.uid() != 0 {
-                            anyhow::bail!(
-                                "refusing Docker state subdir not owned by current user or root: {}",
-                                child.display()
-                            );
-                        }
-                        if child_meta.permissions().mode() & 0o022 != 0 {
-                            anyhow::bail!(
-                                "refusing group- or world-writable Docker state subdir: {}",
-                                child.display()
-                            );
-                        }
-                        super::project::refuse_path_acl_grants(
-                            [child.as_path()],
-                            &child,
-                            "Docker state subdir",
-                        )?;
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(error).with_context(|| {
-                            format!("cannot inspect Docker state subdir {}", child.display())
-                        });
-                    }
-                }
-            }
-            Ok(Some(canonical))
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error)
-            .with_context(|| format!("cannot inspect Docker state path {}", path.display())),
+    let current_uid = rustix::process::geteuid().as_raw();
+    let policy = TrustPolicy {
+        expect_dir: true,
+        allow_missing: true,
+        allow_leaf_symlink: false,
+        allow_sticky_leaf: false,
+    };
+    let Some(canonical) = resolve_trusted_path(
+        &source_config.join(name),
+        current_uid,
+        policy,
+        "Docker state path",
+    )?
+    else {
+        return Ok(None);
+    };
+    let nested_name = match name {
+        "buildx" => Some("instances"),
+        "contexts" => Some("meta"),
+        _ => None,
+    };
+    if let Some(child_name) = nested_name {
+        let _ = resolve_trusted_path(
+            &canonical.join(child_name),
+            current_uid,
+            policy,
+            "Docker state subdir",
+        )?;
     }
+    Ok(Some(canonical))
 }
 
 /// Materializes a deterministic private `0700` `DOCKER_CONFIG` snapshot under
@@ -1280,8 +1077,13 @@ fn isolated_docker_scan_dir_from(
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     let validated = validate_docker_config_from(raw_docker_config, home)?;
-    let contexts_target = validated_docker_state_subdir(&validated.source_config, "contexts")?;
-    let buildx_target = validated_docker_state_subdir(&validated.source_config, "buildx")?;
+    let (contexts_target, buildx_target) = match validated.source_config.as_deref() {
+        Some(source_config) => (
+            validated_docker_state_subdir(source_config, "contexts")?,
+            validated_docker_state_subdir(source_config, "buildx")?,
+        ),
+        None => (None, None),
+    };
 
     let mut config_map = serde_json::Map::new();
     config_map.insert(
@@ -1303,46 +1105,19 @@ fn isolated_docker_scan_dir_from(
     let config_bytes = serde_json::to_vec(&serde_json::Value::Object(config_map))
         .context("cannot serialize validated Docker scan config")?;
 
-    let canonical_base = base
-        .canonicalize()
-        .with_context(|| format!("cannot resolve temp directory {}", base.display()))?;
     let current_uid = rustix::process::geteuid().as_raw();
-    for ancestor in canonical_base.ancestors() {
-        if super::project::ignores_ownership(ancestor)? {
-            anyhow::bail!(
-                "refusing Docker scan temp parent {}: its volume ignores ownership",
-                ancestor.display()
-            );
-        }
-        let metadata = std::fs::symlink_metadata(ancestor)
-            .with_context(|| format!("cannot inspect temp ancestor {}", ancestor.display()))?;
-        let others_write = metadata.permissions().mode() & 0o022 != 0;
-        let trusted = metadata.file_type().is_dir()
-            && (metadata.uid() == current_uid || metadata.uid() == 0)
-            && (!others_write || metadata.permissions().mode() & 0o1000 != 0);
-        if !trusted {
-            anyhow::bail!(
-                "refusing Docker scan temp parent {}: another account could change it",
-                ancestor.display()
-            );
-        }
-    }
-
-    if canonical_base
-        .as_os_str()
-        .as_encoded_bytes()
-        .contains(&b'\n')
-    {
-        anyhow::bail!(
-            "refusing Docker scan temp parent {}: its name holds a newline",
-            canonical_base.display()
-        );
-    }
-    super::project::refuse_path_acl_grants(
-        canonical_base.ancestors(),
-        &canonical_base,
+    let canonical_base = resolve_trusted_path(
+        base,
+        current_uid,
+        TrustPolicy {
+            expect_dir: true,
+            allow_missing: false,
+            allow_leaf_symlink: true,
+            allow_sticky_leaf: true,
+        },
         "Docker scan temp parent",
-    )?;
+    )?
+    .ok_or_else(|| anyhow::anyhow!("missing Docker scan temp parent {}", base.display()))?;
 
     let mut hasher = Sha256::new();
     hasher.update(b"devtrim-docker-scan-v1\0");
@@ -1367,6 +1142,12 @@ fn isolated_docker_scan_dir_from(
         .map_err(std::io::Error::from)
         .with_context(|| format!("cannot open temp directory {}", canonical_base.display()))?;
     let base_file = std::fs::File::from(base_descriptor);
+    if super::project::fd_ignores_ownership(&base_file, "Docker scan temp parent")? {
+        anyhow::bail!(
+            "refusing Docker scan temp parent {}: its volume ignores ownership",
+            canonical_base.display()
+        );
+    }
     match mkdirat(&base_file, &dir_name, Mode::from(0o700)) {
         Ok(()) | Err(rustix::io::Errno::EXIST) => {}
         Err(errno) => {
@@ -1639,38 +1420,36 @@ fn allocate_private_docker_config(
         .journal_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("journal path has no parent directory"))?;
-    let current_uid = rustix::process::getuid().as_raw();
+    let current_uid = rustix::process::geteuid().as_raw();
+    let canonical_state_dir = resolve_trusted_path(
+        state_dir,
+        current_uid,
+        TrustPolicy {
+            expect_dir: true,
+            allow_missing: false,
+            allow_leaf_symlink: false,
+            allow_sticky_leaf: false,
+        },
+        "Docker private state directory",
+    )?
+    .ok_or_else(|| anyhow::anyhow!("missing state directory {}", state_dir.display()))?;
     let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let state_file = std::fs::File::from(
-        open(state_dir, dir_flags, Mode::empty())
+        open(&canonical_state_dir, dir_flags, Mode::empty())
             .map_err(std::io::Error::from)
-            .with_context(|| format!("cannot open state directory {}", state_dir.display()))?,
+            .with_context(|| {
+                format!(
+                    "cannot open state directory {}",
+                    canonical_state_dir.display()
+                )
+            })?,
     );
-    let canonical_state_dir = state_dir
-        .canonicalize()
-        .with_context(|| format!("cannot resolve state directory {}", state_dir.display()))?;
-    if canonical_state_dir
-        .as_os_str()
-        .as_encoded_bytes()
-        .contains(&b'\n')
-    {
-        anyhow::bail!(
-            "refusing Docker state directory {}: its path holds a newline",
-            canonical_state_dir.display()
-        );
-    }
-    validate_trusted_ancestors(&canonical_state_dir, true, "Docker private state directory")?;
-    if super::project::ignores_ownership(&canonical_state_dir)? {
+    if super::project::fd_ignores_ownership(&state_file, "Docker private state directory")? {
         anyhow::bail!(
             "refusing Docker private state directory {}: its volume ignores ownership",
             canonical_state_dir.display()
         );
     }
-    super::project::refuse_path_acl_grants(
-        canonical_state_dir.ancestors(),
-        &canonical_state_dir,
-        "Docker private state directory",
-    )?;
     let pin_base = open_private_dir_child(&state_file, "buildx-pin", current_uid)?;
     // Allocate a fresh per-attempt subdirectory (`O_EXCL` via `mkdirat`) so
     // concurrent applies never share or overwrite each other's isolated config,
@@ -2486,38 +2265,62 @@ mod tests {
             regular_file.as_os_str(),
         ] {
             assert!(
-                validate_docker_config_dir_from(Some(invalid), home).is_err(),
+                validate_docker_config_from(Some(invalid), home).is_err(),
                 "accepted invalid DOCKER_CONFIG {}",
                 Path::new(invalid).display()
             );
         }
 
         assert_eq!(
-            validate_docker_config_dir_from(Some(real_dir.as_os_str()), home).unwrap(),
-            real_dir
+            validate_docker_config_from(Some(real_dir.as_os_str()), home)
+                .unwrap()
+                .source_config,
+            Some(real_dir.canonicalize().unwrap())
         );
+        // DOCKER_CONFIG reached through a writable intermediate symlink hop must fail closed.
+        use std::os::unix::fs::PermissionsExt as _;
+        let writable_hop = home.join("writable-config-hop");
+        std::fs::create_dir_all(&writable_hop).unwrap();
+        let real_parent = home.join("real-parent");
+        std::fs::create_dir_all(real_parent.join("cfg")).unwrap();
+        let hop_link = writable_hop.join("hop-parent");
+        std::os::unix::fs::symlink(&real_parent, &hop_link).unwrap();
+        let outer_parent_link = home.join("outer-parent");
+        std::os::unix::fs::symlink(&hop_link, &outer_parent_link).unwrap();
+        std::fs::set_permissions(&writable_hop, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let hopped_config = outer_parent_link.join("cfg");
+        assert!(
+            validate_docker_config_from(Some(hopped_config.as_os_str()), home).is_err(),
+            "DOCKER_CONFIG through writable intermediate symlink hop must fail closed"
+        );
+        std::fs::set_permissions(&writable_hop, std::fs::Permissions::from_mode(0o755)).unwrap();
+
         // Missing default `~/.docker` stays allowed, while a symlinked or
         // non-directory `~/.docker` must be refused.
         assert_eq!(
-            validate_docker_config_dir_from(None, home).unwrap(),
-            home.join(".docker")
+            validate_docker_config_from(None, home)
+                .unwrap()
+                .source_config,
+            None
         );
         std::os::unix::fs::symlink(&real_dir, home.join(".docker")).unwrap();
         assert!(
-            validate_docker_config_dir_from(None, home).is_err(),
+            validate_docker_config_from(None, home).is_err(),
             "symlinked default ~/.docker must be refused"
         );
         std::fs::remove_file(home.join(".docker")).unwrap();
         std::fs::write(home.join(".docker"), "{}").unwrap();
         assert!(
-            validate_docker_config_dir_from(None, home).is_err(),
+            validate_docker_config_from(None, home).is_err(),
             "regular-file default ~/.docker must be refused"
         );
         std::fs::remove_file(home.join(".docker")).unwrap();
         std::fs::create_dir_all(home.join(".docker")).unwrap();
         assert_eq!(
-            validate_docker_config_dir_from(None, home).unwrap(),
-            home.join(".docker")
+            validate_docker_config_from(None, home)
+                .unwrap()
+                .source_config,
+            Some(home.join(".docker").canonicalize().unwrap())
         );
     }
 
