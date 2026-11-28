@@ -335,11 +335,12 @@ Non-negotiable boundaries:
   root, which is how Homebrew lays out `/opt/homebrew` and macOS lays out
   `/Applications`. A plugin link whose target is missing (an uninstalled
   OrbStack or Docker Desktop) is no plugin only when every existing folder on
-  its way passes the same checks. The scan snapshot is a reused `0700`
-  directory holding only its `config.json`, the verified state links, and,
-  where there is no source state to link, the `buildx` directory Docker
-  creates there itself, accepted only as a real, user-owned directory
-  writable by nobody else.
+  its way passes the same checks and the missing entry is not directly in
+  `/Volumes`, where any local user can mount a disk. The scan snapshot is a
+  reused `0700` directory holding only its `config.json`, the verified state
+  links, and, where there is no source state to link, the `contexts` or
+  `buildx` directory Docker creates there itself, accepted only as a real,
+  user-owned directory writable by nobody else by mode or ACL.
 - A permanent removal refuses, before removing anything, a tree holding a
   folder without write and search permission, since it would otherwise stop
   part-way. The one exception is a direct Trash child in `trash-empty`, whose

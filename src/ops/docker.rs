@@ -741,6 +741,15 @@ fn resolve_trusted_path(
                     policy.allow_missing
                 };
                 if absent_allowed {
+                    // Any local user can mount a volume at a missing
+                    // `/Volumes/<name>` (a disk image, a USB disk), so a link
+                    // to one names a file nobody here vouches for.
+                    if current_from_symlink && current.parent() == Some(Path::new("/Volumes")) {
+                        anyhow::bail!(
+                            "refusing {label} linked to an unmounted volume: {}",
+                            start.display()
+                        );
+                    }
                     if last_parent_writable == Some(true) {
                         anyhow::bail!(
                             "refusing nonexistent {label} under writable ancestor: {}",
@@ -1282,17 +1291,24 @@ fn isolated_docker_scan_dir_from(
         ("buildx", buildx_target.as_deref()),
     ] {
         let Some(target) = maybe_target else {
-            // With no source state to link, `docker buildx ls` creates its
-            // own `buildx/` here on the first scan. Only the current user can
-            // create entries in this 0700 directory, so a real directory it
-            // owns, writable by nobody else, is Docker's state from an earlier
-            // scan; a link, a file or a looser directory still refuses below.
-            match std::fs::symlink_metadata(scan_dir.join(link_name)) {
+            // With no source state to link, Docker creates its own state
+            // here on the first scan (`docker buildx ls` writes `buildx/`).
+            // Only the current user can create entries in this 0700
+            // directory, so a real directory it owns, writable by nobody else
+            // by mode or ACL, is Docker's state from an earlier scan; a link,
+            // a file or a looser directory still refuses below.
+            let entry = scan_dir.join(link_name);
+            match std::fs::symlink_metadata(&entry) {
                 Ok(metadata)
                     if metadata.file_type().is_dir()
                         && metadata.uid() == current_uid
                         && metadata.permissions().mode() & 0o022 == 0 =>
                 {
+                    super::project::refuse_path_acl_grants(
+                        [entry.as_path()],
+                        &entry,
+                        "isolated Docker scan entry",
+                    )?;
                     expected_entries.push(link_name);
                 }
                 Ok(_) => {}
@@ -2618,6 +2634,18 @@ mod tests {
         std::fs::remove_file(&linked_plugin).unwrap();
         std::fs::set_permissions(&sticky_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
+        // `/Volumes` is root-owned 0755, yet any local user can mount a disk
+        // at a missing `/Volumes/<name>`: a dangling link there is refused.
+        let unmounted =
+            Path::new("/Volumes").join(format!("devtrim-test-unmounted-{}", std::process::id()));
+        assert!(!unmounted.exists(), "test volume name must be unused");
+        std::os::unix::fs::symlink(unmounted.join("docker-buildx"), &linked_plugin).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling plugin into an unmounted /Volumes entry must fail closed"
+        );
+        std::fs::remove_file(&linked_plugin).unwrap();
+
         // Symlinked plugin directory passing through a writable intermediate directory hop fails closed.
         let dir_hop_link = writable_hop_dir.join("dir-hop");
         std::os::unix::fs::symlink(&safe_plugins, &dir_hop_link).unwrap();
@@ -2743,6 +2771,18 @@ mod tests {
             isolated_docker_scan_dir_from(Some(source_config.as_os_str()), home, &scan_base)
                 .is_err(),
             "group-writable buildx entry must fail closed"
+        );
+        std::fs::set_permissions(&created, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let add_acl = std::process::Command::new("/bin/chmod")
+            .args(["+a", "group:everyone allow add_file"])
+            .arg(&created)
+            .status()
+            .unwrap();
+        assert!(add_acl.success(), "chmod +a on buildx entry failed");
+        assert!(
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), home, &scan_base)
+                .is_err(),
+            "buildx entry with an allow ACL must fail closed"
         );
         std::fs::remove_dir(&created).unwrap();
         std::os::unix::fs::symlink(&scan_base, &created).unwrap();
