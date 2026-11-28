@@ -1124,6 +1124,14 @@ pub(super) fn ignores_ownership(path: &Path) -> Result<bool> {
     Ok(stats.f_flags & MNT_IGNORE_OWNERSHIP != 0)
 }
 
+pub(super) fn fd_ignores_ownership<Fd: rustix::fd::AsFd>(fd: Fd, label: &str) -> Result<bool> {
+    const MNT_IGNORE_OWNERSHIP: u32 = 0x0020_0000;
+    let stats = rustix::fs::fstatfs(fd)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot read the volume of {label}"))?;
+    Ok(stats.f_flags & MNT_IGNORE_OWNERSHIP != 0)
+}
+
 /// `O_NOFOLLOW` for [`std::os::unix::fs::OpenOptionsExt::custom_flags`].
 fn libc_nofollow() -> i32 {
     rustix::fs::OFlags::NOFOLLOW.bits() as i32

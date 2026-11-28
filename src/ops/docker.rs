@@ -795,7 +795,7 @@ fn read_docker_config_json(
             config_path.display()
         );
     }
-    if super::project::ignores_ownership(&config_path)? {
+    if super::project::fd_ignores_ownership(&descriptor, "Docker config")? {
         anyhow::bail!(
             "refusing Docker config {}: its volume ignores ownership",
             config_path.display()
@@ -1378,6 +1378,9 @@ fn isolated_docker_scan_dir_from(
         .map_err(std::io::Error::from)
         .with_context(|| format!("cannot open Docker scan directory `{dir_name}`"))?;
     let scan_file = std::fs::File::from(scan_descriptor);
+    if super::project::fd_ignores_ownership(&scan_file, &dir_name)? {
+        anyhow::bail!("refusing Docker scan directory `{dir_name}`: its volume ignores ownership");
+    }
     let scan_metadata = scan_file
         .metadata()
         .with_context(|| format!("cannot inspect Docker scan directory `{dir_name}`"))?;
@@ -1397,6 +1400,11 @@ fn isolated_docker_scan_dir_from(
     match openat(&scan_file, "config.json", config_flags, Mode::from(0o600)) {
         Ok(descriptor) => {
             let mut file = std::fs::File::from(descriptor);
+            if super::project::fd_ignores_ownership(&file, "isolated Docker scan config.json")? {
+                anyhow::bail!(
+                    "refusing isolated Docker scan config.json: its volume ignores ownership"
+                );
+            }
             let metadata = file
                 .metadata()
                 .context("cannot inspect isolated Docker scan config.json")?;
@@ -1421,6 +1429,14 @@ fn isolated_docker_scan_dir_from(
             .map_err(std::io::Error::from)
             .context("cannot open existing isolated Docker scan config.json")?;
             let file = std::fs::File::from(existing);
+            if super::project::fd_ignores_ownership(
+                &file,
+                "existing isolated Docker scan config.json",
+            )? {
+                anyhow::bail!(
+                    "refusing existing isolated Docker scan config.json: its volume ignores ownership"
+                );
+            }
             let metadata = file
                 .metadata()
                 .context("cannot inspect existing isolated Docker scan config.json")?;
@@ -1542,7 +1558,7 @@ fn open_private_dir_child(
     current_uid: u32,
 ) -> Result<std::fs::File> {
     use rustix::fs::{Mode, OFlags, fchmod, mkdirat, openat};
-    use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     match mkdirat(parent, name, Mode::from(0o700)) {
@@ -1557,11 +1573,17 @@ fn open_private_dir_child(
         .map_err(std::io::Error::from)
         .with_context(|| format!("cannot open private buildx directory `{name}`"))?;
     let directory = std::fs::File::from(descriptor);
+    if super::project::fd_ignores_ownership(&directory, name)? {
+        anyhow::bail!("refusing private buildx directory `{name}`: its volume ignores ownership");
+    }
     let metadata = directory
         .metadata()
         .with_context(|| format!("cannot inspect private buildx directory `{name}`"))?;
-    if !metadata.is_dir() || metadata.uid() != current_uid {
-        anyhow::bail!("private buildx directory `{name}` is not owned by the current user");
+    if !metadata.is_dir()
+        || metadata.uid() != current_uid
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        anyhow::bail!("refusing untrusted private buildx directory `{name}`");
     }
     fchmod(&directory, Mode::from(0o700))
         .map_err(std::io::Error::from)
@@ -1585,6 +1607,9 @@ fn write_private_json_file(
         .map_err(std::io::Error::from)
         .with_context(|| format!("cannot write private buildx file `{name}`"))?;
     let mut file = std::fs::File::from(descriptor);
+    if super::project::fd_ignores_ownership(&file, name)? {
+        anyhow::bail!("refusing private buildx file `{name}`: its volume ignores ownership");
+    }
     let metadata = file
         .metadata()
         .with_context(|| format!("cannot inspect private buildx file `{name}`"))?;
@@ -1665,6 +1690,11 @@ fn allocate_private_docker_config(
                             format!("cannot open private buildx directory `{candidate}`")
                         })?;
                     let directory = std::fs::File::from(descriptor);
+                    if super::project::fd_ignores_ownership(&directory, &candidate)? {
+                        anyhow::bail!(
+                            "refusing private buildx directory `{candidate}`: its volume ignores ownership"
+                        );
+                    }
                     let metadata = directory.metadata().with_context(|| {
                         format!("cannot inspect private buildx directory `{candidate}`")
                     })?;
@@ -2911,5 +2941,87 @@ mod tests {
                 .is_err_and(|error| error.to_string().contains("ignores ownership")),
             "DOCKER_CONFIG on MNT_IGNORE_OWNERSHIP volume must fail closed: {cfg_off:?}"
         );
+
+        // Child mounts with `MNT_IGNORE_OWNERSHIP` directly at the scan snapshot
+        // directory or reused `buildx-pin` directory must also fail closed even
+        // when their parent directories live on an ownership-enforcing volume.
+        std::fs::write(source_config.join("config.json"), "{}").unwrap();
+        let scan_parent = base.join("scan-parent");
+        std::fs::create_dir_all(&scan_parent).unwrap();
+        std::fs::set_permissions(&scan_parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let initial_scan =
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), base, &scan_parent)
+                .unwrap();
+        let scan_dir_name = initial_scan.file_name().unwrap().to_os_string();
+        std::fs::remove_dir_all(&initial_scan).unwrap();
+
+        let scan_mount = scan_parent.join(&scan_dir_name);
+        std::fs::create_dir_all(&scan_mount).unwrap();
+        let attached_scan_off = std::process::Command::new("/usr/bin/hdiutil")
+            .args([
+                "attach",
+                "-quiet",
+                "-nobrowse",
+                "-noautoopen",
+                "-owners",
+                "off",
+            ])
+            .arg("-mountpoint")
+            .arg(&scan_mount)
+            .arg(&image)
+            .output_within(HDIUTIL_LIMIT)
+            .unwrap();
+        assert!(
+            attached_scan_off.status.success(),
+            "hdiutil attach -owners off on scan child mount failed"
+        );
+        {
+            let _detach = Detach(scan_mount.clone());
+            let scan_off =
+                isolated_docker_scan_dir_from(Some(source_config.as_os_str()), base, &scan_parent);
+            assert!(
+                scan_off
+                    .as_ref()
+                    .is_err_and(|error| error.to_string().contains("ignores ownership")),
+                "scan snapshot child mount with MNT_IGNORE_OWNERSHIP must fail closed: {scan_off:?}"
+            );
+        }
+
+        let state_dir = base.join("state-dir");
+        let pin_mount = state_dir.join("buildx-pin");
+        std::fs::create_dir_all(&pin_mount).unwrap();
+        std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut ctx = test_ctx();
+        ctx.home = base.canonicalize().unwrap();
+        ctx.journal_path = state_dir.join("journal.jsonl");
+        let attached_pin_off = std::process::Command::new("/usr/bin/hdiutil")
+            .args([
+                "attach",
+                "-quiet",
+                "-nobrowse",
+                "-noautoopen",
+                "-owners",
+                "off",
+            ])
+            .arg("-mountpoint")
+            .arg(&pin_mount)
+            .arg(&image)
+            .output_within(HDIUTIL_LIMIT)
+            .unwrap();
+        assert!(
+            attached_pin_off.status.success(),
+            "hdiutil attach -owners off on buildx-pin child mount failed"
+        );
+        {
+            let _detach = Detach(pin_mount.clone());
+            let pin_off = allocate_private_docker_config(&ctx, &[]);
+            assert!(
+                pin_off
+                    .as_ref()
+                    .is_err_and(|error| error.to_string().contains("ignores ownership")),
+                "reused buildx-pin child mount with MNT_IGNORE_OWNERSHIP must fail closed: {:?}",
+                pin_off.err()
+            );
+        }
     }
 }
