@@ -2605,6 +2605,17 @@ mod tests {
             "dangling plugin into a world-writable folder must fail closed"
         );
         std::fs::remove_file(&linked_plugin).unwrap();
+        // Reaching it through a trusted child and `..` must not reset the
+        // writer check: the sticky folder is judged again after the pop.
+        let trusted_child = sticky_dir.join("sub");
+        std::fs::create_dir(&trusted_child).unwrap();
+        std::fs::set_permissions(&trusted_child, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(trusted_child.join("../docker-buildx"), &linked_plugin).unwrap();
+        assert!(
+            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+            "dangling plugin reached through `..` into a world-writable folder must fail closed"
+        );
+        std::fs::remove_file(&linked_plugin).unwrap();
         std::fs::set_permissions(&sticky_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         // Symlinked plugin directory passing through a writable intermediate directory hop fails closed.
