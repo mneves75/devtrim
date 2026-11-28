@@ -1282,6 +1282,27 @@ fn isolated_docker_scan_dir_from(
         ("buildx", buildx_target.as_deref()),
     ] {
         let Some(target) = maybe_target else {
+            // With no source state to link, `docker buildx ls` creates its
+            // own `buildx/` here on the first scan. Only the current user can
+            // create entries in this 0700 directory, so a real directory it
+            // owns, writable by nobody else, is Docker's state from an earlier
+            // scan; a link, a file or a looser directory still refuses below.
+            match std::fs::symlink_metadata(scan_dir.join(link_name)) {
+                Ok(metadata)
+                    if metadata.file_type().is_dir()
+                        && metadata.uid() == current_uid
+                        && metadata.permissions().mode() & 0o022 == 0 =>
+                {
+                    expected_entries.push(link_name);
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("cannot inspect isolated Docker scan entry `{link_name}`")
+                    });
+                }
+            }
             continue;
         };
         expected_entries.push(link_name);
@@ -2693,6 +2714,33 @@ mod tests {
             scan_json["cliPluginsExtraDirs"],
             serde_json::json!([canonical_safe_plugins.to_string_lossy()])
         );
+
+        // With no source `buildx/`, `docker buildx ls` creates one in the scan
+        // dir on the first scan; the next scan must reuse it, not refuse.
+        assert!(!source_config.join("buildx").exists());
+        let created = scan_dir.join("buildx");
+        std::fs::create_dir(&created).unwrap();
+        std::fs::set_permissions(&created, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), home, &scan_base)
+                .expect("Docker's own buildx state from an earlier scan is reused"),
+            scan_dir
+        );
+        // A looser directory, a link or a file in its place still refuses.
+        std::fs::set_permissions(&created, std::fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), home, &scan_base)
+                .is_err(),
+            "group-writable buildx entry must fail closed"
+        );
+        std::fs::remove_dir(&created).unwrap();
+        std::os::unix::fs::symlink(&scan_base, &created).unwrap();
+        assert!(
+            isolated_docker_scan_dir_from(Some(source_config.as_os_str()), home, &scan_base)
+                .is_err(),
+            "symlinked buildx entry must fail closed"
+        );
+        std::fs::remove_file(&created).unwrap();
     }
 
     #[test]
