@@ -336,7 +336,8 @@ Non-negotiable boundaries:
   `/Applications`. A plugin link whose target is missing (an uninstalled
   OrbStack or Docker Desktop) is no plugin only when every existing folder on
   its way passes the same checks and the missing entry is not directly in
-  `/Volumes`, where any local user can mount a disk. The scan snapshot is a
+  `/Volumes` (judged by device and inode, so `/volumes` and the Data-volume
+  firmlink count too), where any local user can mount a disk. The scan snapshot is a
   reused `0700` directory holding only its `config.json`, the verified state
   links, and, where there is no source state to link, the `contexts` or
   `buildx` directory Docker creates there itself, accepted only as a real,

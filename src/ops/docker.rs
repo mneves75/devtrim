@@ -743,8 +743,20 @@ fn resolve_trusted_path(
                 if absent_allowed {
                     // Any local user can mount a volume at a missing
                     // `/Volumes/<name>` (a disk image, a USB disk), so a link
-                    // to one names a file nobody here vouches for.
-                    if current_from_symlink && current.parent() == Some(Path::new("/Volumes")) {
+                    // to one names a file nobody here vouches for. Compared by
+                    // identity: `/volumes` and the Data-volume firmlink
+                    // `/System/Volumes/Data/Volumes` name the same folder.
+                    if current_from_symlink
+                        && current.parent().is_some_and(|parent| {
+                            match (std::fs::metadata(parent), std::fs::metadata("/Volumes")) {
+                                (Ok(parent), Ok(volumes)) => {
+                                    (parent.dev(), parent.ino()) == (volumes.dev(), volumes.ino())
+                                }
+                                // Unknown identity fails closed.
+                                _ => true,
+                            }
+                        })
+                    {
                         anyhow::bail!(
                             "refusing {label} linked to an unmounted volume: {}",
                             start.display()
@@ -2639,12 +2651,20 @@ mod tests {
         let unmounted =
             Path::new("/Volumes").join(format!("devtrim-test-unmounted-{}", std::process::id()));
         assert!(!unmounted.exists(), "test volume name must be unused");
-        std::os::unix::fs::symlink(unmounted.join("docker-buildx"), &linked_plugin).unwrap();
-        assert!(
-            validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
-            "dangling plugin into an unmounted /Volumes entry must fail closed"
-        );
-        std::fs::remove_file(&linked_plugin).unwrap();
+        let name = unmounted.file_name().unwrap();
+        // Every spelling that reaches the same folder: case and the firmlink.
+        for volumes in ["/Volumes", "/volumes", "/System/Volumes/Data/Volumes"] {
+            if !Path::new(volumes).is_dir() {
+                continue;
+            }
+            let target = Path::new(volumes).join(name).join("docker-buildx");
+            std::os::unix::fs::symlink(&target, &linked_plugin).unwrap();
+            assert!(
+                validate_docker_config_from(Some(source_config.as_os_str()), home).is_err(),
+                "dangling plugin into an unmounted {volumes} entry must fail closed"
+            );
+            std::fs::remove_file(&linked_plugin).unwrap();
+        }
 
         // Symlinked plugin directory passing through a writable intermediate directory hop fails closed.
         let dir_hop_link = writable_hop_dir.join("dir-hop");
